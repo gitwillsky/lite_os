@@ -635,14 +635,11 @@ impl Process {
         total
     }
 
-    /// 进程映射统计与存活线程数；共享服务区只由请求该进程统计的调用者归属。
+    /// 本进程 VMAR 的驻留归属与存活线程数；不把成员的共享服务视图重复归属。
     pub(crate) fn stats(&self) -> Result<native_abi::TaskStats, Status> {
-        let (mapped_bytes, resident_bytes) = self.space.memory_stats().map_err(vm_status)?;
-        Ok(native_abi::TaskStats {
-            mapped_bytes,
-            resident_bytes,
-            threads: self.lifecycle.lock().live as u64,
-        })
+        let mut stats = self.root_vmar.memory_stats().map_err(vm_status)?;
+        stats.threads = self.lifecycle.lock().live as u64;
+        Ok(stats)
     }
 }
 

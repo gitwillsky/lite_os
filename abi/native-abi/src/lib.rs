@@ -366,6 +366,10 @@ pub mod info {
     pub const JOB_PROCESSES: u32 = 9;
     /// [`crate::BtiInfo`]（对应 Zircon `ZX_INFO_BTI`）。
     pub const BTI: u32 = 10;
+    /// VMAR 内实际安装的用户翻译，按虚拟地址排序的 [`crate::VmarResidentRange`] 数组。
+    pub const VMAR_RESIDENCY: u32 = 11;
+    /// [`crate::VmarMappingStats`] 数组；实际用户翻译按物理页共享次数分摊。
+    pub const VMAR_MAPPING_STATS: u32 = 12;
 }
 
 /// `system_get_info` 主题与电源操作。
@@ -462,14 +466,20 @@ pub struct TaskRuntime {
     pub restricted_pager_waits: u64,
 }
 
-/// 进程映射的观测快照；同一物理页的不同虚拟映射可重复计数，不是 PSS。
+/// 进程自身 VMAR 的驻留归属快照；成员的共享服务区由共享 owner 计费。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskStats {
     /// 所有映射区间的字节和，含当前未驻留的范围。
     pub mapped_bytes: u64,
-    /// 各映射内已有 backing 的字节和；查询不触发缺页、不提交新页。
+    /// 实际 RAM 翻译字节和；同一页的虚拟别名分别计数，不含 MMIO。
     pub resident_bytes: u64,
+    /// 只有一个逻辑翻译的 RAM 字节。
+    pub private_bytes: u64,
+    /// 至少两个逻辑翻译的 RAM 字节。
+    pub shared_bytes: u64,
+    /// 共享 RAM 逐页除以逻辑翻译次数，再按字节取整；与 private_bytes 之和为 PSS。
+    pub scaled_shared_bytes: u64,
     /// 尚未退出的线程数。
     pub threads: u64,
 }
@@ -524,6 +534,49 @@ pub struct VmoInfo {
 pub struct VmarRegion {
     pub base: u64,
     pub size: u64,
+}
+
+/// VMAR 内连续已驻留的用户虚拟地址区间；没有翻译的 backing 不计入。
+///
+/// 同一页的不同虚拟别名分别占一个页；不报告物理地址，也不声明物理去重或 PSS。MMIO 不计入。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VmarResidentRange {
+    /// 页对齐的区间起点。
+    pub base: u64,
+    /// 页对齐的区间长度（字节）。
+    pub size: u64,
+    /// 内容来源标志（ANONYMOUS/VOLATILE_PAGER），不查询共享次数。
+    pub flags: u64,
+}
+
+/// 驻留内容的归属标志；仅描述内核页 owner 与实际翻译，不包含应用映射策略。
+pub mod residency {
+    /// 匿名提交或 COW 副本；内存文件 pager 不设置此位。
+    pub const ANONYMOUS: u64 = 1 << 0;
+    /// 内容修改后需要保留或写回；不可变启动归档不设置此位。
+    pub const DIRTY: u64 = 1 << 1;
+    /// 同一 RAM 页有至少两个逻辑虚拟翻译。
+    pub const SHARED: u64 = 1 << 2;
+    /// 页由无存储写回目标的 pager 提供；不等同于私有匿名提交。
+    pub const VOLATILE_PAGER: u64 = 1 << 3;
+}
+
+/// 同一归属的连续 RAM 驻留区间；按地址排序，未驻留范围与 MMIO 不在结果中。
+///
+/// 共享按物理页的逻辑虚拟映射次数判断，不按映射策略、句柄或 Arc 引用数判断。
+/// 同一服务映射的硬件镜像只计一次；跨地址空间的瞬时观测不声明原子快照。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VmarMappingStats {
+    /// 页对齐虚拟起点。
+    pub base: u64,
+    /// 页对齐的驻留长度（字节）。
+    pub size: u64,
+    /// 每页的比例字节数，保留 12 位小数；区间内各页的分摊相同。
+    pub pss_per_page: u64,
+    /// [`residency`] 中的归属标志。
+    pub flags: u64,
 }
 
 /// 进程状态。

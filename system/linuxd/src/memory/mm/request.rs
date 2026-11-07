@@ -67,7 +67,12 @@ pub(crate) struct DeviceMappingSource {
     /// 映射用的内存对象：与 `backing` 同一 VMO（同 koid，共享 futex key 跨映射一致）。
     pub(crate) object: Arc<crate::memory::MemoryObject>,
     pub(crate) page_offset: usize,
-    pub(crate) owners: alloc::vec::Vec<Arc<dyn MappedFileOwner>>,
+    /// mmap 入口提供的实际文件身份与打开租约；设备构造 backing 时尚无此身份。
+    pub(crate) file: Option<Arc<dyn MappedFileOwner>>,
+    /// mmap 输入的文件字节偏移；不能用 VMO 中的缓冲偏移替代（DRM 的映射偏移可能是句柄）。
+    pub(crate) file_offset: u64,
+    /// 设备提供者交出的缓冲寿命（例如 GEM 句柄关闭后仍保活 DMA buffer）。
+    retained_buffer: Option<Arc<dyn MappedFileOwner>>,
 }
 
 impl DeviceMappingSource {
@@ -85,29 +90,21 @@ impl DeviceMappingSource {
             object: crate::memory::MemoryObject::new(vmo)?,
             backing,
             page_offset: 0,
-            owners: alloc::vec::Vec::new(),
+            file: None,
+            file_offset: 0,
+            retained_buffer: None,
         })
     }
 
-    /// 保活映射所用的打开文件。
-    ///
-    /// # Errors
-    ///
-    /// 内存不足。
-    pub(crate) fn retain_file(
-        &mut self,
-        file: Arc<dyn MappedFileOwner>,
-    ) -> Result<(), alloc::alloc::AllocError> {
-        self.owners
-            .try_reserve(1)
-            .map_err(|_| alloc::alloc::AllocError)?;
-        self.owners.push(file);
-        Ok(())
+    /// mmap 入口设置实际文件及打开租约；不经堆分配，不能靠遍历无类型 owner 列表猜身份。
+    pub(crate) fn set_file(&mut self, file: Arc<dyn MappedFileOwner>, offset: u64) {
+        self.file = Some(file);
+        self.file_offset = offset;
     }
 
-    /// 保活独立于打开文件的设备对象（GEM 句柄关闭后映射仍有效）。
-    pub(crate) fn retain_object(&mut self, object: Arc<dyn MappedFileOwner>) {
-        self.owners.push(object);
+    /// 设备提供者设置唯一缓冲寿命；与 mmap 入口的文件身份独立，不产生额外的克隆分配。
+    pub(crate) fn retain_buffer(&mut self, buffer: Arc<dyn MappedFileOwner>) {
+        self.retained_buffer = Some(buffer);
     }
 }
 
@@ -139,7 +136,10 @@ pub(crate) enum MappingPlacement {
 #[derive(Clone, Debug)]
 pub(crate) enum UserMappingSource {
     PrivateAnonymous,
-    SharedAnonymous,
+    SharedAnonymous {
+        object: Arc<crate::memory::MemoryObject>,
+        file: Arc<dyn MappedFileOwner>,
+    },
     PrivateFile(FileMappingSource),
     SharedFile(FileMappingSource),
     Device(DeviceMappingSource),

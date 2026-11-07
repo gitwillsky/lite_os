@@ -152,9 +152,8 @@ impl crate::memory::MappedFileOwner for ExecutableOpenLease {}
 struct InodeExecutableSource {
     // Storage inode/cache pins retire before the actual path releases its filesystem/view lease.
     file: RegularFile,
-    inode: Arc<dyn crate::fs::Inode>,
     length: usize,
-    _opened: Arc<crate::fs::OpenedFile>,
+    opened: Arc<crate::fs::OpenedFile>,
 }
 
 impl ExecutableSource for InodeExecutableSource {
@@ -173,7 +172,7 @@ impl ExecutableSource for InodeExecutableSource {
 
     fn shared_mapping(&self) -> Option<Arc<dyn crate::memory::SharedFileMapping>> {
         // 段以私有写时复制方式映射页缓存；没有页缓存的文件（快照型）由调用者复制内容。
-        crate::fs::mapping(self.inode.clone(), None, false, false, false).ok()
+        crate::fs::mapping(self.opened.clone(), None, false, false, false).ok()
     }
 }
 
@@ -343,9 +342,8 @@ fn source(
     let file = RegularFile::from_inode(inode.clone()).map_err(ProgramLoadError::FileSystem)?;
     let source = Arc::try_new(InodeExecutableSource {
         file,
-        inode,
         length,
-        _opened: opened.clone(),
+        opened: opened.clone(),
     })
     .map_err(|_| ProgramLoadError::OutOfMemory)?;
     Ok((source, owner))

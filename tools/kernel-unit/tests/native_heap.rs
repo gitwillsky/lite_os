@@ -1,4 +1,4 @@
-//! Actual service allocator; the host VMAR seam retains mapped ranges and accounts retirement.
+//! Actual service allocator wiring (VMAR/VMO backing); the host VMAR seam retains mapped ranges and accounts retirement.
 use std::alloc::{GlobalAlloc, Layout};
 use std::ops::Range;
 use std::sync::Mutex;
@@ -14,7 +14,13 @@ impl Vmo {
         }
         Ok(Self(size as usize))
     }
+    fn op_range(&self, op: u32, _: u64, _: u64) -> Result<(), ()> {
+        assert_eq!(op, native_abi::vmo::OP_DECOMMIT);
+        DECOMMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
 }
+static DECOMMITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 struct Mapping {
     allocation: usize,
     layout: Layout,
@@ -85,6 +91,33 @@ impl Vmar {
         Ok(())
     }
 }
+mod futex {
+    use std::sync::atomic::AtomicU32;
+    pub(crate) fn wait(_: &AtomicU32, _: u32, _: i64, _: u32) -> Result<(), i32> {
+        std::thread::yield_now();
+        Ok(())
+    }
+    pub(crate) fn wake(_: &AtomicU32, _: u32, _: u32) {}
+}
+mod thread {
+    use span_heap::LocalHeap;
+    use std::cell::Cell;
+    use std::sync::atomic::AtomicPtr;
+    std::thread_local! {
+        static SLOT: Cell<Option<&'static AtomicPtr<LocalHeap>>> = const { Cell::new(None) };
+    }
+    pub(crate) fn heap_slot() -> Option<&'static AtomicPtr<LocalHeap>> {
+        Some(SLOT.with(|cell| match cell.get() {
+            Some(slot) => slot,
+            None => {
+                let slot: &'static AtomicPtr<LocalHeap> =
+                    Box::leak(Box::new(AtomicPtr::new(std::ptr::null_mut())));
+                cell.set(Some(slot));
+                slot
+            }
+        }))
+    }
+}
 #[path = "../../../system/native-runtime/src/heap"]
 mod heap {
     use super::*;
@@ -101,13 +134,15 @@ mod heap {
     mod allocator;
 
     #[test]
-    fn channel_buffers_reuse_aligned_nonoverlapping_blocks_and_large_maps_retire() {
+    fn rpc_buffers_reuse_aligned_nonoverlapping_blocks_without_vmar_churn() {
         use std::sync::atomic::Ordering;
         let heap = allocator::Heap;
+        // 先分配一次让区域与 span 就位，之后同尺寸的反复分配/释放不得再建立映射。
         for (size, align) in [
             (2048, 16),
             (8 + 8 + 4 + device_model::PCM_PERIOD_BYTES, 16),
             (65536, 65536),
+            (native_abi::CHANNEL_MAX_BYTES, 16),
         ] {
             let layout = Layout::from_size_align(size, align).unwrap();
             // SAFETY: valid nonzero layouts; every allocation is returned exactly once below.
@@ -139,35 +174,58 @@ mod heap {
                 heap.dealloc(second, layout);
             }
         }
-        let retained = MAPPINGS.lock().unwrap().len();
-        for size in [native_abi::PAGE_SIZE, native_abi::CHANNEL_MAX_BYTES] {
-            let layout = Layout::from_size_align(size, 16).unwrap();
-            // SAFETY: model concurrent RPC replies, then return every buffer before checking retention.
-            unsafe {
-                let replies: Vec<_> = (0..24).map(|_| heap.alloc(layout)).collect();
-                assert!(replies.iter().all(|pointer| !pointer.is_null()));
-                for reply in replies {
-                    heap.dealloc(reply, layout);
-                }
-            }
-            assert_eq!(
-                MAPPINGS.lock().unwrap().len(),
-                retained,
-                "a completed RPC burst must not permanently retain its peak request/reply mappings"
-            );
-        }
-        let retained = MAPPINGS.lock().unwrap().len();
-        let layout = Layout::from_size_align(8192, 16).unwrap();
-        // SAFETY: medium allocations own independent mappings and must retire on return.
+    }
+
+    #[test]
+    fn a_completed_burst_returns_physical_pages_without_unmapping() {
+        use std::sync::atomic::Ordering;
+        let heap = allocator::Heap;
+        let layout = Layout::from_size_align(native_abi::CHANNEL_MAX_BYTES, 16).unwrap();
+        let mappings = MAPPINGS.lock().unwrap().len();
+        let decommits = DECOMMITS.load(Ordering::Relaxed);
+        // SAFETY: model concurrent RPC replies, then return every buffer before checking retention.
         unsafe {
-            let buffer = heap.alloc(layout);
-            assert!(!buffer.is_null());
-            heap.dealloc(buffer, layout);
+            let replies: Vec<_> = (0..64).map(|_| heap.alloc(layout)).collect();
+            assert!(replies.iter().all(|pointer| !pointer.is_null()));
+            for reply in replies {
+                heap.dealloc(reply, layout);
+            }
         }
-        assert_eq!(MAPPINGS.lock().unwrap().len(), retained);
-        let layout = Layout::from_size_align(8192, 8192).unwrap();
+        assert!(
+            DECOMMITS.load(Ordering::Relaxed) > decommits,
+            "empty spans beyond the retained count must be decommitted"
+        );
+        assert!(
+            MAPPINGS.lock().unwrap().len() >= mappings,
+            "regions stay mapped; only physical pages are returned"
+        );
+    }
+
+    #[test]
+    fn a_retired_thread_heap_hands_its_live_blocks_to_other_threads() {
+        let layout = Layout::from_size_align(96, 16).unwrap();
+        let live = std::thread::spawn(move || {
+            let heap = allocator::Heap;
+            // SAFETY: valid layout; the block outlives the thread and is freed below exactly once.
+            let block = unsafe { heap.alloc(layout) } as usize;
+            allocator::retire_thread(super::thread::heap_slot().unwrap());
+            block
+        })
+        .join()
+        .unwrap();
+        // SAFETY: the block was allocated above and not freed; freeing from another thread uses
+        // the remote path into the orphaned span.
+        unsafe { allocator::Heap.dealloc(live as *mut u8, layout) };
+    }
+
+    #[test]
+    fn rejected_mappings_leave_the_allocator_usable_and_large_maps_retire() {
+        use std::sync::atomic::Ordering;
+        let heap = allocator::Heap;
+        // 大对象（> 256 KiB）失败的 VMO 创建不能留下半个映射，之后可重试。
+        let layout = Layout::from_size_align(1 << 20, 16).unwrap();
         FAIL_MAP.store(true, Ordering::Relaxed);
-        // SAFETY: a rejected chunk must leave the class empty and usable for a later retry.
+        // SAFETY: a rejected mapping must leave the allocator empty and usable for a later retry.
         unsafe {
             assert!(heap.alloc(layout).is_null());
             let retry = heap.alloc(layout);
@@ -175,7 +233,7 @@ mod heap {
             heap.dealloc(retry, layout);
         }
         let before = MAPPINGS.lock().unwrap().len();
-        let layout = Layout::from_size_align(32768, 32768).unwrap();
+        let layout = Layout::from_size_align(1 << 20, 65536).unwrap();
         FAIL_TRIM.store(2, Ordering::Relaxed);
         // SAFETY: no failed aligned allocation may escape or retain its unpublished mapping.
         unsafe {
@@ -186,7 +244,7 @@ mod heap {
             heap.dealloc(retry, layout);
         }
         let before = MAPPINGS.lock().unwrap().len();
-        let layout = Layout::from_size_align(131072, 65536).unwrap();
+        let layout = Layout::from_size_align(1 << 20, 65536).unwrap();
         // SAFETY: the independent mapping is only accessed while allocated, then fully retired.
         unsafe {
             let large = heap.alloc(layout);
@@ -197,6 +255,5 @@ mod heap {
             heap.dealloc(large, layout);
         }
         assert_eq!(MAPPINGS.lock().unwrap().len(), before);
-        // Cached chunks intentionally live with CLASSES for the service/process lifetime.
     }
 }

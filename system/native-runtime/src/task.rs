@@ -87,34 +87,7 @@ impl Job {
         } else {
             native_abi::info::JOB_PROCESSES
         };
-        let mut koids = alloc::vec::Vec::new();
-        loop {
-            let mut actual = 0usize;
-            // SAFETY: 缓冲区按 u64 数组的字节长度传入，输出位置有效。
-            let status = unsafe {
-                invoke(
-                    call::OBJECT_GET_INFO,
-                    &[
-                        self.raw() as usize,
-                        topic as usize,
-                        koids.as_mut_ptr() as usize,
-                        koids.capacity() * 8,
-                        (&raw mut actual) as usize,
-                    ],
-                )
-            };
-            match check(status) {
-                Ok(()) => {
-                    // SAFETY: 内核写入了 `actual` 字节（8 的倍数且不超过容量）的 KOID。
-                    unsafe { koids.set_len(actual / 8) };
-                    return Ok(koids);
-                }
-                Err(native_abi::ERR_BUFFER_TOO_SMALL) => koids
-                    .try_reserve_exact(actual / 8)
-                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-                Err(status) => return Err(status),
-            }
-        }
+        self.info_array(topic)
     }
 
     /// 按 KOID 取直属成员（子 Job 或进程）句柄，rights 不超过本句柄。

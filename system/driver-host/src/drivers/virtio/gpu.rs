@@ -313,7 +313,8 @@ impl VirtIOGpuDevice {
             let added = match &prepared.stream {
                 Some((backing, length)) => queue.add_dma(&[
                     request,
-                    DmaSlice::backing(backing, *length).map_err(|_| DisplayError::Device)?,
+                    DmaSlice::backing(backing, 0..*length, false)
+                        .map_err(|_| DisplayError::Device)?,
                     response,
                 ]),
                 None => queue.add_dma(&[request, response]),

@@ -154,51 +154,98 @@ impl CountingImage {
 }
 
 impl BlockDevice for CountingImage {
+    fn attach_buffer(
+        &self,
+        _: native_runtime::Vmo,
+    ) -> Result<alloc::sync::Arc<dyn device_model::BlockBuffer>, BlockError> {
+        panic!("host image fixtures do not register native DMA VMOs")
+    }
+    fn transfer(
+        &self,
+        _: device_model::BlockOperation,
+        _: u64,
+        _: usize,
+        _: &dyn device_model::BlockBuffer,
+        _: u64,
+    ) -> Result<(), BlockError> {
+        panic!("VMO DMA belongs to guest device fixtures")
+    }
+    fn max_transfer_blocks(&self) -> usize {
+        usize::MAX / device_model::BLOCK_SIZE
+    }
+    fn queue_depth(&self) -> usize {
+        1
+    }
+
     fn disk_name(&self) -> &[u8] {
         b"vda"
     }
 
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
-        if buf.len() != BLOCK_SIZE {
+    fn read_blocks(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() || !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::InvalidBlock);
         }
-        self.reads.fetch_add(1, Ordering::Relaxed);
-        let pause = {
-            let mut pause = self.home_read_pause.lock().unwrap();
-            if pause.as_ref().is_some_and(|pause| pause.target == block_id) {
-                pause.take()
-            } else {
-                None
-            }
-        };
-        self.read_image_block(block_id, buf)?;
-        if let Some(pause) = pause {
-            // 模拟跨扇区读：旧前半块已读取，checkpoint 后从同一设备读取新后半块。
-            // 设备锁不跨 rendezvous，生产 metadata owner 必须拒绝这个撕裂 image。
-            pause.pause();
-            let mut current = [0; BLOCK_SIZE];
-            self.read_image_block(block_id, &mut current)?;
-            buf[BLOCK_SIZE / 2..].copy_from_slice(&current[BLOCK_SIZE / 2..]);
+        let length = buf.len();
+        for (index, buf) in buf.chunks_mut(BLOCK_SIZE).enumerate() {
+            let block_id = block_id
+                .checked_add(index)
+                .ok_or(BlockError::InvalidBlock)?;
+            (|| -> Result<usize, BlockError> {
+                if buf.len() != BLOCK_SIZE {
+                    return Err(BlockError::InvalidBlock);
+                }
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                let pause = {
+                    let mut pause = self.home_read_pause.lock().unwrap();
+                    if pause.as_ref().is_some_and(|pause| pause.target == block_id) {
+                        pause.take()
+                    } else {
+                        None
+                    }
+                };
+                self.read_image_block(block_id, buf)?;
+                if let Some(pause) = pause {
+                    // 模拟跨扇区读：旧前半块已读取，checkpoint 后从同一设备读取新后半块。
+                    // 设备锁不跨 rendezvous，生产 metadata owner 必须拒绝这个撕裂 image。
+                    pause.pause();
+                    let mut current = [0; BLOCK_SIZE];
+                    self.read_image_block(block_id, &mut current)?;
+                    buf[BLOCK_SIZE / 2..].copy_from_slice(&current[BLOCK_SIZE / 2..]);
+                }
+                Ok(buf.len())
+            })()?;
         }
-        Ok(buf.len())
+        Ok(length)
     }
 
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
-        if buf.len() != BLOCK_SIZE {
+    fn write_blocks(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() || !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::InvalidBlock);
         }
-        let pause = self.home_write_pause.lock().unwrap().clone();
-        if let Some(pause) = &pause {
-            pause.pause_after_completed_write();
+        let length = buf.len();
+        for (index, buf) in buf.chunks(BLOCK_SIZE).enumerate() {
+            let block_id = block_id
+                .checked_add(index)
+                .ok_or(BlockError::InvalidBlock)?;
+            (|| -> Result<usize, BlockError> {
+                if buf.len() != BLOCK_SIZE {
+                    return Err(BlockError::InvalidBlock);
+                }
+                let pause = self.home_write_pause.lock().unwrap().clone();
+                if let Some(pause) = &pause {
+                    pause.pause_after_completed_write();
+                }
+                self.writes.fetch_add(1, Ordering::Relaxed);
+                self.overlay.lock().unwrap().insert(block_id, buf.to_vec());
+                if let Some(pause) = pause
+                    && block_id == pause.target
+                {
+                    pause.completed.store(true, Ordering::Relaxed);
+                }
+                Ok(buf.len())
+            })()?;
         }
-        self.writes.fetch_add(1, Ordering::Relaxed);
-        self.overlay.lock().unwrap().insert(block_id, buf.to_vec());
-        if let Some(pause) = pause
-            && block_id == pause.target
-        {
-            pause.completed.store(true, Ordering::Relaxed);
-        }
-        Ok(buf.len())
+        Ok(length)
     }
 
     fn flush(&self) -> Result<(), BlockError> {

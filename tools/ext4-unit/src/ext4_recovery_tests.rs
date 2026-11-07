@@ -93,48 +93,95 @@ impl RecoveryImage {
 }
 
 impl BlockDevice for RecoveryImage {
+    fn attach_buffer(
+        &self,
+        _: native_runtime::Vmo,
+    ) -> Result<alloc::sync::Arc<dyn device_model::BlockBuffer>, BlockError> {
+        panic!("host image fixtures do not register native DMA VMOs")
+    }
+    fn transfer(
+        &self,
+        _: device_model::BlockOperation,
+        _: u64,
+        _: usize,
+        _: &dyn device_model::BlockBuffer,
+        _: u64,
+    ) -> Result<(), BlockError> {
+        panic!("VMO DMA belongs to guest device fixtures")
+    }
+    fn max_transfer_blocks(&self) -> usize {
+        usize::MAX / device_model::BLOCK_SIZE
+    }
+    fn queue_depth(&self) -> usize {
+        1
+    }
+
     fn disk_name(&self) -> &[u8] {
         b"vda"
     }
 
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
-        if buf.len() != BLOCK_SIZE {
+    fn read_blocks(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() || !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::InvalidBlock);
         }
-        if let Some(block) = self.overlay.lock().unwrap().get(&block_id) {
-            buf.copy_from_slice(block);
-            return Ok(buf.len());
+        let length = buf.len();
+        for (index, buf) in buf.chunks_mut(BLOCK_SIZE).enumerate() {
+            let block_id = block_id
+                .checked_add(index)
+                .ok_or(BlockError::InvalidBlock)?;
+            (|| -> Result<usize, BlockError> {
+                if buf.len() != BLOCK_SIZE {
+                    return Err(BlockError::InvalidBlock);
+                }
+                if let Some(block) = self.overlay.lock().unwrap().get(&block_id) {
+                    buf.copy_from_slice(block);
+                    return Ok(buf.len());
+                }
+                let mut image = self.image.lock().unwrap();
+                image
+                    .seek(SeekFrom::Start(block_id as u64 * BLOCK_SIZE as u64))
+                    .map_err(|_| BlockError::IoError)?;
+                image.read_exact(buf).map_err(|_| BlockError::IoError)?;
+                Ok(buf.len())
+            })()?;
         }
-        let mut image = self.image.lock().unwrap();
-        image
-            .seek(SeekFrom::Start(block_id as u64 * BLOCK_SIZE as u64))
-            .map_err(|_| BlockError::IoError)?;
-        image.read_exact(buf).map_err(|_| BlockError::IoError)?;
-        Ok(buf.len())
+        Ok(length)
     }
 
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
-        if buf.len() != BLOCK_SIZE {
+    fn write_blocks(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() || !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::InvalidBlock);
         }
-        if u32::from_be_bytes(buf[..4].try_into().unwrap()) == JBD2_MAGIC {
-            match u32::from_be_bytes(buf[4..8].try_into().unwrap()) {
-                JBD2_DESCRIPTOR_BLOCK => {
-                    self.descriptor_open.store(true, Ordering::Relaxed);
-                    self.descriptor_flushed.store(false, Ordering::Relaxed);
+        let length = buf.len();
+        for (index, buf) in buf.chunks(BLOCK_SIZE).enumerate() {
+            let block_id = block_id
+                .checked_add(index)
+                .ok_or(BlockError::InvalidBlock)?;
+            (|| -> Result<usize, BlockError> {
+                if buf.len() != BLOCK_SIZE {
+                    return Err(BlockError::InvalidBlock);
                 }
-                JBD2_COMMIT_BLOCK if self.descriptor_open.load(Ordering::Relaxed) => {
-                    self.commit_had_preflush.store(
-                        self.descriptor_flushed.load(Ordering::Relaxed),
-                        Ordering::Relaxed,
-                    );
-                    self.descriptor_open.store(false, Ordering::Relaxed);
+                if u32::from_be_bytes(buf[..4].try_into().unwrap()) == JBD2_MAGIC {
+                    match u32::from_be_bytes(buf[4..8].try_into().unwrap()) {
+                        JBD2_DESCRIPTOR_BLOCK => {
+                            self.descriptor_open.store(true, Ordering::Relaxed);
+                            self.descriptor_flushed.store(false, Ordering::Relaxed);
+                        }
+                        JBD2_COMMIT_BLOCK if self.descriptor_open.load(Ordering::Relaxed) => {
+                            self.commit_had_preflush.store(
+                                self.descriptor_flushed.load(Ordering::Relaxed),
+                                Ordering::Relaxed,
+                            );
+                            self.descriptor_open.store(false, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            }
+                self.overlay.lock().unwrap().insert(block_id, buf.to_vec());
+                Ok(buf.len())
+            })()?;
         }
-        self.overlay.lock().unwrap().insert(block_id, buf.to_vec());
-        Ok(buf.len())
+        Ok(length)
     }
 
     fn flush(&self) -> Result<(), BlockError> {

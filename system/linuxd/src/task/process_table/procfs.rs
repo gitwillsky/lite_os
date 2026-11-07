@@ -1,3 +1,5 @@
+mod memory_maps;
+
 use core::sync::atomic::Ordering;
 
 use crate::{
@@ -223,6 +225,13 @@ impl ProcSource for KernelProcSource {
     ) -> Result<ProcSnapshot, crate::fs::FileSystemError> {
         process_snapshot(scope, view)
     }
+    fn open_memory_maps(
+        &self,
+        tid: usize,
+    ) -> Result<alloc::sync::Arc<dyn crate::fs::ProcMemoryMaps>, crate::fs::FileSystemError> {
+        memory_maps::open(tid)
+    }
+
     fn mapped_memory(&self) -> Result<crate::memory::MappedMemory, crate::fs::FileSystemError> {
         mapped_memory()
     }

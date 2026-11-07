@@ -1,6 +1,13 @@
 use super::InodeType;
 use crate::namespace::{NamespaceSelector, UserNamespaceMap};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ProcMapFormat {
+    Maps,
+    Smaps,
+    Rollup,
+}
+
 /// 直接 /proc/TID 与 /proc/TGID/task/TID 的目录父入口；资源仍按同一实际 Thread 读取。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum ProcThreadDirectory {
@@ -71,6 +78,7 @@ pub(super) enum ProcNode {
     ProcessCmdline(usize),
     ProcessComm(usize),
     ProcessStatm(usize),
+    ProcessMaps(usize, ProcMapFormat),
     ProcessIo(usize),
     ProcessMounts(usize),
     ProcessMountInfo(usize),
@@ -89,6 +97,7 @@ pub(super) enum ProcNode {
     ThreadCmdline(usize, usize),
     ThreadComm(usize, usize),
     ThreadStatm(usize, usize),
+    ThreadMaps(usize, usize, ProcMapFormat),
     ThreadIo(usize, usize),
     ThreadMounts(usize),
     ThreadMountInfo(usize),
@@ -110,6 +119,7 @@ impl ProcNode {
             | Self::ThreadStatus(tgid, _)
             | Self::ThreadCmdline(tgid, _)
             | Self::ThreadComm(tgid, _)
+            | Self::ThreadMaps(tgid, _, _)
             | Self::ThreadStatm(tgid, _)
             | Self::ThreadIo(tgid, _) => Some(tgid),
             _ => self.owner_tid(),
@@ -173,6 +183,7 @@ impl ProcNode {
             | Self::ProcessStatus(tid)
             | Self::ProcessCmdline(tid)
             | Self::ProcessComm(tid)
+            | Self::ProcessMaps(tid, _)
             | Self::ProcessStatm(tid)
             | Self::ProcessIo(tid)
             | Self::ProcessMounts(tid)
@@ -199,6 +210,7 @@ impl ProcNode {
             | Self::ThreadStatus(_, tid)
             | Self::ThreadCmdline(_, tid)
             | Self::ThreadComm(_, tid)
+            | Self::ThreadMaps(_, tid, _)
             | Self::ThreadStatm(_, tid)
             | Self::ThreadIo(_, tid)
             | Self::NamespaceDir(_, tid, _)

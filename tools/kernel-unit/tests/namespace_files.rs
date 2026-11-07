@@ -44,7 +44,10 @@ mod fs {
         PermissionDenied,
         NotDirectory,
         IsDirectory,
+        Errno(u16),
     }
+    mod devnum;
+    use devnum::DeviceNumber;
     mod permission;
     use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
     #[path = "vfs/mount_limit.rs"]
@@ -73,6 +76,14 @@ mod fs {
         MountTableSource
     }
     impl MountTableSource {
+        fn opened_path(
+            &self,
+            _: &Arc<OpenedFile>,
+            _: &Arc<OpenedFile>,
+        ) -> Result<Vec<u8>, FileSystemError> {
+            unreachable!("pathname projection is covered by actual VFS fixtures")
+        }
+
         fn mount_table(
             &self,
             _: &Arc<MountNamespace>,
@@ -160,6 +171,10 @@ mod fs {
         }
         fn filesystem_id(&self) -> usize;
         fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
+        fn identity(&self) -> Result<(u64, u64), FileSystemError> {
+            let metadata = self.metadata()?;
+            Ok((metadata.filesystem, metadata.inode))
+        }
         fn inode_type(&self) -> InodeType;
         fn open_backend(
             &self,
@@ -401,17 +416,23 @@ mod fs {
         mod attributes;
         mod identity;
         mod ipc_description;
+        mod maps;
+        use maps::ProcMemoryMaps;
         mod opened_operations;
         mod sysctl_limit;
         mod sysctl_permissions;
         use super::{InodeMetadata, InodeType};
         mod networking;
         mod node;
-        use node::ProcNode;
+        use node::{ProcMapFormat, ProcNode};
         struct Credentials {
             user_namespace: Arc<UserNamespace>,
         }
         trait ProcSource: Send + Sync {
+            fn current_root(&self) -> Option<Arc<OpenedFile>> {
+                unreachable!("calling root projection belongs to the VFS fixture")
+            }
+
             fn network_snapshot(
                 &self,
                 target: &crate::net::NetNamespace,
@@ -457,6 +478,12 @@ mod fs {
             }
         }
         impl Source {
+            fn open_memory_maps(
+                &self,
+                _: usize,
+            ) -> Result<Arc<dyn ProcMemoryMaps>, FileSystemError> {
+                unreachable!("MM lifetime/authorization belongs to the task owner fixture")
+            }
             fn current_ipc_namespace(
                 &self,
             ) -> Result<Arc<crate::ipc::IpcNamespace>, FileSystemError> {

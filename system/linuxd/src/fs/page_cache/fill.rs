@@ -2,14 +2,21 @@
 use super::CachedFile;
 use crate::memory::PAGE_SIZE;
 use alloc::vec::Vec;
+use native_runtime::Pager;
 use native_runtime::native_abi::pager as pager_op;
-use native_runtime::{Pager, Vmo};
+use pager_pool::SupplyBuffer;
 
 /// 一次存储预读的固定上界，避免让单个请求占用无界缓冲。
 const MAX_SUPPLY_PAGES: usize = 32;
 
 impl crate::fs::pager::PageSource for CachedFile {
-    fn page_request(&self, pager: &Pager, offset: u64, length: u64, aux: &mut Option<Vmo>) {
+    fn page_request(
+        &self,
+        pager: &Pager,
+        offset: u64,
+        length: u64,
+        aux: &mut Option<SupplyBuffer>,
+    ) {
         let file = self;
         let vmo = file.object.vmo();
         let mut cursor = offset;
@@ -41,18 +48,21 @@ fn supply(
     file: &CachedFile,
     offset: u64,
     pages: usize,
-    aux: &mut Option<Vmo>,
+    aux: &mut Option<SupplyBuffer>,
 ) -> Result<(), ()> {
     let length = pages * PAGE_SIZE;
     let size = file.inode.size();
-    let mut buffer = Vec::new();
-    buffer.try_reserve_exact(length).map_err(|_| ())?;
-    buffer.resize(length, 0);
-    if offset < size {
-        let valid = ((size - offset) as usize).min(length);
+    let buffer = SupplyBuffer::acquire(aux).map_err(|_| ())?;
+    let bytes = buffer.bytes(length);
+    let valid = if offset < size {
+        ((size - offset) as usize).min(length)
+    } else {
+        0
+    };
+    if valid != 0 {
         let mut slices: Vec<&mut [u8]> = Vec::new();
         slices.try_reserve_exact(pages).map_err(|_| ())?;
-        let mut rest = &mut buffer[..valid];
+        let mut rest = &mut bytes[..valid];
         while !rest.is_empty() {
             let take = rest.len().min(PAGE_SIZE);
             let (head, tail) = rest.split_at_mut(take);
@@ -67,16 +77,9 @@ fn supply(
             return Err(());
         }
     }
-    // 工作池同时服务稀疏内存文件；其上次辅助 VMO 可能只有一页，不能假定容量。
-    if aux
-        .as_ref()
-        .is_none_or(|vmo| vmo.size().unwrap_or(0) < length as u64)
-    {
-        *aux = Some(Vmo::create((MAX_SUPPLY_PAGES * PAGE_SIZE) as u64, 0).map_err(|_| ())?);
-    }
-    let aux = aux.as_ref().expect("auxiliary VMO created above");
-    aux.write(&buffer, 0).map_err(|_| ())?;
-    pager
-        .supply_pages(file.object.vmo(), offset, length as u64, aux, 0)
+    // 暂存区由工作线程复用，EOF 之后的字节必须清零，不能留下上一请求的内容。
+    bytes[valid..].fill(0);
+    buffer
+        .supply(pager, file.object.vmo(), offset, length as u64)
         .map_err(|_| ())
 }

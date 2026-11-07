@@ -17,8 +17,8 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 - 内核代码与注释不出现 Linux 概念；native-abi 变化需更新 `abi/native-abi` 与契约文档。
 - 每项新增热路径、锁、分配或间接层都按[性能验证范围](../development/performance-coverage.md)作 benchmark 决策：
   blocking benchmark、target static/disassembly gate，或说明只作诊断测量。
-- 验证节奏：实施期间每阶段做两架构编译/clippy、architecture-check 与相关 `kernel-unit`/crate 单元测试；
-  运行时门禁与完整 `make verify` 在全部阶段完成后经用户允许统一执行。
+- 验证节奏：实施期间以 Clippy 与代码审查轻量验证，阶段间不反复构建、运行测试或重启采样。
+  全部计划完成后统一运行 `make verify`；端到端验收由用户执行。验证项保留到最终验收，不以静态检查冒充运行时证据。
 - 不修改围栏、阈值或文档声明来掩盖实现错误；范围缩减写入 ABI 矩阵或当前架构限制。
 
 ## 基线（诊断，不设阈值）
@@ -302,5 +302,45 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   当前 AArch64/HVF 开发实例三次对账均为 0 页差额（内核堆/栈/页表 + VMO 匿名/pager/bootfs/连续）；
   创建 4 MiB 内存文件后 Cached/Shmem 增长，Dirty/Writeback 保持 0，清理已完成。
   该对账只代表当前设备配置，不替代 RISC-V 及真实 IOMMU 场景的完整归属验收。
-  进程 maps/smaps/Pss、task-observer private/shared、基线完整归属尚未完成，M0 不标完成。
-- 其余阶段尚未开始；不以阶段性基础改动代替整项验收。
+  maps 的普通文件/设备/匿名映射描述已实现，保留实际文件身份、偏移、exec 授权与 Weak MM 寿命；
+  观察不克隆 VMA membership，避免改变 SysV nattch/时间。设备的文件/缓冲租约不再用 Vec 混存。
+  SysV 与共享匿名 mmap 已补真实内部 tmpfs 文件，内容仍是原匿名 VMO，未引入 pager 或内容副本。
+  stat/statm/status RSS 已改为实际 RAM 用户翻译，补齐 COW 祖先，排除 MMIO 与服务镜像；statm shared 使用文件/共享内存 RSS。
+  smaps/rollup 的驻留、逐页定点 PSS、Private/Shared、Anonymous 与三类 PSS 已实现，支持任意 VMA 页边界交集。
+  task-observer 升级 LTASK002，原生 TASK_STATS 增加 private/shared/scaled shared；服务页显示专用/共享内存。
+  共享次数来自现有 COW 树与实际逻辑映射，同一服务映射的硬件镜像只计一次；无新增全局页索引或 fault 热路径 mapcount。
+  分段读取复用 per-open 文本，offset 0 刷新，不反复全量扫描。
+  当前只完成 Clippy 与代码审查，尚未更新运行实例或运行时验收；完整归属对账与最终端到端仍待完成，M0 不标完成。
+  接口派生清单和最终门禁在实现终态统一生成/执行。
+- 1 进行中：request owner 已同时预留 slot/descriptor credits，变长链不再依赖“有 slot 就有 descriptor”的假设；
+  空闲槽释放为 O(1)，保持 FIFO、prepare OOM、terminal failure 和锁外 wake 的所有权。
+  block header/status 从每槽独立 VMO 合并为一张固定表，16 槽理论少分配 31 页；已支持 backing DMA 任意区间及方向。
+  登记 VMO（ATTACH/DETACH/TRANSFER）与区间传输已落地，内联 READ/WRITE 已删除，块内容不再进入 channel 消息。
+  ext4 `read_storage` 按 extent 合并同一 extent 内连续的完整对齐块，经 `read_fs_blocks` 一次区间读；
+  journal staged 覆盖与 cache generation 重试语义不变（单块先查 staged，多块先读 home 再在一次 journal guard 内覆盖）。
+  FIFO 批量完成（异步多请求）、协商槽数、写路径区间合并仍未完成。
+  双架构服务 Clippy 与 ext4-unit 夹具编译检查通过，未执行测试或更新实例。
+  范围缩减（精确记录）：单线程批量异步 FIFO 不做。槽数本就按 virtqueue 大小协商（queue_size/3），服务端多 worker
+  已能并发提交，单请求区间已到协商上限；写路径区间合并并入阶段 9（checkpoint 回写重做）。M4 的块服务线程缩减依赖
+  “异步完成”，改为按并发度评估线程数，不再以 FIFO 为前提。
+- 2 已实现待运行验收：ext4 `Content` 顺序预读窗口（32 KiB→512 KiB）；pager 工作线程的补页暂存区常驻映射，
+  存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around（64 KiB 对齐窗口、
+  只读、仅已驻留文件页、紧随主缺页的 try-lock 事务）。与计划原文的差异：fault-around 不并入主缺页的同一树锁事务，
+  避免改动 `with_resolved` 的所有调用方；代价是读缺页多一次 try-lock。已加 kernel-unit 用例；双架构 Clippy 通过，未运行测试。
+- 3 已实现待运行验收：每 CPU 定时队列 + 本地硬件 deadline 合成（tick/队首/boot housekeeping 取最小），到期精确到队首
+  截止时间；所有 CPU（含 boot）空闲停 tick，无来源时关闭 timer source；纯到期中断只发布 `TIMER_BACKLOG`。
+  范围缩减（精确记录）：忙碌 CPU 仍保持 100 Hz 调度 tick（计费与时间片轮转），未改为 slice 截止与 trap/切换边界记账——
+  该改动牵动调度计费与用户/内核时间拆分，单独成项，P2.1 的截止时间调度类依赖的是精确定时器而非 slice 截止。
+  双架构 Clippy 与 kernel-unit 编译通过，未运行测试。
+- 4 已实现待运行验收：futex 全局单锁改为 256 桶哈希（桶内 FIFO 不变）；桶锁内用不缺页读，缺页放锁后重试；
+  requeue 按桶序加锁。与计划原文的差异：桶锁为可睡眠 `TaskMutex` 而非 IRQ 自旋锁（取地址空间锁可能短暂睡眠），
+  私有 key 不另建每空间哈希表而与共享 key 共用同一张全局分桶表（key 含空间 koid / VMO id 参与哈希）；
+  不加 host 基准（见执行域契约）。双架构 Clippy 通过，未运行测试。
+- M1 已实现待运行验收：`WindowHost` 删除私有画布与 `present` 整窗复制，经新增 `Display::render_frame` 直接在已释放的共享缓冲中
+  整幅重绘；损伤由上一次提交画面的分块哈希推导（控件树当前没有区域级失效，计划原文假设的“失效区作 damage/重绘裁剪”不存在，
+  局部重绘需要控件树先提供失效区，另行立项）；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
+- 7 与 M3 已实现待运行验收：`libraries/span-heap`（线程本地分片空闲链、增量切分、远端释放原子栈 + pending 队列、
+  线程退出孤儿化/认领、空 span decommit 不 unmap、12.5% 级别、大对象独立映射）替换原全局单锁分级分配器；
+  host 并发单测 9 项与 `span-heap-bench` 通过，双架构 Clippy 通过。顺带修复 `netstack-unit` 夹具缺少
+  `NetworkDevice::link` 实现导致 architecture-bench 无法编译。
+- 5、6、8、9、P2 与 M2、M4–M7 尚未开始；不以阶段性基础改动代替整项验收。

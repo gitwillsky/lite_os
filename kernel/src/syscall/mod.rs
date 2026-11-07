@@ -79,10 +79,14 @@ unsafe impl Plain for native_abi::ExceptionReport {}
 unsafe impl Plain for native_abi::HandleBasic {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::TaskRuntime {}
-// SAFETY: TaskStats 是 repr(C) 的三个 u64，不含 padding、引用或无效位模式。
+// SAFETY: TaskStats 是 repr(C) 的六个 u64，不含 padding、引用或无效位模式。
 unsafe impl Plain for native_abi::TaskStats {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::VmarRegion {}
+// SAFETY: repr(C)，仅 u64 字段，无 padding 或无效位模式。
+unsafe impl Plain for native_abi::VmarResidentRange {}
+// SAFETY: repr(C)，全部字段为 u64，无 padding 或无效位模式。
+unsafe impl Plain for native_abi::VmarMappingStats {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::VmoInfo {}
 // SAFETY: 同上。

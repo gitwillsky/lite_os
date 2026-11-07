@@ -13,6 +13,14 @@ pub(crate) struct OpenedFile {
     pub(super) mount: Option<Arc<MountView>>,
     clear_expiry: bool,
 }
+impl core::fmt::Debug for OpenedFile {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("OpenedFile")
+            .field("mount_id", &self.mount_id())
+            .finish_non_exhaustive()
+    }
+}
 #[derive(Clone, Copy)]
 enum ProjectionRoot<'a> {
     Namespace(&'a OpenedFile),

@@ -172,19 +172,42 @@ struct RemountImage {
 }
 
 impl BlockDevice for RemountImage {
+    fn attach_buffer(
+        &self,
+        _: native_runtime::Vmo,
+    ) -> Result<alloc::sync::Arc<dyn device_model::BlockBuffer>, BlockError> {
+        panic!("host image fixtures do not register native DMA VMOs")
+    }
+    fn transfer(
+        &self,
+        _: device_model::BlockOperation,
+        _: u64,
+        _: usize,
+        _: &dyn device_model::BlockBuffer,
+        _: u64,
+    ) -> Result<(), BlockError> {
+        panic!("VMO DMA belongs to guest device fixtures")
+    }
+    fn max_transfer_blocks(&self) -> usize {
+        usize::MAX / device_model::BLOCK_SIZE
+    }
+    fn queue_depth(&self) -> usize {
+        1
+    }
+
     fn disk_name(&self) -> &[u8] {
         self.image.disk_name()
     }
     fn block_size(&self) -> usize {
         self.image.block_size()
     }
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
-        self.image.read_block(block_id, buf)
+    fn read_blocks(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        self.image.read_blocks(block_id, buf)
     }
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+    fn write_blocks(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
         self.writes
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        self.image.write_block(block_id, buf)
+        self.image.write_blocks(block_id, buf)
     }
     fn flush(&self) -> Result<(), BlockError> {
         self.flushes
@@ -238,11 +261,34 @@ fn ext4_remount_retries_failed_writable_preparation() {
 }
 
 impl BlockDevice for WritableImage {
+    fn attach_buffer(
+        &self,
+        _: native_runtime::Vmo,
+    ) -> Result<alloc::sync::Arc<dyn device_model::BlockBuffer>, BlockError> {
+        panic!("host image fixtures do not register native DMA VMOs")
+    }
+    fn transfer(
+        &self,
+        _: device_model::BlockOperation,
+        _: u64,
+        _: usize,
+        _: &dyn device_model::BlockBuffer,
+        _: u64,
+    ) -> Result<(), BlockError> {
+        panic!("VMO DMA belongs to guest device fixtures")
+    }
+    fn max_transfer_blocks(&self) -> usize {
+        usize::MAX / device_model::BLOCK_SIZE
+    }
+    fn queue_depth(&self) -> usize {
+        1
+    }
+
     fn disk_name(&self) -> &[u8] {
         b"vda"
     }
 
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+    fn read_blocks(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
         let mut file = self.0.lock().unwrap();
         file.seek(SeekFrom::Start((block_id * BLOCK_SIZE) as u64))
             .map_err(|_| BlockError::IoError)?;
@@ -250,7 +296,7 @@ impl BlockDevice for WritableImage {
         Ok(buf.len())
     }
 
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+    fn write_blocks(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
         let mut file = self.0.lock().unwrap();
         file.seek(SeekFrom::Start((block_id * BLOCK_SIZE) as u64))
             .map_err(|_| BlockError::IoError)?;

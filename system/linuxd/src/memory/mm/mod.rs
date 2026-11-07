@@ -21,6 +21,7 @@ mod area;
 mod fault;
 mod fork;
 mod mapping;
+mod observation;
 mod request;
 
 use alloc::sync::Arc;
@@ -31,7 +32,7 @@ use crate::sync::Once;
 use fallible_tree::FallibleMap;
 use native_runtime::{Process, Vmar};
 
-pub(crate) use area::{AnonymousRole, Area, AreaFlags, Backing};
+pub(crate) use area::{AnonymousRole, Area, AreaFlags, Backing, MappingBacking, MappingSnapshot};
 pub(crate) use fault::{PageFaultAccess, PageFaultOutcome, SegmentationCause};
 pub(crate) use request::{
     DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
@@ -39,7 +40,9 @@ pub(crate) use request::{
     UserMappingRequest, UserMappingSource,
 };
 
-use super::{MapPermission, MappedFileOwner, MemoryError, MemoryObject, PAGE_SIZE};
+use super::{
+    MapPermission, MappedFileOwner, MappingStatistics, MemoryError, MemoryObject, PAGE_SIZE,
+};
 
 /// `/proc/<pid>/status` 与 `statm` 使用的页统计。
 #[derive(Debug, Clone, Copy, Default)]
@@ -331,78 +334,6 @@ impl MemorySet {
             .filter(|(_, area)| area.counts_as_data())
             .map(|(_, area)| area.len() as u64)
             .sum()
-    }
-
-    /// 页统计。驻留页数由各后备对象的已提交大小近似：内核按需提交页，未触碰的页不计入。
-    pub(crate) fn user_page_statistics(&self) -> UserPageStatistics {
-        let mut statistics = UserPageStatistics::default();
-        for (_, area) in self.areas.iter() {
-            if matches!(area.backing, Backing::Trampoline { .. }) {
-                continue;
-            }
-            let pages = area.len() / PAGE_SIZE;
-            statistics.virtual_pages += pages;
-            let committed = area
-                .backing
-                .object()
-                .committed_bytes()
-                .map_or(pages, |bytes| (bytes as usize / PAGE_SIZE).min(pages));
-            statistics.resident_pages += committed;
-            if area.backing.is_shared() {
-                statistics.shared_pages += committed;
-            }
-            if area.permission.contains(MapPermission::X) {
-                statistics.text_pages += pages;
-            }
-            if area.counts_as_data() {
-                statistics.data_pages += pages;
-            }
-            if matches!(
-                area.backing,
-                Backing::Anonymous {
-                    role: AnonymousRole::Stack,
-                    ..
-                }
-            ) {
-                statistics.stack_pages += pages;
-            }
-        }
-        statistics
-    }
-
-    /// 把本地址空间的映射并入系统级分类；`seen` 是已计入后备对象的有序地址表。
-    ///
-    /// # Errors
-    ///
-    /// 去重表扩容失败。
-    pub(crate) fn classify_mapped_memory(
-        &self,
-        seen: &mut Vec<usize>,
-        totals: &mut MappedMemory,
-    ) -> Result<(), MemoryError> {
-        for (_, area) in self.areas.iter() {
-            let object = area.backing.object();
-            let key = Arc::as_ptr(object) as usize;
-            let Err(position) = seen.binary_search(&key) else {
-                continue;
-            };
-            seen.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
-            seen.insert(position, key);
-            let pages = object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE;
-            match area.backing {
-                Backing::Anonymous { .. } | Backing::PrivateFile { .. } => {
-                    totals.anonymous_pages += pages;
-                }
-                Backing::SharedAnonymous { .. } | Backing::SystemV { .. } => {
-                    totals.mapped_pages += pages;
-                    totals.shmem_pages += pages;
-                }
-                Backing::SharedFile { .. } => totals.mapped_pages += pages,
-                // 设备窗口不是可回收内存，trampoline 是内部页；Linux 同样不计入这些映射。
-                Backing::Device { .. } | Backing::Trampoline { .. } => {}
-            }
-        }
-        Ok(())
     }
 
     /// 是否存在起点不低于 `address` 的用户 VMA（`mremap`/`munmap` 的探测）。

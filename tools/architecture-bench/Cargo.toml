@@ -33,6 +33,10 @@ name = "audio-mixer-bench"
 path = "src/audio_mixer.rs"
 
 [[bin]]
+name = "span-heap-bench"
+path = "src/span_heap.rs"
+
+[[bin]]
 name = "blocked-load-bench"
 path = "src/blocked_load.rs"
 
@@ -40,6 +44,7 @@ path = "src/blocked_load.rs"
 mmio = { path = "../../libraries/mmio" }
 netstack-unit = { path = "../netstack-unit" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
+span-heap = { path = "../../libraries/span-heap", features = ["host"] }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 network-protocol = { path = "../../system/network-protocol" }

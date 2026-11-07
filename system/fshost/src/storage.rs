@@ -58,7 +58,7 @@ pub(crate) fn is_data_volume(device: &dyn BlockDevice) -> bool {
     let span = (SUPERBLOCK + LABEL_OFFSET + 16).div_ceil(block_size) - first;
     let mut bytes = alloc::vec![0u8; span * block_size];
     for (index, chunk) in bytes.chunks_mut(block_size).enumerate() {
-        if device.read_block(first + index, chunk).is_err() {
+        if device.read_blocks(first + index, chunk).is_err() {
             return false;
         }
     }

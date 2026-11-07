@@ -4,13 +4,15 @@ use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::{MemoryError, MemoryObject, PAGE_SIZE};
+use super::{MappedFileOwner, MemoryError, MemoryObject, PAGE_SIZE};
 use crate::sync::{TaskMutex, TaskMutexGuard};
 
 /// 一个段的内容：匿名 VMO 与 `SHM_LOCK` 状态。
 #[derive(Debug)]
 pub(crate) struct SharedMemoryBacking {
     object: Arc<MemoryObject>,
+    /// 实际 inode/path 的拥有者；与 object 引用同一 VMO，不保活附加 membership。
+    file: Arc<dyn MappedFileOwner>,
     // OWNER: 串行化 SHM_LOCK/SHM_UNLOCK 与配额收费；`locked` 只在持有它时修改。
     lock_gate: TaskMutex<()>,
     locked: AtomicBool,
@@ -30,21 +32,33 @@ impl SharedMemoryLockGuard<'_> {
 }
 
 impl SharedMemoryBacking {
-    /// 分配 `pages` 页零内容段。
+    /// 组装共享内容与实际文件身份；调用者已在 IPC registry 锁外准备二者。
+    ///
+    /// # Parameters
+    /// - `object`: 原段内容对象，不为文件身份另复制页面。
+    /// - `file`: 保活同一内容的真实文件身份；不能反向持有本 backing。
+    ///
+    /// # Returns
+    /// 段的唯一 backing；file 可以独立保活同一内容，不能反向保活此 backing 或段 membership。
     ///
     /// # Errors
-    ///
-    /// 内存不足。
-    pub(crate) fn allocate(pages: usize) -> Result<Arc<Self>, MemoryError> {
-        let bytes = pages
-            .checked_mul(PAGE_SIZE)
-            .ok_or(MemoryError::OutOfMemory)?;
+    /// Arc 分配失败返回 OutOfMemory，输入资源由原所有权自动归还。
+    pub(crate) fn new(
+        object: Arc<MemoryObject>,
+        file: Arc<dyn MappedFileOwner>,
+    ) -> Result<Arc<Self>, MemoryError> {
         Arc::try_new(Self {
-            object: MemoryObject::anonymous(bytes, false)?,
+            object,
+            file,
             lock_gate: TaskMutex::new(()),
             locked: AtomicBool::new(false),
         })
         .map_err(|_| MemoryError::OutOfMemory)
+    }
+
+    /// 文件身份观察引用；克隆它不新增 VMA，也不改变 nattch 或 IPC 操作时间。
+    pub(crate) fn file(&self) -> Arc<dyn MappedFileOwner> {
+        self.file.clone()
     }
 
     /// 后备对象。

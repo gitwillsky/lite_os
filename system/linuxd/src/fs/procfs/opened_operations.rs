@@ -13,6 +13,14 @@ use linux_abi::errno;
 // OWNER: map target 与 opener authority 都不借 Task；SCM_RIGHTS/dup/fork 保持同一 f_cred。
 // Snapshot 分支仍只渲染 live source，viewer namespace 是打开时的 immutable credential projection。
 enum ProcOpenFile {
+    Maps {
+        source: Arc<dyn super::ProcSource>,
+        target: Arc<dyn super::ProcMemoryMaps>,
+        format: super::ProcMapFormat,
+        // OWNER: 同一 open 的文本快照；串行读/定位，offset 0 重新查询。没有它时分段 read
+        // 会重复扫描全部页表/COW 树，并把不同快照的同一字节偏移拼成损坏记录。
+        reader: Box<crate::sync::TaskMutex<Option<Vec<u8>>>>,
+    },
     Network {
         source: Arc<dyn super::ProcSource>,
         target: Arc<crate::net::NetNamespace>,
@@ -70,7 +78,17 @@ pub(super) fn open(
     flags: u32,
     opener: &NamespaceAuthority,
 ) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-    let file = if let Some((tid, kind)) = inode.node.mount_table() {
+    let file = if let ProcNode::ProcessMaps(tid, format) | ProcNode::ThreadMaps(_, tid, format) =
+        inode.node
+    {
+        ProcOpenFile::Maps {
+            source: inode.source.clone(),
+            target: inode.source.open_memory_maps(tid)?,
+            format,
+            reader: Box::try_new(crate::sync::TaskMutex::new(None))
+                .map_err(|_| FileSystemError::OutOfMemory)?,
+        }
+    } else if let Some((tid, kind)) = inode.node.mount_table() {
         let (target, root) = inode
             .source
             .thread_mount_snapshot(tid)
@@ -234,11 +252,29 @@ fn filesystem_error(error: FileSystemError) -> DeviceError {
         FileSystemError::NoDevice => errno::ENXIO,
         FileSystemError::AccessDenied => errno::EACCES,
         FileSystemError::PermissionDenied => errno::EPERM,
+        FileSystemError::Errno(number) => number as isize,
         _ => errno::EIO,
     })
 }
 impl ProcOpenFile {
     fn contents(&self) -> Result<Vec<u8>, FileSystemError> {
+        if let Self::Maps {
+            source,
+            target,
+            format,
+            ..
+        } = self
+        {
+            let mappings = target.snapshot(*format != super::ProcMapFormat::Maps)?;
+            if mappings.is_empty() {
+                return Ok(Vec::new());
+            }
+            return super::maps::contents(
+                &mappings,
+                &source.current_root().ok_or(FileSystemError::NotFound)?,
+                *format,
+            );
+        }
         if let Self::Network {
             source,
             target,
@@ -438,6 +474,26 @@ impl PositionedFile for ProcOpenFile {
                 .map_err(|_| DeviceError::Errno(errno::ENOMEM))?
                 .read(output, offset, target, *table, viewer, pid);
         }
+        if let Self::Maps { reader, .. } = self {
+            let mut snapshot = reader
+                .lock()
+                .map_err(|_| DeviceError::Errno(errno::ENOMEM))?;
+            if offset == 0 || snapshot.is_none() {
+                *snapshot = None;
+                *snapshot = Some(self.contents().map_err(filesystem_error)?);
+            }
+            let Some(bytes) = usize::try_from(offset).ok().and_then(|offset| {
+                snapshot
+                    .as_ref()
+                    .and_then(|contents| contents.get(offset..))
+            }) else {
+                return Ok(());
+            };
+            let length = bytes.len().min(output.remaining());
+            return output
+                .write(&bytes[..length])
+                .map_err(|_| DeviceError::Errno(errno::EFAULT));
+        }
         let contents = self.contents().map_err(|error| {
             if matches!(self, Self::TimeOffsets { .. })
                 && matches!(error, FileSystemError::NotFound)
@@ -464,6 +520,9 @@ impl PositionedFile for ProcOpenFile {
         offset: u64,
         writer: &NamespaceAuthority,
     ) -> Result<(), DeviceError> {
+        if matches!(self, Self::Maps { .. }) {
+            return Err(DeviceError::Errno(errno::EINVAL));
+        }
         if let Self::TimeOffsets { inode, tid, opener } = self {
             return super::time_offsets::write(inode.source.as_ref(), *tid, opener, input, offset);
         }

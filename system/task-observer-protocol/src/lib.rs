@@ -13,9 +13,9 @@ pub const PATH: &[u8] = b"/dev/task-observer";
 /// 允许查询的组：Linux 发行版惯用的系统监视组 `adm`（Alpine/Debian 均为 GID 4）。
 pub const GROUP: u32 = 4;
 /// 一个请求恰为这八个字节；版本变化必须改变 magic，不猜测未知布局。
-pub const QUERY: &[u8; 8] = b"LTASK001";
+pub const QUERY: &[u8; 8] = b"LTASK002";
 /// 每条记录的编码字节数；整数为 little endian，名称为 NUL 填充 UTF-8。
-pub const RECORD_BYTES: usize = 80;
+pub const RECORD_BYTES: usize = 104;
 /// 回复头：magic 与 u32 记录数。
 pub const HEADER_BYTES: usize = 12;
 /// 查询失败的指标；与真实零值严格区分。
@@ -28,8 +28,14 @@ pub struct Record {
     pub koid: u64,
     /// 包括已退出线程的累计 CPU 纳秒。
     pub cpu_ns: u64,
-    /// 映射驻留字节，不是 PSS，不能跨进程直接相加。
+    /// 实际 RAM 驻留字节，不是 PSS，不能跨进程直接相加。
     pub resident_bytes: u64,
+    /// 仅有一个逻辑映射的驻留字节。
+    pub private_bytes: u64,
+    /// 多个逻辑映射共享的驻留字节，不可跨行相加。
+    pub shared_bytes: u64,
+    /// 私有驻留加逐页分摊的共享驻留（PSS）。
+    pub pss_bytes: u64,
     /// 映射区间字节和。
     pub mapped_bytes: u64,
     /// 存活线程数。
@@ -50,14 +56,17 @@ impl Record {
             self.koid,
             self.cpu_ns,
             self.resident_bytes,
+            self.private_bytes,
+            self.shared_bytes,
+            self.pss_bytes,
             self.mapped_bytes,
             self.threads,
             self.state,
         ];
-        for (bytes, value) in output[..48].as_chunks_mut::<8>().0.iter_mut().zip(fields) {
+        for (bytes, value) in output[..72].as_chunks_mut::<8>().0.iter_mut().zip(fields) {
             bytes.copy_from_slice(&value.to_le_bytes());
         }
-        output[48..].copy_from_slice(&self.name);
+        output[72..].copy_from_slice(&self.name);
         true
     }
 
@@ -66,23 +75,26 @@ impl Record {
         if input.len() != RECORD_BYTES {
             return None;
         }
-        let mut fields = [0; 6];
-        for (value, bytes) in fields.iter_mut().zip(input[..48].as_chunks::<8>().0) {
+        let mut fields = [0; 9];
+        for (value, bytes) in fields.iter_mut().zip(input[..72].as_chunks::<8>().0) {
             *value = u64::from_le_bytes(*bytes);
         }
-        if fields[0] == 0 || fields[5] > 2 {
+        if fields[0] == 0 || fields[8] > 2 {
             return None;
         }
-        let name: [u8; 32] = input[48..].try_into().ok()?;
+        let name: [u8; 32] = input[72..].try_into().ok()?;
         core::str::from_utf8(&name[..name.iter().position(|byte| *byte == 0).unwrap_or(32)])
             .ok()?;
         Some(Self {
             koid: fields[0],
             cpu_ns: fields[1],
             resident_bytes: fields[2],
-            mapped_bytes: fields[3],
-            threads: fields[4],
-            state: fields[5],
+            private_bytes: fields[3],
+            shared_bytes: fields[4],
+            pss_bytes: fields[5],
+            mapped_bytes: fields[6],
+            threads: fields[7],
+            state: fields[8],
             name,
         })
     }

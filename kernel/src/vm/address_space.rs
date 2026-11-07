@@ -23,7 +23,7 @@ mod view;
 use super::execution_views::{ExecutionView, ExecutionViews};
 use super::page_table::PagePermissions;
 use super::translation::{TranslationCommit, synchronize_address_space_retirement};
-use super::vmo::{CachePolicy, FaultSource, ResolvedPage, Vmo};
+use super::vmo::{CachePolicy, FAULT_AROUND_PAGES, FaultSource, ResolvedPage, Vmo};
 use super::{FaultAccess, USER_END, USER_START, VmError};
 use crate::arch::mmu::AddressSpaceToken;
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
@@ -422,7 +422,63 @@ impl AddressSpace {
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
+        if access != FaultAccess::Write
+            && let Some(mut around) = self.fault_around(&owner, &mapping, index)
+        {
+            around
+                .synchronize()
+                .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
+        }
         Ok(source)
+    }
+
+    /// 缺页之后顺带只读装入同一对齐窗口内相邻的已驻留文件页，摊销顺序访问的缺页成本。
+    ///
+    /// 1. 只处理 pager 支撑且已驻留的页：不分配、不请求 pager、不复制，也不映射匿名或私有副本。
+    /// 2. 一律去掉写权限：之后的写入走正常缺页并置脏，回写与写时复制语义不变。
+    /// 3. 不覆盖已有翻译；树锁或地址空间锁正忙、页表分配失败都只是放弃，主缺页已经成功。
+    ///
+    /// 缺少窗口对齐与映射裁剪时，翻译会越过映射边界或覆盖其他映射的页。
+    fn fault_around(
+        self: &Arc<Self>,
+        owner: &Arc<Self>,
+        mapping: &Arc<Mapping>,
+        index: usize,
+    ) -> Option<TranslationCommit> {
+        let window = index & !(FAULT_AROUND_PAGES - 1);
+        let first = window.max(mapping.vmo_page);
+        let end = (window + FAULT_AROUND_PAGES).min(mapping.vmo_page + mapping.size / PAGE_SIZE);
+        let mut permissions = mapping.permissions | PagePermissions::USER;
+        permissions.remove(PagePermissions::WRITE);
+        mapping
+            .vmo
+            .with_resident_file_pages(first..end, index, |pages| {
+                let owner_guard = if Arc::ptr_eq(owner, self) {
+                    None
+                } else {
+                    Some(owner.lock().ok()?)
+                };
+                let mut inner = self.lock().ok()?;
+                if !mapping.live.load(Ordering::Acquire) {
+                    return None;
+                }
+                let mut commit = TranslationCommit::new();
+                for &(page_index, page) in pages.iter().flatten() {
+                    let address = mapping.base + (page_index - mapping.vmo_page) * PAGE_SIZE;
+                    let vpn = VirtualAddress::from(address).floor();
+                    if inner
+                        .views
+                        .install_if_absent(vpn, page.ppn, permissions, &mut commit)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                drop(inner);
+                drop(owner_guard);
+                Some(commit)
+            })
+            .flatten()
     }
 
     /// 由 VMO 解析回调调用（持树锁）：装入一条翻译。
@@ -532,6 +588,47 @@ impl AddressSpace {
                 target.copy_from_slice(&input[range]);
             },
         )
+    }
+
+    /// 读取一个 4 字节对齐的用户字，翻译缺失时不缺页（futex 在桶锁内比较值使用）。
+    ///
+    /// # Returns
+    /// `Some(value)`；用户翻译尚未安装或不可读时为 `None`——调用者应释放自己的锁、用普通读取缺页后重试，
+    /// 缺少这一步就会在持有全局可见的锁时等待 pager I/O。
+    ///
+    /// # Errors
+    /// 地址未对齐或超出用户区间返回 `NotMapped`。
+    pub(crate) fn read_resident_word(&self, address: usize) -> Result<Option<u32>, VmError> {
+        if !address.is_multiple_of(4)
+            || address < USER_START
+            || address.checked_add(4).is_none_or(|end| end > USER_END)
+        {
+            return Err(VmError::NotMapped);
+        }
+        let inner = self.lock()?;
+        let Some(entry) = inner
+            .views
+            .normal
+            .translate(VirtualAddress::from(address).floor())
+            .filter(|entry| {
+                entry
+                    .permissions()
+                    .contains(PagePermissions::READ | PagePermissions::USER)
+            })
+        else {
+            return Ok(None);
+        };
+        let word = entry
+            .ppn()
+            .as_page_mut_ptr()
+            .wrapping_add(address % PAGE_SIZE)
+            .cast::<u32>();
+        // SAFETY: 翻译在持有地址空间锁期间有效（撤销需要同一把锁），页框经 direct map 可读；
+        // 地址 4 字节对齐且不跨页。用户态可并发写该字，故按原子读取。
+        Ok(Some(
+            unsafe { core::sync::atomic::AtomicU32::from_ptr(word) }
+                .load(core::sync::atomic::Ordering::Acquire),
+        ))
     }
 
     fn for_each_user_chunk(

@@ -47,6 +47,11 @@ impl ExecutionViews {
         self.private.as_ref().map(PageTable::token)
     }
 
+    /// 观察本空间用户翻译的唯一执行视图；不把成员的 normal 镜像重复计入。
+    pub(super) fn resident_table(&self) -> &PageTable {
+        self.private.as_ref().unwrap_or(&self.normal)
+    }
+
     /// 实际映射安装两种视图；共享区只进入 normal，错误返回前仍提交已发生的退休。
     pub(super) fn install(
         &mut self,
@@ -92,6 +97,33 @@ impl ExecutionViews {
             return Err(error);
         }
         Ok(commit)
+    }
+
+    /// 仅当 `vpn` 尚无翻译时安装（fault-around）：已有翻译保持原权限，不降级可写映射。
+    ///
+    /// 失败时已发生的 PTE 变化仍记录在 `commit`，调用者必须提交它。
+    pub(super) fn install_if_absent(
+        &mut self,
+        vpn: VirtualPageNumber,
+        ppn: PhysicalPageNumber,
+        permissions: PagePermissions,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), VmError> {
+        if self.normal.translate(vpn).is_some() {
+            return Ok(());
+        }
+        self.normal
+            .map(vpn, ppn, permissions, commit)
+            .map_err(|_| VmError::NoMemory)?;
+        if vpn.as_usize() < SHARED_START / PAGE_SIZE
+            && let Some(private) = &mut self.private
+            && private.translate(vpn).is_none()
+        {
+            private
+                .map(vpn, ppn, permissions, commit)
+                .map_err(|_| VmError::NoMemory)?;
+        }
+        Ok(())
     }
 
     /// 两种视图共用一个 fence commit；现有全 ASID 的 local/remote fence 同时覆盖两个根。

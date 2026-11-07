@@ -1,6 +1,6 @@
 //! wl_shm 缓冲池：Display 独占内存与 busy 状态，release 之前绝不重写。
 
-use super::{Configuration, Display, WindowId};
+use super::{Configuration, Display, WindowId, damage::Tiles};
 use canvas::Rect;
 use linux_uapi::shared_memory::{MemFd, SharedMapping};
 use std::{collections::VecDeque, io, os::fd::AsFd};
@@ -51,6 +51,8 @@ pub(super) struct History {
     key: Option<(i32, i32, i32)>,
     /// 上一次有像素提交的缓冲。它已保留完整画面，供下一次计算损伤。
     latest: Option<ObjectId>,
+    /// 整窗重绘路径上一次提交画面的分块哈希；损伤相对它推导，与具体缓冲无关。
+    tiles: Option<Tiles>,
 }
 
 impl History {
@@ -58,6 +60,7 @@ impl History {
     pub(super) fn invalidate(&mut self) {
         self.key = None;
         self.latest = None;
+        self.tiles = None;
         self.damage.clear();
     }
 
@@ -109,7 +112,9 @@ impl Display {
     /// 在途 callback/缓冲池满返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
     /// 连接错误后调用方应销毁 Display，不能继续使用部分发送的请求。
     pub fn present(&mut self, window: WindowId, pixels: &[u32]) -> io::Result<()> {
-        self.present_frame(window, Some(pixels), false, |_, _, _, _| Ok(Vec::new()))
+        self.present_frame(window, Some(pixels), false, false, |_, _, _, _| {
+            Ok(Vec::new())
+        })
     }
 
     /// 在已经释放的 Wayland 缓冲中绘制画面，然后提交实际损伤。
@@ -127,7 +132,27 @@ impl Display {
         window: WindowId,
         paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
     ) -> io::Result<()> {
-        self.present_frame(window, None, false, paint)
+        self.present_frame(window, None, false, false, paint)
+    }
+
+    /// 在已经释放的 Wayland 缓冲中整幅重绘，损伤由与上一次提交的分块哈希比较得出。
+    ///
+    /// # 参数
+    ///
+    /// `paint` 接收可写像素（物理像素、行距等于宽度）、当前配置和只读 Display，必须画满整个缓冲：
+    /// 缓冲里是更早一帧或未初始化的内容，不能假定任何像素保留。
+    ///
+    /// # 错误
+    ///
+    /// 在途 callback/缓冲池满返回 WouldBlock（此时不会调用 `paint`）；其余错误同 [`Self::paint_frame`]。
+    pub fn render_frame(
+        &mut self,
+        window: WindowId,
+        paint: impl FnOnce(&mut [u32], Configuration, &Self) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.present_frame(window, None, false, true, |pixels, configuration, _, display| {
+            paint(pixels, configuration, display).map(|()| Vec::new())
+        })
     }
 
     /// 用一个预乘 ARGB `pixel` 覆盖 `window` 的当前逻辑尺寸。
@@ -135,7 +160,9 @@ impl Display {
     /// # Errors
     /// 需要标准 wp_viewporter；其余配置、在途缓冲和提交错误同 [`Self::present`]。
     pub fn present_solid(&mut self, window: WindowId, pixel: u32) -> io::Result<()> {
-        self.present_frame(window, Some(&[pixel]), true, |_, _, _, _| Ok(Vec::new()))
+        self.present_frame(window, Some(&[pixel]), true, false, |_, _, _, _| {
+            Ok(Vec::new())
+        })
     }
 
     fn present_frame(
@@ -143,6 +170,7 @@ impl Display {
         window: WindowId,
         pixels: Option<&[u32]>,
         solid: bool,
+        measured: bool,
         paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
     ) -> io::Result<()> {
         let state = self
@@ -249,6 +277,7 @@ impl Display {
                 self.allocate_buffer(window, (width, height), stride, capacity)?
             }
         };
+        let mut new_tiles = None;
         if pixels.is_none() {
             let mut buffer = self.buffers.remove(&id).expect("allocated drawing buffer");
             let held = buffer.commit;
@@ -267,7 +296,21 @@ impl Display {
             })();
             self.buffers.insert(id, buffer);
             damage = result?;
-            if !preserved {
+            if measured {
+                // 整幅重绘：相对上一次提交的分块哈希推导损伤；没有同规格基线或哈希分配失败则整幅。
+                let count = bytes as usize / 4;
+                new_tiles = Tiles::of(
+                    self.buffers[&id].pixels(count),
+                    width as usize,
+                    height as usize,
+                );
+                let history = &self.windows[&window].history;
+                damage = match (&new_tiles, &history.tiles) {
+                    (Some(now), Some(before)) if mapped => now.changed_from(before),
+                    _ => None,
+                }
+                .unwrap_or_else(|| vec![bounds]);
+            } else if !preserved {
                 damage = vec![bounds];
             }
             for rect in &mut damage {
@@ -343,6 +386,9 @@ impl Display {
         let state = self.windows.get_mut(&window).expect("validated window");
         state.frame = Some(callback);
         state.history.record(key, id, damage);
+        if measured {
+            state.history.tiles = new_tiles;
+        }
         let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
         buffer.busy = true;
         buffer.commit = state.history.commits;
@@ -483,6 +529,18 @@ impl Display {
             self.destroy_buffer(object)?;
         } else {
             buffer.busy = false;
+            // 稳定状态每窗口只保留一块空闲缓冲：第二块只在上一块未释放时临时分配，
+            // 释放后立即退休，否则最大化窗口会长期多占一整幅画面的内存。
+            // 交互缩放期间保留空闲池，避免相邻尺寸反复创建和传递 memfd。
+            let resizing = state.is_some_and(|state| state.configuration.resizing);
+            let spare = !resizing
+                && self
+                    .buffers
+                    .iter()
+                    .any(|(id, other)| *id != object && other.window == window && !other.busy);
+            if spare {
+                self.destroy_buffer(object)?;
+            }
         }
         if live {
             self.events.push_back(super::Event {

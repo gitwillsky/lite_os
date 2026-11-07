@@ -77,6 +77,11 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
 - deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
+- 内核 futex 表（`syscall::futex`）按 key 哈希分入 256 个桶，每桶一把可睡眠 `TaskMutex` 与一棵 (key, 序号) 有序树；同一 key
+  恒在同一桶，FIFO 不变。桶锁内比较用户值只用不缺页读取（`AddressSpace::read_resident_word`）：翻译缺失时先放桶锁、
+  锁外普通读取缺页（可能等 pager），再重试，缺失这一步会让一次文件缺页的 I/O 串行化同桶 futex。requeue 按桶下标升序加锁、
+  同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：该路径依赖线程与调度，
+  无法在 host 隔离成可靠的阻塞基准，竞争吞吐用计划基线 4 的 guest 诊断；桶数是静态内存与碰撞率的折中。
 - 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。
 - fault/trap、OOM、exit 和 kill 只能由对应 owner 退休 context、wait membership 与 observer；同步 fence 未确认时不得回收 backing。
 - native-runtime 的启动闭包和结果引用属于 Descriptor，执行时不把其 Box 搬到线程栈；
@@ -146,23 +151,30 @@ ThreadOwner 的返回前处理移交 UserReturn（Enter 一个 ExecutionView，�
 
 ## 服务堆与 IPC 缓冲
 
-native-runtime::heap 独占分配器注册与 VMAR，allocator::Classes 在原互斥锁内拥有各尺寸空闲链。
-小块尺寸桶覆盖至 2 KiB，保留到服务进程 VMAR 退休，成本是小块并发高水位。
-整页请求与完整 native channel 回复各使用独立映射，每种尺寸最多保留一个备用块（4 KiB + 64 KiB）；
-并发 RPC 结束后的多余块立即撤销，不能用长期 slab 保留一页工作缓冲的突发峰值而耗尽小内存实例。
-整页桶覆盖带事务头、代际与长度前缀的半页 PCM 数据，顺序提交复用它以减少 VMAR/fence 成本。
-中等尺寸与超出 chunk 的分配仍为独立映射，在 dealloc 时撤销；撤销失败 fail-stop，不能丢失最后的映射回收责任。
-chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发布地址前裁剪，活跃块不得重叠。
-裁剪拒绝先撤销整个未发表区间再返回空指针；回滚失败 fail-stop，不能发布失去所有权的部分映射。
-缺少完整消息备用块时，顺序 RPC 的每次回复都要创建/撤销 VMAR 并跨核 fence，放大音频等有期限的数据流延迟。
-实际分配器 fixture 验证大块对齐、复用时无新增映射、活跃块隔离、突发后的有界保留及独立映射退休；
-实际 RPC 成本与容量分别由音频/桌面、musl 地址空间压力门禁验证。
+`libraries/span-heap` 拥有分配器算法与全部堆状态（mimalloc 的分片空闲链 + snmalloc 的远端释放消息）；
+`native-runtime::heap` 只提供 `Backing`：区域（64 MiB 整段映射、按需提交的 VMO）、`OP_DECOMMIT`、大对象独立映射、
+futex 等待/唤醒与线程描述符里的堆槽。服务堆在进程内只有这一个 owner，没有第二套 slab。
+- 尺寸级别：每个二的幂区间 8 级，内部碎片 ≤ 12.5%，至 256 KiB；2 的幂块在按块大小对齐的 span 内保持自然对齐，
+  更大对齐取 2 的幂级别。更大的请求使用独立映射，dealloc 时撤销，撤销失败 fail-stop。
+- span 是 64 KiB–2 MiB 的 2 的幂段，块由 `bump` 游标增量切出：新 span 不会提前触碰整块页面，
+  缺失增量切分时每个原生进程的每个级别至少提交一整块（旧实现约 512 KiB/进程）。
+- 每线程一个 `LocalHeap`：分配与本线程释放不加锁、无原子读-改-写。远端释放压入 span 的原子栈，并在首次待收集时把
+  span 压入所属堆的 `pending` 栈（`queued` 记录持有它的堆，CAS 保证同时只在一个栈上）；所属线程在慢路径整体收走。
+  缺失 `queued` 的归属校验会让 span 同时进入两个栈而破坏 `pending_next`。
+- 线程终止后由描述符析构调用 `retire_thread`：空 span 立即归还，其余孤儿化由他人认领；缺失该调用时已退出线程的
+  span 永远无人回收。运行时安装线程描述符之前使用带锁的后备堆。
+- 空 span 回到全局按阶栈；每阶最多保留 4 个已提交的，其余先 decommit（不 unmap，地址空间稳定），所以服务空闲时
+  不保留历史并发峰值，也没有等待翻译 fence 的 unmap。全局锁只保护 span 取还、孤儿链与堆池，不在热路径上。
+- `realloc` 在块容量内且级别不变时原地返回。
+- 验证：span-heap 宿主并发单测（对齐/隔离、跨线程释放、线程退出认领、归还与 decommit、混合负载不重复发放存活块）；
+  blocking benchmark `span-heap-bench`（小块 alloc+free、跨线程释放、16 B→64 KiB 增长，宽绝对上限）。
+  实际 RPC 成本与容量分别由音频/桌面、musl 地址空间压力门禁验证。
 
 ## 原生任务观测
 
 - `object::Process` 的 lifecycle 锁同时保护存活线程索引与退出累计计费；最终 runtime 与线程摘除同一事务提交，
   不丢失已退出线程，也不与并发查询重复计费。启动失败只回滚登记，不改变未启动执行体的状态。
-- `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回映射字节、映射驻留字节和存活线程数，均要求 INSPECT。
+- `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回自身 VMAR 的映射字节、实际 RAM 驻留、private/shared、scaled shared 与存活线程数，均要求 INSPECT。
   统计由实际 task/VM owner 提供，不在 component-manager 或桌面另建人工同步计数。
 - Job 默认持有 `ENUMERATE`：`JOB_CHILDREN`/`JOB_PROCESSES`（另需 INSPECT）返回存活直属成员的升序 KOID，
   `OBJECT_GET_CHILD` 按 KOID 取成员句柄，rights 不得超出 Job 句柄。只读观察者因此只能取得只读成员，不能借枚举提权。
@@ -175,7 +187,8 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
   节点从发布起就是最终权限，Linux 进程无法抢先占用路径。连接与发送由 VFS socket inode 写权限按 fsuid 与附加组授权，
   组外进程得到 `EACCES`。端点放在 linuxd 自有的 devtmpfs 上（同 Linux `/dev/log`），因为 `/run` 由 init 脚本稍后挂载。只返回服务名称/运行状态/汇总资源量，
   不返回地址、寄存器、凭据、映射明细或管理 capability。请求不持久化客户端状态；socket 队列沿用现有配额，
-  回复不能立即发送时丢弃，不阻塞其他客户端。快照受单个 datagram 上限约束（80 字节/记录），原生服务数量远低于该界。
+  回复不能立即发送时丢弃，不阻塞其他客户端。快照受单个 datagram 上限约束（`LTASK002`，104 字节/记录），原生服务数量远低于该界。
+- 协议返回驻留、专用、共享与分摊内存；查询失败用 UNAVAILABLE，不能当作真实零。任务管理器服务页显示专用与共享，比例分摊值用于诊断。
 - 原生 KOID 与 Linux PID 分属不同身份空间。原生服务按自己的承载进程计费，Linux 应用及其 syscall 消耗归实际成员承载线程；
   不再把相同应用的承载线程计入服务。Linuxd 工作线程是其服务的展开明细，系统总线程数不重复加它们。
   普通 Linux 进程仍使用标准 procfs/pidfd；获授权的系统桌面工具消费只读服务协议，不新增 Linux syscall、ioctl 或伪造 PID。

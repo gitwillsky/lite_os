@@ -22,7 +22,7 @@ impl RegularFileWrite<'_> {
             Self::Memory(write) => write
                 .inode
                 .prepare_memory_write(&write.write, Some(&write.identity)),
-            Self::Remote(write) => write.file.inode.prepare_cached_write(&write.identity),
+            Self::SharedVmo(write) => write.file.inode.prepare_cached_write(&write.identity),
         }
     }
     pub(crate) fn size(&self) -> u64 {
@@ -30,7 +30,7 @@ impl RegularFileWrite<'_> {
             Self::Cached(write) => write.file.inode.size(),
             Self::Direct(write) => write.cached.file.inode.size(),
             Self::Memory(write) => write.write.size(),
-            Self::Remote(write) => write.file.inode.size(),
+            Self::SharedVmo(write) => write.file.inode.size(),
         }
     }
 
@@ -40,7 +40,7 @@ impl RegularFileWrite<'_> {
             Self::Cached(write) => write.write(offset, input),
             Self::Direct(write) => write.write(offset, input),
             Self::Memory(write) => write.write(offset, input),
-            Self::Remote(write) => write.write(offset, input),
+            Self::SharedVmo(write) => write.write(offset, input),
         }
     }
 
@@ -54,7 +54,7 @@ impl RegularFileWrite<'_> {
             Self::Cached(write) => write.append(input, size_limit),
             Self::Direct(write) => write.append(input, size_limit),
             Self::Memory(write) => write.append(input, size_limit),
-            Self::Remote(write) => write.append(input, size_limit),
+            Self::SharedVmo(write) => write.append(input, size_limit),
         }
     }
 }

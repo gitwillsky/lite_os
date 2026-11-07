@@ -268,6 +268,82 @@ fn available_read_never_requests_pages_and_observes_supplied_cow_content() {
 }
 
 #[test]
+fn fault_around_collects_only_resident_file_pages_read_only_without_requests() {
+    struct NoRequests;
+    impl PagerSink for NoRequests {
+        fn request(&self, _: PagerRequest) -> Result<(), ()> {
+            panic!("fault-around must not issue a pager request")
+        }
+    }
+    let file = Vmo::create_paged(
+        (4 * PAGE_SIZE) as u64,
+        VmoOptions::default(),
+        PagerBinding {
+            sink: Arc::new(NoRequests),
+            key: 1,
+        },
+        false,
+    )
+    .unwrap();
+    let supply = Vmo::create((4 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
+    for page in [0, 2] {
+        supply.write((page * PAGE_SIZE) as u64, &[7]).unwrap();
+        file.supply_pages(
+            (page * PAGE_SIZE) as u64,
+            PAGE_SIZE as u64,
+            &supply,
+            (page * PAGE_SIZE) as u64,
+        )
+        .unwrap();
+    }
+    // 只有驻留页（0、2）被收集；页 1、3 缺失，既不分配也不请求；主缺页的页 1 被跳过。
+    let collected = file
+        .with_resident_file_pages(0..4, 0, |pages| {
+            pages
+                .iter()
+                .flatten()
+                .map(|(index, page)| (*index, page.writable))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(collected, vec![(2, false)]);
+    assert!(file.state.lock().requested.is_empty());
+
+    // 私有快照读到祖先的文件页，同样只读；自身写时复制的副本不是文件页，不收集。
+    let snapshot = file
+        .create_child(0, file.size(), ChildKind::AtLeastOnWrite)
+        .unwrap();
+    snapshot.write(0, &[9]).unwrap();
+    let collected = snapshot
+        .with_resident_file_pages(0..4, 1, |pages| {
+            pages
+                .iter()
+                .flatten()
+                .map(|(index, page)| (*index, page.writable))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(collected, vec![(2, false)]);
+
+    // 匿名对象的已提交页不属于 pager 补页成本，映射为只读只会多一次写缺页。
+    let anonymous = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
+    anonymous.write(0, &[1]).unwrap();
+    assert_eq!(
+        anonymous.with_resident_file_pages(0..1, 1, |pages| pages.len()),
+        Some(0)
+    );
+    let anonymous_all = anonymous
+        .with_resident_file_pages(0..1, usize::MAX, |pages| pages.len())
+        .unwrap();
+    assert_eq!(anonymous_all, 0);
+
+    // 树锁正忙时放弃，不排队。
+    let held = file.tree.lock.lock().unwrap();
+    assert!(file.with_resident_file_pages(0..4, 1, |_| ()).is_none());
+    drop(held);
+}
+
+#[test]
 fn available_read_does_not_enqueue_behind_a_held_tree_lock() {
     let object = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
     object.write(0, &[11]).unwrap();
@@ -477,29 +553,6 @@ fn detaching_the_pager_fails_outstanding_and_later_requests() {
     // 内容 owner 已退休：仍存活的对象不再把请求投给它，缺页直接失败。
     assert_eq!(file.read(PAGE_SIZE as u64, &mut [0]), Err(VmError::Io));
     assert_eq!(sink.0.load(Ordering::Relaxed), 1, "no request after detach");
-}
-
-#[test]
-fn resident_observation_keeps_sparse_cow_and_slice_backing_without_faulting() {
-    // 内容标签使用原有 padding，观测不能让每个物理页的元数据增长。
-    assert_eq!(core::mem::size_of::<Page>(), 24);
-    let parent = Vmo::create((PAGE_SIZE * 8) as u64, VmoOptions::default()).unwrap();
-    parent.write(PAGE_SIZE as u64, &[17]).unwrap();
-    parent.write((PAGE_SIZE * 6) as u64, &[23]).unwrap();
-    let child = parent
-        .create_child(0, parent.size(), ChildKind::Snapshot)
-        .unwrap();
-    assert_eq!(child.resident_pages(0, 8).unwrap(), 2);
-    assert_eq!(child.committed_bytes().unwrap(), 0);
-    child.write(PAGE_SIZE as u64, &[31]).unwrap();
-    assert_eq!(child.resident_pages(0, 8).unwrap(), 2);
-    assert_eq!(child.resident_pages(2, 4).unwrap(), 0);
-    let slice = child
-        .create_child(PAGE_SIZE as u64, (PAGE_SIZE * 6) as u64, ChildKind::Slice)
-        .unwrap();
-    assert_eq!(slice.resident_pages(0, 6).unwrap(), 2);
-    assert_eq!(child.committed_bytes().unwrap(), PAGE_SIZE as u64);
-    assert_eq!(byte(&parent, PAGE_SIZE as u64), 17);
 }
 
 #[test]

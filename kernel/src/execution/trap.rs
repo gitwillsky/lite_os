@@ -29,9 +29,14 @@ fn handle_software_interrupt() {
     crate::crash::stop_if_requested();
 }
 
-/// timer tick 的 deferred work；`user_trap` 表示在用户态 trap 入口响应。
-fn timer_work(user_trap: bool, fired: u64) -> DeferredWork {
-    if user_trap && timer::tick_interrupted_user(fired) {
+/// timer 中断的 deferred work；`user_trap` 表示在用户态 trap 入口响应。
+///
+/// 只有包含调度 tick 的中断才发布 [`DeferredWork::TIMER`]（计费与抢占裁决）；截止时间等待者或
+/// housekeeping 到期只发布 backlog 位，由 dispatch 唤醒到期者，不额外触发调度计费。
+fn timer_work(user_trap: bool, event: &timer::TimerEvent) -> DeferredWork {
+    if !event.tick {
+        DeferredWork::TIMER_BACKLOG
+    } else if user_trap && timer::tick_interrupted_user(event.fired) {
         DeferredWork::TIMER.with(DeferredWork::TIMER_FROM_USER)
     } else {
         DeferredWork::TIMER
@@ -44,9 +49,9 @@ fn handle_claimed_interrupt(user_trap: bool) {
     match &claimed {
         crate::platform::ClaimedInterrupt::Timer(_) => {
             // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
-            let fired = timer::set_next_timer_interrupt();
+            let event = timer::acknowledge_timer_interrupt();
             crate::crash::watchdog_tick();
-            deferred::raise(timer_work(user_trap, fired));
+            deferred::raise(timer_work(user_trap, &event));
         }
         crate::platform::ClaimedInterrupt::Device(_)
         | crate::platform::ClaimedInterrupt::Software(_) => {}
@@ -65,9 +70,9 @@ fn handle_claimed_interrupt(user_trap: bool) {
 fn handle_interrupt(event: TrapEvent, user_trap: bool) -> bool {
     match event {
         TrapEvent::TimerInterrupt => {
-            let fired = timer::set_next_timer_interrupt();
+            let event = timer::acknowledge_timer_interrupt();
             crate::crash::watchdog_tick();
-            deferred::raise(timer_work(user_trap, fired));
+            deferred::raise(timer_work(user_trap, &event));
         }
         TrapEvent::ExternalInterrupt => {
             handle_claimed_interrupt(user_trap);

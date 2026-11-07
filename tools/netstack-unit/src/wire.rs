@@ -31,6 +31,11 @@ fn initialize() {
         fn driver(&self) -> &'static str {
             "fixture"
         }
+        fn link(
+            &self,
+        ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
+            Ok(device_model::network::NetworkLink::default())
+        }
         fn receive(&self, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
             let Some(frame) = WIRE.lock().unwrap().0.pop_front() else {
                 return Err(device_model::network::NetworkError::WouldBlock);
@@ -320,6 +325,11 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         }
         fn driver(&self) -> &'static str {
             "fixture"
+        }
+        fn link(
+            &self,
+        ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
+            Ok(device_model::network::NetworkLink::default())
         }
         fn receive(&self, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
             if self

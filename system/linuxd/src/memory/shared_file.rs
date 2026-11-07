@@ -24,7 +24,7 @@ pub(crate) enum SharedFileError {
 }
 
 /// 文件映射的后备：页缓存 VMO 是文件内容的唯一驻留副本，read/write 与 mmap 看到同一页。
-pub(crate) trait SharedFileMapping: Send + Sync + Debug {
+pub(crate) trait SharedFileMapping: core::any::Any + Send + Sync + Debug {
     /// 打开方式允许共享写映射（`VM_MAYWRITE`）。
     fn may_write(&self) -> bool {
         true

@@ -4,21 +4,24 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 mod policy;
 use policy::{
-    CompletionStatus, RequestOperation, completion_length_is_valid, decode_status, valid_block,
+    CompletionStatus, RequestOperation, completion_length_is_valid, decode_status, valid_transfer,
 };
 
-use device_model::{BLOCK_SIZE, BlockDevice, BlockError};
+use device_model::{
+    BLOCK_SIZE, BlockBuffer, BlockBufferPool, BlockDevice, BlockError, BlockOperation,
+    BlockRequest, DeviceBacking,
+};
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VirtIODevice,
     completion_irq::VirtIOCompletionIrq,
-    queue::{DmaBuffer, VirtQueue},
+    queue::{DmaSlice, VirtQueue},
 };
 use crate::io_completion::{
     self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget,
     request_owner::{
-        CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
-        ReserveOrWait,
+        CapacityWake, CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner,
+        RequestOwnerError, ReserveOrWait,
     },
 };
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
@@ -27,15 +30,16 @@ const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
 const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
-const BLOCK_REQUEST_SLOTS: usize = 16;
-const DESCRIPTORS_PER_REQUEST: usize = 5;
+const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;
+const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
+// OWNER: 每个请求独占 16-byte header 与 1-byte status，其余为槽间 padding；整张表只固定一次。
+const REQUEST_METADATA_STRIDE: usize = 32;
+const MIN_DESCRIPTORS_PER_REQUEST: usize = 3;
 const COMPLETION_BATCH: usize = 32;
 const CAPACITY_FAILURE_BATCH: usize = 32;
 
 struct RequestData {
-    request: DmaBuffer<16>,
-    data: DmaBuffer<BLOCK_SIZE>,
-    status: DmaBuffer<1>,
+    length: usize,
     generation: u64,
     // OWNER: used len 只能结合原 request writable layout 解释；缺失该字段会让短 read
     // completion 误用 status 后的 stale 4 KiB data。
@@ -53,6 +57,8 @@ struct RequestSlot {
 
 struct BlockQueue {
     queue: VirtQueue,
+    // OWNER: 同一固定表的各槽互不重叠；发布后 CPU 不接触该槽，直到 used-ring 完成或设备复位。
+    metadata: DeviceBacking,
     requests: RequestOwner,
     failed: bool,
 }
@@ -64,11 +70,26 @@ pub(crate) struct VirtIOBlockDevice {
     slots: Box<[RequestSlot]>,
     capacity: u64,
     supports_flush: bool,
+    max_transfer_blocks: usize,
+    segment_limit: usize,
+    bytes: BlockBufferPool,
     /// Linux virtio-blk 命名的磁盘名（`vda`、`vdb`、…、`vdaa`）。
     name: DiskName,
     completion_irq: VirtIOCompletionIrq,
     /// scheduler wait key 中区分本 adapter 实例的 identity。
     io_device: IoDevice,
+}
+
+/// 本设备 BTI 登记的 payload；不映射到驱动 CPU 地址空间，也不持有 adapter 引用。
+struct VirtioBlockBuffer {
+    backing: DeviceBacking,
+    device: IoDevice,
+}
+
+impl BlockBuffer for VirtioBlockBuffer {
+    fn vmo(&self) -> &native_runtime::Vmo {
+        self.backing.vmo()
+    }
 }
 
 /// virtio-blk 磁盘名：`vd` 后接 Linux `virtblk_name_format` 的 bijective base-26 后缀。
@@ -132,7 +153,8 @@ impl VirtIOBlockDevice {
         if features & VIRTIO_F_VERSION_1 == 0 {
             return None;
         }
-        let driver_features = VIRTIO_F_VERSION_1 | features & VIRTIO_BLK_F_FLUSH;
+        let driver_features = VIRTIO_F_VERSION_1
+            | features & (VIRTIO_BLK_F_FLUSH | VIRTIO_BLK_F_SEG_MAX | VIRTIO_BLK_F_SIZE_MAX);
         device.set_driver_features(driver_features).ok()?;
         let status = device.get_status().ok()?;
         device
@@ -143,7 +165,29 @@ impl VirtIOBlockDevice {
         }
 
         let queue_size = device.queue_max_size(0).ok()?;
-        if usize::from(queue_size) < BLOCK_REQUEST_SLOTS * DESCRIPTORS_PER_REQUEST {
+        if usize::from(queue_size) < MIN_DESCRIPTORS_PER_REQUEST {
+            return None;
+        }
+        let slot_count = usize::from(queue_size) / MIN_DESCRIPTORS_PER_REQUEST;
+        let data_segments = if driver_features & VIRTIO_BLK_F_SEG_MAX != 0 {
+            usize::try_from(device.read_config_u32(12).ok()?)
+                .ok()?
+                .max(1)
+        } else {
+            1
+        }
+        .min(usize::from(queue_size) - 2);
+        let segment_limit = if driver_features & VIRTIO_BLK_F_SIZE_MAX != 0 {
+            let maximum = device.read_config_u32(8).ok()? as usize;
+            if maximum == 0 {
+                return None;
+            }
+            maximum
+        } else {
+            u32::MAX as usize
+        };
+        let max_transfer_blocks = data_segments / BLOCK_SIZE.div_ceil(segment_limit);
+        if max_transfer_blocks == 0 {
             return None;
         }
         let queue = VirtQueue::new(queue_size, device.bti())?;
@@ -152,15 +196,28 @@ impl VirtIOBlockDevice {
             .ok()?;
         let capacity = device.read_config_u64(0).ok()?;
 
+        let metadata = DeviceBacking::try_allocate(
+            (slot_count * REQUEST_METADATA_STRIDE).div_ceil(native_runtime::native_abi::PAGE_SIZE),
+        )?;
+        metadata.pin(device.bti()).ok()?;
+        let metadata_address = metadata.cpu_address()?;
+        for page in 0..metadata.pages() {
+            // SAFETY: 整张表已固定并映射、设备尚未 DRIVER_OK；只读现有零内容以提前安装 CPU 翻译，
+            // 避免第一次提交在 queue 锁内缺页。这里只触及请求 metadata，不预读设备数据缓冲。
+            unsafe {
+                core::ptr::read_volatile(
+                    (metadata_address + page * native_runtime::native_abi::PAGE_SIZE) as *const u8,
+                );
+            }
+        }
+
         let mut slots = Vec::new();
-        slots.try_reserve_exact(BLOCK_REQUEST_SLOTS).ok()?;
-        for _ in 0..BLOCK_REQUEST_SLOTS {
+        slots.try_reserve_exact(slot_count).ok()?;
+        for _ in 0..slot_count {
             slots.push(RequestSlot {
                 completion: IoCompletion::new(),
                 data: Mutex::new(RequestData {
-                    request: DmaBuffer::try_zeroed(device.bti()).ok()?,
-                    data: DmaBuffer::try_zeroed(device.bti()).ok()?,
-                    status: DmaBuffer::try_zeroed(device.bti()).ok()?,
+                    length: 0,
                     generation: 0,
                     operation: RequestOperation::Flush,
                     result: None,
@@ -169,7 +226,7 @@ impl VirtIOBlockDevice {
             });
         }
         let io_device = IoDevice::allocate();
-        let requests = RequestOwner::new(queue_size as usize, BLOCK_REQUEST_SLOTS, io_device)?;
+        let requests = RequestOwner::new(queue_size as usize, slot_count, io_device)?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
 
@@ -177,12 +234,16 @@ impl VirtIOBlockDevice {
             device,
             queue: Mutex::new(BlockQueue {
                 queue,
+                metadata,
                 requests,
                 failed: false,
             }),
             slots: slots.into_boxed_slice(),
             capacity,
             supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
+            max_transfer_blocks,
+            segment_limit,
+            bytes: BlockBufferPool::default(),
             name: DiskName::allocate(),
             completion_irq: VirtIOCompletionIrq::new(),
             io_device,
@@ -193,13 +254,6 @@ impl VirtIOBlockDevice {
         Some(adapter)
     }
 
-    fn validate_block(&self, block_id: usize, len: usize) -> Result<(), BlockError> {
-        if !valid_block(self.capacity, block_id, len) {
-            return Err(BlockError::InvalidBlock);
-        }
-        Ok(())
-    }
-
     fn decode_status(status: u8) -> Result<(), BlockError> {
         match decode_status(status) {
             CompletionStatus::Ok => Ok(()),
@@ -208,19 +262,31 @@ impl VirtIOBlockDevice {
         }
     }
 
-    fn wait_for_capacity(&self) -> Result<RequestIdentity, BlockError> {
+    fn wake_capacity(&self, wake: Option<CapacityWake>) {
+        CapacityWake::drain(wake, || {
+            let mut owner = self.queue.lock();
+            if owner.failed {
+                None
+            } else {
+                owner.requests.handoff_next()
+            }
+        });
+    }
+
+    fn wait_for_capacity(&self, descriptors: usize) -> Result<RequestIdentity, BlockError> {
         let key = {
             let mut owner = self.queue.lock();
             if owner.failed {
                 return Err(BlockError::DeviceError);
             }
-            match owner.requests.reserve_or_wait() {
+            match owner.requests.reserve_or_wait(descriptors) {
                 ReserveOrWait::Reserved(identity) => return Ok(identity),
                 ReserveOrWait::Prepare(ticket) => owner.requests.capacity_key(ticket),
             }
         };
-        let prepared = PreparedCapacityWait::try_new(key, io_completion::current_wait_target())
-            .map_err(Self::request_owner_error)?;
+        let prepared =
+            PreparedCapacityWait::try_new(key, descriptors, io_completion::current_wait_target())
+                .map_err(Self::request_owner_error)?;
         let waiter = {
             let mut owner = self.queue.lock();
             if owner.failed {
@@ -238,20 +304,67 @@ impl VirtIOBlockDevice {
     fn submit(
         &self,
         operation: RequestOperation,
-        block_id: usize,
-        write: Option<&[u8]>,
+        block_id: u64,
+        payload: Option<DmaSlice<'_>>,
     ) -> Result<RequestIdentity, BlockError> {
-        let identity = self.wait_for_capacity()?;
+        let descriptors = 2 + payload.as_ref().map_or(0, DmaSlice::segment_count);
+        let identity = self.wait_for_capacity(descriptors)?;
         let waiter = io_completion::current_wait_target();
-        self.submit_reserved(identity, operation, block_id, write, waiter)
+        self.submit_reserved(identity, operation, block_id, payload, waiter)
+    }
+
+    /// 校验一次传输并构造指向登记缓冲的 DMA 视图；不发布任何请求。
+    fn payload<'a>(
+        &self,
+        operation: BlockOperation,
+        first_block: u64,
+        blocks: usize,
+        buffer: &'a dyn BlockBuffer,
+        buffer_offset: u64,
+    ) -> Result<DmaSlice<'a>, BlockError> {
+        let owner: &dyn core::any::Any = buffer;
+        let buffer = owner
+            .downcast_ref::<VirtioBlockBuffer>()
+            .ok_or(BlockError::InvalidBlock)?;
+        let length = blocks
+            .checked_mul(BLOCK_SIZE)
+            .ok_or(BlockError::InvalidBlock)?;
+        let start = usize::try_from(buffer_offset).map_err(|_| BlockError::InvalidBlock)?;
+        let end = start.checked_add(length).ok_or(BlockError::InvalidBlock)?;
+        if buffer.device != self.io_device
+            || !start.is_multiple_of(BLOCK_SIZE)
+            || blocks > self.max_transfer_blocks
+            || !valid_transfer(self.capacity, first_block, length)
+        {
+            return Err(BlockError::InvalidBlock);
+        }
+        DmaSlice::backing(
+            &buffer.backing,
+            start..end,
+            operation == BlockOperation::Read,
+        )
+        .and_then(|slice| slice.limit_segment_size(self.segment_limit))
+        .map_err(|_| BlockError::InvalidBlock)
+    }
+
+    /// 不等待地预留 slot 与描述符 credit；容量不足返回 `None`（不登记 FIFO 等待者）。
+    fn try_reserve(&self, descriptors: usize) -> Result<Option<RequestIdentity>, BlockError> {
+        let mut owner = self.queue.lock();
+        if owner.failed {
+            return Err(BlockError::DeviceError);
+        }
+        Ok(match owner.requests.reserve_or_wait(descriptors) {
+            ReserveOrWait::Reserved(identity) => Some(identity),
+            ReserveOrWait::Prepare(_) => None,
+        })
     }
 
     fn submit_reserved(
         &self,
         identity: RequestIdentity,
         operation: RequestOperation,
-        block_id: usize,
-        write: Option<&[u8]>,
+        block_id: u64,
+        payload: Option<DmaSlice<'_>>,
         waiter: Arc<dyn IoWaitTarget>,
     ) -> Result<RequestIdentity, BlockError> {
         let mut owner = self.queue.lock();
@@ -262,39 +375,50 @@ impl VirtIOBlockDevice {
         let request_slot = &self.slots[identity.slot as usize];
         request_slot.completion.reset();
         let mut data = request_slot.data.lock();
-        data.request.as_mut_slice().fill(0);
         let request_type = match operation {
             RequestOperation::Read => VIRTIO_BLK_T_IN,
             RequestOperation::Write => VIRTIO_BLK_T_OUT,
             RequestOperation::Flush => VIRTIO_BLK_T_FLUSH,
         };
-        data.request.as_mut_slice()[..4].copy_from_slice(&request_type.to_le_bytes());
         let sector = match operation {
             RequestOperation::Flush => 0,
-            _ => (block_id * (BLOCK_SIZE / 512)) as u64,
+            _ => block_id * (BLOCK_SIZE / 512) as u64,
         };
-        data.request.as_mut_slice()[8..16].copy_from_slice(&sector.to_le_bytes());
-        if let Some(bytes) = write {
-            data.data.as_mut_slice().copy_from_slice(bytes);
+        let metadata_offset = identity.slot as usize * REQUEST_METADATA_STRIDE;
+        let metadata_address = owner
+            .metadata
+            .cpu_address()
+            .expect("block metadata was mapped before DRIVER_OK")
+            + metadata_offset;
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(&request_type.to_le_bytes());
+        header[8..16].copy_from_slice(&sector.to_le_bytes());
+        // SAFETY: 当前 generation 独占本槽，尚未 publication；写入只覆盖本槽 header/status，
+        // 不构造覆盖整张表的 Rust 引用，其他槽可同时由设备访问。metadata 保活到设备 reset 后。
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                header.as_ptr(),
+                metadata_address as *mut u8,
+                header.len(),
+            );
+            core::ptr::write_volatile((metadata_address + 16) as *mut u8, 0xff);
         }
-        data.status.as_mut_slice()[0] = 0xff;
+        data.length = payload.as_ref().map_or(0, DmaSlice::length);
         data.generation = identity.generation;
         data.operation = operation;
         data.result = None;
         data.waiter = Some(waiter);
 
-        let request = data.request.readable_all();
-        let status = data.status.writable_all();
-        let head = match operation {
-            RequestOperation::Read => {
-                let buffer = data.data.writable_all();
-                owner.queue.add_dma(&[request, buffer, status])
-            }
-            RequestOperation::Write => {
-                let buffer = data.data.readable_all();
-                owner.queue.add_dma(&[request, buffer, status])
-            }
-            RequestOperation::Flush => owner.queue.add_dma(&[request, status]),
+        let BlockQueue {
+            queue, metadata, ..
+        } = &mut *owner;
+        let request = DmaSlice::backing(metadata, metadata_offset..metadata_offset + 16, false)
+            .expect("block request metadata range");
+        let status = DmaSlice::backing(metadata, metadata_offset + 16..metadata_offset + 17, true)
+            .expect("block status metadata range");
+        let head = match payload {
+            Some(payload) => queue.add_dma(&[request, payload, status]),
+            None => queue.add_dma(&[request, status]),
         };
         let head = match head {
             Ok(head) => head,
@@ -303,9 +427,7 @@ impl VirtIOBlockDevice {
                 let wake = owner.requests.release_and_handoff(identity);
                 drop(data);
                 drop(owner);
-                if let Some(wake) = wake {
-                    wake.wake();
-                }
+                self.wake_capacity(wake);
                 return Err(BlockError::DeviceError);
             }
         };
@@ -326,7 +448,7 @@ impl VirtIOBlockDevice {
         waiter.sleep(&slot.completion, self.request_id(identity));
     }
 
-    fn finish(&self, identity: RequestIdentity, read: Option<&mut [u8]>) -> Result<(), BlockError> {
+    fn finish(&self, identity: RequestIdentity) -> Result<(), BlockError> {
         let mut owner = self.queue.lock();
         let mut data = self.slots[identity.slot as usize].data.lock();
         assert_eq!(data.generation, identity.generation);
@@ -334,11 +456,6 @@ impl VirtIOBlockDevice {
             .result
             .take()
             .expect("block request woke without result");
-        if result.is_ok()
-            && let Some(read) = read
-        {
-            read.copy_from_slice(data.data.as_slice());
-        }
         data.waiter = None;
         let wake = if owner.failed {
             owner.requests.release_without_handoff(identity);
@@ -348,9 +465,7 @@ impl VirtIOBlockDevice {
         };
         drop(data);
         drop(owner);
-        if let Some(wake) = wake {
-            wake.wake();
-        }
+        self.wake_capacity(wake);
         result
     }
 
@@ -361,13 +476,12 @@ impl VirtIOBlockDevice {
     fn execute(
         &self,
         operation: RequestOperation,
-        block_id: usize,
-        write: Option<&[u8]>,
-        read: Option<&mut [u8]>,
+        block_id: u64,
+        payload: Option<DmaSlice<'_>>,
     ) -> Result<(), BlockError> {
-        let identity = self.submit(operation, block_id, write)?;
+        let identity = self.submit(operation, block_id, payload)?;
         self.wait(identity);
-        self.finish(identity, read)
+        self.finish(identity)
     }
 
     fn reclaim_completions(&self) -> bool {
@@ -407,7 +521,8 @@ impl VirtIOBlockDevice {
                         data.result.is_none(),
                         "block descriptor retained after result publication"
                     );
-                    if !completion_length_is_valid(data.operation, completion.length()) {
+                    if !completion_length_is_valid(data.operation, data.length, completion.length())
+                    {
                         owner.requests.reject_completion(claim);
                         corrupt = true;
                         break;
@@ -418,7 +533,16 @@ impl VirtIOBlockDevice {
                         break;
                     }
                     let identity = owner.requests.accept_completion(claim);
-                    data.result = Some(Self::decode_status(data.status.as_slice()[0]));
+                    let status_address = owner
+                        .metadata
+                        .cpu_address()
+                        .expect("block metadata remains mapped")
+                        + identity.slot as usize * REQUEST_METADATA_STRIDE
+                        + 16;
+                    // SAFETY: 同一 slot/generation 的 used length 已验证，device 已交还 status；
+                    // queue 锁排除该槽被重新发布，metadata 与 adapter 同寿命。
+                    let status = unsafe { core::ptr::read_volatile(status_address as *const u8) };
+                    data.result = Some(Self::decode_status(status));
                     let armed = slot.completion.complete();
                     if let Some(waiter) = data.waiter.clone()
                         && armed
@@ -457,15 +581,26 @@ impl VirtIOBlockDevice {
     }
 
     fn fail_device(&self) {
-        let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; BLOCK_REQUEST_SLOTS] =
-            core::array::from_fn(|_| None);
-        let first_failure = {
+        {
             let mut owner = self.queue.lock();
-            if owner.failed {
-                false
-            } else {
+            if !owner.failed {
+                // failed 只在确认 reset 后向锁外可见；completion-before-arm 也不能提前交还客户端页。
                 owner.failed = true;
-                while let Some(identity) = owner.requests.pop_outstanding() {
+                self.device
+                    .reset()
+                    .expect("block reset must revoke DMA before failure publication");
+            }
+        }
+        loop {
+            let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; COMPLETION_BATCH] =
+                core::array::from_fn(|_| None);
+            let mut drained = 0;
+            {
+                let mut owner = self.queue.lock();
+                for wake in &mut wakes {
+                    let Some(identity) = owner.requests.pop_outstanding() else {
+                        break;
+                    };
                     let slot = &self.slots[identity.slot as usize];
                     let mut data = slot.data.lock();
                     assert_eq!(
@@ -477,20 +612,19 @@ impl VirtIOBlockDevice {
                         "block outstanding request already has result"
                     );
                     data.result = Some(Err(BlockError::DeviceError));
-                    let armed = slot.completion.complete();
-                    if let Some(waiter) = data.waiter.clone()
-                        && armed
+                    if slot.completion.complete()
+                        && let Some(waiter) = data.waiter.clone()
                     {
-                        wakes[identity.slot as usize] = Some((waiter, self.request_id(identity)));
+                        *wake = Some((waiter, self.request_id(identity)));
                     }
+                    drained += 1;
                 }
-                true
             }
-        };
-        if first_failure {
-            let _ = self.device.reset();
             for (waiter, request) in wakes.into_iter().flatten() {
                 waiter.wake(request);
+            }
+            if drained < COMPLETION_BATCH {
+                break;
             }
         }
         if self.drain_failed_capacity_waiters() {
@@ -511,29 +645,134 @@ impl BlockDevice for VirtIOBlockDevice {
         &self.name.bytes[..self.name.length]
     }
 
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
-        self.validate_block(block_id, buf.len())?;
-        self.execute(RequestOperation::Read, block_id, None, Some(buf))?;
-        Ok(buf.len())
+    fn attach_buffer(&self, vmo: native_runtime::Vmo) -> Result<Arc<dyn BlockBuffer>, BlockError> {
+        let backing = DeviceBacking::from_vmo(vmo).map_err(|_| BlockError::InvalidBlock)?;
+        if backing.pages() == 0 {
+            return Err(BlockError::InvalidBlock);
+        }
+        backing
+            .pin(self.device.bti())
+            .map_err(|status| match status {
+                native_runtime::native_abi::ERR_NO_MEMORY
+                | native_runtime::native_abi::ERR_NO_RESOURCES => BlockError::OutOfMemory,
+                _ => BlockError::DeviceError,
+            })?;
+        Arc::try_new(VirtioBlockBuffer {
+            backing,
+            device: self.io_device,
+        })
+        .map(|buffer| buffer as Arc<dyn BlockBuffer>)
+        .map_err(|_| BlockError::OutOfMemory)
     }
 
+    fn transfer(
+        &self,
+        operation: BlockOperation,
+        first_block: u64,
+        blocks: usize,
+        buffer: &dyn BlockBuffer,
+        buffer_offset: u64,
+    ) -> Result<(), BlockError> {
+        let payload = self.payload(operation, first_block, blocks, buffer, buffer_offset)?;
+        self.execute(
+            RequestOperation::from(operation),
+            first_block,
+            Some(payload),
+        )
+    }
+
+    fn transfer_batch(&self, requests: &[BlockRequest<'_>]) -> Result<(), BlockError> {
+        // 1. 先校验整批并构造 DMA 视图：无效请求在任何请求发布之前失败。
+        let mut payloads: Vec<DmaSlice<'_>> = Vec::new();
+        payloads
+            .try_reserve_exact(requests.len())
+            .map_err(|_| BlockError::OutOfMemory)?;
+        for request in requests {
+            payloads.push(self.payload(
+                request.operation,
+                request.first_block,
+                request.blocks,
+                request.buffer,
+                request.buffer_offset,
+            )?);
+        }
+        // 2. 并发提交：自己的在途请求占满容量时先收割最老的一个。若只靠阻塞等待容量，
+        //    自己持有的 slot/credit 在 finish 之前不会归还，会自我死锁。
+        let mut inflight: alloc::collections::VecDeque<RequestIdentity> =
+            alloc::collections::VecDeque::new();
+        inflight
+            .try_reserve(self.slots.len().min(requests.len()))
+            .map_err(|_| BlockError::OutOfMemory)?;
+        let mut first_error = None;
+        for (request, payload) in requests.iter().zip(payloads) {
+            let descriptors = 2 + payload.segment_count();
+            let identity = loop {
+                match self.try_reserve(descriptors) {
+                    Ok(Some(identity)) => break Ok(identity),
+                    Ok(None) => {
+                        if let Some(oldest) = inflight.pop_front() {
+                            self.wait(oldest);
+                            if let Err(error) = self.finish(oldest) {
+                                first_error.get_or_insert(error);
+                            }
+                        } else {
+                            // 没有自己的在途请求：容量被其他调用者占用，阻塞等待是安全的。
+                            break self.wait_for_capacity(descriptors);
+                        }
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
+            let submitted = identity.and_then(|identity| {
+                self.submit_reserved(
+                    identity,
+                    RequestOperation::from(request.operation),
+                    request.first_block,
+                    Some(payload),
+                    io_completion::current_wait_target(),
+                )
+            });
+            match submitted {
+                Ok(identity) => inflight.push_back(identity),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        for identity in inflight {
+            self.wait(identity);
+            if let Err(error) = self.finish(identity) {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn read_block_ranges(&self, ranges: &mut [(usize, &mut [u8])]) -> Result<(), BlockError> {
+        self.bytes.read_many(self, ranges)
+    }
+
+    fn max_transfer_blocks(&self) -> usize {
+        self.max_transfer_blocks
+    }
+    fn queue_depth(&self) -> usize {
+        self.slots.len()
+    }
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
-
     fn block_count(&self) -> u64 {
         self.capacity / (BLOCK_SIZE as u64 / 512)
     }
-
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
-        self.validate_block(block_id, buf.len())?;
-        self.execute(RequestOperation::Write, block_id, Some(buf), None)?;
-        Ok(buf.len())
+    fn read_blocks(&self, first: usize, output: &mut [u8]) -> Result<usize, BlockError> {
+        self.bytes.read(self, first, output)
     }
-
+    fn write_blocks(&self, first: usize, input: &[u8]) -> Result<usize, BlockError> {
+        self.bytes.write(self, first, input)
+    }
     fn flush(&self) -> Result<(), BlockError> {
         if self.supports_flush {
-            self.execute(RequestOperation::Flush, 0, None, None)
+            self.execute(RequestOperation::Flush, 0, None)
         } else {
             Ok(())
         }
@@ -549,7 +788,9 @@ impl CompletionSource for VirtIOBlockDevice {
 impl Drop for VirtIOBlockDevice {
     fn drop(&mut self) {
         // Reset revokes outstanding request/data/status descriptors before fixed slots drop.
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("device must stop DMA before adapter destruction");
     }
 }
 

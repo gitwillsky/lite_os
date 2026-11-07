@@ -1,6 +1,7 @@
 //! 标准 Wayland 客户端窗口。连接独占协议对象、configure、输入焦点与帧生命周期。
 
 mod clipboard;
+mod damage;
 mod events;
 mod file_drag;
 mod foreign;

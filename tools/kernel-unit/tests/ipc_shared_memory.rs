@@ -49,6 +49,7 @@ fn rmid_withdraws_only_key_and_allows_reattach_until_last_actual_vma() {
             pid.clone(),
             4,
             &creator_list,
+            crate::memory::allocate_shared_memory,
         )
         .unwrap();
     let reservation = owner.shared_memory_prepare_attach(id, 6, &access).unwrap();
@@ -78,6 +79,7 @@ fn rmid_withdraws_only_key_and_allows_reattach_until_last_actual_vma() {
             pid.clone(),
             6,
             &creator_list,
+            crate::memory::allocate_shared_memory,
         )
         .unwrap();
     assert_ne!(replacement, id);
@@ -108,7 +110,16 @@ fn rmid_withdraws_only_key_and_allows_reattach_until_last_actual_vma() {
     ));
     assert_eq!(
         owner
-            .shared_memory_get(13, 0, 0, &access, pid.clone(), 10, &creator_list)
+            .shared_memory_get(
+                13,
+                0,
+                0,
+                &access,
+                pid.clone(),
+                10,
+                &creator_list,
+                crate::memory::allocate_shared_memory
+            )
             .unwrap(),
         replacement
     );
@@ -121,7 +132,16 @@ fn failed_mapping_reservation_does_not_update_vma_times_or_pid() {
     let owner = owner();
     let (pid, _registration) = pid();
     let id = owner
-        .shared_memory_get(0, 1, 0o600, &access, pid.clone(), 21, &creator_list)
+        .shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid.clone(),
+            21,
+            &creator_list,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let reservation = owner.shared_memory_prepare_attach(id, 6, &access).unwrap();
     let segment = reservation.segment.clone();
@@ -174,6 +194,7 @@ fn namespace_shm_identity_size_and_vma_actor_are_actual_object_facts() {
             creator.clone(),
             30,
             &creator_list,
+            crate::memory::allocate_shared_memory,
         )
         .unwrap();
     let second_id = second
@@ -185,11 +206,21 @@ fn namespace_shm_identity_size_and_vma_actor_are_actual_object_facts() {
             actor.clone(),
             31,
             &creator_list,
+            crate::memory::allocate_shared_memory,
         )
         .unwrap();
     assert_eq!(first_id, second_id);
     assert!(matches!(
-        first.shared_memory_get(8, 9000, 0, &access, actor.clone(), 32, &creator_list),
+        first.shared_memory_get(
+            8,
+            9000,
+            0,
+            &access,
+            actor.clone(),
+            32,
+            &creator_list,
+            crate::memory::allocate_shared_memory
+        ),
         Err(IpcError::Invalid)
     ));
     assert!(matches!(
@@ -200,7 +231,8 @@ fn namespace_shm_identity_size_and_vma_actor_are_actual_object_facts() {
             &access,
             actor.clone(),
             32,
-            &creator_list
+            &creator_list,
+            crate::memory::allocate_shared_memory
         ),
         Err(IpcError::Exists)
     ));
@@ -235,24 +267,60 @@ fn namespace_page_admission_charges_until_actual_delayed_destroy_and_limits_rech
         .set_shared_memory_limit(ipc::SharedMemoryLimit::TotalPages, 2, &access.authority)
         .unwrap();
     let id = owner
-        .shared_memory_get(0, 4097, 0o600, &access, pid.clone(), 40, &creator_list)
+        .shared_memory_get(
+            0,
+            4097,
+            0o600,
+            &access,
+            pid.clone(),
+            40,
+            &creator_list,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let reservation = owner.shared_memory_prepare_attach(id, 4, &access).unwrap();
     owner.shared_memory_remove(id, &access).unwrap();
     assert!(matches!(
-        owner.shared_memory_get(0, 1, 0o600, &access, pid.clone(), 41, &creator_list),
+        owner.shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid.clone(),
+            41,
+            &creator_list,
+            crate::memory::allocate_shared_memory
+        ),
         Err(IpcError::NoSpace)
     ));
     assert_eq!(owner.shared_memory_info().1, [2, 0, 0]);
     drop(reservation);
     let next = owner
-        .shared_memory_get(0, 1, 0o600, &access, pid.clone(), 42, &creator_list)
+        .shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid.clone(),
+            42,
+            &creator_list,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     owner
         .set_shared_memory_limit(ipc::SharedMemoryLimit::Segments, 0, &access.authority)
         .unwrap();
     assert!(matches!(
-        owner.shared_memory_get(0, 1, 0o600, &access, pid.clone(), 43, &creator_list),
+        owner.shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid.clone(),
+            43,
+            &creator_list,
+            crate::memory::allocate_shared_memory
+        ),
         Err(IpcError::NoSpace)
     ));
     owner.shared_memory_remove(next, &access).unwrap();
@@ -266,10 +334,28 @@ fn forced_removal_uses_real_creator_retirement_instead_of_pid_observer_lifetime(
     let creator_observer = creator.clone();
     let (pid, _registration) = pid();
     let unused = owner
-        .shared_memory_get(91, 1, IPC_CREAT | 0o600, &access, pid.clone(), 50, &creator)
+        .shared_memory_get(
+            91,
+            1,
+            IPC_CREAT | 0o600,
+            &access,
+            pid.clone(),
+            50,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let attached = owner
-        .shared_memory_get(92, 1, IPC_CREAT | 0o600, &access, pid.clone(), 51, &creator)
+        .shared_memory_get(
+            92,
+            1,
+            IPC_CREAT | 0o600,
+            &access,
+            pid.clone(),
+            51,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let reservation = owner
         .shared_memory_prepare_attach(attached, 4, &access)
@@ -316,7 +402,16 @@ fn enabling_forced_removal_drains_previously_orphaned_segments_and_namespace_dro
     let creator = ipc::SharedMemoryCreatorList::new().unwrap();
     let (pid, _registration) = pid();
     let id = owner
-        .shared_memory_get(0, 1, 0o600, &access, pid.clone(), 60, &creator)
+        .shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid.clone(),
+            60,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     creator.retire();
     assert!(
@@ -334,7 +429,16 @@ fn enabling_forced_removal_drains_previously_orphaned_segments_and_namespace_dro
     let second = IpcNamespace::create(namespace::boot(), 0).unwrap();
     let live_creator = ipc::SharedMemoryCreatorList::new().unwrap();
     second
-        .shared_memory_get(0, 1, 0o600, &access, pid, 61, &live_creator)
+        .shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid,
+            61,
+            &live_creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     drop(second);
     // Namespace teardown 必须撤销 clist 节点；没有段时 live creator 的冷 Drop 可直接归还 Arc。
@@ -348,10 +452,28 @@ fn shm_lock_charges_real_uid_once_and_unlock_and_destroy_return_original_charge(
     let creator = ipc::SharedMemoryCreatorList::new().unwrap();
     let (pid, _registration) = pid();
     let first = owner
-        .shared_memory_get(0, 8192, 0o600, &access, pid.clone(), 70, &creator)
+        .shared_memory_get(
+            0,
+            8192,
+            0o600,
+            &access,
+            pid.clone(),
+            70,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let second = owner
-        .shared_memory_get(0, 4096, 0o600, &access, pid.clone(), 71, &creator)
+        .shared_memory_get(
+            0,
+            4096,
+            0o600,
+            &access,
+            pid.clone(),
+            71,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     owner
         .shared_memory_lock(first, true, &access, 591201, || 8192)
@@ -396,7 +518,16 @@ fn shm_lock_reads_current_rlimit_after_policy_wait_and_rolls_back_failed_admissi
     let creator = ipc::SharedMemoryCreatorList::new().unwrap();
     let (pid, _registration) = pid();
     let id = owner
-        .shared_memory_get(0, 1, 0o600, &access, pid, 80, &creator)
+        .shared_memory_get(
+            0,
+            1,
+            0o600,
+            &access,
+            pid,
+            80,
+            &creator,
+            crate::memory::allocate_shared_memory,
+        )
         .unwrap();
     let reads = core::cell::Cell::new(0);
     let result = owner.shared_memory_lock(id, true, &access, 591203, || {

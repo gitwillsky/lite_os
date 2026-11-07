@@ -10,6 +10,11 @@ impl ProcText {
         Self(Vec::new())
     }
 
+    /// 当前编码长度，供固定列宽投影使用；不额外分配每行缓冲。
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// 原生接口名是字节序列；不把合法非 UTF-8 名称替换或遗漏。
     pub(super) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), FileSystemError> {
         self.0

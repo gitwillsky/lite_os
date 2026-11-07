@@ -59,7 +59,10 @@ fn measure(sources: &[SourceFile]) -> Result<BlockCompletionContract, String> {
         .ok_or_else(|| format!("{SOURCE}: missing reclaim_completions"))?;
     let text = method.block.to_token_stream().to_string();
     let length_policy = text.find("completion_length_is_valid");
-    let status_read = text.find("decode_status");
+    let status_read = [text.find("read_volatile"), text.find("decode_status")]
+        .into_iter()
+        .flatten()
+        .min();
     let recycle = text.find("recycle_used");
     let accept = text.find("accept_completion");
     Ok(BlockCompletionContract {

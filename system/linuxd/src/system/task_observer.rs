@@ -103,6 +103,9 @@ fn record(process: &Process) -> Record {
         koid: koid(process),
         cpu_ns: UNAVAILABLE,
         resident_bytes: UNAVAILABLE,
+        private_bytes: UNAVAILABLE,
+        shared_bytes: UNAVAILABLE,
+        pss_bytes: UNAVAILABLE,
         mapped_bytes: UNAVAILABLE,
         threads: UNAVAILABLE,
         state: 2,
@@ -117,6 +120,9 @@ fn record(process: &Process) -> Record {
     }
     if let Ok(stats) = process.stats() {
         record.resident_bytes = stats.resident_bytes;
+        record.private_bytes = stats.private_bytes;
+        record.shared_bytes = stats.shared_bytes;
+        record.pss_bytes = stats.private_bytes + stats.scaled_shared_bytes;
         record.mapped_bytes = stats.mapped_bytes;
         record.threads = stats.threads;
     }

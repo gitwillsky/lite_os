@@ -337,7 +337,11 @@ impl VirtIOGpuDevice {
             let response = slot.response.writable_all();
             match data {
                 Some((backing, length)) => queue
-                    .add_dma(&[request, DmaSlice::backing(backing, length).ok()?, response])
+                    .add_dma(&[
+                        request,
+                        DmaSlice::backing(backing, 0..length, false).ok()?,
+                        response,
+                    ])
                     .ok()?,
                 None => queue.add_dma(&[request, response]).ok()?,
             }

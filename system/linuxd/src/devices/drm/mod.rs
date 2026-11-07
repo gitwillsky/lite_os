@@ -581,7 +581,7 @@ impl DrmFile {
         }
         let mut source =
             DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory)?;
-        source.retain_object(prime::DmaBuf::from_buffer(
+        source.retain_buffer(prime::DmaBuf::from_buffer(
             &self.device,
             buffer.buffer.clone(),
         )?);

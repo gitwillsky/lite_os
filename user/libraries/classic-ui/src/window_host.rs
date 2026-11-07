@@ -1,4 +1,4 @@
-//! 窗口级共同 owner：装饰、绘图存储与未提交失效，协议状态仍只属于 Display。
+//! 窗口级共同 owner：装饰与未提交失效，协议状态与绘图存储（共享缓冲）仍只属于 Display。
 use crate::{
     Configuration, Decoration, DecorationAction, Display, Event, EventKind, FrameKind, Painter,
     Resources, WindowId,
@@ -15,7 +15,6 @@ pub struct HostEvent {
 pub struct WindowHost {
     window: WindowId,
     decoration: Decoration,
-    pixels: Vec<u32>,
     dirty: bool,
     resource_generation: u64,
 }
@@ -25,7 +24,6 @@ impl WindowHost {
         Self {
             window,
             decoration: Decoration::new(kind),
-            pixels: Vec::new(),
             dirty: true,
             resource_generation: 0,
         }
@@ -107,6 +105,9 @@ impl WindowHost {
     }
     /// 在需要且允许提交时绘制完整窗口；draw 只负责客户区，尺寸为逻辑像素。
     ///
+    /// 直接在已释放的共享缓冲中整幅重绘，没有窗口私有画布：最大化窗口的绘图内存只有共享缓冲本身。
+    /// 损伤由 Display 对上一次提交画面的分块哈希比较得出，所以未变化的区域不会重复合成。
+    ///
     /// 返回 true 表示完成提交，false 表示无失效或等待配置/callback/缓冲。
     /// 字体、绘制与 I/O 错误保留失效并返回 Err；不执行应用事件回调。
     pub fn paint(
@@ -123,26 +124,23 @@ impl WindowHost {
         let Some(configuration) = display.configuration(self.window) else {
             return Ok(false);
         };
-        let (width, height) = configuration.pixel_size()?;
         let font = resources.fonts(configuration.scale)?;
-        let pixel_count = width as usize * height as usize;
-        // 拖动时保留容量供下一次 configure 复用。尺寸稳定后丢掉超出的画布，
-        // 否则从最大化恢复或缩小窗口后，绘制内存仍会停留在历史峰值。
-        if !configuration.resizing && self.pixels.capacity() > pixel_count {
-            self.pixels = Vec::new();
-        }
-        self.pixels.resize(pixel_count, 0);
-        let surface = Surface::new(&mut self.pixels, width, height, width as usize)
-            .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;
-        let mut painter = Painter::new(surface, resources.theme(), &font, configuration.scale);
-        let client = self.decoration.paint(&mut painter, configuration, title);
-        painter.fill(client, SystemColor::ButtonFace);
-        let mut result = Ok(());
-        painter.clipped(client, |painter| {
-            result = draw(painter, client, configuration, display)
+        let theme = resources.theme();
+        let decoration = &self.decoration;
+        let result = display.render_frame(self.window, |pixels, configuration, display| {
+            let (width, height) = configuration.pixel_size()?;
+            let surface = Surface::new(pixels, width, height, width as usize)
+                .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;
+            let mut painter = Painter::new(surface, theme, &font, configuration.scale);
+            let client = decoration.paint(&mut painter, configuration, title);
+            painter.fill(client, SystemColor::ButtonFace);
+            let mut result = Ok(());
+            painter.clipped(client, |painter| {
+                result = draw(painter, client, configuration, display)
+            });
+            result
         });
-        result?;
-        match display.present(self.window, &self.pixels) {
+        match result {
             Ok(()) => {
                 self.dirty = false;
                 self.resource_generation = resources.generation();

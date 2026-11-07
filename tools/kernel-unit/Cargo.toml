@@ -7,6 +7,7 @@ edition = "2024"
 native-abi = { path = "../../abi/native-abi" }
 mmio = { path = "../../libraries/mmio" }
 native-runtime = { path = "../../system/native-runtime" }
+span-heap = { path = "../../libraries/span-heap" }
 device-model = { path = "../../system/device-model" }
 device-protocol = { path = "../../system/device-protocol" }
 network-protocol = { path = "../../system/network-protocol" }

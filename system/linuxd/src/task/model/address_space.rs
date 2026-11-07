@@ -62,6 +62,14 @@ impl AddressSpace {
             .map_err(|_| UserAccessError::OutOfMemory)
     }
 
+    /// 在 MM 锁内保活有序 VMA 快照；文件路径及属性查询必须在该锁外进行。
+    pub(in crate::task) fn mapping_snapshot(
+        &self,
+        detailed: bool,
+    ) -> Result<Vec<crate::memory::MappingSnapshot>, MemoryError> {
+        self.lock()?.mapping_snapshot(detailed)
+    }
+
     /// 承载本地址空间的成员进程。
     pub(in crate::task) fn process(&self) -> &Arc<native_runtime::Process> {
         &self.process
@@ -127,7 +135,7 @@ impl AddressSpace {
     }
 
     pub(super) fn page_statistics(&self) -> Result<crate::memory::UserPageStatistics, MemoryError> {
-        Ok(self.lock()?.user_page_statistics())
+        self.lock()?.user_page_statistics()
     }
 
     pub(super) fn classify_mapped_memory(

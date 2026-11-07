@@ -106,6 +106,10 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
   只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
   只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
+- fault-around（`AddressSpace::fault_around`）必须在持有 VMO 树锁时安装：回收的 zap 与安装由树锁串行，释放锁后再装会留下
+  指向已退休页框的悬空翻译。它只装入 pager 支撑且已驻留的页，一律去掉写权限，不覆盖已有翻译；树锁/地址空间锁忙、
+  页表分配失败都放弃，缺失窗口裁剪时翻译会越过映射边界。Benchmark 决策：仅在读/执行缺页成功后多一次 try-lock，
+  不改变 PTE/TLBI 的 static/disassembly gate；收益用基线 6 诊断。
 - FaultSource 是单次解析结果：是否等待过 pager，不能作为持久 residency cache。只有成功安装翻译并完成 fence
   的 restricted fault 才进入线程统计。normal mode 服务缺页和失败解析不混入该计数。
 - restricted fault/pager-wait 计数与既有线程状态同锁更新，无新锁、分配或页级影子索引；native runtime
@@ -138,12 +142,21 @@ writeback begin 先写保护全部别名并完成 fence，再清脏；失败保�
 
 ## 观测口径
 
-原生 `TASK_STATS` 的 mapped bytes 是映射范围之和；resident bytes 是这些范围已有 RAM backing 的字节和，
-包含 COW 祖先和 slice，排除 MMIO 物理 VMO。不同虚拟映射可引用同一物理页，故它不是 PSS，不可跨进程相加。
-地址空间先复制 Mapping 引用并释放空间锁，再按 VMO 树锁查询 backing，保持 tree → address-space 的锁序；
-统计不会 fault-in、等待 pager 或提交页面。稀疏 VMO 按实际 committed entries 合并可见区间，不扫描整个虚拟范围。
-分配失败向调用者返回错误，不能把未知驻留量报告为零。
+原生 `TASK_STATS` 的 mapped bytes 是进程自身 VMAR 的映射字节和；resident bytes 是实际 RAM 用户翻译之和，
+不含 MMIO。private/shared 按同一物理页的逻辑虚拟映射次数区分，不按共享映射策略、句柄或 Arc 引用数判断。
+scaled shared 逐页除以映射次数，累加 12 位小数后取整；它与 private 之和为 PSS。不同虚拟别名分别计数，
+normal/private 的硬件镜像不重复计数；成员的共享服务区归实际共享 owner，不再重复进入每个成员的统计。
 
+`VMAR_RESIDENCY` 返回实际 RAM 驻留区间与内容来源，供轻量 RSS 使用；`VMAR_MAPPING_STATS` 另外查询共享次数，
+返回同一归属的驻留区间及每页定点分摊值。区间可在任意页边界拆分，不能把一个映射的平均占用分配到未驻留部分。
+两者均要求 INSPECT，不向调用者暴露物理地址，不 fault-in、等待 pager 或提交页面。VMAR 退休返回错误，分配失败向调用者传播，
+不能把未知驻留量报告为零或整个虚拟区间。
+
+地址空间先复制 Mapping 引用并释放空间锁，再按 VMO 树锁 → 地址空间锁观察翻译。`vmo::attribution` 每次查询按树构造
+临时物理页索引，扫描已有映射登记并排序、二分计数；不新增全局页索引、页热路径 mapcount、锁或原子更新。
+树锁保活页框，空间锁保护 live 与页表读取；跨空间 publication/munmap 仍可变化，因此是瞬时观测，不声明全系统原子快照。
+共享服务区在 owner 与其成员 normal 根中取翻译并集，同一逻辑映射的硬件副本去重。
+页内容来源由真实 Page owner 给出，沿 COW/slice 偏移与继承上限解析；页表的缺失页不会因 backing 已提交而被计入。
 
 `vmo::creation` 集中构造 VMO 与树；发布 Arc 前登记连续页，构造失败与正常析构共用同一释放路径。
 
@@ -168,4 +181,41 @@ linuxd 的 `/proc/meminfo` Cached 投影全系统 pager 驻留页（包含 tmpfs
 `/proc/vmstat` nr_dirty 只投影其中的存储写回计数，
 覆盖 ext4 等独立内容服务；MemAvailable 只加干净且未固定的可淘汰子集，并限制在 MemTotal 内。
 删除 linuxd 局部缓存扫描，避免漏计远端文件页和把查询失败当作零。此物理分类不是进程 RSS/PSS：
-TASK_STATS 仍遵循上述 backing 口径，不能由这些分类反推某个进程的实际页表驻留。
+TASK_STATS 使用实际用户翻译，不能由物理内容总数反推某个进程的实际驻留。
+
+
+## 进程映射观察
+
+linuxd 的 `MemorySet::mapping_snapshot` 只在所属 MM 锁内复制有序 `MappingSnapshot`（标量与提供者 Arc）；
+不能克隆 Area/Backing：SysV membership 的 clone/drop 会修改 nattch、操作时间和最后操作者。task 在锁外转换
+`ProcMapping`，FS 只负责 maps codec 和实际路径投影。快照不是第二份可修改 VMA 索引，不触发内容页缺页。
+设备映射分别持有实际文件租约与可选缓冲租约，不用 Vec 混存两种 owner；mmap 入口设置文件身份，设备提供者
+设置缓冲寿命；设备文件偏移来自 mmap 输入，独立于 backing 内部偏移，split 按窗口内位移投影。
+fork/split 和只读描述都只克隆 Arc，不分配 owner 列表。文件 mapping 由真实 `OpenedFile` 建立，
+与原 backend/打开租约一起保活；mmap、ELF source、FUSE passthrough 共用该入口，不从 inode 号、VMO koid 或名称猜路径。内存层只持 `SharedFileMapping`，FS 在自己的 adapter 中
+恢复实际打开身份，保留 memory → FS 的依赖边界；重命名/删除与挂载视图由已有路径 owner 投影。
+
+`ProcSource::open_memory_maps` 在目标 exec credential guard 下捕获并授权实际 MM； READ_FSCREDS 沿用
+commoncap 与 UserNS 规则，同一 MM 可读，初始域 PERFMON/SYS_ADMIN 遵循固定 Linux `may_access_mm`。
+成功 open 仅保存 Weak MM（mmgrab），每次读取 upgrade 临时取得 MM user（mmget_not_zero）；最后 user 退出
+返回 EOF，exec 不把旧 fd 重定向到新映像。PID 查找、MM 锁、FS 属性/路径查询和 user-copy 不交叉持锁。
+该观察接口只走标准 procfs，没有新增应用 ABI 或 syscall；普通数据访问与缺页路径不增加锁或分配。
+
+
+共享匿名 mmap 在破坏 MAP_FIXED 旧映射前准备真实 `/dev/zero (deleted)` 文件与原匿名 VMO；文件长度取页对齐的
+映射长度。SysV backing 在 IPC registry guard 外由调用方工厂一次准备匿名 MemoryObject 与真实内部 tmpfs 文件，
+`SharedMemoryBacking` 同时保活它们；文件 inode 只持同一 MemoryObject，不反向持 backing、segment 或 namespace。
+segment/VMA 退休后，单独存在的文件观察引用不阻止 nattch 归零，也不使 shmid/key 继续存在；该 inode/VMO 可以
+随文件引用独立退休。文件与 IPC 权限各有 owner，文件名使用创建时的 key，不随 RMID 的 key 撤销改写。
+
+`DataBacking::SharedVmo` 与 `page_cache::vmo_file` 统一消费 inode 外部 owner 导出的内容，覆盖 ext4 RemoteFs
+与 SysV 文件；不增加本地缓存、不增加第二个 VMO、不把 SysV 页改为 pager 页，也不改变 SHM_LOCK 的既有语义。
+共享匿名与 SysV maps 描述只复制文件身份 Arc 与映射偏移，不克隆附加 membership。普通文件、设备和 SysV 的路径均由真实
+OpenedFile 投影，绝不以 shmid/koid 冒充 inode。
+
+linuxd 的 maps/smaps/smaps_rollup 共用同一 READ_FSCREDS 授权与 Weak MM 观察引用。详细统计在 MM 锁内取得 VMA 与原生驻留区间，
+按真实交集累加，不要求 Linux VMA 与内核 Mapping 边界完全相同（命名等操作可只拆分 VMA）。匿名提交/COW、文件页、
+无存储 pager、共享匿名与 SysV 的分类由真实 backing/provider 提供；statm shared 是文件与共享内存 RSS，非物理共享次数。
+每次实际 open 保留一个文本快照，reader TaskMutex 串行读/定位；offset 0 刷新，后续分段读取不重扫或拼接不同快照。
+快照只保留文本，不延长 MM、TCB、SysV membership 或内容租约寿命；失败不发布部分文本。
+Dirty 沿页 owner 的保留/回写状态投影，不把共享映射的可写权限当成脏页；不可变 bootfs 为 clean。

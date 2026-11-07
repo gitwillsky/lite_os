@@ -3,6 +3,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::{BlockDevice, BlockError};
+use device_model::{BlockBuffer, BlockOperation, BlockRequest};
+use native_runtime::Vmo;
 
 /// 整盘中 `[first_block, first_block + blocks)` 的视图；块号在分区内从零起算。
 ///
@@ -30,11 +32,17 @@ impl PartitionDevice {
         }
     }
 
-    fn translate(&self, block_id: usize) -> Result<usize, BlockError> {
-        if block_id >= self.blocks {
+    fn translate(&self, block_id: usize, count: usize) -> Result<usize, BlockError> {
+        if count == 0
+            || block_id
+                .checked_add(count)
+                .is_none_or(|end| end > self.blocks)
+        {
             return Err(BlockError::InvalidBlock);
         }
-        Ok(self.first_block + block_id)
+        self.first_block
+            .checked_add(block_id)
+            .ok_or(BlockError::InvalidBlock)
     }
 }
 
@@ -43,12 +51,80 @@ impl BlockDevice for PartitionDevice {
         &self.name
     }
 
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
-        self.parent.read_block(self.translate(block_id)?, buf)
+    fn attach_buffer(&self, vmo: Vmo) -> Result<Arc<dyn BlockBuffer>, BlockError> {
+        self.parent.attach_buffer(vmo)
+    }
+    fn transfer(
+        &self,
+        operation: BlockOperation,
+        first: u64,
+        count: usize,
+        buffer: &dyn BlockBuffer,
+        offset: u64,
+    ) -> Result<(), BlockError> {
+        let first = self.translate(
+            usize::try_from(first).map_err(|_| BlockError::InvalidBlock)?,
+            count,
+        )?;
+        self.parent
+            .transfer(operation, first as u64, count, buffer, offset)
+    }
+    fn transfer_batch(&self, requests: &[BlockRequest<'_>]) -> Result<(), BlockError> {
+        let mut translated: Vec<BlockRequest<'_>> = Vec::new();
+        translated
+            .try_reserve_exact(requests.len())
+            .map_err(|_| BlockError::OutOfMemory)?;
+        for request in requests {
+            let first = self.translate(
+                usize::try_from(request.first_block).map_err(|_| BlockError::InvalidBlock)?,
+                request.blocks,
+            )?;
+            translated.push(BlockRequest {
+                first_block: first as u64,
+                ..*request
+            });
+        }
+        self.parent.transfer_batch(&translated)
+    }
+    fn read_block_ranges(&self, ranges: &mut [(usize, &mut [u8])]) -> Result<(), BlockError> {
+        let block_size = self.block_size();
+        let mut translated: Vec<(usize, &mut [u8])> = Vec::new();
+        translated
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| BlockError::OutOfMemory)?;
+        for (first, output) in ranges.iter_mut() {
+            if !output.len().is_multiple_of(block_size) {
+                return Err(BlockError::InvalidBlock);
+            }
+            translated.push((self.translate(*first, output.len() / block_size)?, &mut **output));
+        }
+        self.parent.read_block_ranges(&mut translated)
+    }
+    fn max_transfer_blocks(&self) -> usize {
+        self.parent.max_transfer_blocks()
+    }
+    fn queue_depth(&self) -> usize {
+        self.parent.queue_depth()
     }
 
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
-        self.parent.write_block(self.translate(block_id)?, buf)
+    fn read_blocks(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        if !buf.len().is_multiple_of(self.block_size()) {
+            return Err(BlockError::InvalidBlock);
+        }
+        self.parent.read_blocks(
+            self.translate(block_id, buf.len() / self.block_size())?,
+            buf,
+        )
+    }
+
+    fn write_blocks(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+        if !buf.len().is_multiple_of(self.block_size()) {
+            return Err(BlockError::InvalidBlock);
+        }
+        self.parent.write_blocks(
+            self.translate(block_id, buf.len() / self.block_size())?,
+            buf,
+        )
     }
 
     fn flush(&self) -> Result<(), BlockError> {
@@ -66,10 +142,12 @@ impl BlockDevice for PartitionDevice {
     /// 分区内区间平移到整盘块号后由整盘共享；越出分区返回 `None`。
     fn share_range(&self, first_block: u64, block_count: u64) -> Option<native_runtime::Handle> {
         let end = first_block.checked_add(block_count)?;
-        if end > self.blocks as u64 {
+        if block_count == 0 || end > self.blocks as u64 {
             return None;
         }
-        self.parent
-            .share_range(self.first_block as u64 + first_block, block_count)
+        self.parent.share_range(
+            (self.first_block as u64).checked_add(first_block)?,
+            block_count,
+        )
     }
 }

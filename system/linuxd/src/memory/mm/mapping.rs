@@ -83,8 +83,9 @@ impl MemorySet {
                 offset: 0,
                 role: AnonymousRole::Plain,
             },
-            UserMappingSource::SharedAnonymous => Backing::SharedAnonymous {
-                object: MemoryObject::anonymous(length, true)?,
+            UserMappingSource::SharedAnonymous { object, file } => Backing::SharedAnonymous {
+                object,
+                file,
                 offset: 0,
             },
             UserMappingSource::PrivateFile(source) => {

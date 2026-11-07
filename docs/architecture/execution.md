@@ -18,6 +18,11 @@
 
 - hardirq 只确认硬件并发布有界内核工作；software IRQ 先 ack，再完成 barrier/TLB rendezvous。kernel trap 不重入普通领域锁。
 - `execution::deferred` 的 per-CPU bitmap 只在空→非空时发一个软件中断；重复发布合并 bit。内核 consumer 在 user-return/IRQ-closed idle safe point 执行。
+- 截止时间等待由每 CPU 定时队列持有（等待者入队到当前 CPU，令牌记录所属 CPU 供跨 CPU 取消）。每个 CPU 的硬件 deadline 是
+  三个来源的最小值：运行线程时的 100 Hz 调度 tick、本 CPU 队首等待者、boot CPU 的 1 s housekeeping（崩溃看门狗与 deferred 进度）。
+  到期精确到队首截止时间，不再等下一个 tick。空闲时调度 tick 停止；没有任何来源的 CPU 关闭 timer source。
+  只含到期等待者的中断发布 `TIMER_BACKLOG`，不触发调度计费。当前限制：忙碌 CPU 仍以 100 Hz tick 做计费与时间片轮转，
+  尚未改为 slice 截止与 trap/切换边界记账。
 - `LocalIrqGuard`/`IrqMutex` 维护本地嵌套；guard 不可跨 CPU，锁内不得阻塞或等待远端 fence。
 - native idle 在关中断窗口复查 deferred/mailbox/runqueue 后进入架构 guarded WFI。enable→WFI 间已经确认的中断由精确 PC/resume seam 跳过 WFI，避免丢失一次性唤醒。
 - outgoing 线程在汇编保存上下文前只进入 pending handoff；next/idle continuation 在保存后提交 Blocked/Ready 后果。Ready 的发布与退休均须消费线性 projection token。

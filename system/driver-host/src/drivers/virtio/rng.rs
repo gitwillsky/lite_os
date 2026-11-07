@@ -15,8 +15,8 @@ use super::{
 use crate::io_completion::{
     self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget,
     request_owner::{
-        CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
-        ReserveOrWait,
+        CapacityWake, CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner,
+        RequestOwnerError, ReserveOrWait,
     },
 };
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
@@ -119,18 +119,29 @@ impl VirtIORngDevice {
         Some(adapter)
     }
 
+    fn wake_capacity(&self, wake: Option<CapacityWake>) {
+        CapacityWake::drain(wake, || {
+            let mut owner = self.queue.lock();
+            if owner.failed {
+                None
+            } else {
+                owner.requests.handoff_next()
+            }
+        });
+    }
+
     fn wait_for_capacity(&self) -> Result<RequestIdentity, ()> {
         let key = {
             let mut owner = self.queue.lock();
             if owner.failed {
                 return Err(());
             }
-            match owner.requests.reserve_or_wait() {
+            match owner.requests.reserve_or_wait(1) {
                 ReserveOrWait::Reserved(identity) => return Ok(identity),
                 ReserveOrWait::Prepare(ticket) => owner.requests.capacity_key(ticket),
             }
         };
-        let prepared = PreparedCapacityWait::try_new(key, io_completion::current_wait_target())
+        let prepared = PreparedCapacityWait::try_new(key, 1, io_completion::current_wait_target())
             .map_err(|_| ())?;
         let waiter = {
             let mut owner = self.queue.lock();
@@ -172,9 +183,7 @@ impl VirtIORngDevice {
                 let wake = owner.requests.release_and_handoff(identity);
                 drop(data);
                 drop(owner);
-                if let Some(wake) = wake {
-                    wake.wake();
-                }
+                self.wake_capacity(wake);
                 return Err(());
             }
         };
@@ -224,9 +233,7 @@ impl VirtIORngDevice {
         };
         drop(data);
         drop(owner);
-        if let Some(wake) = wake {
-            wake.wake();
-        }
+        self.wake_capacity(wake);
         result
     }
 
@@ -332,6 +339,9 @@ impl VirtIORngDevice {
                 false
             } else {
                 owner.failed = true;
+                self.device
+                    .reset()
+                    .expect("entropy reset must revoke DMA before failure publication");
                 while let Some(identity) = owner.requests.pop_outstanding() {
                     let slot = &self.slots[identity.slot as usize];
                     let mut data = slot.data.lock();
@@ -355,8 +365,6 @@ impl VirtIORngDevice {
             }
         };
         if first_failure {
-            // Reset revokes every device-writable descriptor before DMA owners can be released.
-            let _ = self.device.reset();
             for (waiter, request) in wakes.into_iter().flatten() {
                 waiter.wake(request);
             }
@@ -405,7 +413,9 @@ impl CompletionSource for VirtIORngDevice {
 impl Drop for VirtIORngDevice {
     fn drop(&mut self) {
         // Reset is the DMA revocation barrier required before fixed uninitialized buffers drop.
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("device must stop DMA before adapter destruction");
     }
 }
 

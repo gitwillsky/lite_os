@@ -11,21 +11,53 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use native_runtime::native_abi::{self, rights};
+use native_runtime::sync::Mutex;
 use native_runtime::{Pager, Vmo};
-use pager_pool::PageSource;
+use pager_pool::{PageSource, SUPPLY_BYTES, SupplyBuffer};
 
 use crate::ext4::Ext4Inode;
 use crate::vfs::{FileSystemError, WritePolicy};
 
 const PAGE: u64 = native_abi::PAGE_SIZE as u64;
-/// 一次补页与回写的页数上界，避免单个请求占用无界缓冲。
-const BATCH_PAGES: u64 = 32;
+/// 一次补页与回写的页数上界，避免单个请求占用无界缓冲；补页不超过 [`SupplyBuffer`] 容量。
+const BATCH_PAGES: u64 = (SUPPLY_BYTES / native_abi::PAGE_SIZE) as u64;
+/// 预读窗口起步与上限（字节）。上限限制单个文件对页缓存的瞬时占用与一次请求的延迟。
+const READAHEAD_INITIAL: u64 = 8 * PAGE;
+const READAHEAD_MAX: u64 = 128 * PAGE;
+
+/// 每文件的顺序访问状态。
+///
+/// `next` 是最近一次补页范围的结尾；缺页恰好落在它上面（或从文件头开始）视为顺序访问，窗口倍增；
+/// 否则关闭预读，只补请求的页。缺少该状态时每个缺页只读一页，顺序读文件退化为逐页存储往返。
+struct Readahead {
+    next: u64,
+    window: u64,
+}
+
+impl Readahead {
+    /// 返回这次缺页应补入的字节数（不小于 `length`），并推进状态。
+    fn span(&mut self, offset: u64, length: u64) -> u64 {
+        self.window = if offset == self.next || offset == 0 {
+            if self.window == 0 {
+                READAHEAD_INITIAL
+            } else {
+                (self.window * 2).min(READAHEAD_MAX)
+            }
+        } else {
+            0
+        };
+        let span = length.max(self.window);
+        self.next = offset + span;
+        span
+    }
+}
 
 /// 一个普通文件的内容 VMO。
 pub(crate) struct Content {
     inode: Arc<Ext4Inode>,
     vmo: Vmo,
     key: u64,
+    readahead: Mutex<Readahead>,
 }
 
 fn vmo_error(status: native_abi::Status) -> FileSystemError {
@@ -45,7 +77,13 @@ impl Content {
     pub(crate) fn new(inode: Arc<Ext4Inode>) -> Result<Arc<Self>, FileSystemError> {
         let (vmo, key) = pager_pool::create_vmo(inode.size(), 0).map_err(vmo_error)?;
         let content =
-            Arc::try_new(Self { inode, vmo, key }).map_err(|_| FileSystemError::OutOfMemory)?;
+            Arc::try_new(Self {
+            inode,
+            vmo,
+            key,
+            readahead: Mutex::new(Readahead { next: 0, window: 0 }),
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
         let source: Arc<dyn PageSource> = content.clone();
         pager_pool::register(key, Arc::downgrade(&source)).map_err(vmo_error)?;
         Ok(content)
@@ -181,16 +219,30 @@ impl Drop for Content {
 }
 
 impl PageSource for Content {
-    fn page_request(&self, pager: &Pager, offset: u64, length: u64, aux: &mut Option<Vmo>) {
-        let end = offset + length;
+    fn page_request(
+        &self,
+        pager: &Pager,
+        offset: u64,
+        length: u64,
+        buffer: &mut Option<SupplyBuffer>,
+    ) {
+        let requested_end = offset + length;
+        // 预读不越过 EOF 所在页：VMO 大小即文件大小向上取整，范围外的页无法补入。
+        let limit = self.inode.size().next_multiple_of(PAGE);
+        let span = self.readahead.lock().span(offset, length);
+        let end = requested_end.max((offset + span).min(limit));
         let mut cursor = offset;
         while cursor < end {
             let pages = ((end - cursor) / PAGE).min(BATCH_PAGES);
             let chunk = pages * PAGE;
-            if self.supply(pager, cursor, chunk, aux).is_err() {
+            if self.supply(pager, cursor, chunk, buffer).is_err() {
                 pager
                     .op(native_abi::pager::OP_FAIL, &self.vmo, cursor, chunk)
                     .expect("failed storage read must retire its pager request");
+                if cursor + chunk >= requested_end {
+                    // 其后只剩预读：没有等待者，失败不再重试。
+                    break;
+                }
             }
             cursor += chunk;
         }
@@ -204,31 +256,24 @@ impl Content {
         pager: &Pager,
         offset: u64,
         length: u64,
-        aux: &mut Option<Vmo>,
+        buffer: &mut Option<SupplyBuffer>,
     ) -> Result<(), FileSystemError> {
         let length = length as usize;
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(length)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        buffer.resize(length, 0);
+        let buffer = SupplyBuffer::acquire(buffer).map_err(vmo_error)?;
+        let bytes = buffer.bytes(length);
         let size = self.inode.size();
-        if offset < size {
-            let valid = ((size - offset) as usize).min(length);
-            if self.inode.read_storage(offset, &mut buffer[..valid])? != valid {
-                return Err(FileSystemError::IoError);
-            }
+        let valid = if offset < size {
+            ((size - offset) as usize).min(length)
+        } else {
+            0
+        };
+        if valid != 0 && self.inode.read_storage(offset, &mut bytes[..valid])? != valid {
+            return Err(FileSystemError::IoError);
         }
-        if aux
-            .as_ref()
-            .is_none_or(|vmo| vmo.size().unwrap_or(0) < length as u64)
-        {
-            *aux = Some(Vmo::create(BATCH_PAGES * PAGE, 0).map_err(vmo_error)?);
-        }
-        let aux = aux.as_ref().expect("auxiliary VMO created above");
-        aux.write(&buffer, 0).map_err(vmo_error)?;
-        pager
-            .supply_pages(&self.vmo, offset, length as u64, aux, 0)
+        // 暂存区复用：EOF 之后的字节必须显式清零，不能留下上一次请求的内容。
+        bytes[valid..].fill(0);
+        buffer
+            .supply(pager, &self.vmo, offset, length as u64)
             .map_err(vmo_error)
     }
 }

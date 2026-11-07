@@ -29,7 +29,7 @@ use super::pager;
 mod registry;
 mod regular_file;
 mod regular_write;
-mod remote_file;
+mod vmo_file;
 mod writeback;
 mod writeback_batch;
 
@@ -60,7 +60,7 @@ impl core::fmt::Debug for CachedFile {
     }
 }
 
-fn status_error(status: native_runtime::native_abi::Status) -> FileSystemError {
+pub(in crate::fs) fn status_error(status: native_runtime::native_abi::Status) -> FileSystemError {
     match status {
         native_runtime::native_abi::ERR_NO_MEMORY => FileSystemError::OutOfMemory,
         _ => FileSystemError::IoError,
@@ -177,7 +177,7 @@ pub(crate) enum RegularFileWrite<'a> {
     Cached(CachedWrite<'a>),
     Direct(DirectWrite<'a>),
     Memory(MemoryInodeWrite<'a>),
-    Remote(remote_file::RemoteWrite<'a>),
+    SharedVmo(vmo_file::VmoWrite<'a>),
 }
 
 /// 同一缓存写串行化下的 per-open 直接写（FUSE direct_io）。
@@ -206,24 +206,26 @@ pub(crate) struct MemoryInodeWrite<'a> {
 ///
 /// 非 regular file 或快照文件返回 `InvalidOperation`；分配失败返回 `OutOfMemory`。
 pub(crate) fn mapping(
-    inode: Arc<dyn Inode>,
+    opened: Arc<super::OpenedFile>,
     owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
     may_write: bool,
     shared: bool,
     write: bool,
 ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
+    let inode = opened.inode();
     if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Err(FileSystemError::InvalidOperation);
     }
     let inner: Arc<dyn SharedFileMapping> = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         DataBacking::Memory(file) => file.mapping(shared, may_write, write)?,
-        DataBacking::Remote => remote_file::remote_file(inode)?,
+        DataBacking::SharedVmo => vmo_file::vmo_file(inode)?,
         DataBacking::Snapshot => return Err(FileSystemError::InvalidOperation),
     };
     Arc::try_new(MappedFile {
         inner,
         _owner: owner,
+        opened,
         may_write,
     })
     .map(|mapping| mapping as Arc<dyn SharedFileMapping>)
@@ -233,7 +235,23 @@ pub(crate) fn mapping(
 struct MappedFile {
     inner: Arc<dyn SharedFileMapping>,
     _owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
+    // OWNER: 同一个真实打开路径；mmap 不能只留下 inode/cache key，否则无法投影 rename/unlink。
+    opened: Arc<super::OpenedFile>,
     may_write: bool,
+}
+
+/// 读取本文件映射保活的真实打开路径；不按 inode、缓存键或 VMO 名反查。
+///
+/// # Errors
+/// 非文件系统创建的 mapping 返回 InvalidOperation，不能伪造文件身份。
+pub(crate) fn mapping_file(
+    mapping: &dyn SharedFileMapping,
+) -> Result<Arc<super::OpenedFile>, FileSystemError> {
+    let source: &dyn core::any::Any = mapping;
+    source
+        .downcast_ref::<MappedFile>()
+        .map(|file| file.opened.clone())
+        .ok_or(FileSystemError::InvalidOperation)
 }
 
 impl core::fmt::Debug for MappedFile {
@@ -277,9 +295,9 @@ pub(crate) fn truncate(
         DataBacking::Memory(_) | DataBacking::Snapshot => {
             return inode.truncate_storage(size, Some(identity));
         }
-        DataBacking::Remote => {
+        DataBacking::SharedVmo => {
             // 服务调整自己的内容 VMO；写串行化防止与并发 append 交错。
-            let file = remote_file::remote_file(inode)?;
+            let file = vmo_file::vmo_file(inode)?;
             let _sequence = file
                 .write_sequence
                 .lock()
@@ -324,7 +342,7 @@ pub(crate) fn allocate(
     }
     let file = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
-        DataBacking::Memory(_) | DataBacking::Remote => {
+        DataBacking::Memory(_) | DataBacking::SharedVmo => {
             return inode.allocate_storage(offset, length, Some(identity));
         }
         DataBacking::Snapshot => return Err(FileSystemError::ReadOnly),
@@ -348,7 +366,7 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         DataBacking::Memory(_) | DataBacking::Snapshot => return Ok(()),
         // 服务写回映射写入并提交日志。
-        DataBacking::Remote => return inode.sync_storage(),
+        DataBacking::SharedVmo => return inode.sync_storage(),
     };
     let _sequence = file.lock(&file.write_sequence)?;
     let _operation = file.lock(&file.operation)?;

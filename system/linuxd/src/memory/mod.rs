@@ -16,6 +16,7 @@ mod executable;
 mod executable_load;
 mod futex;
 mod initial_stack;
+mod mapping_statistics;
 mod mm;
 mod object;
 mod shared_file;
@@ -28,11 +29,12 @@ pub(crate) use executable::{
 };
 pub(crate) use futex::{FutexAccessError, FutexKey, UserAtomicU32, UserAtomicU32Op};
 pub(crate) use initial_stack::{InitialStack, InitialStackCredentials};
+pub(crate) use mapping_statistics::MappingStatistics;
 pub(crate) use mm::{
-    DeviceMappingSource, FileMappingError, FileMappingSource, MappedMemory, MappingPlacement,
-    MappingResourceLimits, MemoryAdvice, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
-    RemapPlacement, RemapRequest, SegmentationCause, UserMappingRequest, UserMappingSource,
-    UserPageStatistics,
+    AnonymousRole, DeviceMappingSource, FileMappingError, FileMappingSource, MappedMemory,
+    MappingBacking, MappingPlacement, MappingResourceLimits, MappingSnapshot, MemoryAdvice,
+    MemorySet, PageFaultAccess, PageFaultOutcome, RemapError, RemapPlacement, RemapRequest,
+    SegmentationCause, UserMappingRequest, UserMappingSource, UserPageStatistics,
 };
 pub(crate) use object::MemoryObject;
 pub(crate) use shared_file::{MappedFileOwner, SharedFileError, SharedFileId, SharedFileMapping};

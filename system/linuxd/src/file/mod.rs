@@ -160,7 +160,7 @@ impl OpenFileDescription {
         if shared && write && !writable {
             return Err(FileSystemError::AccessDenied);
         }
-        crate::fs::mapping(self.inode_ref(), Some(self), writable, shared, write)
+        crate::fs::mapping(self.opened_ref(), Some(self), writable, shared, write)
     }
 
     /// 按 `shared` 准入本次打开的 mmap；失败不改变已有 VMA，传播后端错误。

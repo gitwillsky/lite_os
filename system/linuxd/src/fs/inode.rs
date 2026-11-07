@@ -75,9 +75,9 @@ pub(crate) enum DataBacking {
     Snapshot,
     /// 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。
     Memory(alloc::sync::Arc<super::memory_file::MemoryFile>),
-    /// 内容由文件系统服务拥有（ext4 服务挂载，Starnix RemoteFs）：读与 mmap 使用服务交出的 VMO
+    /// 内容由文件系统外的 owner 拥有（ext4 服务或 IPC 段）：读与 mmap 使用同一导出 VMO
     /// （[`Inode::backing_memory`]），写经存储接口；linuxd 不缓存它的页，也不回写。
-    Remote,
+    SharedVmo,
 }
 
 /// 一次 inode-owned symlink lookup 的完整结果；不重试目标类型或身份。
@@ -322,7 +322,7 @@ pub(crate) trait Inode: Send + Sync {
         DataBacking::PageCache
     }
 
-    /// [`DataBacking::Remote`] 文件的内容 VMO：服务端拥有其大小与页，读与 mmap 都经它。
+    /// [`DataBacking::SharedVmo`] 文件的内容 VMO：服务端拥有其大小与页，读与 mmap 都经它。
     ///
     /// # Errors
     ///

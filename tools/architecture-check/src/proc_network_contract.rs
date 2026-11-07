@@ -11,6 +11,8 @@ fn source(sources: &[SourceFile], path: &str) -> String {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let proc = source(sources, "system/linuxd/src/fs/procfs.rs");
+    let directory = source(sources, "system/linuxd/src/fs/procfs/directory.rs");
+    let lookup = source(sources, "system/linuxd/src/fs/procfs/lookup.rs");
     let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
     let link = source(sources, "system/linuxd/src/fs/procfs/link.rs");
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
@@ -32,9 +34,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || node.contains("NetDir,")
         || generic.contains("Self::NetDev")
         || generic.contains("Self::NetRoute")
-        || !proc.contains("ProcNode::TaskNetDir(tgid,tid,directory)")
-        || !proc.contains("self.source.thread_net_namespace(tid).ok_or(FileSystemError::NotFound)?")
-        || !proc.contains(
+        || !lookup.contains("ProcNode::TaskNetDir(tgid,tid,directory)")
+        || !lookup
+            .contains("self.source.thread_net_namespace(tid).ok_or(FileSystemError::NotFound)?")
+        || !directory.contains(
             "self.source.thread_net_namespace(tid).ok_or(FileSystemError::InvalidOperation)?",
         )
         || !proc.contains("Some(network.ok_or(FileSystemError::NotFound)?)")

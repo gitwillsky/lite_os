@@ -53,7 +53,7 @@
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - linuxd page cache 唯一拥有其缓存文件（tmpfs 以外的本地页缓存文件与 Linux FUSE 守护进程的文件）的 shared file page
-  identity、dirty/writeback 状态和 reclaim cursor；ext4 服务挂载的文件由 ext4 实例拥有内容（`DataBacking::Remote`）。
+  identity、dirty/writeback 状态和 reclaim cursor；ext4 服务挂载的文件由 ext4 实例拥有内容（`DataBacking::SharedVmo`）。
   VMA 与 filesystem 通过 shared-page seam 交互。
 - linuxd 在启动时挂载根文件系统（`fs::mount_root`，source 为 `/dev/<disk>`）与 `/dev` 上的 devtmpfs（Linux
   `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts`、`/run`、`/tmp`、`/dev/shm` 由 init 的
@@ -158,3 +158,8 @@ proc 控制文件支持 `open(O_TRUNC)` 与合法的 truncate 属性操作；依
 只更新时间，保持固定 i_size 与 map/sysctl 内容。proc/nsfs 重复 lookup 和 ioctl producer
 复用同一 live inode；nsfs 的普通属性更新与 namespace identity 分离。registry 只持 Weak，
 关闭全部实际 inode 后不延长 namespace 或其 quota charge 的寿命。
+
+
+内部 SysV 段文件与 memfd 共用内部 tmpfs 的真实 inode/path 装配；段内容仍由 IPC 的匿名 MemoryObject 拥有。
+`DataBacking::SharedVmo` 既用于独立 ext4 服务，也用于同进程的外部内容 owner，导入接口相同，不复制内容。
+IPC admission 调用锁外工厂，准备失败或并发 loser 的 inode、路径与 VMO 全在 registry guard 外回收。

@@ -95,7 +95,7 @@ fn filesystem_uuid(device: &dyn BlockDevice) -> Result<[u8; 16], Status> {
     let block_size = device.block_size();
     let mut block = alloc::vec![0u8; block_size];
     device
-        .read_block(UUID_OFFSET / block_size, &mut block)
+        .read_blocks(UUID_OFFSET / block_size, &mut block)
         .map_err(|_| native_abi::ERR_IO)?;
     let start = UUID_OFFSET % block_size;
     block

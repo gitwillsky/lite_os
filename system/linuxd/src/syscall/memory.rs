@@ -113,7 +113,28 @@ pub(crate) fn sys_mmap(
             return -errno::EINVAL;
         }
         if sharing == MAP_SHARED {
-            UserMappingSource::SharedAnonymous
+            let Some(rounded_length) = length.checked_next_multiple_of(crate::memory::PAGE_SIZE)
+            else {
+                return -errno::ENOMEM;
+            };
+            let object = match crate::memory::MemoryObject::anonymous(rounded_length, true) {
+                Ok(object) => object,
+                Err(_) => return -errno::ENOMEM,
+            };
+            let label = match crate::fs::try_format_bytes(format_args!("/dev/zero (deleted)")) {
+                Ok(label) => label,
+                Err(_) => return -errno::ENOMEM,
+            };
+            let file = match crate::fs::SharedMemoryFile::create_opened(
+                label,
+                rounded_length as u64,
+                object.clone(),
+                &task.access_identity(true),
+            ) {
+                Ok(file) => file,
+                Err(_) => return -errno::ENOMEM,
+            };
+            UserMappingSource::SharedAnonymous { object, file }
         } else {
             UserMappingSource::PrivateAnonymous
         }
@@ -137,9 +158,7 @@ pub(crate) fn sys_mmap(
             );
             match file.mmap(offset as u64, length, request) {
                 Ok(mut source) => {
-                    if source.retain_file(ofd.clone()).is_err() {
-                        return -errno::ENOMEM;
-                    }
+                    source.set_file(ofd.clone(), offset as u64);
                     UserMappingSource::Device(source)
                 }
                 Err(error) => return super::device::device_error(error),

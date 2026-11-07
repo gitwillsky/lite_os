@@ -457,6 +457,9 @@ pub(crate) fn dispatch_deferred() {
         timer_queue::expire(get_time_ns());
         processor::request_tick_reschedule();
     } else if work.contains(DeferredWork::TIMER_BACKLOG) {
+        // 空闲时没有调度 tick：boot CPU 的 housekeeping 与到期唤醒也必须推进看门狗的 deferred 进度，
+        // 否则全空闲的系统会被误判为 deferred 停滞。
+        crate::crash::note_deferred_progress();
         timer_queue::expire(get_time_ns());
     }
     if work.contains(DeferredWork::RUNQUEUE) {
@@ -471,6 +474,7 @@ pub(crate) fn dispatch_deferred() {
 /// 初始化调度拓扑与等待协议适配器。必须在任何线程创建前调用。
 pub(crate) fn initialize() {
     processor::init_topology();
+    timer_queue::initialize();
     wait::install();
 }
 
@@ -480,8 +484,7 @@ pub(crate) fn run() -> ! {
         // Release 发布本地 Processor 初始化；缺失时远端可能向尚未开始 drain 的 CPU 投递。
         crate::execution::cpu::mark_active();
     });
-    // boot CPU 保留 housekeeping tick；其余 CPU 只在运行线程时用 tick 抢占，空闲时关闭以免频繁唤醒。
-    let keeps_tick = crate::execution::cpu::current_id() == crate::execution::cpu::boot_id();
+    // 调度 tick 只在本 CPU 运行线程时存在；空闲时只剩截止时间等待者（boot CPU 另有 housekeeping）。
     let mut tick_armed = true;
     loop {
         // 1. 关中断覆盖 deferred、mailbox drain 与选择，保证空闲决策看到一致状态。
@@ -497,7 +500,7 @@ pub(crate) fn run() -> ! {
             drop(idle_irq);
             continue;
         }
-        if !keeps_tick && tick_armed {
+        if tick_armed {
             crate::execution::timer::suspend_local_idle_tick();
             tick_armed = false;
         }

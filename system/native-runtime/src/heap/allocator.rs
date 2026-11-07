@@ -1,60 +1,32 @@
-//! 系统服务目标的 VMAR 分配器；宿主夹具使用宿主分配器。
+//! 系统服务目标的全局分配器：[`span_heap::Heap`] 接线到运行时 VMAR、VMO 与线程描述符。
+//!
+//! 区域是一个整段映射、按需提交的 VMO；空闲 span 用 `OP_DECOMMIT` 归还物理页而不 unmap，
+//! 地址空间保持稳定，也不需要等待翻译 fence 的 unmap。大于 [`span_heap::classes::MAX_SMALL`]
+//! 的对象仍使用独立映射。
 
 use super::{VMAR, vmar};
 use crate::Vmo;
 use crate::sync::Mutex;
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::{NonNull, null_mut};
+use core::sync::atomic::{AtomicPtr, AtomicU32};
+use span_heap::{Backing, Heap as SpanHeap, LocalHeap};
 
-const MIN_CLASS_SHIFT: u32 = 4;
-const SMALL_CLASS_COUNT: usize = 8;
-const SMALL_MAX_SIZE: usize = 1 << (MIN_CLASS_SHIFT as usize + SMALL_CLASS_COUNT - 1);
-// 整页与完整 channel 缓冲各只保留一个备用映射，不保留并发峰值。
-const CHUNK_SIZE: usize = native_abi::CHANNEL_MAX_BYTES;
-const PAGE_BUFFER_CLASS: usize = SMALL_CLASS_COUNT;
-const CHANNEL_BUFFER_CLASS: usize = SMALL_CLASS_COUNT + 1;
-const CLASS_COUNT: usize = SMALL_CLASS_COUNT + 2;
-const _: () = assert!(CHUNK_SIZE.is_power_of_two() && CHUNK_SIZE >= native_abi::PAGE_SIZE);
+/// 同时存在的区域数上限（与 span-heap 的区域表一致，外加堆池块）。
+const REGION_SLOTS: usize = 320;
 
-struct FreeBlock {
-    next: Option<NonNull<FreeBlock>>,
+/// 区域 VMO 与区域起点在 VMO 内的偏移。
+struct RegionVmo {
+    vmo: Vmo,
+    offset: u64,
 }
 
-struct Classes {
-    free: [Option<NonNull<FreeBlock>>; CLASS_COUNT],
-}
+// OWNER: 区域令牌表；令牌是下标，条目一经写入永不移除（区域在进程生命周期内保持映射）。
+// 表自身是静态数组，不经过堆分配，避免分配器在持锁时递归进入分配器。
+static REGIONS: Mutex<[Option<RegionVmo>; REGION_SLOTS]> =
+    Mutex::new([const { None }; REGION_SLOTS]);
 
-// SAFETY: 空闲链只在 `Mutex` 内访问，链上的块属于本分配器。
-unsafe impl Send for Classes {}
-
-// OWNER: 各级空闲链；只在锁内修改。
-static CLASSES: Mutex<Classes> = Mutex::new(Classes {
-    free: [None; CLASS_COUNT],
-});
-
-fn class_of(layout: Layout) -> Option<usize> {
-    let size = layout.size().max(layout.align()).max(1 << MIN_CLASS_SHIFT);
-    if size <= SMALL_MAX_SIZE {
-        Some((size.next_power_of_two().trailing_zeros() - MIN_CLASS_SHIFT) as usize)
-    } else if size <= native_abi::PAGE_SIZE {
-        Some(PAGE_BUFFER_CLASS)
-    } else if size == CHUNK_SIZE {
-        Some(CHANNEL_BUFFER_CLASS)
-    } else {
-        None
-    }
-}
-
-fn class_size(class: usize) -> usize {
-    match class {
-        PAGE_BUFFER_CLASS => native_abi::PAGE_SIZE,
-        CHANNEL_BUFFER_CLASS => CHUNK_SIZE,
-        _ => 1usize << (class as u32 + MIN_CLASS_SHIFT),
-    }
-}
-
-/// 映射 `size` 字节的新匿名内存，地址按 `align` 对齐。
-fn map(size: usize, align: usize) -> Option<usize> {
+/// 映射 `size` 字节的新匿名内存，地址按 `align` 对齐；返回起点、所属 VMO 与起点在 VMO 内的偏移。
+fn map(size: usize, align: usize) -> Option<(usize, Vmo, u64)> {
     let vmar = VMAR.get()?;
     let page = native_abi::PAGE_SIZE;
     let size = size.next_multiple_of(page);
@@ -93,74 +65,83 @@ fn map(size: usize, align: usize) -> Option<usize> {
             .expect("unpublished heap mapping rollback must complete");
         return None;
     }
-    Some(start)
+    Some((start, vmo, (start - base) as u64))
 }
 
-/// 父 heap 模块注册的服务分配器；各实例只访问同一个进程内 Classes owner。
+struct Native;
+
+// SAFETY: 区域由 VMO 整段映射、读写、进程生命周期内不解除；decommit 只释放物理页，映射保持；
+// futex 提供要求的等待/唤醒语义。
+unsafe impl Backing for Native {
+    fn reserve(&self, size: usize, align: usize) -> Option<(usize, usize)> {
+        let (address, vmo, offset) = map(size, align)?;
+        let mut regions = REGIONS.lock();
+        let token = regions.iter().position(Option::is_none)?;
+        regions[token] = Some(RegionVmo { vmo, offset });
+        Some((address, token))
+    }
+
+    fn decommit(&self, token: usize, region_offset: usize, length: usize) {
+        let regions = REGIONS.lock();
+        if let Some(region) = &regions[token] {
+            // 失败只意味着物理页暂不归还，内容与映射不受影响。
+            let _ = region.vmo.op_range(
+                native_abi::vmo::OP_DECOMMIT,
+                region.offset + region_offset as u64,
+                length as u64,
+            );
+        }
+    }
+
+    fn map_large(&self, size: usize, align: usize) -> Option<usize> {
+        map(size, align).map(|(address, _, _)| address)
+    }
+
+    fn unmap_large(&self, address: usize, size: usize) {
+        let size = size.next_multiple_of(native_abi::PAGE_SIZE);
+        // SAFETY: 大块是独立映射，调用者保证不再使用。
+        unsafe { vmar().unmap(address, size) }.expect("heap deallocation must retire its mapping");
+    }
+
+    fn thread_slot(&self) -> Option<&AtomicPtr<LocalHeap>> {
+        crate::thread::heap_slot()
+    }
+
+    fn wait(&self, word: &AtomicU32, expected: u32) {
+        // 值已变化或被打断时调用者重试。
+        let _ = crate::futex::wait(word, expected, native_abi::DEADLINE_INFINITE, 0);
+    }
+
+    fn wake(&self, word: &AtomicU32) {
+        crate::futex::wake(word, 1, 0);
+    }
+}
+
+// OWNER: 进程唯一的堆状态；`Heap` 只是 `#[global_allocator]` 的零大小句柄，状态不随句柄复制。
+static STATE: SpanHeap<Native> = SpanHeap::new(Native);
+
+/// 注册为全局分配器的句柄。
 pub(super) struct Heap;
 
-// SAFETY: 小块来自独占的空闲链，大块来自独立映射；同一地址不会同时交给两个调用者。
+/// 线程终止后交还其堆。
+pub(super) fn retire_thread(slot: &AtomicPtr<LocalHeap>) {
+    STATE.retire_thread(slot);
+}
+
+// SAFETY: 委托给满足 `GlobalAlloc` 契约的 span 堆。
 unsafe impl GlobalAlloc for Heap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let Some(class) = class_of(layout) else {
-            return map(layout.size(), layout.align())
-                .map_or(null_mut(), |address| address as *mut u8);
-        };
-        let block_size = class_size(class);
-        let mut classes = CLASSES.lock();
-        if classes.free[class].is_none() {
-            // 整页消息（例如带头部的半页 PCM）独占映射；否则 slab 会永久保留短时的并发峰值。
-            let chunk_size = if class >= SMALL_CLASS_COUNT {
-                block_size
-            } else {
-                CHUNK_SIZE
-            };
-            let Some(chunk) = map(chunk_size, block_size.max(native_abi::PAGE_SIZE)) else {
-                return null_mut();
-            };
-            // 把新区块切成块并串入空闲链（逆序，使低地址先被取出）。
-            for index in (0..chunk_size / block_size).rev() {
-                let block = (chunk + index * block_size) as *mut FreeBlock;
-                // SAFETY: 块位于刚映射的可写区块内，按块大小对齐。
-                unsafe {
-                    block.write(FreeBlock {
-                        next: classes.free[class],
-                    })
-                };
-                classes.free[class] = NonNull::new(block);
-            }
-        }
-        let block = classes.free[class].expect("class refilled above");
-        // SAFETY: 空闲链上的块都是有效的 `FreeBlock`。
-        classes.free[class] = unsafe { block.as_ref().next };
-        block.as_ptr().cast()
+        // SAFETY: 同 `GlobalAlloc::alloc`。
+        unsafe { STATE.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let Some(class) = class_of(layout) else {
-            let size = layout.size().next_multiple_of(native_abi::PAGE_SIZE);
-            // SAFETY: 大块是独立映射，调用者保证不再使用。
-            unsafe { vmar().unmap(pointer as usize, size) }
-                .expect("heap deallocation must retire its mapping");
-            return;
-        };
-        let mut classes = CLASSES.lock();
-        if class >= SMALL_CLASS_COUNT && classes.free[class].is_some() {
-            // 1. 整页/完整缓冲独占映射，不与小块共享。2. 本桶已有一个备用缓冲时直接退休
-            // 当前映射；必须先释放 Classes 锁，再执行可能等待翻译 fence 的 unmap。
-            drop(classes);
-            // SAFETY: 调用者归还独占映射，地址已按块大小对齐，没有其他活跃块。
-            unsafe { vmar().unmap(pointer as usize, class_size(class)) }
-                .expect("surplus message buffer must retire its mapping");
-            return;
-        }
-        let block = pointer.cast::<FreeBlock>();
-        // SAFETY: 调用者归还的块至少有一个 `FreeBlock` 大小且按其对齐。
-        unsafe {
-            block.write(FreeBlock {
-                next: classes.free[class],
-            })
-        };
-        classes.free[class] = NonNull::new(block);
+        // SAFETY: 同 `GlobalAlloc::dealloc`。
+        unsafe { STATE.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: 同 `GlobalAlloc::realloc`。
+        unsafe { STATE.realloc(pointer, layout, new_size) }
     }
 }

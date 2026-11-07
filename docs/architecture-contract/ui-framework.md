@@ -142,7 +142,12 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   关闭不 join，旧结果丢弃，Context 释放 channel 后 worker 退出；共享通用控件处理输入与布局。
 - WindowHost 只因装饰、configure 和 focus 的视觉变化失效；Tree input 单独返回 repaint，普通未捕获 motion 不重绘。
   多行选择拖动、菜单、范围和表头抓取仍申请帧；WindowHost 保留尚未成功提交的失效。
-  交互缩放期间复用绘制画布容量。尺寸稳定后，画布按当前窗口大小收缩，历史最大尺寸不再占用常驻内存。
+  WindowHost 不拥有画布：整幅重绘直接写入 Display 提供的已释放共享缓冲（`render_frame`），绘制闭包必须画满整个缓冲，
+  因为缓冲里是更早一帧的内容。Display 在 `History` 中只保留上一次提交画面的分块哈希（每块一个 u64），
+  损伤相对它推导；哈希分配失败或规格变化时整幅损伤，只会多传不会漏传。稳定状态每窗口只保留一块空闲缓冲，第二块
+  仅在上一块未 release 时临时分配、release 后立即退休；缺失退休会让最大化窗口长期多占整幅画面内存。
+  交互缩放期间保留空闲池以复用几何。Benchmark 决策：哈希遍历整幅像素，成本与原先逐行比较同量级，
+  按窗口交互范围分别测应用绘制、缓冲提交、合成与 flip。
 - calendar 的 OnceLock<RwLock<TimeZone>> 唯一持有已解析 TZif，文件 I/O 和解析均在锁外。
   reload 失败保留旧模型，固定偏移写入使用同目录 create_new 临时文件、sync 与 rename；没有进程环境写入。
 

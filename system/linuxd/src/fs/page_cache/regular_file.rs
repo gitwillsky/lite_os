@@ -17,7 +17,7 @@ enum RegularFileBackend {
         file: Arc<MemoryFile>,
         inode: Arc<dyn Inode>,
     },
-    Remote(Arc<super::remote_file::RemoteFile>),
+    SharedVmo(Arc<super::vmo_file::VmoFile>),
 }
 
 /// 一次 regular-file cache read 的 logical 与实际 storage 结果。
@@ -72,8 +72,8 @@ impl RegularFile {
             })),
             DataBacking::Snapshot => Ok(Self(RegularFileBackend::Snapshot(inode))),
             DataBacking::Memory(file) => Ok(Self(RegularFileBackend::Memory { file, inode })),
-            DataBacking::Remote => Ok(Self(RegularFileBackend::Remote(
-                super::remote_file::remote_file(inode)?,
+            DataBacking::SharedVmo => Ok(Self(RegularFileBackend::SharedVmo(
+                super::vmo_file::vmo_file(inode)?,
             ))),
         }
     }
@@ -94,7 +94,7 @@ impl RegularFile {
                 Some(file.id)
             }
             RegularFileBackend::Memory { file, .. } => Some(file.id()),
-            RegularFileBackend::Remote(file) => Some(file.id),
+            RegularFileBackend::SharedVmo(file) => Some(file.id),
             RegularFileBackend::Snapshot(_) => None,
         }
     }
@@ -110,7 +110,7 @@ impl RegularFile {
                 file.inode.size()
             }
             RegularFileBackend::Memory { file, .. } => file.size(),
-            RegularFileBackend::Remote(file) => file.inode.size(),
+            RegularFileBackend::SharedVmo(file) => file.inode.size(),
             RegularFileBackend::Snapshot(inode) => inode.size(),
         }
     }
@@ -181,7 +181,7 @@ impl RegularFile {
                     storage_bytes: 0,
                 });
             }
-            RegularFileBackend::Remote(file) => {
+            RegularFileBackend::SharedVmo(file) => {
                 return file.read(offset, output).map(|bytes| RegularFileRead {
                     bytes,
                     storage_bytes: 0,
@@ -216,7 +216,7 @@ impl RegularFile {
     ) -> Result<Option<RegularFileRead>, FileSystemError> {
         let (inode, object) = match &self.0 {
             RegularFileBackend::Cached(file) => (&file.inode, &file.object),
-            RegularFileBackend::Remote(file) => (&file.inode, &file.memory),
+            RegularFileBackend::SharedVmo(file) => (&file.inode, &file.memory),
             _ => return Ok(None),
         };
         if !inode.data_cache_valid() {
@@ -278,12 +278,12 @@ impl RegularFile {
                     identity,
                 }))
             }
-            RegularFileBackend::Remote(file) => {
+            RegularFileBackend::SharedVmo(file) => {
                 let sequence = file
                     .write_sequence
                     .lock()
                     .map_err(|_| FileSystemError::OutOfMemory)?;
-                Ok(RegularFileWrite::Remote(super::remote_file::RemoteWrite {
+                Ok(RegularFileWrite::SharedVmo(super::vmo_file::VmoWrite {
                     file,
                     identity,
                     _sequence: sequence,

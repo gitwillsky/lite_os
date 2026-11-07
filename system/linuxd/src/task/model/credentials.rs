@@ -232,6 +232,33 @@ impl TaskControlBlock {
         }
     }
 
+    /// mm_access(READ_FSCREDS)：只检查本次捕获的 MM，允许相同 MM 与初始域 PERFMON/SYS_ADMIN。
+    /// 调用者持目标 exec credential guard；空 MM 由 proc open 作为 EOF 处理。
+    pub(in crate::task) fn may_read_memory_maps(
+        &self,
+        target: &TaskControlBlock,
+        mm: Arc<super::AddressSpace>,
+    ) -> bool {
+        if self
+            .namespace_mm()
+            .as_ref()
+            .is_some_and(|own| Arc::ptr_eq(own, &mm))
+            || self.tgid() == target.tgid()
+        {
+            return true;
+        }
+        self.may_inspect_identity(
+            target.credential_snapshot(),
+            MmMembership::Live(mm),
+            InspectionCredentials::Filesystem,
+        ) || {
+            let authority = self.namespace_authority();
+            let initial = crate::namespace::initial_user();
+            authority.capable(&initial, Capability::PERFMON)
+                || authority.capable(&initial, Capability::SYS_ADMIN)
+        }
+    }
+
     fn may_inspect_identity(
         &self,
         target: crate::fs::ProcCredentialSnapshot,

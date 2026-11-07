@@ -110,12 +110,7 @@ impl Ext4FileSystem {
     ) -> Result<Vec<Ext4GroupDesc>, FileSystemError> {
         let group_count = ceil_div(superblock.blocks_count() as usize, self.blocks_per_group);
         let mut table = try_zeroed(self.descriptor_blocks * self.block_size)?;
-        for index in 0..self.descriptor_blocks {
-            self.read_fs_block_home(
-                1 + index as u64,
-                &mut table[index * self.block_size..(index + 1) * self.block_size],
-            )?;
-        }
+        self.read_fs_block_home(1, &mut table)?;
         let mut groups = Vec::new();
         groups
             .try_reserve_exact(group_count)
@@ -233,7 +228,7 @@ impl Ext4FileSystem {
         let mut raw = try_zeroed(blocks_needed * device_block_size)?;
         for index in 0..blocks_needed {
             device
-                .read_block(
+                .read_blocks(
                     index,
                     &mut raw[index * device_block_size..(index + 1) * device_block_size],
                 )

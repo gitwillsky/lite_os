@@ -13,7 +13,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use native_abi::Status;
 
@@ -47,6 +47,12 @@ pub struct Descriptor {
     // OWNER: 启动闭包留在描述符中，不能搬到线程栈。body 可经 THREAD_EXIT 永不返回，
     // 栈上的 Box/result Arc 不会析构；reaper 必须在 TERMINATED 后释放这些捕获。
     start: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    // OWNER: 本线程的堆（见 `heap`）。线程终止后由描述符析构交还，缺失时已退出线程的 span 永远无人回收。
+    #[cfg_attr(
+        not(target_os = "none"),
+        expect(dead_code, reason = "宿主夹具使用宿主分配器，只有服务目标读取线程堆槽")
+    )]
+    heap: AtomicPtr<span_heap::LocalHeap>,
 }
 
 impl Descriptor {
@@ -131,6 +137,25 @@ pub fn current() -> &'static Descriptor {
     unsafe { &*pointer }
 }
 
+/// 当前线程的堆槽；线程描述符尚未安装（运行时启动早期）时为 `None`。
+#[cfg_attr(
+    not(target_os = "none"),
+    expect(dead_code, reason = "宿主夹具使用宿主分配器，只有服务目标读取线程堆槽")
+)]
+pub(crate) fn heap_slot() -> Option<&'static AtomicPtr<span_heap::LocalHeap>> {
+    let pointer = thread_pointer();
+    // SAFETY: 非空线程指针指向线程持有强引用的描述符，线程运行期间有效。
+    (!pointer.is_null()).then(|| unsafe { &(*pointer).heap })
+}
+
+#[cfg(target_os = "none")]
+impl Drop for Descriptor {
+    fn drop(&mut self) {
+        // 描述符只在线程终止后析构：它的堆不再有本地访问者，span 可交还或孤儿化。
+        crate::heap::retire_thread(&self.heap);
+    }
+}
+
 /// 当前线程描述符的强引用。
 pub fn current_arc() -> Arc<Descriptor> {
     let pointer = thread_pointer();
@@ -150,6 +175,7 @@ pub(crate) fn install_main(handle: Thread) {
         context: AtomicUsize::new(0),
         stack: Mutex::new(None),
         start: Mutex::new(None),
+        heap: AtomicPtr::new(core::ptr::null_mut()),
     });
     set_thread_pointer(Arc::into_raw(descriptor));
 }
@@ -325,6 +351,7 @@ pub fn prepare_in<T: Send + 'static>(
             let body = body.take().expect("thread body started twice");
             *slot.lock() = Some(body());
         }))),
+        heap: AtomicPtr::new(core::ptr::null_mut()),
     });
     let raw = Arc::into_raw(descriptor.clone()) as usize;
     Ok(PreparedThread {

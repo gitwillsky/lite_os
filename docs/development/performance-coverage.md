@@ -11,7 +11,7 @@
 - 只设置宽但真实的绝对上限，用于阻止锁、分配、runtime dispatch 或复杂度退化；
 - 文档不记录本机测量值；阈值变化必须有实现和环境证据，不能为通过门禁直接放宽。
 
-当前 blocking benchmark 覆盖 timer deadline、AArch64 VA39 index/TLBI operand projection 与
+当前 blocking benchmark 覆盖 span 堆（`span-heap-bench`：小块 alloc+free、跨线程释放、16 B→64 KiB 增长）、timer deadline、AArch64 VA39 index/TLBI operand projection 与
 AArch64 semantic PTE encode/decode、production HAL MMIO window 的检查后 read/write、
 seccomp disabled/单 filter/八 filter，以及实际 bdev claim owner 的 raw-read cache policy projection
 （一个整盘、一个整盘加八个分区，沿用每项 200 ns/op 上限）。claim gate 只衡量
@@ -168,3 +168,33 @@ unmask 保留原 affinity 装配并写回有效 priority。MMIO 时序不由 hos
 返回只从已有 ThreadOwner 安全点移交 transient view，最终 token 获取不加锁、不分配、不新增 runtime dispatch。
 两根具有独立 ASID，已有全 ASID fence 同时覆盖，撤销不增加第二轮 IPI。成本由原双架构 trap/release
 门禁、完整 65536-root churn 与实际桌面帧门禁裁决，不放宽阈值；host fixture 只验证映射和 OOM 退休。
+
+
+maps 是显式诊断读取，不进入缺页、read/write 数据面或任务管理器既有采样路径：MM 锁内一次有序元数据快照，
+只复制标量与 Arc，不调用 VMA membership clone/drop；设备文件/缓冲租约不通过 Vec 克隆分配。
+锁外查询 inode 的无 I/O identity 与实际路径，格式化直接追加同一个可失败输出缓冲，不逐行分配临时字符串。
+新增只读 observer 使用每次 open 的 Weak MM，无全局索引、驻留 cache 或持久 VMA 镜像。成本由同实例
+映射查询诊断观察，不设宿主 wall-clock 阈值；smaps 的页级查询成本另在 M0 完整实现时评估。
+
+
+共享匿名 mmap 与 SysV 的真实 inode/path 只在对象创建和最后关闭时装配/释放；保活同一匿名 VMO，
+不新增 pager，不在页提交、访存、futex 或附加 open/close 路径增加文件操作。只读映射描述复制文件 Arc，
+不复制 VMA membership。新增构造成本在计划最终的 mmap/IPC 及启动诊断中观察，不新设宿主时间阈值或专用用例。
+
+VMAR RSS 与 PSS 是按需诊断路径，不在 fault、map/unmap、pager supply 或调度热路径新增 mapcount 状态。
+轻量 RSS 只观察目标映射的实际 RAM 翻译与内容来源；详细归属每棵相关 COW 树构建一次临时物理页数组，
+排序后以二分取得共享次数，成本随该树实际驻留翻译增长，不扫描空虚拟页。临时空间为树内物理页索引、
+当前映射的翻译列表与输出区间；没有持久全 RAM 数组。它不等价于零成本，收益/暂停时间在最终 guest 诊断观察，
+不以宿主微秒阈值代替页表/IPC 开销。原生观察器与 smaps 只在请求时执行，基本 maps 不查询 PSS。
+proc 每个实际 open 只格式化一次连续读取序列，offset 0 重新观测；分段读取不重复构造页索引。
+原生对象查询的布局/容量检查只有固定整数比较，属于现有诊断控制路径，不新增热路径 benchmark。
+实施阶段只做 Clippy 和代码审查；运行时采样与完整门禁集中在全部性能计划完成后执行。
+
+块 I/O 准入的 descriptor credits 与 slot 共用既有 RequestOwner/queue guard，不增加锁、全局状态或 uncontended 分配。
+空闲 slot 链把旧的 release 线性 contains 扫描改为固定索引操作；contended handoff 成本随实际授予的 waiter 数增长，
+所有 scheduler wake 在锁外执行，不分配 wake 批次。该阶段不新增宿主 wall-clock 阈值，I/O backpressure 与延迟
+在最终 guest 批量/并发 workload 诊断；已有 request-owner fixture 改为覆盖空槽仍在而 descriptor credits 不足的情况。
+块 metadata 从每槽两个 VMO 改为一张固定表，16 槽下分配页数从 32 页减为 1 页（不含 payload）；
+初始化预触及的只是一张 metadata 表，不预读设备输出缓冲。提交使用 cached DMA extent 的现有 static gate，
+completion gate 同时约束 volatile status read 与 decode 都在 used-length 检查之后。
+本阶段不声称已完成登记 VMO/FIFO/客户端直接 DMA，也不以 metadata 收益代替整条 I/O 链路验收。

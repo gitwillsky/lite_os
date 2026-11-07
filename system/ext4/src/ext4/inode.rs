@@ -175,6 +175,21 @@ impl Ext4Inode {
         })
     }
 
+    /// 返回 logical block 起、同一已初始化 extent 内物理连续的区间 `(物理块, 块数)`。
+    ///
+    /// hole 与 unwritten extent 返回 `None`（读为零）。调用者按区间一次读取，extent 边界即合并边界。
+    pub(super) fn map_run(&self, file_block: u32) -> Result<Option<(u64, u64)>, FileSystemError> {
+        let disk = self.disk.lock().disk;
+        let tree = ExtentTree::new(&self.fs, self.inode_num, &disk)?;
+        Ok(match tree.lookup(file_block)? {
+            Mapping::Mapped(extent) if !extent.unwritten => {
+                let delta = u64::from(file_block - extent.logical);
+                Some((extent.physical + delta, u64::from(extent.length) - delta))
+            }
+            Mapping::Mapped(_) | Mapping::Hole { .. } => None,
+        })
+    }
+
     /// 返回 logical block 的已初始化物理 block；hole 返回 `NotFound`。
     pub(super) fn map_block(&self, file_block: u32) -> Result<u64, FileSystemError> {
         self.map_block_sparse(file_block)?

@@ -76,7 +76,10 @@ impl IpcNamespace {
         Ok(())
     }
     /// 创建/取得实际 segment；Arc、页 owner 和索引 storage 在 registry guard 外准备。
-    #[allow(
+    ///
+    /// `allocate` 只在创建新 key 时调用，在锁外组装内容与实际文件身份；失败不发布 ID，
+    /// 并发创建的 loser 也在 registry guard 外释放。IPC 不依赖文件系统实现。
+    #[expect(
         clippy::too_many_arguments,
         reason = "同一次原子 publication 的独立领域输入，参数语义与所有权已逐项说明"
     )]
@@ -89,6 +92,7 @@ impl IpcNamespace {
         pid: Arc<PidIdentity>,
         now: u64,
         creator: &Arc<SharedMemoryCreatorList>,
+        allocate: impl FnOnce(usize) -> Result<Arc<SharedMemoryBacking>, IpcError>,
     ) -> Result<i32, IpcError> {
         let find = |registry: &SharedMemoryRegistry| -> Result<Option<i32>, IpcError> {
             let Some(segment) = registry.ids.get_key(key) else {
@@ -133,7 +137,7 @@ impl IpcNamespace {
         }
         let prepared = PreparedIpcObject::new(key)?;
         let prepared_creator = PreparedCreator::new()?;
-        let backing = SharedMemoryBacking::allocate(pages).map_err(|_| IpcError::NoMemory)?;
+        let backing = allocate(pages)?;
         // 竞争/限额失败时不消费 preparation，节点和 backing 的析构晚于 registry guard。
         let mut pending = Some((prepared, prepared_creator, backing, pid));
         let result = {

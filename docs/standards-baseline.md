@@ -17,6 +17,7 @@
   [RISC-V syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/uapi/asm/unistd.h)、
   [asm-generic syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/unistd.h)。
 - io_uring 的 ABI（`include/uapi/linux/io_uring.h`）与语义（`io_uring/*.c`）取自同一固定源码树；本地以 `linux-7.1.tar.xz` 的 SHA-256 校验后解包，不另设来源。
+- smaps/PSS 与 statm 投影使用同一固定源码树 `fs/proc/task_mmu.c` 的 `smaps_account`、`task_statm`；PSS 保留 12 位小数。
 - FUSE 的 UAPI（`include/uapi/linux/fuse.h`，协议 7.45）与语义（`fs/fuse/*.c`）取自同一固定源码树。
 - 该固定源码树定义共享 syscall number、architecture UAPI layout/flags、return 与 Linux errno。POSIX 和 libc wrapper 不能替代该层；本基线不声明未经固定一手 revision 的 Arm ABI 或 architecture 版本号。
 
@@ -37,11 +38,19 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 [FIDL transaction ID 约定](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/fidl/language/wire-format/README.md#transactional-messages)：
 零事务号不要求回复。LiteOS 只采用该 channel 消息语义，不声明 FIDL 编码兼容。
 
+### 原生块 I/O
+
+- 登记 VMO、FIFO 请求/分组完成及会话寿命参照 Fuchsia 固定 revision `bb06fd0022e58d6c501367cd87f16e178498a1b7` 的
+  [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。
+  LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；当前完成度由性能计划与设备契约维护。
+
 ### 原生任务观测
 
 - 原生任务树身份、INSPECT 权限及包含已退出线程的 runtime 语义参照
   [固定 Zircon object_get_info](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/object_get_info.md)。
   LiteOS 的 TASK_STATS 是自身映射驻留观测，不声明 Zircon TASK_STATS/PSS 编码兼容。
+- 进程映射视图以同树 `fs/proc/task_mmu.c`（maps codec）、`fs/proc/base.c`（proc_mem_open）和
+  `kernel/fork.c`（mm_access/may_access_mm）为准；MM 观察引用不等同于保活实际映射 user。
 - 内存观测字段遵循同一 Linux revision 的 [`fs/proc/meminfo.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/meminfo.c)：
   Cached 的文件页范围包含内存文件，Dirty/Writeback 属于存储写回计数，不能混入无落盘目标的保留内容。
 - Linux procfs 的 `Kthread`、`stat` starttime、RSS 与 pidfd 操作沿用上述固定 Linux revision 的 UAPI/实现；

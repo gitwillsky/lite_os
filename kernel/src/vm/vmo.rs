@@ -31,6 +31,7 @@ mod pin;
 mod reclaim;
 mod release;
 pub(crate) use pin::PinnedRange;
+mod attribution;
 mod residency;
 use super::VmError;
 use super::address_space::{Mapping, ZapMode};
@@ -182,6 +183,12 @@ pub(crate) enum FaultSource {
     Pager,
 }
 
+/// 一次缺页顺带装入相邻已驻留页的最大页数（同时是对齐窗口大小）。
+///
+/// 64 KiB 窗口与 Linux fault-around 的默认值同量级：足以把顺序访问的缺页次数降一个数量级，
+/// 又不会在稀疏访问时映射大量未用页。
+pub(crate) const FAULT_AROUND_PAGES: usize = 16;
+
 /// 一次页解析的结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedPage {
@@ -203,11 +210,6 @@ impl Vmo {
         let guard = self.tree.lock.lock().map_err(|_| VmError::NoMemory)?;
         self.collapse_hidden_parents();
         Ok(guard)
-    }
-
-    /// 字节大小。
-    pub(crate) fn size(&self) -> u64 {
-        (self.state.lock().pages * PAGE_SIZE) as u64
     }
 
     /// 创建子对象。
@@ -495,6 +497,100 @@ impl Vmo {
         }
         let frame = frame_allocator::alloc().ok_or(Resolve::Error(VmError::NoMemory))?;
         commit_page(&mut state, index, frame, self.page_content())
+    }
+
+    /// 在树锁内收集 `range` 中已驻留的文件页并交给 `with_pages`（fault-around）。
+    ///
+    /// 只返回对象自身或祖先链上 pager 支撑的、已驻留的页，且一律按只读解析：不分配、不请求 pager、
+    /// 不复制。树锁正忙时放弃（返回 `None`），因为这只是对主缺页的机会性补充。
+    /// `with_pages` 在持树锁时执行，翻译必须在其中安装，否则回收的 zap 可能先于安装而留下悬空翻译。
+    ///
+    /// # Parameters
+    ///
+    /// - `range`: 页索引区间，长度不超过 [`FAULT_AROUND_PAGES`]。
+    /// - `skip`: 已由主缺页处理的页索引，不再收集。
+    pub(crate) fn with_resident_file_pages<R>(
+        self: &Arc<Self>,
+        range: core::ops::Range<usize>,
+        skip: usize,
+        with_pages: impl FnOnce(&[Option<(usize, ResolvedPage)>]) -> R,
+    ) -> Option<R> {
+        debug_assert!(range.len() <= FAULT_AROUND_PAGES);
+        let _tree = self.tree.lock.try_lock()?;
+        let mut pages = [None; FAULT_AROUND_PAGES];
+        let mut count = 0;
+        for index in range.filter(|&index| index != skip) {
+            if let Some(page) = self.peek_resident_file_locked(index) {
+                pages[count] = Some((index, page));
+                count += 1;
+            }
+        }
+        Some(with_pages(&pages[..count]))
+    }
+
+    /// 只读地查看一页是否已驻留于 pager 支撑的对象；调用者持树锁。
+    fn peek_resident_file_locked(self: &Arc<Self>, index: usize) -> Option<ResolvedPage> {
+        let resident = |ppn| ResolvedPage {
+            source: FaultSource::Memory,
+            ppn,
+            writable: false,
+            cache: CachePolicy::Cached,
+        };
+        match &self.kind {
+            Kind::Slice => {
+                let (parent, offset) = {
+                    let state = self.state.lock();
+                    if index >= state.pages {
+                        return None;
+                    }
+                    match &state.relation {
+                        Some(Relation::Slice { parent, offset }) => (parent.clone(), *offset),
+                        _ => unreachable!("slice VMO without slice parent"),
+                    }
+                };
+                return parent.peek_resident_file_locked(index + offset);
+            }
+            Kind::Paged { .. } | Kind::Hidden => {}
+            Kind::Physical { .. } | Kind::Contiguous(_) => return None,
+        }
+        let state = self.state.lock();
+        if index >= state.pages {
+            return None;
+        }
+        let file_backed = |vmo: &Vmo| matches!(vmo.kind, Kind::Paged { pager: Some(_), .. });
+        if let Some(page) = state.committed.get(&index) {
+            // 自身已提交的页若不是文件页（私有写时复制副本、匿名页），映射为只读会让之后的写
+            // 多一次缺页，且它不是 fault-around 要摊销的 pager 补页成本。
+            return file_backed(self).then(|| resident(page.frame.ppn));
+        }
+        let mut ancestor = match &state.relation {
+            Some(Relation::Cow {
+                parent,
+                offset,
+                limit,
+            }) if index < *limit => Some((parent.clone(), index + offset)),
+            _ => None,
+        };
+        while let Some((vmo, ancestor_index)) = ancestor {
+            let ancestor_state = vmo.state.lock();
+            if ancestor_index >= ancestor_state.pages {
+                return None;
+            }
+            if let Some(page) = ancestor_state.committed.get(&ancestor_index) {
+                return file_backed(&vmo).then(|| resident(page.frame.ppn));
+            }
+            let next = match &ancestor_state.relation {
+                Some(Relation::Cow {
+                    parent,
+                    offset,
+                    limit,
+                }) if ancestor_index < *limit => Some((parent.clone(), ancestor_index + offset)),
+                _ => None,
+            };
+            drop(ancestor_state);
+            ancestor = next;
+        }
+        None
     }
 
     /// 解析一页，必要时等待 pager 补页；调用者不持有树锁。

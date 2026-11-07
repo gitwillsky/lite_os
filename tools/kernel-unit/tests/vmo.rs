@@ -146,6 +146,8 @@ mod memory {
     }
 }
 
+// 保持实际 vm → vmo 作用域；显式目录让 source-view 入口沿用本 fixture 的路径基准。
+#[path = "."]
 mod vm {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum VmError {
@@ -166,6 +168,17 @@ mod vm {
         }
         pub(crate) struct Mapping;
         impl Mapping {
+            pub(crate) fn vmo(&self) -> &alloc::sync::Arc<crate::vmo::Vmo> {
+                panic!("mapping ownership belongs to guest MMU fixtures")
+            }
+            pub(crate) fn object_page(&self, _: usize) -> usize {
+                panic!("mapping offsets belong to guest MMU fixtures")
+            }
+            pub(crate) fn resident_pages(
+                &self,
+            ) -> Result<alloc::vec::Vec<(usize, usize)>, VmError> {
+                panic!("hardware residency belongs to guest MMU fixtures")
+            }
             pub(crate) fn zap_vmo_pages(
                 &self,
                 _: core::ops::Range<usize>,
@@ -175,13 +188,13 @@ mod vm {
             }
         }
     }
+    #[expect(
+        dead_code,
+        unused_imports,
+        reason = "本 fixture 只执行 COW、pager 与淘汰生命周期；固定与回收入口的 re-export 由内核其余模块消费"
+    )]
+    #[path = "../../../tools/source-view/kernel/vm/vmo/vmo/vmo.rs"]
+    pub(crate) mod vmo;
 }
 
-use vm::{VmError, address_space};
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "本 fixture 只执行 COW、pager 与淘汰生命周期；固定与回收入口的 re-export 由内核其余模块消费"
-)]
-#[path = "../../../tools/source-view/kernel/vm/vmo/vmo/vmo.rs"]
-mod vmo;
+use vm::vmo;

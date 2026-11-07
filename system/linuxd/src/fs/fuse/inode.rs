@@ -405,7 +405,7 @@ impl Inode for FuseInode {
     /// 服务挂载的普通文件由服务拥有内容；`/dev/fuse` 守护进程的文件经 linuxd 页缓存。
     fn data_backing(&self) -> crate::fs::DataBacking {
         if self.kind == InodeType::File && self.mount.backing.is_some() {
-            crate::fs::DataBacking::Remote
+            crate::fs::DataBacking::SharedVmo
         } else {
             crate::fs::DataBacking::PageCache
         }

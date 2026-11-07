@@ -72,6 +72,23 @@ impl TaskControlBlock {
             self.tgid_identity().clone(),
             crate::time::get_realtime_ns() / 1_000_000_000,
             &creator,
+            |pages| {
+                let bytes = pages
+                    .checked_mul(crate::memory::PAGE_SIZE)
+                    .ok_or(crate::ipc::IpcError::NoMemory)?;
+                let object = crate::memory::MemoryObject::anonymous(bytes, false)
+                    .map_err(|_| crate::ipc::IpcError::NoMemory)?;
+                let file = crate::fs::SharedMemoryFile::create_opened(
+                    crate::fs::try_format_bytes(format_args!("/SYSV{:08x} (deleted)", key as u32))
+                        .map_err(|_| crate::ipc::IpcError::NoMemory)?,
+                    size as u64,
+                    object.clone(),
+                    &self.access_identity(true),
+                )
+                .map_err(|_| crate::ipc::IpcError::NoMemory)?;
+                crate::memory::SharedMemoryBacking::new(object, file)
+                    .map_err(|_| crate::ipc::IpcError::NoMemory)
+            },
         )
     }
     pub(in crate::task) fn retire_shared_memory_creator(&self) {

@@ -128,6 +128,15 @@ fn write_info<T: Plain>(call: &Call<'_>, value: &T) -> Result<(), Status> {
     call.write_bytes(call.arg(2), bytes)
 }
 
+fn write_info_array<T: Plain>(call: &Call<'_>, values: &[T]) -> Result<(), Status> {
+    let size = core::mem::size_of_val(values);
+    call.write_optional(call.arg(4), &size)?;
+    if call.arg(3) < size {
+        return Err(native_abi::ERR_BUFFER_TOO_SMALL);
+    }
+    call.write_array(call.arg(2), values)
+}
+
 pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
     let entry = call.entry(call.arg_handle(0), rights::INSPECT)?;
     match call.arg_u32(1) {
@@ -191,6 +200,22 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             }
             _ => Err(native_abi::ERR_WRONG_TYPE),
         },
+        info::VMAR_RESIDENCY => match &entry.object {
+            Object::Vmar(vmar) => {
+                let ranges = vmar.resident_ranges().map_err(crate::object::vm_status)?;
+                write_info_array(call, &ranges)
+            }
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
+        info::VMAR_MAPPING_STATS => match &entry.object {
+            Object::Vmar(vmar) => {
+                let stats = vmar
+                    .mapping_statistics()
+                    .map_err(crate::object::vm_status)?;
+                write_info_array(call, &stats)
+            }
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
         info::PROCESS => match &entry.object {
             Object::Process(process) => {
                 let (exited, code) = process.exit_status();
@@ -212,12 +237,7 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 return Err(native_abi::ERR_ACCESS_DENIED);
             }
             let koids = job.member_koids(call.arg_u32(1) == info::JOB_CHILDREN)?;
-            let size = koids.len() * 8;
-            call.write_optional(call.arg(4), &size)?;
-            if call.arg(3) < size {
-                return Err(native_abi::ERR_BUFFER_TOO_SMALL);
-            }
-            call.write_array(call.arg(2), &koids)
+            write_info_array(call, &koids)
         }
         info::NAME => {
             let (name, length) = match &entry.object {

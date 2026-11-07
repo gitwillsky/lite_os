@@ -46,6 +46,7 @@ mod memory_file;
 mod mount;
 mod nsfs;
 pub(crate) mod pidfs;
+mod shared_memory_file;
 mod xattr;
 pub(crate) use nsfs::namespace_opened;
 pub(crate) use xattr::{XattrChange, XattrError};
@@ -97,16 +98,18 @@ pub(crate) use mount::{
     unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
-    RegularFile, RegularFileWrite, allocate, mapping, sync_all, sync_inode, truncate,
+    RegularFile, RegularFileWrite, allocate, mapping, mapping_file, sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{
     AccessIdentity, CreateMetadata, MAY_ACCESS, MAY_CHDIR, OwnerModeChange,
 };
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcCredentialSnapshot, ProcDirectory, ProcFileDescriptorSnapshot,
-    ProcIoSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
-    ProcSnapshotScope, ProcSource, ProcTaskIdentity, ProcThreadSnapshot,
+    ProcIoSnapshot, ProcMapping, ProcMemoryMaps, ProcNetworkSnapshot, ProcProcessSnapshot,
+    ProcRouteSnapshot, ProcSnapshot, ProcSnapshotScope, ProcSource, ProcTaskIdentity,
+    ProcThreadSnapshot,
 };
+pub(crate) use shared_memory_file::SharedMemoryFile;
 use storage_budget::StorageBudget;
 pub(crate) use storage_open::{BackingFile, BackingOpen, DirectIo, StorageOpen};
 pub(crate) use sysfs_net::{NetLinkSnapshot, NetLinkSource};

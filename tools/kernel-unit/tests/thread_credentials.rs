@@ -1068,7 +1068,7 @@ pub(crate) mod task {
         mod thread_capabilities;
         mod address_space {
             mod dumpability;
-            pub(super) struct AddressSpace {
+            pub(in crate::task) struct AddressSpace {
                 dumpability: dumpability::Dumpability,
                 user_namespace: alloc::sync::Arc<crate::namespace::UserNamespace>,
             }
@@ -1307,6 +1307,11 @@ pub(crate) mod task {
             }
             fn mm_snapshot(&self) -> Option<Arc<AddressSpace>> {
                 self.thread.mm.lock().live().cloned()
+            }
+            fn namespace_mm(&self) -> Option<Arc<AddressSpace>> {
+                (!self.is_kernel_thread())
+                    .then(|| self.mm_snapshot())
+                    .flatten()
             }
             fn memory_inspection(&self) -> MmMembership {
                 if self.is_kernel_thread() {

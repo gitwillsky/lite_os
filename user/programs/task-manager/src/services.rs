@@ -62,10 +62,12 @@ impl Service {
             || "—".into(),
             |value| format!("{}.{:02}", value / 100, value % 100),
         );
-        let memory = if record.resident_bytes == UNAVAILABLE {
-            "—".into()
-        } else {
-            memory_text(record.resident_bytes / 1024)
+        let memory = |bytes| {
+            if bytes == UNAVAILABLE {
+                "—".into()
+            } else {
+                memory_text(bytes / 1024)
+            }
         };
         let state = match record.state {
             0 => "运行中",
@@ -73,7 +75,7 @@ impl Service {
             _ => "无法查询",
         };
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             name,
             record.koid,
             state,
@@ -83,7 +85,8 @@ impl Service {
             } else {
                 crate::processes::cpu_time_text(record.cpu_ns / (1_000_000_000 / TICKS_PER_SECOND))
             },
-            memory,
+            memory(record.private_bytes),
+            memory(record.shared_bytes),
             number(record.threads)
         )
     }

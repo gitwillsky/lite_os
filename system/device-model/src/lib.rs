@@ -29,7 +29,9 @@ pub use audio_output::{
     PcmCompletionObserver, PcmOutput, PcmOutputError,
 };
 pub use backing::{DeviceBacking, DeviceExtent};
-pub use block::{BLOCK_SIZE, BlockDevice, BlockError};
+pub use block::{
+    BLOCK_SIZE, BlockBuffer, BlockBufferPool, BlockDevice, BlockError, BlockOperation, BlockRequest,
+};
 pub use display::{
     BootFramebuffer, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
 };

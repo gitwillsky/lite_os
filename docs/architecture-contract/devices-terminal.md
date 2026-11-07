@@ -248,6 +248,19 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   完成固定 outstanding 并清除 head mapping，capacity waiters 以固定 batch 续投 deferred work，最终
   全部取得 device error；generation 使 late/duplicate completion 不能命中新 request。
   notify/IRQ/reclaim 不提前释放仍由 caller 消费的 slot。
+- `RequestOwner` 在同一 queue guard 内同时预留 slot 与请求实际需要的 descriptor credits，
+  直到 caller 消费完成或撤销未发布请求后才一起归还。slot record 是 generation/credit 的唯一 owner，
+  空闲槽用预分配数组内的索引链管理，预留和释放为 O(1)，stale generation 或重复释放 fail-stop。
+  credits 不足与 slot 不足都走同一 FIFO capacity wait；不能取得 slot 后再把 descriptor 竞争误报为设备失败。
+  prepared waiter 保留原请求 footprint，重入时按 ticket 判断能否先于已登记请求准入；FIFO 头不满足时保留登记。
+  释放后逐个授予所有可满足的 FIFO 请求，唤醒发生在 queue guard 外，随后重新检查 adapter 的 failed 状态。
+  没有新增锁/原子或 uncontended 分配；credits 在 descriptor 已回收而 caller 尚未消费结果时仍由该 slot 保留。
+- VirtIO-block 的全部 header/status 共用一张固定 DeviceBacking。每槽独占 32-byte 区间，header 为前 16 byte，
+  status 为随后 1 byte；CPU 写入只覆盖当前未发布槽的原始字节，不创建覆盖其他 DMA 活动槽的 Rust 引用。
+  table 在 DRIVER_OK 前分配、固定、映射并触及页表，提交与 completion 只投影已缓存的设备地址；
+  不在 queue 锁内为 metadata 创建映射/固定记录。status 仅在同一 slot/generation 的 used 长度与回收已验证后读取。
+  表与 adapter 同寿命，Drop 仍先确认 reset 再释放 DMA owner。
+  `DmaSlice::backing` 接受非空字节区间及 device-writable 方向；边界在 publication 前检查，复用原 extent 裁剪逻辑。
 - VirtIO-block slot 必须保存原 `RequestOperation`，因为 used `len` 只证明 device-writable prefix。
   Read 的 writable chain 是 4096-byte data 后接 1-byte status，完成长度必须精确为 4097；Write 与
   Flush 只有 status，必须精确为 1。长度未覆盖 status/data 或超过 writable capacity 时，不得读取

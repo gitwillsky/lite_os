@@ -160,11 +160,65 @@ impl Handle {
     ///
     /// # Errors
     ///
-    /// 同 [`Self::get_info`]。
+    /// 同 [`Self::get_info`]；固定布局长度不符返回 `ERR_IO`，不能把缺失字段当作真实零值。
     pub fn info<T: crate::Plain>(&self, topic: u32) -> Result<T, Status> {
         let mut value = T::default();
-        self.get_info(topic, crate::bytes_of_mut(&mut value))?;
+        let actual = self.get_info(topic, crate::bytes_of_mut(&mut value))?;
+        if actual != core::mem::size_of::<T>() {
+            return Err(native_abi::ERR_IO);
+        }
         Ok(value)
+    }
+
+    /// 读取变长 POD 数组；所需大小随对象变化时按内核回报的字节数扩容重试。
+    pub(crate) fn info_array<T: crate::Plain>(
+        &self,
+        topic: u32,
+    ) -> Result<alloc::vec::Vec<T>, Status> {
+        let mut values = alloc::vec::Vec::<T>::new();
+        let element_size = core::mem::size_of::<T>();
+        if element_size == 0 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        loop {
+            let mut actual = 0usize;
+            // SAFETY: Vec 拥有 capacity 个 T 的可写空间，Plain 允许内核填入任意位模式。
+            let status = unsafe {
+                invoke(
+                    call::OBJECT_GET_INFO,
+                    &[
+                        self.raw() as usize,
+                        topic as usize,
+                        values.as_mut_ptr() as usize,
+                        values.capacity() * element_size,
+                        (&raw mut actual) as usize,
+                    ],
+                )
+            };
+            match check(status) {
+                Ok(()) => {
+                    if !actual.is_multiple_of(element_size)
+                        || actual > values.capacity() * element_size
+                    {
+                        return Err(native_abi::ERR_IO);
+                    }
+                    // SAFETY: 对应数组 topic 写入完整 T，actual 不超过传入容量；没有读取未初始化尾部。
+                    unsafe { values.set_len(actual / element_size) };
+                    return Ok(values);
+                }
+                Err(native_abi::ERR_BUFFER_TOO_SMALL) => {
+                    if !actual.is_multiple_of(element_size)
+                        || actual <= values.capacity() * element_size
+                    {
+                        return Err(native_abi::ERR_IO);
+                    }
+                    values
+                        .try_reserve_exact(actual / element_size)
+                        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                }
+                Err(status) => return Err(status),
+            }
+        }
     }
 
     /// 对象类型、rights 与全局编号。

@@ -1,0 +1,14 @@
+[package]
+name = "span-heap"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+bench = false
+
+[features]
+# 宿主 `Backing`（标准库内存），供单元测试与基准使用；目标构建不启用。
+host = []
+
+[lints]
+workspace = true

@@ -26,11 +26,93 @@ use native_runtime::{Pager, Port, Vmo};
 /// 工作线程上限。
 const MAX_WORKERS: usize = 64;
 
+/// 补页暂存区容量；单次 supply 不超过它。
+pub const SUPPLY_BYTES: usize = 32 * native_abi::PAGE_SIZE;
+
+/// 工作线程私有的补页暂存区：一个常驻映射的 VMO，存储读直接写入它，再整体移交给目标 VMO。
+///
+/// 移交会把页从暂存区移走，下一次写入重新获得零页，所以每次使用前只需覆盖有效字节、
+/// 清零其余字节；省去“先读入堆缓冲、再复制进 VMO”的一次分配与复制。
+pub struct SupplyBuffer {
+    vmo: Vmo,
+    // OWNER: 映射由本结构独占并随它存活；工作线程只经 `&mut self` 访问，
+    // 缺失独占会让并发 supply 读到另一请求的字节。
+    address: usize,
+}
+
+impl SupplyBuffer {
+    /// 取得（必要时创建）工作线程的暂存区；创建失败时调用者必须以 `OP_FAIL` 结束请求。
+    ///
+    /// # Errors
+    ///
+    /// VMO 创建或映射失败。
+    pub fn acquire(slot: &mut Option<Self>) -> Result<&mut Self, Status> {
+        if slot.is_none() {
+            *slot = Some(Self::new()?);
+        }
+        Ok(slot.as_mut().expect("supply buffer installed above"))
+    }
+
+    fn new() -> Result<Self, Status> {
+        let vmo = Vmo::create(SUPPLY_BYTES as u64, 0)?;
+        let address = native_runtime::heap::vmar().map(
+            native_abi::vm::READ | native_abi::vm::WRITE,
+            0,
+            &vmo,
+            0,
+            SUPPLY_BYTES,
+        )?;
+        Ok(Self { vmo, address })
+    }
+
+    /// 暂存区前 `length` 字节的可写视图；上一次使用的残留字节由调用者覆盖或清零。
+    ///
+    /// # Panics
+    ///
+    /// `length` 超过 [`SUPPLY_BYTES`]。
+    pub fn bytes(&mut self, length: usize) -> &mut [u8] {
+        assert!(length <= SUPPLY_BYTES, "supply length exceeds the buffer");
+        // SAFETY: 映射覆盖 SUPPLY_BYTES、读写、由本结构独占；`&mut self` 排除别名，
+        // 内核移交页后重新缺页得到零页，不改变映射本身。
+        unsafe { core::slice::from_raw_parts_mut(self.address as *mut u8, length) }
+    }
+
+    /// 把暂存区前 `length` 字节（页对齐）移交给 `target` 的 `offset` 处。
+    ///
+    /// # Errors
+    ///
+    /// 区间未对齐或越界，或目标不是本 pager 的 VMO。
+    pub fn supply(
+        &self,
+        pager: &Pager,
+        target: &Vmo,
+        offset: u64,
+        length: u64,
+    ) -> Result<(), Status> {
+        pager.supply_pages(target, offset, length, &self.vmo, 0)
+    }
+}
+
+impl Drop for SupplyBuffer {
+    fn drop(&mut self) {
+        // SAFETY: 映射由本结构创建，`&mut self` 保证没有仍在使用的视图。
+        let _ = unsafe { native_runtime::heap::vmar().unmap(self.address, SUPPLY_BYTES) };
+    }
+}
+
 /// 文件内容的补页政策；调用者不持 native VMO 锁。
 /// 每个请求必须完成 supply 或 `OP_FAIL`，不得把等待者留在未完成状态。
 pub trait PageSource: Send + Sync {
-    /// 为请求的字节区间补页；`aux` 是本工作线程复用的可移交 VMO。
-    fn page_request(&self, pager: &Pager, offset: u64, length: u64, aux: &mut Option<Vmo>);
+    /// 为请求的字节区间补页；`buffer` 是本工作线程复用的补页暂存区。
+    ///
+    /// 允许对请求范围之后的页预读：内核对已驻留页保持不变，对未请求页直接提交。
+    fn page_request(
+        &self,
+        pager: &Pager,
+        offset: u64,
+        length: u64,
+        buffer: &mut Option<SupplyBuffer>,
+    );
 }
 
 struct Shared {
@@ -185,7 +267,7 @@ fn dispatch() {
 fn work() {
     let shared = shared();
     let me = native_runtime::thread::current_arc();
-    let mut aux: Option<Vmo> = None;
+    let mut buffer: Option<SupplyBuffer> = None;
     loop {
         let request = {
             let mut queue = shared.queue.lock();
@@ -209,7 +291,7 @@ fn work() {
                 &shared.pager,
                 request.payload,
                 u64::from(request.observed) * native_abi::PAGE_SIZE as u64,
-                &mut aux,
+                &mut buffer,
             );
         }
     }

@@ -3,6 +3,9 @@
 原生服务边界由 `native-abi`/`native-runtime` 拥有，应用 ABI 由 `system/linuxd` 拥有；二者不共享 syscall 编号或寄存器政策。
 component-manager 只分发初始 capability 和服务连接。linuxd 在 normal mode 运行兼容层、restricted mode 执行应用；设备 UAPI 只经服务协议访问。
 原生 `TaskRuntime` 只投影承载线程 CPU 时间、切换数和 restricted fault/pager-wait 计数，不解释 Linux rusage。
+原生对象固定信息查询必须检查实际长度等于类型布局；变长数组必须完整对齐且不超过传入容量。
+长度不符返回错误，不能把短回复中缺失的字段补成零。原生 ABI 改动要求内核与服务成套更新，
+服务协议布局改变必须同步升级 magic，不保留猜测布局的兼容路径。
 
 
 ## Owner

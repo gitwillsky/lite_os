@@ -68,6 +68,8 @@ plain!(
     native_abi::TaskRuntime,
     native_abi::TaskStats,
     native_abi::VmarRegion,
+    native_abi::VmarResidentRange,
+    native_abi::VmarMappingStats,
     native_abi::VmoInfo,
     native_abi::BtiInfo,
     native_abi::SystemMemoryStats,

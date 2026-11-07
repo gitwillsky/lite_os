@@ -341,6 +341,32 @@ impl Vmar {
     pub fn region(&self) -> Result<VmarRegion, Status> {
         self.info(native_abi::info::VMAR)
     }
+
+    /// 查询本 VMAR 实际安装的用户翻译，返回按地址排序、互不重叠的驻留区间。
+    ///
+    /// 不触发内容缺页，不计仅有 backing 而未安装的页；成员不包含共享服务区。
+    ///
+    /// # Errors
+    ///
+    /// 缺少 `INSPECT`、VMAR 已销毁，或快照/输出缓冲分配失败。
+    pub fn resident_ranges(
+        &self,
+    ) -> Result<alloc::vec::Vec<native_abi::VmarResidentRange>, Status> {
+        self.info_array(native_abi::info::VMAR_RESIDENCY)
+    }
+
+    /// 查询本 VMAR 各映射的 RAM 驻留与比例归属，按虚拟地址排序。
+    ///
+    /// 不报告物理地址，不触发内容缺页；跨地址空间的映射次数为瞬时观测。
+    ///
+    /// # Errors
+    ///
+    /// 缺少 `INSPECT`、VMAR 已销毁，或观测索引/输出缓冲分配失败。
+    pub fn mapping_statistics(
+        &self,
+    ) -> Result<alloc::vec::Vec<native_abi::VmarMappingStats>, Status> {
+        self.info_array(native_abi::info::VMAR_MAPPING_STATS)
+    }
 }
 
 impl Pager {

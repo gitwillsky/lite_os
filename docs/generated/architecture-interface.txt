@@ -4945,9 +4945,9 @@ system/linuxd/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 system/linuxd/src/fs/mod.rs :: pub (crate) use memory_file :: { MemoryFile , charged_pages as memory_file_pages }
 system/linuxd/src/fs/mod.rs :: pub (crate) use mount :: { CallerFiles , CreatedFileSystem , CurrentRequester , FileSystemType , MountEnvironment , MountRequest , Requester , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
-system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , sync_all , sync_inode , truncate , }
+system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , mapping_file , sync_all , sync_inode , truncate , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
-system/linuxd/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
+system/linuxd/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcMapping , ProcMemoryMaps , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use storage_open :: { BackingFile , BackingOpen , DirectIo , StorageOpen }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_net :: { NetLinkSnapshot , NetLinkSource }
@@ -5013,7 +5013,8 @@ system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryIno
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Remote (remote_file :: RemoteWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
-system/linuxd/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > , owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > > , may_write : bool , shared : bool , write : bool ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
+system/linuxd/src/fs/page_cache.rs :: pub (crate) fn mapping (opened : Arc < super :: OpenedFile > , owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > > , may_write : bool , shared : bool , write : bool ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
+system/linuxd/src/fs/page_cache.rs :: pub (crate) fn mapping_file (mapping : & dyn SharedFileMapping ,) -> Result < Arc < super :: OpenedFile > , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64 , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) struct CachedFile
@@ -5148,6 +5149,7 @@ system/linuxd/src/fs/procfs.rs :: pub (crate) enum ProcSnapshotScope
 system/linuxd/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
 system/linuxd/src/fs/procfs.rs :: pub (crate) struct ProcTaskIdentity
 system/linuxd/src/fs/procfs.rs :: pub (crate) trait ProcSource
+system/linuxd/src/fs/procfs.rs :: pub (crate) use maps :: { ProcMapping , ProcMemoryMaps }
 system/linuxd/src/fs/procfs.rs :: pub (crate) use networking :: { ProcNetworkSnapshot , ProcRouteSnapshot }
 system/linuxd/src/fs/procfs.rs :: pub (crate) use snapshot :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcThreadSnapshot , }
 system/linuxd/src/fs/procfs.rs :: pub (super) struct ProcFileSystemType
@@ -5161,6 +5163,7 @@ system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn current_time_offsets (&
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn kernel_command_line (& self) -> & [u8]
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn mapped_memory (& self) -> Result < crate :: memory :: MappedMemory , FileSystemError >
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn network_snapshot (& self , target : & crate :: net :: NetNamespace ,) -> Result < Vec < ProcNetworkSnapshot > , FileSystemError >
+system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn open_memory_maps (& self , tid : usize) -> Result < Arc < dyn ProcMemoryMaps > , FileSystemError >
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn previous_panic (& self) -> Option < & 'static [u8] >
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn process_directory (& self , tid : usize , kind : ProcDirectory ,) -> Result < Option < Arc < OpenedFile > > , FileSystemError >
 system/linuxd/src/fs/procfs.rs :: trait ProcSource :: fn process_identities (& self , view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < Arc < crate :: namespace :: PidIdentity > > , FileSystemError >
@@ -5200,9 +5203,22 @@ system/linuxd/src/fs/procfs/lookup.rs :: pub (super) fn decimal_name (value : us
 system/linuxd/src/fs/procfs/lookup.rs :: pub (super) fn find_process (snapshot : & ProcSnapshot , pid : usize ,) -> Result < & ProcProcessSnapshot , FileSystemError >
 system/linuxd/src/fs/procfs/lookup.rs :: pub (super) fn find_thread (process : & ProcProcessSnapshot , tid : usize ,) -> Result < & ProcThreadSnapshot , FileSystemError >
 system/linuxd/src/fs/procfs/lookup.rs :: pub (super) fn parse_pid (name : & [u8]) -> Option < usize >
+system/linuxd/src/fs/procfs/lookup.rs :: pub (super) impl ProcInode :: fn lookup_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 system/linuxd/src/fs/procfs/lookup_cache.rs :: pub (super) impl ProcLookupCache :: fn new () -> Self
 system/linuxd/src/fs/procfs/lookup_cache.rs :: pub (super) impl ProcLookupCache :: fn remember (& self , child : & Arc < ProcInode >) -> Result < () , FileSystemError >
 system/linuxd/src/fs/procfs/lookup_cache.rs :: pub (super) struct ProcLookupCache
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: end : usize
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: file : Option < Arc < OpenedFile > >
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: label : Option < & 'static [u8] >
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: name : Option < Arc < [u8] > >
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: offset : u64
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: permissions : [bool ; 3]
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: shared : bool
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: start : usize
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) struct ProcMapping
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) trait ProcMemoryMaps
+system/linuxd/src/fs/procfs/maps.rs :: pub (super) fn contents (mappings : & [ProcMapping] , root : & Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
+system/linuxd/src/fs/procfs/maps.rs :: trait ProcMemoryMaps :: fn snapshot (& self) -> Result < Vec < ProcMapping > , FileSystemError >
 system/linuxd/src/fs/procfs/mount.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource > , pid_namespace : Arc < crate :: namespace :: PidNamespace > ,) -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/fs/procfs/networking.rs :: enum NetworkTable :: Devices
 system/linuxd/src/fs/procfs/networking.rs :: enum NetworkTable :: Routes
@@ -5258,6 +5274,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCwd (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessIo (usize)
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMaps (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMountInfo (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMountStats (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMounts (usize)
@@ -5282,6 +5299,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadComm (usize , usiz
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadCwd (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadDir (usize , usize , ProcThreadDirectory)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadIo (usize , usize)
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMaps (usize , usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMountInfo (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMountStats (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMounts (usize)
@@ -5412,6 +5430,7 @@ system/linuxd/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u6
 system/linuxd/src/fs/procfs/text.rs :: pub (super) fn proc_text (arguments : fmt :: Arguments < '_ >) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/text.rs :: pub (super) impl ProcText :: const fn new () -> Self
 system/linuxd/src/fs/procfs/text.rs :: pub (super) impl ProcText :: fn finish (self) -> Vec < u8 >
+system/linuxd/src/fs/procfs/text.rs :: pub (super) impl ProcText :: fn len (& self) -> usize
 system/linuxd/src/fs/procfs/text.rs :: pub (super) impl ProcText :: fn write_bytes (& mut self , bytes : & [u8]) -> Result < () , FileSystemError >
 system/linuxd/src/fs/procfs/text.rs :: pub (super) struct ProcText
 system/linuxd/src/fs/procfs/time_offsets.rs :: pub (super) fn contents (source : & dyn ProcSource , tid : usize) -> Result < Vec < u8 > , FileSystemError >
@@ -6756,6 +6775,7 @@ system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn classify_
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn data_bytes (& self) -> u64
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn executable_owner (& self) -> Option < Arc < dyn MappedFileOwner > >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn has_user_vma_at_or_after (& self , address : usize) -> bool
+system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn mapping_snapshot (& self) -> Result < Vec < Area > , MemoryError >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn process (& self) -> & Arc < Process >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn trampoline (& self) -> usize
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn try_new (name : & [u8]) -> Result < Self , MemoryError >
@@ -6863,7 +6883,7 @@ system/linuxd/src/memory/mod.rs :: pub (crate) impl MemoryError :: fn is_out_of_
 system/linuxd/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 system/linuxd/src/memory/mod.rs :: pub (crate) use futex :: { FutexAccessError , FutexKey , UserAtomicU32 , UserAtomicU32Op }
 system/linuxd/src/memory/mod.rs :: pub (crate) use initial_stack :: { InitialStack , InitialStackCredentials }
-system/linuxd/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappedMemory , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserMappingRequest , UserMappingSource , UserPageStatistics , }
+system/linuxd/src/memory/mod.rs :: pub (crate) use mm :: { AnonymousRole , Area , Backing , DeviceMappingSource , FileMappingError , FileMappingSource , MappedMemory , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserMappingRequest , UserMappingSource , UserPageStatistics , }
 system/linuxd/src/memory/mod.rs :: pub (crate) use object :: MemoryObject
 system/linuxd/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , SharedFileError , SharedFileId , SharedFileMapping }
 system/linuxd/src/memory/mod.rs :: pub (crate) use shared_memory :: { SharedMemoryBacking , SharedMemoryMappingSource , SharedMemoryMembership , SharedMemoryVma , }
@@ -8418,6 +8438,7 @@ system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessS
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: start_time_us : u64
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: text_pages : usize
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: virtual_pages : usize
+system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) impl AddressSpace :: fn mapping_snapshot (& self ,) -> Result < Vec < crate :: memory :: Area > , MemoryError >
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) impl AddressSpace :: fn process (& self) -> & Arc < native_runtime :: Process >
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) struct AddressSpace
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) struct ProcessStatistics
@@ -8547,6 +8568,7 @@ system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskC
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_inspect_process (& self , target : & super :: Process) -> bool
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_inspect_thread (& self , target : & TaskControlBlock) -> bool
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_inspect_thread_real (& self , target : & TaskControlBlock) -> bool
+system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_read_memory_maps (& self , target : & TaskControlBlock , mm : Arc < super :: AddressSpace > ,) -> bool
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_signal_process (& self , target : & super :: Process) -> bool
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn may_trace_me (& self , target : & TaskControlBlock) -> bool
 system/linuxd/src/task/model/credentials.rs :: pub (in crate :: task) impl TaskControlBlock :: fn proc_inode_owner (& self , mode : u32) -> (u32 , u32)
@@ -9381,6 +9403,7 @@ system/linuxd/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot
 system/linuxd/src/task/process_table/procfs.rs :: pub (crate) fn system_info_snapshot () -> SystemInfoSnapshot
 system/linuxd/src/task/process_table/procfs.rs :: pub (crate) struct KernelProcSource
 system/linuxd/src/task/process_table/procfs.rs :: pub (crate) struct SystemInfoSnapshot
+system/linuxd/src/task/process_table/procfs/memory_maps.rs :: pub (super) fn open (tid : usize) -> Result < Arc < dyn ProcMemoryMaps > , FileSystemError >
 system/linuxd/src/task/process_table/ptrace.rs :: enum PtraceError :: Interrupted
 system/linuxd/src/task/process_table/ptrace.rs :: enum PtraceError :: Invalid
 system/linuxd/src/task/process_table/ptrace.rs :: enum PtraceError :: Io

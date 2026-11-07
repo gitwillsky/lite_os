@@ -6,6 +6,7 @@ members = [
     "abi/native-abi",
     "libraries/fallible-tree",
     "libraries/mmio",
+    "libraries/span-heap",
     "system/native-runtime",
     "system/service-sync",
     "system/service-rpc",

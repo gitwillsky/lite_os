@@ -1,4 +1,4 @@
-//! Fixed driver request slots、descriptor identity 与 capacity wait 的共同 owner。
+//! Request slot、descriptor credits、completion identity 与 FIFO capacity wait 的共同 owner。
 
 use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
@@ -48,6 +48,7 @@ impl CompletionClaim {
 /// slot capacity waiter、completion handshake 与 handoff result 的唯一 owner。
 pub(crate) struct CapacityWait {
     key: IoWaitKey,
+    descriptors: usize,
     completion: IoCompletion,
     target: Arc<dyn IoWaitTarget>,
     // OWNER: wait node 独占单次 slot handoff/terminal failure result。缺失该 result 会使
@@ -56,11 +57,12 @@ pub(crate) struct CapacityWait {
 }
 
 impl CapacityWait {
-    fn new(key: IoWaitKey, target: Arc<dyn IoWaitTarget>) -> Self {
+    fn new(key: IoWaitKey, descriptors: usize, target: Arc<dyn IoWaitTarget>) -> Self {
         let completion = IoCompletion::new();
         completion.reset();
         Self {
             key,
+            descriptors,
             completion,
             target,
             outcome: Mutex::new(None),
@@ -130,6 +132,16 @@ impl CapacityWake {
     pub(crate) fn wake(self) {
         self.target.wake(self.request);
     }
+
+    /// 在 owner 锁外唤醒已授予的等待者，再逐个取得剩余可满足的 FIFO handoff。
+    ///
+    /// 不分配 wake 数组；`next` 只在前一个 wake 已完成后调用，并负责检查 adapter 是否失效。
+    pub(crate) fn drain(mut wake: Option<Self>, mut next: impl FnMut() -> Option<Self>) {
+        while let Some(current) = wake {
+            current.wake();
+            wake = next();
+        }
+    }
 }
 
 /// owner 锁外预分配、尚未发布的 capacity waiter 与 FIFO index node。
@@ -144,6 +156,7 @@ impl PreparedCapacityWait {
     /// # Parameters
     ///
     /// - `key`: owner 已签发的 capacity wait key。
+    /// - `descriptors`: 本次请求实际需要的 descriptor 数；与首次 reserve 参数一致。
     /// - `target`: current task 的 scheduler adapter；冷启动期为 `None`。
     ///
     /// # Returns
@@ -155,9 +168,10 @@ impl PreparedCapacityWait {
     /// Arc 或 ordered-index node 分配失败返回 `OutOfMemory`；非 capacity key fail-stop。
     pub(crate) fn try_new(
         key: IoWaitKey,
+        descriptors: usize,
         target: Arc<dyn IoWaitTarget>,
     ) -> Result<Self, RequestOwnerError> {
-        let waiter = Arc::try_new(CapacityWait::new(key, target))
+        let waiter = Arc::try_new(CapacityWait::new(key, descriptors, target))
             .map_err(|_| RequestOwnerError::OutOfMemory)?;
         let crate::io_completion::IoWaitKind::Capacity(ticket) = key.kind else {
             panic!("request key used for capacity wait")
@@ -184,10 +198,21 @@ pub(crate) enum CommitOrWait {
     Waiting(Arc<CapacityWait>),
 }
 
+/// 一个 slot 的唯一预留记录；generation 为零表示空闲，其余字段不在 adapter 中复制。
+struct SlotState {
+    generation: u64,
+    descriptors: u32,
+    next_free: Option<u16>,
+}
+
 /// 固定 slot lifecycle、descriptor-head projection 与 FIFO capacity membership。
 pub(crate) struct RequestOwner {
     by_head: Vec<Option<RequestIdentity>>,
-    free_slots: Vec<u16>,
+    slots: Vec<SlotState>,
+    free_slot: Option<u16>,
+    // OWNER: 与 slot 预留同一事务扣除/归还；不从尚未发布的 descriptor 链推算容量。
+    // 缺失时多个已取得 slot 的 scatter-gather 请求可在 publication 时争抢同一份描述符容量。
+    available_descriptors: usize,
     next_generation: u64,
     // OWNER: 本对象是 capacity membership 的唯一 FIFO index；release 必须先摘除再 wake。
     capacity_waiters: FallibleMap<u64, Arc<CapacityWait>>,
@@ -210,17 +235,26 @@ impl RequestOwner {
     ///
     /// # Errors
     ///
-    /// `by_head` 或 `free_slots` 分配失败以 `None` 表示，不发布部分 owner。
+    /// slot/descriptor 数量不可表示或 storage 分配失败以 `None` 表示，不发布部分 owner。
     pub(crate) fn new(queue_size: usize, slots: usize, device: IoDevice) -> Option<Self> {
+        if slots == 0 || slots > queue_size || queue_size > usize::from(u16::MAX) + 1 {
+            return None;
+        }
         let mut by_head = Vec::new();
         by_head.try_reserve_exact(queue_size).ok()?;
         by_head.resize(queue_size, None);
-        let mut free_slots = Vec::new();
-        free_slots.try_reserve_exact(slots).ok()?;
-        free_slots.extend((0..slots).map(|slot| slot as u16));
+        let mut states = Vec::new();
+        states.try_reserve_exact(slots).ok()?;
+        states.extend((0..slots).map(|slot| SlotState {
+            generation: 0,
+            descriptors: 0,
+            next_free: (slot + 1 < slots).then_some((slot + 1) as u16),
+        }));
         Some(Self {
             by_head,
-            free_slots,
+            slots: states,
+            free_slot: Some(0),
+            available_descriptors: queue_size,
             next_generation: 1,
             capacity_waiters: FallibleMap::new(),
             next_capacity_ticket: 1,
@@ -228,16 +262,29 @@ impl RequestOwner {
         })
     }
 
-    fn reserve(&mut self) -> Option<RequestIdentity> {
-        let slot = self.free_slots.pop()?;
+    fn reserve(&mut self, descriptors: usize) -> Option<RequestIdentity> {
+        assert!(
+            descriptors != 0 && descriptors <= self.by_head.len(),
+            "invalid request descriptor footprint"
+        );
+        if descriptors > self.available_descriptors {
+            return None;
+        }
+        let slot = self.free_slot?;
         let generation = self.next_generation;
         self.next_generation = generation
             .checked_add(1)
             .expect("driver request generation exhausted");
+        let state = &mut self.slots[slot as usize];
+        assert_eq!(state.generation, 0, "reserved slot remains on free list");
+        self.free_slot = state.next_free.take();
+        state.generation = generation;
+        state.descriptors = descriptors as u32;
+        self.available_descriptors -= descriptors;
         Some(RequestIdentity { slot, generation })
     }
 
-    /// 预留空闲 slot，或签发锁外 waiter preparation ticket。
+    /// 原子预留空闲 slot 与 `descriptors` 个 credit，或签发锁外 waiter preparation ticket。
     ///
     /// # Returns
     ///
@@ -246,8 +293,14 @@ impl RequestOwner {
     /// # Errors
     ///
     /// 不返回错误；generation 或 ticket 耗尽时 fail-stop。
-    pub(crate) fn reserve_or_wait(&mut self) -> ReserveOrWait {
-        if let Some(identity) = self.reserve() {
+    pub(crate) fn reserve_or_wait(&mut self, descriptors: usize) -> ReserveOrWait {
+        assert!(
+            descriptors != 0 && descriptors <= self.by_head.len(),
+            "invalid request descriptor footprint"
+        );
+        if self.capacity_waiters.is_empty()
+            && let Some(identity) = self.reserve(descriptors)
+        {
             return ReserveOrWait::Reserved(identity);
         }
         let ticket = self.next_capacity_ticket;
@@ -287,7 +340,15 @@ impl RequestOwner {
         &mut self,
         prepared: PreparedCapacityWait,
     ) -> CommitOrWait {
-        if let Some(identity) = self.reserve() {
+        assert!(
+            prepared.waiter.descriptors != 0 && prepared.waiter.descriptors <= self.by_head.len(),
+            "invalid prepared descriptor footprint"
+        );
+        let first_in_fifo = self
+            .capacity_waiters
+            .first_key_value()
+            .is_none_or(|(ticket, _)| prepared.entry.key() < ticket);
+        if first_in_fifo && let Some(identity) = self.reserve(prepared.waiter.descriptors) {
             return CommitOrWait::Reserved(identity);
         }
         let PreparedCapacityWait { waiter, entry } = prepared;
@@ -306,6 +367,12 @@ impl RequestOwner {
     ///
     /// head 越界或覆盖 live mapping 时 fail-stop。
     pub(crate) fn publish(&mut self, head: u16, identity: RequestIdentity) {
+        let state = &self.slots[identity.slot as usize];
+        assert_ne!(state.generation, 0, "publication without reserved slot");
+        assert_eq!(
+            state.generation, identity.generation,
+            "stale request publication"
+        );
         assert!(self.by_head[head as usize].replace(identity).is_none());
     }
 
@@ -369,11 +436,21 @@ impl RequestOwner {
     }
 
     fn release_slot(&mut self, identity: RequestIdentity) {
-        assert!(
-            !self.free_slots.contains(&identity.slot),
-            "driver request slot released twice"
+        let slot = &mut self.slots[identity.slot as usize];
+        assert_ne!(slot.generation, 0, "driver request slot released twice");
+        assert_eq!(
+            slot.generation, identity.generation,
+            "stale request slot release"
         );
-        self.free_slots.push(identity.slot);
+        self.available_descriptors += slot.descriptors as usize;
+        assert!(
+            self.available_descriptors <= self.by_head.len(),
+            "descriptor credits released twice"
+        );
+        slot.generation = 0;
+        slot.descriptors = 0;
+        slot.next_free = self.free_slot;
+        self.free_slot = Some(identity.slot);
     }
 
     /// 释放 caller 已消费的 slot，不执行 capacity handoff。
@@ -407,18 +484,24 @@ impl RequestOwner {
         identity: RequestIdentity,
     ) -> Option<CapacityWake> {
         self.release_slot(identity);
-        let ticket = self
-            .capacity_waiters
-            .first_key_value()
-            .map(|(key, _)| *key)?;
-        let waiter = self
-            .capacity_waiters
-            .remove(&ticket)
-            .expect("capacity waiter disappeared");
-        let granted = self
-            .reserve()
-            .expect("released slot must satisfy capacity waiter");
-        waiter.publish(Ok(granted))
+        self.handoff_next()
+    }
+
+    /// 只授予能同时取得 slot 与 descriptor credits 的 FIFO 头；不足时保留等待登记。
+    /// 未进入睡眠的 waiter 不需要 wake，继续授予下一位，直到产生锁外 wake 或容量不足。
+    pub(crate) fn handoff_next(&mut self) -> Option<CapacityWake> {
+        loop {
+            let (&ticket, waiter) = self.capacity_waiters.first_key_value()?;
+            let descriptors = waiter.descriptors;
+            let granted = self.reserve(descriptors)?;
+            let waiter = self
+                .capacity_waiters
+                .remove(&ticket)
+                .expect("capacity waiter disappeared");
+            if let Some(wake) = waiter.publish(Ok(granted)) {
+                return Some(wake);
+            }
+        }
     }
 
     /// 从 terminal failure drain 摘取最旧 capacity waiter。
@@ -462,15 +545,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_capacity_and_descriptor_identity_are_single_owned() {
-        let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
-        let ReserveOrWait::Reserved(first) = owner.reserve_or_wait() else {
+    fn slot_and_descriptor_capacity_and_identity_are_single_owned() {
+        let mut owner = RequestOwner::new(8, 3, IoDevice::allocate()).unwrap();
+        let ReserveOrWait::Reserved(first) = owner.reserve_or_wait(6) else {
             panic!("first slot missing")
         };
-        let ReserveOrWait::Reserved(second) = owner.reserve_or_wait() else {
+        let ReserveOrWait::Reserved(second) = owner.reserve_or_wait(2) else {
             panic!("second slot missing")
         };
-        assert!(matches!(owner.reserve_or_wait(), ReserveOrWait::Prepare(_)));
+        assert!(matches!(
+            owner.reserve_or_wait(1),
+            ReserveOrWait::Prepare(_)
+        ));
         owner.publish(5, first);
         owner.publish(1, second);
         let second_claim = owner.claim_completion(1).unwrap();
@@ -479,13 +565,14 @@ mod tests {
         assert_eq!(owner.accept_completion(first_claim), first);
         owner.release_without_handoff(first);
         owner.release_without_handoff(second);
-        assert_eq!(owner.free_slots.len(), 2);
+        assert!(owner.slots.iter().all(|slot| slot.generation == 0));
+        assert_eq!(owner.available_descriptors, 8);
     }
 
     #[test]
     fn rejected_completion_is_drained_and_released_exactly_once() {
         let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
-        let ReserveOrWait::Reserved(identity) = owner.reserve_or_wait() else {
+        let ReserveOrWait::Reserved(identity) = owner.reserve_or_wait(1) else {
             panic!("slot missing")
         };
         owner.publish(3, identity);
@@ -495,24 +582,29 @@ mod tests {
         assert_eq!(owner.pop_outstanding(), None);
         assert!(owner.claim_completion(3).is_none());
         owner.release_without_handoff(identity);
-        assert_eq!(owner.free_slots.len(), 2);
+        assert!(owner.slots.iter().all(|slot| slot.generation == 0));
+        assert_eq!(owner.available_descriptors, 8);
     }
 
     #[test]
     fn terminal_failure_publishes_capacity_outcome_without_leaking_slot() {
-        let mut owner = RequestOwner::new(8, 1, IoDevice::allocate()).unwrap();
-        let ReserveOrWait::Reserved(active) = owner.reserve_or_wait() else {
+        let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
+        let ReserveOrWait::Reserved(active) = owner.reserve_or_wait(6) else {
             panic!("slot missing")
         };
-        let ReserveOrWait::Prepare(ticket) = owner.reserve_or_wait() else {
+        let ReserveOrWait::Prepare(ticket) = owner.reserve_or_wait(4) else {
             panic!("full owner must prepare wait")
         };
         let key = owner.capacity_key(ticket);
         let prepared =
-            PreparedCapacityWait::try_new(key, super::super::current_wait_target()).unwrap();
+            PreparedCapacityWait::try_new(key, 4, super::super::current_wait_target()).unwrap();
         let CommitOrWait::Waiting(waiter) = owner.commit_wait_or_reserve(prepared) else {
             panic!("capacity unexpectedly appeared")
         };
+        assert!(
+            owner.handoff_next().is_none(),
+            "free slot cannot replace missing descriptor credits"
+        );
         let failed = owner.pop_capacity_waiter().unwrap();
         assert!(
             failed
@@ -522,6 +614,7 @@ mod tests {
         waiter.wait();
         assert_eq!(waiter.take_outcome(), Err(RequestOwnerError::DeviceFailed));
         owner.release_without_handoff(active);
-        assert_eq!(owner.free_slots.len(), 1);
+        assert!(owner.slots.iter().all(|slot| slot.generation == 0));
+        assert_eq!(owner.available_descriptors, 8);
     }
 }

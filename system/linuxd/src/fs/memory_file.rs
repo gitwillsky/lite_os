@@ -7,7 +7,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use fallible_tree::{FallibleMap, VacantEntry};
-use native_runtime::{Pager, Vmo};
+use native_runtime::Pager;
+use pager_pool::SupplyBuffer;
 
 use native_runtime::native_abi::vmo;
 
@@ -19,7 +20,7 @@ mod seals;
 use seals::{SealError, Seals};
 
 /// 限制辅助 VMO 的工作集；批量供页减少大块预分配逐页跨越 native ABI 的开销。
-const ZERO_SUPPLY_PAGES: usize = 32;
+const ZERO_SUPPLY_PAGES: usize = pager_pool::SUPPLY_BYTES / PAGE_SIZE;
 
 struct State {
     seals: Seals,
@@ -255,31 +256,15 @@ impl MemoryFile {
         pager: &Pager,
         index: u64,
         pages: usize,
-        aux: &mut Option<Vmo>,
+        aux: &mut Option<SupplyBuffer>,
     ) -> Result<(), FileSystemError> {
-        let length = (pages * PAGE_SIZE) as u64;
-        if aux
-            .as_ref()
-            .is_none_or(|vmo| vmo.size().unwrap_or(0) < length)
-        {
-            *aux = Some(
-                Vmo::create((ZERO_SUPPLY_PAGES * PAGE_SIZE) as u64, 0)
-                    .map_err(|_| FileSystemError::OutOfMemory)?,
-            );
-        }
-        let aux = aux.as_ref().expect("auxiliary VMO created above");
-        // 工作池也供持久文件读取使用；清除旧内容后提交零页。成功 supply 会移走源页，
-        // 失败留下的源页也会在下次使用前清零，不能把另一文件的内容交给内存文件。
-        if pages == 1 {
-            // 普通单页缺页保留一次写入的路径，批量优化不增加它的 native 调用次数。
-            aux.write(&[0; PAGE_SIZE], 0)
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-        } else {
-            aux.op_range(vmo::OP_ZERO, 0, length)
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-        }
-        pager
-            .supply_pages(self.object.vmo(), index * PAGE_SIZE as u64, length, aux, 0)
+        let length = pages * PAGE_SIZE;
+        let buffer = SupplyBuffer::acquire(aux).map_err(|_| FileSystemError::OutOfMemory)?;
+        // 工作池也供持久文件读取使用，暂存区可能留有另一文件的内容（成功 supply 会移走页，
+        // 失败不会）；清零后再移交，不能把别的文件内容交给内存文件。
+        buffer.bytes(length).fill(0);
+        buffer
+            .supply(pager, self.object.vmo(), index * PAGE_SIZE as u64, length as u64)
             .map_err(|_| FileSystemError::OutOfMemory)
     }
 
@@ -288,7 +273,7 @@ impl MemoryFile {
         state: &mut State,
         pager: &Pager,
         index: u64,
-        aux: &mut Option<Vmo>,
+        aux: &mut Option<SupplyBuffer>,
     ) -> Result<(), FileSystemError> {
         if state.pages.contains_key(&index) {
             return Ok(());
@@ -490,7 +475,13 @@ impl Drop for MemoryFile {
 }
 
 impl super::pager::PageSource for MemoryFile {
-    fn page_request(&self, pager: &Pager, offset: u64, length: u64, aux: &mut Option<Vmo>) {
+    fn page_request(
+        &self,
+        pager: &Pager,
+        offset: u64,
+        length: u64,
+        aux: &mut Option<SupplyBuffer>,
+    ) {
         let result = self.state().and_then(|mut state| {
             for index in offset / PAGE_SIZE as u64..pages_for(offset + length) {
                 if index >= pages_for(self.size()) {

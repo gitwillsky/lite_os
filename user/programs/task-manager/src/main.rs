@@ -203,11 +203,16 @@ impl View {
             },
             liteos_ui::Column {
                 id: 6,
-                title: "内存",
+                title: "专用内存",
                 width: 92,
             },
             liteos_ui::Column {
                 id: 7,
+                title: "共享内存",
+                width: 92,
+            },
+            liteos_ui::Column {
+                id: 8,
                 title: "线程",
                 width: 45,
             },
@@ -606,7 +611,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|argument| argument == "--snapshot")
     {
         let (_, Sample { rows, services, .. }) = Sampler::new().sample(Page::Services);
-        println!("系统服务\tKOID\t状态\tCPU\t累计 CPU 时间\t内存\t线程");
+        println!("系统服务\tKOID\t状态\tCPU\t累计 CPU 时间\t专用内存\t共享内存\t线程");
         for service in &services.rows {
             println!("{}", service.text(service.name()));
         }

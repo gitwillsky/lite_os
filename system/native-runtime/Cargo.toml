@@ -9,6 +9,7 @@ bench = false
 
 [dependencies]
 native-abi = { path = "../../abi/native-abi" }
+span-heap = { path = "../../libraries/span-heap" }
 
 [lints]
 workspace = true

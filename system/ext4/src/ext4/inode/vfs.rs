@@ -69,7 +69,6 @@ impl Ext4Inode {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<usize, FileSystemError> {
-        let mut done = 0usize;
         let size = usize::try_from(self.disk.lock().size())
             .map_err(|_| FileSystemError::InvalidOperation)?;
         let offset = usize::try_from(offset).map_err(|_| FileSystemError::InvalidOperation)?;
@@ -78,32 +77,46 @@ impl Ext4Inode {
         }
         let to_read = cmp::min(buf.len(), size - offset);
         let bs = self.fs.block_size;
+        // 1. 遍历 extent：hole 与 unwritten 立即补零，同一 extent 内连续的完整对齐块记为一段，
+        //    首尾不对齐的块同步读取后截取。
+        // 2. 收集到的各段（可能分属不同 extent）作为一批提交，设备并发处理，
+        //    避免碎片化文件的 extent 间逐段往返。
+        let mut rest: &mut [u8] = &mut buf[..to_read];
+        let mut runs: Vec<(u64, &mut [u8])> = Vec::new();
         let mut cur_off = offset;
-        while done < to_read {
+        while !rest.is_empty() {
             let blk_index = (cur_off / bs) as u32;
             let blk_off = cur_off % bs;
-            let blk = self.map_block_sparse(blk_index)?;
-            let n = cmp::min(bs - blk_off, to_read - done);
-            let Some(blk) = blk else {
+            let n = cmp::min(bs - blk_off, rest.len());
+            let Some((blk, run_blocks)) = self.map_run(blk_index)? else {
                 // hole 与 unwritten extent 都读为零。
-                buf[done..done + n].fill(0);
-                done += n;
+                let (head, tail) = core::mem::take(&mut rest).split_at_mut(n);
+                head.fill(0);
+                rest = tail;
                 cur_off += n;
                 continue;
             };
             if blk_off == 0 && n == bs {
-                // 完整对齐块直接读入 caller，避免 page-cache miss 为每个块分配并复制 Vec。
-                self.fs.read_fs_block(blk, &mut buf[done..done + n])?;
-            } else {
-                // Read from actual block
-                let mut b = try_zeroed(bs)?;
-                self.fs.read_fs_block(blk, &mut b)?;
-                buf[done..done + n].copy_from_slice(&b[blk_off..blk_off + n]);
+                let blocks = cmp::min(run_blocks, (rest.len() / bs) as u64) as usize;
+                let (head, tail) = core::mem::take(&mut rest).split_at_mut(blocks * bs);
+                runs.try_reserve(1)
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                runs.push((blk, head));
+                rest = tail;
+                cur_off += blocks * bs;
+                continue;
             }
-            done += n;
+            let mut b = try_zeroed(bs)?;
+            self.fs.read_fs_block(blk, &mut b)?;
+            let (head, tail) = core::mem::take(&mut rest).split_at_mut(n);
+            head.copy_from_slice(&b[blk_off..blk_off + n]);
+            rest = tail;
             cur_off += n;
         }
-        Ok(done)
+        if !runs.is_empty() {
+            self.fs.read_fs_runs(&mut runs)?;
+        }
+        Ok(to_read)
     }
 
     /// 读访问后按 relatime 更新 atime。

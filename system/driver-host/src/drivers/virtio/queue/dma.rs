@@ -152,6 +152,7 @@ impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
             source: DmaSource::Mapped(&self.storage.segments),
             range: 0..length,
             device_writable: true,
+            segment_limit: u32::MAX as usize,
         }
     }
 
@@ -238,6 +239,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
             source: DmaSource::Mapped(self.segments()),
             range: 0..SIZE,
             device_writable,
+            segment_limit: u32::MAX as usize,
         }
     }
 
@@ -253,6 +255,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
             source: DmaSource::Mapped(self.segments()),
             range,
             device_writable,
+            segment_limit: u32::MAX as usize,
         })
     }
 }
@@ -292,6 +295,8 @@ pub(in crate::drivers::virtio) struct DmaSlice<'mapping> {
     source: DmaSource<'mapping>,
     range: Range<usize>,
     device_writable: bool,
+    // OWNER: 本视图允许的单个 descriptor 长度；由协商的设备限制缩小，不改变 backing 或 pin。
+    segment_limit: usize,
 }
 
 /// descriptor segment 的来源：固定 buffer 的 cached 区段，或已固定的 device backing 区段。
@@ -331,32 +336,55 @@ impl DmaSource<'_> {
 
 #[cfg(not(test))]
 impl<'mapping> DmaSlice<'mapping> {
-    /// 投影 device backing 的只读前缀；backing 必须已以本设备 BTI 固定，并由 slot 保活到 used ring
-    /// 归还 descriptor。
+    /// 投影已固定 device backing 的字节区间；backing 由 request owner 保活到完成或复位。
+    ///
+    /// `device_writable` 指定设备可写该区间（块读等设备输出）；缺失该方向时设备不能合法写入客户端 VMO。
     ///
     /// # Errors
     ///
     /// 空范围或超过 backing 容量返回 `InvalidRange`。
     pub(in crate::drivers::virtio) fn backing(
         backing: &'mapping DeviceBacking,
-        length: usize,
+        range: Range<usize>,
+        device_writable: bool,
     ) -> Result<Self, DmaMappingError> {
-        if length == 0 || length > backing.pages().saturating_mul(PAGE_SIZE) {
+        if range.start >= range.end || range.end > backing.pages().saturating_mul(PAGE_SIZE) {
             return Err(DmaMappingError::InvalidRange);
         }
         Ok(Self {
             source: DmaSource::Backing(backing),
-            range: 0..length,
-            device_writable: false,
+            range,
+            device_writable,
+            segment_limit: u32::MAX as usize,
         })
     }
 }
 
 impl DmaSlice<'_> {
-    pub(super) fn segment_count(&self) -> usize {
+    /// 应用设备协商的单 segment 字节上限；零上限无法形成有效 DMA 链。
+    pub(in crate::drivers::virtio) fn limit_segment_size(
+        mut self,
+        maximum: usize,
+    ) -> Result<Self, DmaMappingError> {
+        if maximum == 0 {
+            return Err(DmaMappingError::InvalidRange);
+        }
+        self.segment_limit = maximum.min(u32::MAX as usize);
+        Ok(self)
+    }
+
+    pub(in crate::drivers::virtio) fn length(&self) -> usize {
+        self.range.end - self.range.start
+    }
+
+    pub(in crate::drivers::virtio) fn segment_count(&self) -> usize {
         let mut count = 0;
         self.source.for_each(|segment| {
-            count += usize::from(segment_overlaps(&segment, &self.range));
+            if segment_overlaps(&segment, &self.range) {
+                let start = segment.offset.max(self.range.start);
+                let end = (segment.offset + segment.length).min(self.range.end);
+                count += (end - start).div_ceil(self.segment_limit);
+            }
         });
         count
     }
@@ -366,13 +394,17 @@ impl DmaSlice<'_> {
             if !segment_overlaps(&segment, &self.range) {
                 return;
             }
-            let start = segment.offset.max(self.range.start);
+            let mut start = segment.offset.max(self.range.start);
             let end = (segment.offset + segment.length).min(self.range.end);
-            visit(
-                segment.device_address + (start - segment.offset) as u64,
-                end - start,
-                self.device_writable,
-            );
+            while start < end {
+                let length = (end - start).min(self.segment_limit);
+                visit(
+                    segment.device_address + (start - segment.offset) as u64,
+                    length,
+                    self.device_writable,
+                );
+                start += length;
+            }
         });
     }
 }
@@ -433,6 +465,7 @@ mod tests {
             source: DmaSource::Mapped(&segments),
             range: 1..4099,
             device_writable: true,
+            segment_limit: u32::MAX as usize,
         };
         assert_eq!(slice.segment_count(), 3);
         let mut observed = Vec::new();
@@ -452,11 +485,13 @@ mod tests {
             source: DmaSource::Mapped(&segments),
             range: 0..2,
             device_writable: false,
+            segment_limit: u32::MAX as usize,
         };
         let second = DmaSlice {
             source: DmaSource::Mapped(&segments),
             range: 2..8196,
             device_writable: true,
+            segment_limit: u32::MAX as usize,
         };
         assert_eq!(
             descriptor_requirement(&[first.clone(), second.clone()], 3),

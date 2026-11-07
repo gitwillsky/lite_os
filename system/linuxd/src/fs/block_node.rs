@@ -63,11 +63,11 @@ impl BlockStore for BlockNode {
     }
 
     fn read_block(&self, block: usize, buffer: &mut [u8]) -> Result<(), BlockError> {
-        self.device.read_block(block, buffer).map(|_| ())
+        self.device.read_blocks(block, buffer).map(|_| ())
     }
 
     fn write_block(&self, block: usize, buffer: &[u8]) -> Result<(), BlockError> {
-        self.device.write_block(block, buffer).map(|_| ())
+        self.device.write_blocks(block, buffer).map(|_| ())
     }
 }
 

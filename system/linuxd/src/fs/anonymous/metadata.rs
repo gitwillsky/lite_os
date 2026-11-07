@@ -43,6 +43,11 @@ impl Metadata {
             }),
         }
     }
+    /// 已分配的 filesystem/inode 身份，不获取属性锁或读取内容。
+    pub(in crate::fs) fn identity(&self) -> (u64, u64) {
+        (self.filesystem.id() as u64, self.inode)
+    }
+
     pub(in crate::fs) fn snapshot(&self, size: u64, blocks: u64) -> InodeMetadata {
         let state = self.state.lock();
         let times = state.times.snapshot();

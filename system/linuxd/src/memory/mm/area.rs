@@ -43,6 +43,7 @@ pub(crate) enum Backing {
     /// 共享匿名：fork 后父子映射同一对象。
     SharedAnonymous {
         object: Arc<MemoryObject>,
+        file: Arc<dyn crate::memory::MappedFileOwner>,
         offset: u64,
     },
     /// 文件私有映射：对象是页缓存的写时复制子对象，`file_offset` 是区间起点对应的文件偏移。
@@ -148,6 +149,34 @@ impl Backing {
     }
 }
 
+/// 映射来源的只读引用；不能克隆 VMA membership，否则一次观察也会改变 SysV nattch/时间。
+pub(crate) enum MappingBacking {
+    Anonymous(AnonymousRole),
+    File {
+        mapping: Arc<dyn crate::memory::SharedFileMapping>,
+        offset: u64,
+    },
+    Device {
+        file: Option<Arc<dyn crate::memory::MappedFileOwner>>,
+        offset: u64,
+    },
+    SharedMemory {
+        file: Arc<dyn crate::memory::MappedFileOwner>,
+        offset: u64,
+    },
+}
+
+/// 脱离 MM 锁使用的映射描述；只保活内容提供者，不创建另一份可修改 VMA 或附加成员关系。
+pub(crate) struct MappingSnapshot {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) permission: MapPermission,
+    pub(crate) shared: bool,
+    pub(crate) backing: MappingBacking,
+    pub(crate) name: Option<Arc<[u8]>>,
+    pub(crate) statistics: super::MappingStatistics,
+}
+
 /// 一个 VMA。
 #[derive(Debug, Clone)]
 pub(crate) struct Area {
@@ -161,6 +190,51 @@ pub(crate) struct Area {
 }
 
 impl Area {
+    /// 只复制标量与 Arc；不调用 Backing/SharedMemoryMembership::clone，也不复制设备 owner Vec。
+    pub(crate) fn observe(&self) -> MappingSnapshot {
+        let backing = match &self.backing {
+            Backing::Anonymous { role, .. } => MappingBacking::Anonymous(*role),
+            Backing::PrivateFile {
+                source,
+                file_offset,
+                ..
+            } => MappingBacking::File {
+                mapping: source.mapping.clone(),
+                offset: *file_offset,
+            },
+            Backing::SharedFile { source, offset, .. } => MappingBacking::File {
+                mapping: source.mapping.clone(),
+                offset: *offset,
+            },
+            Backing::Device { source, offset } => MappingBacking::Device {
+                file: source.file.clone(),
+                // file offset 与 VMO 窗口独立；split 只前移后者。Linux maps 以 pgoff 左移投影 u64，
+                // 超出字节表示范围时按无符号整数截断，不把可映射的设备区间改报成文件溢出。
+                offset: source
+                    .file_offset
+                    .wrapping_add(*offset - (source.page_offset * crate::memory::PAGE_SIZE) as u64),
+            },
+            Backing::SystemV { source, offset } => MappingBacking::SharedMemory {
+                file: source.source.backing.file(),
+                offset: *offset,
+            },
+            Backing::SharedAnonymous { file, offset, .. } => MappingBacking::SharedMemory {
+                file: file.clone(),
+                offset: *offset,
+            },
+            Backing::Trampoline { .. } => MappingBacking::Anonymous(AnonymousRole::Plain),
+        };
+        MappingSnapshot {
+            start: self.start,
+            end: self.end,
+            permission: self.permission,
+            shared: self.backing.is_shared(),
+            backing,
+            name: self.name.clone(),
+            statistics: super::MappingStatistics::default(),
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.end - self.start
     }
