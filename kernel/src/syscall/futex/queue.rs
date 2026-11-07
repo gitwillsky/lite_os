@@ -3,7 +3,7 @@
 //! 不含锁、线程与用户内存：桶锁、用户值比较和睡眠在上层；这里只在“已持有桶锁”的前提下改写表，
 //! 因此可以脱离内核做宿主单测与基准。
 
-use fallible_tree::FallibleMap;
+use fallible_tree::{FallibleMap, VacantEntry};
 
 /// 一个 futex 的身份：私有按（空间, 虚拟地址），共享按（VMO, 字节偏移）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,23 +31,65 @@ impl FutexKey {
     }
 }
 
-/// 一个桶：等待者按（key, 登记序号）排序，同 key 内先入先出。
-pub(crate) type Table<W> = FallibleMap<(FutexKey, u64), W>;
+/// 等待者在桶内的位置：（key, 登记序号）。序号单调递增，同 key 内先入先出。
+pub(crate) type Slot = (FutexKey, u64);
+
+/// 一个桶：等待者按 [`Slot`] 排序。
+pub(crate) struct Bucket<W> {
+    waiters: FallibleMap<Slot, W>,
+}
+
+impl<W> Bucket<W> {
+    /// 空桶。
+    pub(crate) const fn new() -> Self {
+        Self {
+            waiters: FallibleMap::new(),
+        }
+    }
+
+    /// 为 `slot` 预分配节点（可失败的一步放在拿桶锁之前）。
+    ///
+    /// # Errors
+    /// 分配失败返回 `Err(())`。
+    pub(crate) fn prepare(slot: Slot, waiter: W) -> Result<VacantEntry<Slot, W>, ()> {
+        FallibleMap::try_prepare(slot, waiter).map_err(|_| ())
+    }
+
+    /// 入队预分配的节点；不分配、不失败。
+    pub(crate) fn enqueue(&mut self, entry: VacantEntry<Slot, W>) {
+        self.waiters.commit_vacant(entry);
+    }
+
+    /// 摘除 `slot` 处的等待者（已被唤醒者不在桶里）。
+    pub(crate) fn remove(&mut self, slot: &Slot) -> Option<W> {
+        self.waiters.remove(slot)
+    }
+
+    /// 桶内等待者数量。
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.waiters.len()
+    }
+
+    /// `key` 的最早登记位置。
+    fn first(&self, key: FutexKey) -> Option<Slot> {
+        self.waiters
+            .ceiling(&(key, 0))
+            .map(|(slot, _)| *slot)
+            .filter(|slot| slot.0 == key)
+    }
+}
 
 /// 摘除并唤醒至多 `count` 个 `key` 的等待者，逐个交给 `wake`；返回实际唤醒数。
 pub(crate) fn wake_locked<W>(
-    table: &mut Table<W>,
+    table: &mut Bucket<W>,
     key: FutexKey,
     count: usize,
     mut wake: impl FnMut(W),
 ) -> u32 {
     let mut woken = 0;
     while (woken as usize) < count {
-        let next = table
-            .ceiling(&(key, 0))
-            .map(|(slot, _)| *slot)
-            .filter(|slot| slot.0 == key);
-        let Some(slot) = next else { break };
+        let Some(slot) = table.first(key) else { break };
         wake(table.remove(&slot).expect("futex waiter vanished"));
         woken += 1;
     }
@@ -78,8 +120,8 @@ pub(crate) trait RequeueHooks<W> {
 ///
 /// `target_table` 为 `None` 表示 `target` 与 `source` 在同一个桶。返回被移动的数量。
 pub(crate) fn requeue_locked<W>(
-    source_table: &mut Table<W>,
-    mut target_table: Option<&mut Table<W>>,
+    source_table: &mut Bucket<W>,
+    mut target_table: Option<&mut Bucket<W>>,
     plan: &Requeue,
     hooks: &mut impl RequeueHooks<W>,
 ) -> usize {
@@ -88,20 +130,19 @@ pub(crate) fn requeue_locked<W>(
     });
     let mut count = 0;
     while count < plan.requeue {
-        let next = source_table
-            .ceiling(&(plan.source, 0))
-            .map(|(slot, _)| *slot)
-            .filter(|slot| slot.0 == plan.source);
-        let Some(slot) = next else { break };
+        let Some(slot) = source_table.first(plan.source) else {
+            break;
+        };
         let mut entry = source_table
+            .waiters
             .take_entry(&slot)
             .expect("futex waiter vanished");
         let position = (plan.target, hooks.next_ticket());
         hooks.moved(entry.value(), position);
         entry.set_key(position);
         match target_table.as_deref_mut() {
-            Some(table) => table.commit_vacant(entry),
-            None => source_table.commit_vacant(entry),
+            Some(table) => table.enqueue(entry),
+            None => source_table.enqueue(entry),
         }
         count += 1;
     }

@@ -704,9 +704,12 @@ pub(crate) struct RestrictedEntry {
     pub(crate) normal: RegisterState,
 }
 
+mod restricted_state;
+pub(crate) use restricted_state::RestrictedStateBinding;
+
 struct Restricted {
-    // OWNER: `restricted_bind_state` 绑定的状态 VMO；进入时读取、退出时写回。
-    state: Option<Arc<Vmo>>,
+    // OWNER: `restricted_bind_state` 绑定的状态；进入时读取、退出时写回。
+    state: Option<Arc<RestrictedStateBinding>>,
     mode: Mode,
     // OWNER: 当前线程登记的 normal-mode 恢复区间，随线程退出退休。没有它时不可恢复的故障按异常处理。
     fault_recovery: Option<[usize; 3]>,
@@ -902,8 +905,14 @@ impl Thread {
     }
 
     /// 绑定 restricted 状态 VMO。
-    pub(crate) fn bind_restricted_state(&self, vmo: Arc<Vmo>) {
-        self.restricted.lock().state = Some(vmo);
+    ///
+    /// # Errors
+    /// 固定状态页或分配失败。
+    pub(crate) fn bind_restricted_state(&self, vmo: Arc<Vmo>) -> Result<(), Status> {
+        let binding =
+            Arc::try_new(RestrictedStateBinding::new(vmo)?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        self.restricted.lock().state = Some(binding);
+        Ok(())
     }
 
     /// 解除绑定。
@@ -912,7 +921,7 @@ impl Thread {
     }
 
     /// 绑定的 restricted 状态 VMO。
-    pub(crate) fn restricted_state(&self) -> Option<Arc<Vmo>> {
+    pub(crate) fn restricted_state(&self) -> Option<Arc<RestrictedStateBinding>> {
         self.restricted.lock().state.clone()
     }
 

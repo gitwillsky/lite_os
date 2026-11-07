@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 
 use native_abi::{ExceptionReport, RestrictedState, Status, rights};
 
-use super::{Call, Outcome, bytes_of};
+use super::{Call, Outcome};
 use crate::object::{Mode, Object, RestrictedEntry};
 use crate::vm::{Vmo, VmoOptions};
 
@@ -34,7 +34,11 @@ pub(super) fn bind_state(call: &Call<'_>) -> Result<(), Status> {
         drop(call.process().handles().remove(handle));
         return Err(status);
     }
-    call.owner.bind_restricted_state(vmo);
+    // 固定状态页：之后进入/退出经内核直接映射拷贝。失败时撤销刚发布的句柄，不留下未绑定的状态 VMO。
+    if let Err(status) = call.owner.bind_restricted_state(vmo) {
+        drop(call.process().handles().remove(handle));
+        return Err(status);
+    }
     Ok(())
 }
 
@@ -61,21 +65,8 @@ pub(super) fn set_fault_recovery(call: &Call<'_>) -> Result<(), Status> {
     call.owner.set_fault_recovery(start, end, resume)
 }
 
-fn read_state(vmo: &Arc<Vmo>) -> Result<RestrictedState, Status> {
-    let mut state = RestrictedState::default();
-    // SAFETY: RestrictedState 是 Plain；按字节写入任意内容都是合法值。
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            (&mut state as *mut RestrictedState).cast::<u8>(),
-            core::mem::size_of::<RestrictedState>(),
-        )
-    };
-    vmo.read(0, bytes).map_err(crate::object::vm_status)?;
-    Ok(state)
-}
-
 pub(super) fn enter(call: &Call<'_>) -> Outcome {
-    let Some(vmo) = call.owner.restricted_state() else {
+    let Some(binding) = call.owner.restricted_state() else {
         return Outcome::Return(native_abi::ERR_BAD_STATE);
     };
     if call
@@ -95,10 +86,7 @@ pub(super) fn enter(call: &Call<'_>) -> Outcome {
         });
         return Outcome::Preserve;
     }
-    let state = match read_state(&vmo) {
-        Ok(state) => state,
-        Err(status) => return Outcome::Return(status),
-    };
+    let state = binding.load();
     let normal = call
         .thread
         .with_user_context(|registers| registers.save_registers());
@@ -146,9 +134,10 @@ pub(super) fn exit(
         registers,
         exception: exception.unwrap_or_default(),
     };
-    let written = owner
-        .restricted_state()
-        .is_some_and(|vmo| vmo.write(0, bytes_of(&state)).is_ok());
+    let written = owner.restricted_state().is_some_and(|binding| {
+        binding.store(&state);
+        true
+    });
     thread.with_user_context(|context| {
         context
             .load_registers(&entry.normal)

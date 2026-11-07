@@ -24,12 +24,10 @@ use spin::{Mutex, Once};
 
 use super::Call;
 use crate::execution::sync::{TaskEvent, TaskMutex, TaskMutexGuard, WaitResult};
-use fallible_tree::FallibleMap;
-
 mod queue;
-use queue::{FutexKey, Table};
+use queue::{FutexKey, Slot};
 
-type Bucket = Table<Arc<Waiter>>;
+type Bucket = queue::Bucket<Arc<Waiter>>;
 type BucketGuard = TaskMutexGuard<'static, Bucket>;
 
 /// 每个 CPU 的桶数（2 的幂）；总桶数 = 它乘以 CPU 数再向上取 2 的幂（Linux futex 哈希的经验比例）。
@@ -41,7 +39,7 @@ struct Waiter {
     // FLAG: 已被 waker 摘除；醒来后据此区分唤醒与超时。
     woken: AtomicBool,
     // OWNER: 当前登记位置；requeue 在持有所在桶锁时改写，超时摘除时在桶锁内复核。
-    slot: Mutex<(FutexKey, u64)>,
+    slot: Mutex<Slot>,
 }
 
 // OWNER: 全部 futex 等待者的唯一索引，按 key 哈希分桶；桶锁内不缺页（见模块说明），
@@ -58,7 +56,7 @@ fn table() -> &'static [TaskMutex<Bucket>] {
         table
             .try_reserve_exact(buckets)
             .expect("futex bucket table allocation failed");
-        table.extend((0..buckets).map(|_| TaskMutex::new(FallibleMap::new())));
+        table.extend((0..buckets).map(|_| TaskMutex::new(Bucket::new())));
         table.into_boxed_slice()
     })
 }
@@ -121,15 +119,14 @@ pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut entry = Some(
-        FallibleMap::try_prepare((key, ticket), waiter.clone())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+        Bucket::prepare((key, ticket), waiter.clone()).map_err(|_| native_abi::ERR_NO_MEMORY)?,
     );
     loop {
         let mut table = lock(key)?;
         match read_word(call, address)? {
             Some(value) if value != call.arg_u32(1) => return Err(native_abi::ERR_BAD_STATE),
             Some(_) => {
-                table.commit_vacant(entry.take().expect("futex waiter committed twice"));
+                table.enqueue(entry.take().expect("futex waiter committed twice"));
                 break;
             }
             None => {
@@ -187,7 +184,7 @@ impl queue::RequeueHooks<Arc<Waiter>> for WaiterHooks {
     fn next_ticket(&mut self) -> u64 {
         NEXT_TICKET.fetch_add(1, Ordering::Relaxed)
     }
-    fn moved(&mut self, waiter: &Arc<Waiter>, position: (FutexKey, u64)) {
+    fn moved(&mut self, waiter: &Arc<Waiter>, position: Slot) {
         *waiter.slot.lock() = position;
     }
 }

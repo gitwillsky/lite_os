@@ -68,6 +68,9 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
         ],
     );
     vm::initialize_kernel_space();
+    // CPU 数与内核堆都已就绪：此后单页分配与释放先走每 CPU 缓存，不再每次争用全局 allocator 锁。
+    memory::frame_allocator::enable_cpu_caches(execution::cpu::count());
+    vm::initialize_zero_page();
     crash::recover();
     let parameters = boot::cmdline::parse(platform::kernel_command_line())
         .unwrap_or_else(|error| panic!("invalid kernel command line: {error:?}"));

@@ -63,8 +63,8 @@
 | `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/syscall/futex.rs :: static TABLE` | `TaskMutex < FallibleMap < (FutexKey , u64) , Arc < Waiter > > >` |
-| `kernel/src/thread/timer_queue.rs :: static TIMERS` | `IrqMutex < FallibleMap < Key , Entry > >` |
+| `kernel/src/syscall/futex/queue.rs :: Bucket.waiters` | `FallibleMap < Slot , W >` |
+| `kernel/src/thread/timer_queue/index.rs :: DeadlineIndex.map` | `FallibleMap < Key , V >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.contexts` | `FallibleMap < VirtualPageNumber , FrameTracker >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.nodes` | `FallibleMap < u64 , VmarNode >` |
 | `kernel/src/vm/address_space.rs :: VmarNode.children` | `FallibleMap < usize , Child >` |
@@ -81,9 +81,9 @@
 |---|---:|---|---|---|
 | `system/linuxd/src/fs/tmpfs.rs` | 984 | `fs` | inode 权限与通知事务 | 新增 metadata family 前拆分 |
 | `system/linuxd/src/task/process_table/signal.rs` | 723 | `task` | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
-| `system/linuxd/src/fs/procfs.rs` | 850 | fs | ProcNode 投影，目录枚举归 procfs/directory，lookup 归 procfs/lookup，MM 文本归 procfs/maps | 新增独立目录 family 前拆分 |
-| `kernel/src/vm/vmo.rs` | 854 | `vm` | COW 树、页解析与映射退休。构造归 creation，物理归属/驻留归 residency；补页归 pager，祖先折叠/释放归 release，固定归 pin，淘汰归 reclaim | 增加新的 backing kind 前审查页解析职责 |
-| `kernel/src/vm/address_space.rs` | 1077 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
+| `system/linuxd/src/fs/procfs.rs` | 849 | fs | ProcNode 投影，目录枚举归 procfs/directory，lookup 归 procfs/lookup，MM 文本归 procfs/maps | 新增独立目录 family 前拆分 |
+| `kernel/src/vm/vmo.rs` | 800 | `vm` | COW 树、页解析与映射退休。构造归 creation，物理归属/驻留归 residency；补页归 pager，祖先折叠/释放归 release，固定归 pin，淘汰归 reclaim | 增加新的 backing kind 前审查页解析职责 |
+| `kernel/src/vm/address_space.rs` | 1058 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
 | `system/network-protocol/src/lib.rs` | 914 | `lib` | 共享线格式与服务端分派，客户端调用归 client | 增加 wire family 前按控制、网络域和 socket 的边界拆分 |
 | `system/ext4/src/fuse_server.rs` | 1001 | `fuse_server` | FUSE 操作分派与每文件内容缓存的生命周期在同一会话事务内（lookup/forget、写回与 syncfs） | 新增 FUSE 操作 family 前把内容缓存表拆到独立 owner |
 

@@ -61,6 +61,62 @@ use crate::execution::sync::IrqMutex;
 // OWNER: frame allocator module owns all allocatable physical-frame metadata.
 static FRAME_ALLOCATOR: Once<IrqMutex<FrameAllocator>> = Once::new();
 
+/// 每个 CPU 缓存的单页上限；超过时把一半批量还给伙伴系统。
+const CACHE_PAGES: usize = 32;
+/// 缓存为空时一次从伙伴系统取回的页数（一次取锁摊销 `REFILL_PAGES` 次分配）。
+const REFILL_PAGES: usize = 16;
+
+/// 一个 CPU 的单页缓存（Linux per-cpu pageset / Bonwick 的 magazine）。
+///
+/// 缓存里的页在伙伴系统看来仍是“已分配”：不参与合并，所以只缓存最近释放的少量页，且内存压力下停用。
+struct CpuFrames {
+    // OWNER: 只由所属 CPU 在本地 IRQ 屏蔽时读写；中断处理（可经全局分配器进入）不会重入同一缓存。
+    pages: core::cell::UnsafeCell<[usize; CACHE_PAGES]>,
+    // OWNER: `pages` 有效长度的投影，所属 CPU 写，统计读取；Relaxed 即可，只用于容量快照。
+    len: core::sync::atomic::AtomicUsize,
+}
+
+// SAFETY: `pages` 只在所属 CPU 屏蔽本地 IRQ 时访问；`len` 是原子投影。
+unsafe impl Sync for CpuFrames {}
+
+impl CpuFrames {
+    fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    /// 调用者屏蔽本地 IRQ 且是所属 CPU。
+    ///
+    /// # Safety
+    /// 同类型说明：只有所属 CPU 在本地 IRQ 屏蔽期间可以调用。
+    // SAFETY: 访问 `pages` 的唯一性由调用者的 IRQ 屏蔽与所属 CPU 保证（见类型的 `Sync` 说明）。
+    unsafe fn pop(&self) -> Option<PhysicalPageNumber> {
+        let len = self.len();
+        if len == 0 {
+            return None;
+        }
+        // SAFETY: 见类型说明。
+        let page = unsafe { (*self.pages.get())[len - 1] };
+        self.len.store(len - 1, Ordering::Relaxed);
+        Some(PhysicalPageNumber::from(page))
+    }
+
+    /// 调用者屏蔽本地 IRQ、是所属 CPU，且缓存未满。
+    ///
+    /// # Safety
+    /// �� `pop`，并且缓存未满。
+    // SAFETY: 同 `pop`；容量由调用者保证。
+    unsafe fn push(&self, ppn: PhysicalPageNumber) {
+        let len = self.len();
+        debug_assert!(len < CACHE_PAGES);
+        // SAFETY: 见类型说明。
+        unsafe { (*self.pages.get())[len] = ppn.as_usize() };
+        self.len.store(len + 1, Ordering::Relaxed);
+    }
+}
+
+// OWNER: 每 CPU 单页缓存，早期启动（CPU 数未知）时为空，分配走全局路径。
+static CPU_FRAMES: Once<alloc::boxed::Box<[CpuFrames]>> = Once::new();
+
 // OWNER: 内存压力 FLAG。空闲页低于低水位（容量的 1/64，至少 256 页）时置位，回到高水位（低水位的 1.5 倍）才清除；
 // 只在 allocator 锁内写，读者（用户缺页入口的回收）只把它当提示。缺失时 pager 支撑页的干净页
 // 在分配失败之前不会被淘汰，缺页直接以 NoMemory 结束进程。
@@ -158,11 +214,15 @@ impl FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
-        if let Err(error) = FRAME_ALLOCATOR
-            .wait()
-            .lock()
-            .dealloc_contiguous(self.ppn, self.pages)
-        {
+        let result = if self.pages == 1 {
+            free_page(self.ppn)
+        } else {
+            FRAME_ALLOCATOR
+                .wait()
+                .lock()
+                .dealloc_contiguous(self.ppn, self.pages)
+        };
+        if let Err(error) = result {
             panic!(
                 "invalid FrameTracker drop for {:?}+{} pages: {:?}",
                 self.ppn, self.pages, error
@@ -619,19 +679,11 @@ fn for_each_aligned_block(
 }
 
 fn alloc_raw() -> Option<FrameTracker> {
-    let res = FRAME_ALLOCATOR
-        .wait()
-        .lock()
-        .alloc(FrameAllocationClass::Reclaimable);
-    res.map(FrameTracker::new)
+    alloc_page().map(FrameTracker::new)
 }
 
 fn alloc_unzeroed_raw() -> Option<FrameTracker> {
-    FRAME_ALLOCATOR
-        .wait()
-        .lock()
-        .alloc(FrameAllocationClass::Reclaimable)
-        .map(|ppn| FrameTracker { ppn, pages: 1 })
+    alloc_page().map(|ppn| FrameTracker { ppn, pages: 1 })
 }
 
 /// 从唯一 frame allocator 分配一页清零页；内核不回收用户态缓存，耗尽时直接失败。
@@ -711,11 +763,18 @@ fn alloc_contiguous_uninitialized(
         return None;
     }
     pages.checked_next_power_of_two()?;
-    FRAME_ALLOCATOR
-        .wait()
-        .lock()
-        .alloc_contiguous(pages, class)
-        .map(|(ppn, pages)| FrameTracker { ppn, pages })
+    let allocate = || {
+        FRAME_ALLOCATOR
+            .wait()
+            .lock()
+            .alloc_contiguous(pages, class)
+            .map(|(ppn, pages)| FrameTracker { ppn, pages })
+    };
+    allocate().or_else(|| {
+        // 本 CPU 缓存里的单页会阻碍相邻块合并；还回去再试一次。
+        drain_local_cache();
+        allocate()
+    })
 }
 
 /// 空闲页是否低于低水位（尚未回到高水位）；只作回收提示，不保证下一次分配成功或失败。
@@ -729,5 +788,94 @@ pub(crate) fn under_pressure() -> bool {
 ///
 /// 容量、空闲页和每 order block 数；均来自唯一 allocator 状态。
 pub(crate) fn statistics() -> FrameStatistics {
-    FRAME_ALLOCATOR.wait().lock().statistics()
+    let mut statistics = FRAME_ALLOCATOR.wait().lock().statistics();
+    // 每 CPU 缓存里的页对外仍是空闲页。
+    statistics.free_pages += CPU_FRAMES
+        .get()
+        .map_or(0, |caches| caches.iter().map(CpuFrames::len).sum());
+    statistics
+}
+
+/// 建立每 CPU 单页缓存；CPU 数确定之后调用一次。之前的分配与释放走全局路径。
+pub(crate) fn enable_cpu_caches(cpus: usize) {
+    CPU_FRAMES.call_once(|| {
+        let mut caches = alloc::vec::Vec::new();
+        caches
+            .try_reserve_exact(cpus)
+            .expect("per-CPU frame cache allocation failed");
+        caches.extend((0..cpus).map(|_| CpuFrames {
+            pages: core::cell::UnsafeCell::new([0; CACHE_PAGES]),
+            len: core::sync::atomic::AtomicUsize::new(0),
+        }));
+        caches.into_boxed_slice()
+    });
+}
+
+/// 取一页：先本地缓存，空则批量从伙伴系统补充；内存压力下直接取一页，不囤积。
+fn alloc_page() -> Option<PhysicalPageNumber> {
+    let Some(caches) = CPU_FRAMES.get() else {
+        return FRAME_ALLOCATOR
+            .wait()
+            .lock()
+            .alloc(FrameAllocationClass::Reclaimable);
+    };
+    let _irq = crate::execution::sync::LocalIrqGuard::disable();
+    let cache = &caches[crate::execution::cpu::current_id().index()];
+    // SAFETY: 本地 IRQ 已屏蔽，当前 CPU 是该缓存的所有者。
+    if let Some(page) = unsafe { cache.pop() } {
+        return Some(page);
+    }
+    let mut allocator = FRAME_ALLOCATOR.wait().lock();
+    let first = allocator.alloc(FrameAllocationClass::Reclaimable)?;
+    if !UNDER_PRESSURE.load(Ordering::Relaxed) {
+        for _ in 1..REFILL_PAGES {
+            let Some(page) = allocator.alloc(FrameAllocationClass::Reclaimable) else {
+                break;
+            };
+            // SAFETY: 同上。
+            unsafe { cache.push(page) };
+        }
+    }
+    Some(first)
+}
+
+/// 归还一页：进本地缓存，满则还一半；内存压力下直接还给伙伴系统。
+fn free_page(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
+    let Some(caches) = CPU_FRAMES.get() else {
+        return FRAME_ALLOCATOR.wait().lock().dealloc_contiguous(ppn, 1);
+    };
+    let _irq = crate::execution::sync::LocalIrqGuard::disable();
+    let cache = &caches[crate::execution::cpu::current_id().index()];
+    if UNDER_PRESSURE.load(Ordering::Relaxed) {
+        return FRAME_ALLOCATOR.wait().lock().dealloc_contiguous(ppn, 1);
+    }
+    if cache.len() == CACHE_PAGES {
+        let mut allocator = FRAME_ALLOCATOR.wait().lock();
+        for _ in 0..CACHE_PAGES / 2 {
+            // SAFETY: 本地 IRQ 已屏蔽，当前 CPU 是该缓存的所有者；缓存非空。
+            let page = unsafe { cache.pop() }.expect("full cache lost its pages");
+            allocator
+                .dealloc_contiguous(page, 1)
+                .expect("cached frame was not allocated");
+        }
+    }
+    // SAFETY: 同上；上面已腾出空位。
+    unsafe { cache.push(ppn) };
+    Ok(())
+}
+
+/// 把本地缓存全部还给伙伴系统：连续分配失败后重试前调用，缓存的页会阻碍相邻块合并。
+fn drain_local_cache() {
+    let Some(caches) = CPU_FRAMES.get() else {
+        return;
+    };
+    let _irq = crate::execution::sync::LocalIrqGuard::disable();
+    let cache = &caches[crate::execution::cpu::current_id().index()];
+    let mut allocator = FRAME_ALLOCATOR.wait().lock();
+    // SAFETY: 同上。
+    while let Some(page) = unsafe { cache.pop() } {
+        allocator
+            .dealloc_contiguous(page, 1)
+            .expect("cached frame was not allocated");
+    }
 }

@@ -111,8 +111,23 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   一律去掉写权限，不覆盖已有翻译，共用主页的 `TranslationCommit`（一次 fence）；页表分配失败只是放弃，
   缺失窗口裁剪时翻译会越过映射边界。Benchmark 决策：读/执行缺页多一次 ≤16 页的驻留查询，
   不改变 PTE/TLBI 的 static/disassembly gate；收益用基线 6 诊断。
+- 单页分配与释放先经每 CPU 缓存（`frame_allocator::CpuFrames`，上限 32 页，空时一次补 16 页、满时还一半），
+  缓存只在所属 CPU 屏蔽本地 IRQ 时访问，不取全局 allocator 锁。缓存里的页在伙伴系统看来仍是已分配，不参与合并，
+  所以：内存压力（`UNDER_PRESSURE`）下停用囤积并直接归还；连续分配失败后先把本地缓存还回再重试一次；
+  对外统计把各 CPU 缓存页计入空闲页。补充只用 `Reclaimable` 类，不会借此动用 kernel progress reserve。
+  Benchmark 决策：热路径从“每次一把全局 IRQ 锁”变为“本地数组出入”，不新增分配或 Atomic 读-改-写；
+  锁争用收益用多核缺页诊断（基线 6）观察。
+- 共享零页（`vmo/zero_page.rs`）：没有祖先的根匿名 VMO 的读缺页若该下标尚未提交，翻译指向全局只读零页（由连续 VMO 持有，
+  计入既有“连续”类别），不占内存、不清零；写解析、`pin`（DMA）与 `OP_COMMIT` 永远得到真实页。对象置 `zero_mapped`，
+  之后首次在某下标提交真实页时撤销该下标的翻译，否则读者继续读到零页而看不到写入。有祖先的对象、pager 对象不使用零页：
+  祖先的后到写入必须对读者可见，而祖先的 zap 覆盖不到把零页映射在子对象里的翻译。观测（RSS/PSS）对无已提交页的下标返回空，
+  零页翻译因此不计入驻留。Benchmark 决策：读缺页少一次页分配与清零，不新增锁或间接层。
 - FaultSource 是单次解析结果：是否等待过 pager，不能作为持久 residency cache。只有成功安装翻译并完成 fence
   的 restricted fault 才进入线程统计。normal mode 服务缺页和失败解析不混入该计数。
+- restricted 状态 VMO 在 `RESTRICTED_BIND_STATE` 时固定其页（`RestrictedStateBinding`），`enter`/`exit` 经 direct map
+  拷贝寄存器状态，不再每次取 VMO 树锁、查页；固定使用户对该 VMO 的 decommit、快照被拒绝，所以物理页号在绑定期间有效，
+  缺失固定时内核会写入已释放的页框。解除绑定时随绑定一起解除固定。Benchmark 决策：删除了每次进出的树锁与查页，
+  新增的只有绑定时一次固定，不加基准。
 - restricted fault/pager-wait 计数与既有线程状态同锁更新，无新锁、分配或页级影子索引；native runtime
   只投影该 owner。linuxd 在线程退休时累加，投影 minor/major，删除旧异常层计数，避免重复记账。
 

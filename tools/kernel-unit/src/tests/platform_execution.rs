@@ -64,20 +64,21 @@ mod timer_deadline_tests {
 
 #[cfg(test)]
 mod futex_queue_tests {
-    use super::super::futex_queue::{FutexKey, Requeue, RequeueHooks, Table, requeue_locked, wake_locked};
+    use super::super::futex_queue::{
+        Bucket, FutexKey, Requeue, RequeueHooks, requeue_locked, wake_locked,
+    };
 
     fn private(address: usize) -> FutexKey {
         FutexKey::Private { space: 1, address }
     }
 
-    fn enqueue(table: &mut Table<u32>, key: FutexKey, ticket: u64, waiter: u32) {
-        let entry = fallible_tree::FallibleMap::try_prepare((key, ticket), waiter).unwrap();
-        table.commit_vacant(entry);
+    fn enqueue(table: &mut Bucket<u32>, key: FutexKey, ticket: u64, waiter: u32) {
+        table.enqueue(Bucket::prepare((key, ticket), waiter).unwrap());
     }
 
     #[test]
     fn wake_is_fifo_per_key_and_never_touches_other_keys() {
-        let mut table = Table::new();
+        let mut table = Bucket::new();
         let (a, b) = (private(0x1000), private(0x2000));
         for (ticket, key, waiter) in [(5, a, 50), (1, a, 10), (3, b, 30), (2, a, 20)] {
             enqueue(&mut table, key, ticket, waiter);
@@ -121,8 +122,8 @@ mod futex_queue_tests {
     #[test]
     fn requeue_wakes_first_then_moves_behind_the_existing_target_waiters() {
         let (source, target) = (private(0x1000), private(0x2000));
-        let mut from = Table::new();
-        let mut to = Table::new();
+        let mut from = Bucket::new();
+        let mut to = Bucket::new();
         for ticket in 1..=4u64 {
             enqueue(&mut from, source, ticket, ticket as u32);
         }
@@ -142,7 +143,7 @@ mod futex_queue_tests {
     #[test]
     fn requeue_within_one_bucket_keeps_a_single_table_consistent() {
         let (source, target) = (private(0x1000), private(0x1004));
-        let mut table = Table::new();
+        let mut table = Bucket::new();
         for ticket in 1..=3u64 {
             enqueue(&mut table, source, ticket, ticket as u32);
         }

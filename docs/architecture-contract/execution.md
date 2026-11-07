@@ -83,6 +83,8 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
   同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：队列逻辑（key 哈希、FIFO 唤醒、requeue）是 `futex/queue.rs` 的纯函数，
 architecture-bench `futex enqueue + wake` 约束无竞争入队/摘除的 CPU 成本，host 单测覆盖 FIFO、唤醒数、
 同桶/跨桶 requeue 与哈希稳定/分布；锁争用吞吐用计划基线 4 的 guest 诊断。
+- native channel 每个���点的积压按字节限额（4 MiB，含每条消息 64 字节固定开销），超过返回 `ERR_NO_RESOURCES`；
+  条数上限会让 64 KiB 整消息放大到数百 MiB、同时对小消息过紧。字节记账与队列同锁增减，端点关闭时随队列清零。
 - 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。
 - fault/trap、OOM、exit 和 kill 只能由对应 owner 退休 context、wait membership 与 observer；同步 fence 未确认时不得回收 backing。
 - native-runtime 的启动闭包和结果引用属于 Descriptor，执行时不把其 Box 搬到线程栈；

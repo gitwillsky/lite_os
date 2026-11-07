@@ -393,12 +393,12 @@ fn main() {
     });
     // 生产 futex 队列逻辑的无竞争 wait 入队 + wake 摘除：同一桶内另有 32 个其他 key 的等待者。
     // 锁、用户值读取与睡眠属于上层，不在此计入。
-    let mut futex_table = futex_queue::Table::<u64>::new();
+    let mut futex_table = futex_queue::Bucket::<u64>::new();
     for resident in 0..32u64 {
         let key = futex_queue::FutexKey::Private { space: 1, address: 0x4000 + resident as usize * 4 };
-        let entry = fallible_tree::FallibleMap::try_prepare((key, resident), resident)
-            .expect("benchmark entry");
-        futex_table.commit_vacant(entry);
+        futex_table.enqueue(
+            futex_queue::Bucket::prepare((key, resident), resident).expect("benchmark entry"),
+        );
     }
     let mut futex_ticket = 1_000u64;
     verify("futex enqueue + wake", |iteration| {
@@ -407,9 +407,9 @@ fn main() {
             space: 2,
             address: 0x8000 + (iteration as usize % 64) * 4,
         };
-        let entry = fallible_tree::FallibleMap::try_prepare((key, futex_ticket), iteration)
-            .expect("benchmark entry");
-        futex_table.commit_vacant(entry);
+        futex_table.enqueue(
+            futex_queue::Bucket::prepare((key, futex_ticket), iteration).expect("benchmark entry"),
+        );
         let mut woken = 0;
         futex_queue::wake_locked(&mut futex_table, key, 1, |waiter| woken = waiter);
         woken as usize + key.bucket(1024)

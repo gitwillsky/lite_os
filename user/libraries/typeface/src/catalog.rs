@@ -1,5 +1,6 @@
 //! Windows 2000 GDI 式字体映射：Fonts 表来自字体目录扫描，FontSubstitutes 与 SystemLink 来自
 //! `fontmap.ini`，逻辑字体只给出字体名、磅值与粗细，代码中不指定任何字体文件或字号。
+use crate::glyph_cache::LruCache;
 use crate::{
     BdfFont, FontError, Glyph, Sfnt,
     hinting::{FontProgram, SizeProgram, hint_glyph},
@@ -7,7 +8,7 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -346,7 +347,7 @@ impl FontCatalog {
             smoothing,
             chain,
             sizes: RefCell::new(BTreeMap::new()),
-            glyphs: RefCell::new(HashMap::new()),
+            glyphs: RefCell::new(LruCache::new(GLYPH_CACHE_LIMIT)),
         }
     }
 }
@@ -372,8 +373,8 @@ pub struct Typeface {
     // FAILURE: 不缓存会在每个字形重复执行 prep；None 记录该字号不可 hinting，避免反复失败。
     sizes: RefCell<BTreeMap<usize, Option<SizeProgram>>>,
     // OWNER: 本字号独占已光栅化字形，键为（字符，是否粗体）。
-    // FAILURE: 不缓存会在每次绘制重新执行字形指令与光栅化；超过上限时整体清空，防止内存无界增长。
-    glyphs: RefCell<HashMap<(char, bool), Glyph>>,
+    // FAILURE: 不缓存会在每次绘制重新执行字形指令与光栅化；超过上限时按 LRU 淘汰最久未用的一批，防止内存无界增长且不让常驻文字重新光栅化。
+    glyphs: RefCell<LruCache<(char, bool), Glyph>>,
 }
 
 /// 灰度平滑的笔画加深（每侧像素）：宋体等发丝笔画在 24 ppem 只有约 0.5 像素厚，灰度下会变成半灰而发虚；
@@ -395,15 +396,13 @@ impl Typeface {
     /// 逐个链接字体：有该 ppem 的点阵即采用，否则采用第一个有该字形的轮廓（带 hinting）。
     pub fn glyph(&self, character: char, bold: bool) -> Glyph {
         let bold = bold || self.bold;
-        if let Some(glyph) = self.glyphs.borrow().get(&(character, bold)) {
-            return glyph.clone();
+        if let Some(glyph) = self.glyphs.borrow_mut().get(&(character, bold)) {
+            return glyph;
         }
         let glyph = self.render(character, bold);
-        let mut cache = self.glyphs.borrow_mut();
-        if cache.len() >= GLYPH_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert((character, bold), glyph.clone());
+        self.glyphs
+            .borrow_mut()
+            .insert((character, bold), glyph.clone());
         glyph
     }
 

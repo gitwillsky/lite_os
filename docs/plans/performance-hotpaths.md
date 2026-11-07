@@ -334,4 +334,30 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   requeue 按桶序加锁；队列逻辑抽成 `futex/queue.rs` 纯函数，kernel-unit 4 项单测（FIFO、唤醒数、同桶/跨桶 requeue、
   哈希分布）与 architecture-bench `futex enqueue + wake` 基准。桶锁为可睡眠 `TaskMutex` 而非 IRQ 自旋锁：桶内取地址空间锁
   可能短暂睡眠，自旋锁下不允许；私有与共享 key 共用同一张全局分桶表（空间 koid / VMO id 参与哈希）。双架构 Clippy 通过。
-- 5、6、8、9、P2 与 M2、M4–M7 尚未开始；不以阶段性基础改动代替整项验收。
+- M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
+  并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
+  内核栈尺寸评估需要栈染色测量工具，尚未做。
+- M5 已实现待运行验收：bootfs 文件内容按页对齐（打包器把填充放进路径名字段，标准 cpio 读取器兼容）；`Image::from_vmo`
+  让 ELF 段成为 bootfs VMO 的写时复制子对象（末页清零，bss 为独立零页），不再逐段复制；ext4 映像与 driver-host 映像
+  以 `Bootfs::file_vmo` 子对象交付，不再 `bootfs_copy`；客户端提供的替换映像仍复制（防止之后被改写）。
+- P2.6 已实现待运行验收：物理页单页分配/释放经每 CPU 缓存（32 页上限、16 页补充、压力下停用、连续分配失败先还缓存）。
+- P2.2 已实现：restricted 状态 VMO 绑定时固定，进出经 direct map 拷贝。P2.3 部分实现：channel 积压改为按字节限额
+  （4 MiB，含每消息 64 B 开销）；消息缓冲与 `CallWaiter` 的分配由内核堆每 CPU 缓存承担，未另建池。
+- 7 与 M3 已实现待运行验收：`libraries/span-heap`（线程本地分片空闲链、增量切分、远端释放原子栈 + pending 队列、
+  线程退出孤儿化/认领、空 span decommit 不 unmap、12.5% 级别、大对象独立映射）替换原全局单锁分级分配器；
+  host 并发单测 9 项、`span-heap-bench`、kernel-unit `native_heap` 接线夹具 4 项通过，双架构 Clippy 通过。
+  顺带修复 `netstack-unit` 夹具缺少 `NetworkDevice::link` 实现导致 architecture-bench 无法编译。
+- M1 部分实现：`WindowHost` 删除私有画布与 `present` 整窗复制，经 `Display::render_frame` 直接在已释放的共享缓冲中整幅重绘；
+  损伤由上一次提交画面的分块哈希推导；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
+  尚缺：区域级光栅裁剪（只重画失效区）。控件树的 `nodes` 是公开 map、到处直接 `get_mut`，没有统一的变更入口，
+  需要先给控件树引入节点变更版本（封装可变访问）才能安全地由它推导失效区。
+- M7 部分实现：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）。尚缺：1 bit/像素字形存储、
+  预解码共享主题图标图集。
+- 门禁：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
+  `--write-interface` 重新生成接口清单）；ext4-unit 69 项、kernel-unit 非 DTB 夹具、scheduler-unit、netstack-unit、
+  span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
+- 8 部分实现：共享零页（根匿名 VMO 的读缺页映射全局只读零页，写时分配；kernel-unit 用例通过）。
+  尚缺：accessed 位分代回收与后台回收线程。
+- 尚未完成：5（页表子树共享）、6（VMO 页列表分块）、8 余项（回收分代/后台线程）、9（ext4 延迟分配写回）、P2.1（截止时间调度类）、
+  P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
+  M4 内核栈尺寸评估、M6（随 5、6）、M7 余项；不以阶段性基础改动代替整项验收。

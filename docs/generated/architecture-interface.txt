@@ -663,7 +663,6 @@ kernel/src/execution/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
 kernel/src/execution/deferred.rs :: pub (crate) fn raise_on (cpu : CpuId , work : DeferredWork)
 kernel/src/execution/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
 kernel/src/execution/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
-kernel/src/execution/deferred.rs :: pub (crate) impl DeferredWork :: const fn with (self , other : Self) -> Self
 kernel/src/execution/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn contains (self , work : DeferredWork) -> bool
 kernel/src/execution/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn is_empty (self) -> bool
 kernel/src/execution/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn run_registered (self , now_ns : u64)
@@ -770,21 +769,22 @@ kernel/src/execution/sync/wait_queue.rs :: pub (crate) impl WaitQueue :: const f
 kernel/src/execution/sync/wait_queue.rs :: pub (crate) impl WaitQueue :: fn wait_until (& self , mut ready : impl FnMut () -> bool , deadline_ns : Option < u64 > ,) -> WaitResult
 kernel/src/execution/sync/wait_queue.rs :: pub (crate) impl WaitQueue :: fn wake_all (& self)
 kernel/src/execution/sync/wait_queue.rs :: pub (crate) struct WaitQueue
-kernel/src/execution/timer/deadline.rs :: pub (crate) fn next (previous : u64 , now : u64 , interval : u64) -> Option < u64 >
+kernel/src/execution/timer/mod.rs :: pub (crate) TimerEvent :: slice_expired : bool
+kernel/src/execution/timer/mod.rs :: pub (crate) fn acknowledge_timer_interrupt () -> TimerEvent
+kernel/src/execution/timer/mod.rs :: pub (crate) fn arm_slice ()
 kernel/src/execution/timer/mod.rs :: pub (crate) fn boot_epoch_seconds () -> u64
+kernel/src/execution/timer/mod.rs :: pub (crate) fn disarm_slice ()
 kernel/src/execution/timer/mod.rs :: pub (crate) fn enable_timer_interrupt ()
 kernel/src/execution/timer/mod.rs :: pub (crate) fn get_realtime_ns () -> u64
 kernel/src/execution/timer/mod.rs :: pub (crate) fn get_time_ns () -> u64
 kernel/src/execution/timer/mod.rs :: pub (crate) fn get_time_us () -> u64
 kernel/src/execution/timer/mod.rs :: pub (crate) fn init_rtc ()
 kernel/src/execution/timer/mod.rs :: pub (crate) fn monotonic_resolution_ns () -> u64
-kernel/src/execution/timer/mod.rs :: pub (crate) fn note_return_to_user ()
-kernel/src/execution/timer/mod.rs :: pub (crate) fn resume_local_idle_tick ()
+kernel/src/execution/timer/mod.rs :: pub (crate) fn note_slice_start ()
+kernel/src/execution/timer/mod.rs :: pub (crate) fn publish_timer_head (target : cpu :: CpuId , head_ns : Option < u64 >)
 kernel/src/execution/timer/mod.rs :: pub (crate) fn scheduler_quantum_ns () -> u64
-kernel/src/execution/timer/mod.rs :: pub (crate) fn set_next_timer_interrupt () -> u64
 kernel/src/execution/timer/mod.rs :: pub (crate) fn set_realtime_ns (realtime_ns : u64) -> Result < () , () >
-kernel/src/execution/timer/mod.rs :: pub (crate) fn suspend_local_idle_tick ()
-kernel/src/execution/timer/mod.rs :: pub (crate) fn tick_interrupted_user (fired_deadline : u64) -> bool
+kernel/src/execution/timer/mod.rs :: pub (crate) struct TimerEvent
 kernel/src/execution/trap.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/execution/trap.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/execution/trap.rs :: pub (crate) fn init ()
@@ -860,6 +860,7 @@ kernel/src/memory/frame_allocator.rs :: pub (crate) enum FrameAllocationClass
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc () -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc_contiguous (pages : usize , class : FrameAllocationClass) -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc_copy (source : & [u8]) -> Option < FrameTracker >
+kernel/src/memory/frame_allocator.rs :: pub (crate) fn enable_cpu_caches (cpus : usize)
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn init (start_addr : PhysicalAddress , end_addr : PhysicalAddress , reserved : [Option < core :: ops :: Range < PhysicalAddress > > ; BOOT_RESERVED_CAPACITY] ,)
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn release_boot_reserved ()
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn statistics () -> FrameStatistics
@@ -1056,7 +1057,7 @@ kernel/src/object/task.rs :: pub (crate) impl Process :: fn set_name (& self , n
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn space (& self) -> & Arc < AddressSpace >
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn stats (& self) -> Result < native_abi :: TaskStats , Status >
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn terminate (& self , code : Option < i64 >)
-kernel/src/object/task.rs :: pub (crate) impl Thread :: fn bind_restricted_state (& self , vmo : Arc < Vmo >)
+kernel/src/object/task.rs :: pub (crate) impl Thread :: fn bind_restricted_state (& self , vmo : Arc < Vmo >) -> Result < () , Status >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn create (process : & Arc < Process > , name : & [u8]) -> Result < Arc < Self > , Status >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn execution (& self) -> Option < Arc < crate :: thread :: Thread > >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn exited (& self)
@@ -1065,7 +1066,7 @@ kernel/src/object/task.rs :: pub (crate) impl Thread :: fn kill (self : & Arc < 
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn mode (& self) -> Mode
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn name (& self) -> ([u8 ; NAME_CAPACITY] , usize)
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn process (& self) -> & Arc < Process >
-kernel/src/object/task.rs :: pub (crate) impl Thread :: fn restricted_state (& self) -> Option < Arc < Vmo > >
+kernel/src/object/task.rs :: pub (crate) impl Thread :: fn restricted_state (& self) -> Option < Arc < RestrictedStateBinding > >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn runtime (& self) -> crate :: thread :: Runtime
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_affinity (& self , cpus : crate :: execution :: cpu :: CpuSet) -> Result < () , Status >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_fault_recovery (& self , start : usize , end : usize , resume : usize ,) -> Result < () , Status >
@@ -1078,6 +1079,11 @@ kernel/src/object/task.rs :: pub (crate) struct Job
 kernel/src/object/task.rs :: pub (crate) struct Process
 kernel/src/object/task.rs :: pub (crate) struct RestrictedEntry
 kernel/src/object/task.rs :: pub (crate) struct Thread
+kernel/src/object/task.rs :: pub (crate) use restricted_state :: RestrictedStateBinding
+kernel/src/object/task/restricted_state.rs :: pub (crate) impl RestrictedStateBinding :: fn load (& self) -> RestrictedState
+kernel/src/object/task/restricted_state.rs :: pub (crate) impl RestrictedStateBinding :: fn store (& self , state : & RestrictedState)
+kernel/src/object/task/restricted_state.rs :: pub (crate) struct RestrictedStateBinding
+kernel/src/object/task/restricted_state.rs :: pub (super) impl RestrictedStateBinding :: fn new (vmo : Arc < Vmo >) -> Result < Self , Status >
 kernel/src/platform/mod.rs :: enum ResetKind :: ColdReboot
 kernel/src/platform/mod.rs :: enum ResetKind :: Shutdown
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。"] SystemFailure
@@ -1272,6 +1278,28 @@ kernel/src/serial.rs :: pub (crate) fn read (output : & mut [u8] , deadline_ns :
 kernel/src/syscall/futex.rs :: pub (super) fn requeue (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/futex.rs :: pub (super) fn wait (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/futex.rs :: pub (super) fn wake (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/futex/queue.rs :: enum FutexKey :: Private { space : u64 , address : usize }
+kernel/src/syscall/futex/queue.rs :: enum FutexKey :: Shared { vmo : u64 , offset : u64 }
+kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: requeue : usize
+kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: source : FutexKey
+kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: target : FutexKey
+kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: wake : usize
+kernel/src/syscall/futex/queue.rs :: pub (crate) enum FutexKey
+kernel/src/syscall/futex/queue.rs :: pub (crate) fn requeue_locked < W > (source_table : & mut Bucket < W > , mut target_table : Option < & mut Bucket < W > > , plan : & Requeue , hooks : & mut impl RequeueHooks < W > ,) -> usize
+kernel/src/syscall/futex/queue.rs :: pub (crate) fn wake_locked < W > (table : & mut Bucket < W > , key : FutexKey , count : usize , mut wake : impl FnMut (W) ,) -> u32
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: const fn new () -> Self
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn enqueue (& mut self , entry : VacantEntry < Slot , W >)
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn len (& self) -> usize
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn prepare (slot : Slot , waiter : W) -> Result < VacantEntry < Slot , W > , () >
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn remove (& mut self , slot : & Slot) -> Option < W >
+kernel/src/syscall/futex/queue.rs :: pub (crate) impl FutexKey :: fn bucket (self , buckets : usize) -> usize
+kernel/src/syscall/futex/queue.rs :: pub (crate) struct Bucket < W >
+kernel/src/syscall/futex/queue.rs :: pub (crate) struct Requeue
+kernel/src/syscall/futex/queue.rs :: pub (crate) trait RequeueHooks < W >
+kernel/src/syscall/futex/queue.rs :: pub (crate) type Slot  = (FutexKey , u64)
+kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn moved (& mut self , waiter : & W , position : (FutexKey , u64))
+kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn next_ticket (& mut self) -> u64
+kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn wake (& mut self , waiter : W)
 kernel/src/syscall/handles.rs :: pub (super) fn close (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn duplicate (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn get_child (call : & Call < '_ >) -> Result < () , Status >
@@ -1452,12 +1480,15 @@ kernel/src/thread/processor.rs :: pub (super) fn account_current_cpu_runtime (ru
 kernel/src/thread/processor.rs :: pub (super) fn begin_preempt_current (thread : & Arc < Thread >)
 kernel/src/thread/processor.rs :: pub (super) fn defer_reap (thread : Arc < Thread >)
 kernel/src/thread/processor.rs :: pub (super) fn dispatch_inbound_ready ()
+kernel/src/thread/processor.rs :: pub (super) fn enter_idle ()
 kernel/src/thread/processor.rs :: pub (super) fn finish_deschedule (thread : & Arc < Thread >)
 kernel/src/thread/processor.rs :: pub (super) fn init_topology ()
+kernel/src/thread/processor.rs :: pub (super) fn note_busy_from (now_us : u64)
 kernel/src/thread/processor.rs :: pub (super) fn reap_deferred ()
+kernel/src/thread/processor.rs :: pub (super) fn rearm_slice (processor : & Processor)
 kernel/src/thread/processor.rs :: pub (super) fn replace_affinity (thread : & Arc < Thread > , affinity : CpuAffinity)
+kernel/src/thread/processor.rs :: pub (super) fn request_slice_reschedule ()
 kernel/src/thread/processor.rs :: pub (super) fn request_thread_reschedule (thread : & Arc < Thread >)
-kernel/src/thread/processor.rs :: pub (super) fn request_tick_reschedule ()
 kernel/src/thread/processor.rs :: pub (super) fn waiting_membership (thread : & Thread) -> Option < WaitMembership >
 kernel/src/thread/processor.rs :: pub (super) fn wake_waiting (thread : Arc < Thread > , expected : WaitMembership , result : WaitResult , prefer_current_cpu : bool ,) -> bool
 kernel/src/thread/processor.rs :: pub (super) fn with_current_processor < R > (f : impl FnOnce (& mut Processor) -> R) -> R
@@ -1553,10 +1584,9 @@ kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn restricted
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn begin (& mut self , now_us : u64)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn checkpoint (& mut self , now_us : u64)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn finish (& mut self , now_us : u64)
-kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn restricted_runtime_us (& self) -> u64
+kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn runtime_at (& self , now_us : u64) -> (u64 , u64)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn set_priority (& mut self , priority : u8)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn set_restricted (& mut self , now_us : u64 , restricted : bool)
-kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn total_runtime_us (& self) -> u64
 kernel/src/thread/scheduling.rs :: pub (crate) impl SchedulingEntity :: fn new (priority : u8 , vruntime : u64 , last_cpu : usize) -> Self
 kernel/src/thread/scheduling.rs :: pub (crate) impl SchedulingState :: fn replace_non_ready_state (& mut self , state : RunState)
 kernel/src/thread/scheduling.rs :: pub (crate) impl SchedulingState :: fn run_state (& self) -> RunState
@@ -1577,9 +1607,24 @@ kernel/src/thread/scheduling.rs :: pub (super) impl ReadyTransition < '_ > :: fn
 kernel/src/thread/timer_queue.rs :: pub (super) fn arm (timer : PreparedTimer) -> TimerToken
 kernel/src/thread/timer_queue.rs :: pub (super) fn cancel (token : TimerToken)
 kernel/src/thread/timer_queue.rs :: pub (super) fn expire (now_ns : u64)
+kernel/src/thread/timer_queue.rs :: pub (super) fn initialize ()
 kernel/src/thread/timer_queue.rs :: pub (super) fn prepare (deadline_ns : u64 , thread : Arc < Thread > , membership : WaitMembership ,) -> Result < PreparedTimer , () >
 kernel/src/thread/timer_queue.rs :: pub (super) struct PreparedTimer
 kernel/src/thread/timer_queue.rs :: pub (super) struct TimerToken
+kernel/src/thread/timer_queue/index.rs :: pub (crate) Cancelled :: head_changed : bool
+kernel/src/thread/timer_queue/index.rs :: pub (crate) Cancelled :: removed : Option < VacantEntry < Key , V > >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) Due :: more_due : bool
+kernel/src/thread/timer_queue/index.rs :: pub (crate) Due :: taken : usize
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: const fn new () -> Self
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: fn cancel (& mut self , key : & Key) -> Cancelled < V >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: fn head (& self) -> Option < u64 >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: fn insert (& mut self , entry : VacantEntry < Key , V >) -> bool
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: fn prepare (key : Key , value : V) -> Result < VacantEntry < Key , V > , () >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) impl DeadlineIndex < V > :: fn take_due (& mut self , now_ns : u64 , batch : & mut [Option < VacantEntry < Key , V > >] ,) -> Due
+kernel/src/thread/timer_queue/index.rs :: pub (crate) struct Cancelled < V >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) struct DeadlineIndex < V >
+kernel/src/thread/timer_queue/index.rs :: pub (crate) struct Due
+kernel/src/thread/timer_queue/index.rs :: pub (crate) type Key  = (u64 , u64)
 kernel/src/thread/user_context.rs :: pub (super) impl ContextSlot < T > :: fn address (& self) -> usize
 kernel/src/thread/user_context.rs :: pub (super) impl ContextSlot < T > :: fn is_live (& self) -> bool
 kernel/src/thread/user_context.rs :: pub (super) impl ContextSlot < T > :: fn retire (& self)
@@ -1610,8 +1655,8 @@ kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn copy_to_us
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create () -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_member (shared : & Arc < Self >) -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_shared () -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn fault (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn futex_owner (& self , address : usize) -> u64
+kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn read_resident_word (& self , address : usize) -> Result < Option < u32 > , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn release_context (& self , address : usize)
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn resolve_object (self : & Arc < Self > , address : usize) -> Result < (u64 , u64) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn allocate (& self , placement : Placement , size : usize , permissions : PagePermissions ,) -> Result < Arc < Vmar > , VmError >
@@ -1627,8 +1672,14 @@ kernel/src/vm/address_space.rs :: pub (crate) struct Vmar
 kernel/src/vm/address_space.rs :: pub (crate) struct VmarInfo
 kernel/src/vm/address_space.rs :: pub (super) impl AddressSpace :: fn zap_range (& self , range : Range < usize > , mode : ZapMode) -> Result < () , VmError >
 kernel/src/vm/address_space.rs :: pub (super) impl Mapping :: fn zap_vmo_pages (& self , pages : Range < usize > , mode : ZapMode) -> Result < () , VmError >
-kernel/src/vm/address_space/observation.rs :: pub (crate) impl AddressSpace :: fn memory_stats (& self) -> Result < (u64 , u64) , VmError >
+kernel/src/vm/address_space/fault.rs :: pub (crate) impl AddressSpace :: fn fault (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn info (& self) -> VmarInfo
+kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn mapping_statistics (& self) -> Result < Vec < native_abi :: VmarMappingStats > , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn memory_stats (& self) -> Result < native_abi :: TaskStats , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn resident_ranges (& self) -> Result < Vec < native_abi :: VmarResidentRange > , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn object_page (& self , page : usize) -> usize
+kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn resident_pages (& self) -> Result < Vec < (usize , usize) > , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn vmo (& self) -> & Arc < Vmo >
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn fault_private (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn has_private_view (& self) -> bool
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn is_private_address (& self , address : usize) -> bool
@@ -1646,9 +1697,11 @@ kernel/src/vm/execution_views.rs :: enum ExecutionView :: # [doc = " 系统服�
 kernel/src/vm/execution_views.rs :: pub (crate) enum ExecutionView
 kernel/src/vm/execution_views.rs :: pub (super) ExecutionViews :: normal : PageTable
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn install (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , permissions : PagePermissions ,) -> Result < TranslationCommit , VmError >
+kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn install_if_absent (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , permissions : PagePermissions , commit : & mut TranslationCommit ,) -> Result < () , VmError >
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn map_context (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , commit : & mut TranslationCommit ,) -> Result < () , VmError >
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn new (member : bool) -> Result < Self , VmError >
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn private_token (& self) -> Option < AddressSpaceToken >
+kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn resident_table (& self) -> & PageTable
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn retire (& mut self)
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn unmap_context (& mut self , vpn : VirtualPageNumber , commit : & mut TranslationCommit)
 kernel/src/vm/execution_views.rs :: pub (super) impl ExecutionViews :: fn zap (& mut self , range : Range < usize > , mode : ZapMode ,) -> Result < TranslationCommit , VmError >
@@ -1697,6 +1750,7 @@ kernel/src/vm/mod.rs :: pub (crate) use execution_views :: ExecutionView
 kernel/src/vm/mod.rs :: pub (crate) use fault :: FaultAccess
 kernel/src/vm/mod.rs :: pub (crate) use kernel_space :: { KERNEL_SPACE , initialize as initialize_kernel_space }
 kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: KernelStack
+kernel/src/vm/mod.rs :: pub (crate) use vmo :: initialize_zero_page
 kernel/src/vm/mod.rs :: pub (crate) use vmo :: { CachePolicy , ChildKind , FaultSource , PagerBinding , PagerRequest , PagerSink , PinnedRange , RangeOp , Vmo , VmoOptions , evicted_pages , physical_page_statistics , relieve_memory_pressure , }
 kernel/src/vm/page_table.rs :: pub (crate) fn table_pages () -> usize
 kernel/src/vm/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
@@ -1773,10 +1827,8 @@ kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_child (self : & Arc < 
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn id (& self) -> u64
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn op_range (self : & Arc < Self > , op : RangeOp , offset : u64 , length : u64 ,) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn read (self : & Arc < Self > , offset : u64 , output : & mut [u8]) -> Result < () , VmError >
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn read_available (self : & Arc < Self > , offset : u64 , output : & mut [u8] ,) -> Result < bool , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn set_size (self : & Arc < Self > , size : u64) -> Result < () , VmError >
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn size (& self) -> u64
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn with_resolved < R > (self : & Arc < Self > , index : usize , write : bool , mut with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > ,) -> Result < R , VmError >
+kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn with_resolved < R > (self : & Arc < Self > , index : usize , write : bool , with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > ,) -> Result < R , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn write (self : & Arc < Self > , offset : u64 , input : & [u8]) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) struct PageAccess
 kernel/src/vm/vmo.rs :: pub (crate) struct PagerBinding
@@ -1785,24 +1837,33 @@ kernel/src/vm/vmo.rs :: pub (crate) struct ResolvedPage
 kernel/src/vm/vmo.rs :: pub (crate) struct Vmo
 kernel/src/vm/vmo.rs :: pub (crate) struct VmoOptions
 kernel/src/vm/vmo.rs :: pub (crate) trait PagerSink
+kernel/src/vm/vmo.rs :: pub (crate) use fault_around :: FAULT_AROUND_PAGES
 kernel/src/vm/vmo.rs :: pub (crate) use pin :: PinnedRange
 kernel/src/vm/vmo.rs :: pub (crate) use reclaim :: { evicted_pages , relieve_memory_pressure }
 kernel/src/vm/vmo.rs :: pub (crate) use residency :: physical_page_statistics
+kernel/src/vm/vmo.rs :: pub (crate) use zero_page :: initialize as initialize_zero_page
 kernel/src/vm/vmo.rs :: pub (super) enum Resolve
 kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn register_mapping (& self , mapping : & Arc < Mapping >) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn resolve_locked (self : & Arc < Self > , index : usize , write : bool ,) -> Result < ResolvedPage , Resolve >
 kernel/src/vm/vmo.rs :: trait PagerSink :: fn request (& self , request : PagerRequest) -> Result < () , () >
+kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn mapping_statistics (self : & Arc < Self > , targets : & [Arc < Mapping >] , output : & mut Vec < native_abi :: VmarMappingStats > ,) -> Result < () , VmError >
+kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn resident_ranges (self : & Arc < Self > , mapping : & Mapping , output : & mut Vec < native_abi :: VmarResidentRange > ,) -> Result < () , VmError >
+kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn tree_identity (& self) -> usize
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create (size : u64 , options : VmoOptions) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_bootfs (size : u64) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_paged (size : u64 , options : VmoOptions , pager : PagerBinding , anonymous : bool ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_physical (physical : u64 , size : u64 , cache : CachePolicy ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (super) impl Vmo :: fn new_in (tree : Arc < Tree > , kind : Kind , pages : usize , relation : Option < Relation > ,) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/fault_around.rs :: pub (crate) const FAULT_AROUND_PAGES : usize = 16
+kernel/src/vm/vmo/fault_around.rs :: pub (crate) impl Vmo :: fn with_resolved_around < R > (self : & Arc < Self > , index : usize , write : bool , around : Option < core :: ops :: Range < usize > > , mut with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > , with_around : impl FnOnce (& mut R , & [Option < (usize , ResolvedPage) >]) ,) -> Result < R , VmError >
+kernel/src/vm/vmo/fault_around.rs :: pub (super) impl Vmo :: fn collect_resident_file_pages_locked (self : & Arc < Self > , range : core :: ops :: Range < usize > , skip : usize ,) -> [Option < (usize , ResolvedPage) > ; FAULT_AROUND_PAGES]
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn begin_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn detach_pager (& self) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn end_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn fail_range (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn first_dirty_range (& self , offset : u64 , length : u64 ,) -> Result < Option < (u64 , u64) > , VmError >
+kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn read_available (self : & Arc < Self > , offset : u64 , output : & mut [u8] ,) -> Result < bool , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn supply_pages (self : & Arc < Self > , offset : u64 , length : u64 , source : & Arc < Vmo > , source_offset : u64 ,) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn invalidate_read_requests_locked (& self , range : core :: ops :: Range < usize >)
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn request_page (& self , index : usize) -> Result < Arc < PageRequestCompletion > , VmError >
@@ -1829,7 +1890,7 @@ kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_re
 kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_writeback_pages : usize
 kernel/src/vm/vmo/residency.rs :: pub (crate) fn physical_page_statistics () -> PhysicalPageStatistics
 kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn committed_bytes (& self) -> Result < u64 , VmError >
-kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn resident_pages (self : & Arc < Self > , first : usize , pages : usize ,) -> Result < usize , VmError >
+kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn size (& self) -> u64
 kernel/src/vm/vmo/residency.rs :: pub (crate) struct PhysicalPageStatistics
 kernel/src/vm/vmo/residency.rs :: pub (super) enum PageContent
 kernel/src/vm/vmo/residency.rs :: pub (super) fn add_contiguous (pages : usize)
@@ -1840,6 +1901,9 @@ kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_cleanliness (&
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_pins (& mut self , pins : u32)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn supply_to_pager (& mut self , content : PageContent)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Vmo :: fn page_content (& self) -> PageContent
+kernel/src/vm/vmo/zero_page.rs :: pub (crate) fn initialize ()
+kernel/src/vm/vmo/zero_page.rs :: pub (super) impl Vmo :: fn retire_zero_translation (self : & Arc < Self > , state : spin :: MutexGuard < '_ , State > , index : usize ,) -> Result < () , Resolve >
+kernel/src/vm/vmo/zero_page.rs :: pub (super) impl Vmo :: fn shared_zero_locked (& self , state : & mut State , write : bool ,) -> Option < ResolvedPage >
 system/component-manager/src/drivers.rs :: pub (super) fn connect (connection : Channel) -> Result < () , Status >
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: async fn supervise (mut self , executor : & 'static Executor) -> i64
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: fn start (root : & Job , resource : & Resource , bootfs : & Bootfs , device_tree : Handle , publisher : Channel ,) -> Result < Self , Status >
@@ -1981,11 +2045,11 @@ system/driver-host/src/drivers/virtio/blk/policy.rs :: enum CompletionStatus :: 
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum RequestOperation :: Flush
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum RequestOperation :: Read
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum RequestOperation :: Write
-system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) const fn completion_length_is_valid (operation : RequestOperation , used_length : u32 ,) -> bool
+system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) const fn completion_length_is_valid (operation : RequestOperation , requested : usize , used_length : u32 ,) -> bool
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) enum CompletionStatus
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) enum RequestOperation
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn decode_status (status : u8) -> CompletionStatus
-system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_block (capacity_sectors : u64 , block : usize , length : usize) -> bool
+system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_transfer (capacity_sectors : u64 , block : u64 , length : usize) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
@@ -2363,14 +2427,16 @@ system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn readable_all (& self) -> DmaSlice < '_ >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn try_zeroed (bti : & Bti) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable_all (& self) -> DmaSlice < '_ >
-system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < 'mapping > :: fn backing (backing : & 'mapping DeviceBacking , length : usize ,) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn length (& self) -> usize
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn limit_segment_size (mut self , maximum : usize ,) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < 'mapping > :: fn backing (backing : & 'mapping DeviceBacking , range : Range < usize > , device_writable : bool ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DeviceWriteBuffer < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaBuffer < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaSlice < 'mapping >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) enum DmaChainRequirement
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) fn descriptor_requirement (buffers : & [DmaSlice < '_ >] , capacity : usize ,) -> DmaChainRequirement
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) impl DmaSlice < '_ > :: fn for_each_segment (& self , mut visit : impl FnMut (u64 , usize , bool))
-system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
 system/driver-host/src/drivers/virtio/rng.rs :: pub (crate) impl VirtIORngDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/rng.rs :: pub (crate) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/rng.rs :: pub (crate) struct VirtIORngDevice
@@ -2497,13 +2563,15 @@ system/driver-host/src/io_completion/request_owner.rs :: pub (crate) enum Reserv
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn publish (& self , outcome : Result < RequestIdentity , RequestOwnerError > ,) -> Option < CapacityWake >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn take_outcome (& self) -> Result < RequestIdentity , RequestOwnerError >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn wait (& self)
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWake :: fn drain (mut wake : Option < Self > , mut next : impl FnMut () -> Option < Self >)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWake :: fn wake (self)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CompletionClaim :: fn identity (& self) -> RequestIdentity
-system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl PreparedCapacityWait :: fn try_new (key : IoWaitKey , target : Arc < dyn IoWaitTarget > ,) -> Result < Self , RequestOwnerError >
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl PreparedCapacityWait :: fn try_new (key : IoWaitKey , descriptors : usize , target : Arc < dyn IoWaitTarget > ,) -> Result < Self , RequestOwnerError >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn accept_completion (& mut self , claim : CompletionClaim) -> RequestIdentity
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn capacity_key (& self , ticket : u64) -> IoWaitKey
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn claim_completion (& mut self , head : u16) -> Option < CompletionClaim >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn commit_wait_or_reserve (& mut self , prepared : PreparedCapacityWait ,) -> CommitOrWait
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn handoff_next (& mut self) -> Option < CapacityWake >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn has_capacity_waiters (& self) -> bool
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn new (queue_size : usize , slots : usize , device : IoDevice) -> Option < Self >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn pop_capacity_waiter (& mut self) -> Option < Arc < CapacityWait > >
@@ -2512,7 +2580,7 @@ system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl Reques
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn reject_completion (& mut self , claim : CompletionClaim)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn release_and_handoff (& mut self , identity : RequestIdentity ,) -> Option < CapacityWake >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn release_without_handoff (& mut self , identity : RequestIdentity)
-system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn reserve_or_wait (& mut self) -> ReserveOrWait
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn reserve_or_wait (& mut self , descriptors : usize) -> ReserveOrWait
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct CapacityWait
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct CapacityWake
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct CompletionClaim
@@ -2626,8 +2694,10 @@ system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :
 system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock_home (& self) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn metadata_cached (& self , fs_block_id : u64) -> Option < Arc < Vec < u8 > > >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
-system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
-system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_blocks (& self , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_blocks_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_runs (& self , runs : & mut [(u64 , & mut [u8])] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_metadata_block (& self , fs_block_id : u64 ,) -> Result < Arc < Vec < u8 > > , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_block (& self , fs_block_id : u64 , buf : & [u8] , kind : BlockKind ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
@@ -2721,6 +2791,7 @@ system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn is_fast_symlin
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn load (fs : Arc < Ext4FileSystem > , inode_num : u32 ,) -> Result < Arc < Self > , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block (& self , file_block : u32) -> Result < u64 , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block_sparse (& self , file_block : u32) -> Result < Option < u64 > , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_run (& self , file_block : u32) -> Result < Option < (u64 , u64) > , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn new_disk (fs : & Ext4FileSystem , mode : u16 , uid : u32 , gid : u32 , links : u16 , extents : bool ,) -> Ext4InodeDisk
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , directory : bool ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn truncate_locked (& self , mutation : & mut MutationGuard < '_ > , size : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
@@ -4175,6 +4246,7 @@ system/linuxd/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl P
 system/linuxd/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl PseudoFileSystem :: const fn type_name (self) -> & 'static str
 system/linuxd/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl PseudoFileSystem :: fn statistics (self) -> FileSystemStatistics
 system/linuxd/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn change (& self , change : & OwnerModeChange) -> Result < () , FileSystemError >
+system/linuxd/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn identity (& self) -> (u64 , u64)
 system/linuxd/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn new (filesystem : PseudoFileSystem , inode : u64 , kind : InodeType , creator : CreateMetadata , links : u32 , times : TimeOwner ,) -> Self
 system/linuxd/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >)
 system/linuxd/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn snapshot (& self , size : u64 , blocks : u64) -> InodeMetadata
@@ -4634,7 +4706,7 @@ system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Reader < 'a >
 system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Statfs
 system/linuxd/src/fs/fuse/service.rs :: pub (in crate :: fs) fn mount (channel : Channel , environment : & MountEnvironment , backing : Arc < dyn super :: filesystem :: BackingMemory > ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。"] Memory (alloc :: sync :: Arc < super :: memory_file :: MemoryFile >)
-system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内容由文件系统服务拥有（ext4 服务挂载，Starnix RemoteFs）：读与 mmap 使用服务交出的 VMO"] # [doc = " （[`Inode::backing_memory`]），写经存储接口；linuxd 不缓存它的页，也不回写。"] Remote
+system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内容由文件系统外的 owner 拥有（ext4 服务或 IPC 段）：读与 mmap 使用同一导出 VMO"] # [doc = " （[`Inode::backing_memory`]），写经存储接口；linuxd 不缓存它的页，也不回写。"] SharedVmo
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 持久文件：经全局 page cache 缓存 filesystem storage。"] PageCache
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 每次读取即时生成的只读快照（procfs）：不缓存、不可 mmap、不可写。"] Snapshot
 system/linuxd/src/fs/inode.rs :: enum InodeOpen :: # [doc = " 经 VFS/page cache 访问 inode storage；有 per-open 状态的 filesystem 附带其 release 令牌。"] Storage (Option < Arc < dyn StorageOpen > >)
@@ -4948,6 +5020,7 @@ system/linuxd/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
 system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , mapping_file , sync_all , sync_inode , truncate , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcMapping , ProcMemoryMaps , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
+system/linuxd/src/fs/mod.rs :: pub (crate) use shared_memory_file :: SharedMemoryFile
 system/linuxd/src/fs/mod.rs :: pub (crate) use storage_open :: { BackingFile , BackingOpen , DirectIo , StorageOpen }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_net :: { NetLinkSnapshot , NetLinkSource }
@@ -5010,7 +5083,7 @@ system/linuxd/src/fs/nsfs.rs :: pub (crate) fn namespace_opened (namespace : Nam
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Direct (DirectWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryInodeWrite < 'a >)
-system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Remote (remote_file :: RemoteWrite < 'a >)
+system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: SharedVmo (vmo_file :: VmoWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn mapping (opened : Arc < super :: OpenedFile > , owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > > , may_write : bool , shared : bool , write : bool ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
@@ -5023,6 +5096,7 @@ system/linuxd/src/fs/page_cache.rs :: pub (crate) struct DirectWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) struct MemoryInodeWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , invalidate , sync_all , write_back , writeback_cached , }
 system/linuxd/src/fs/page_cache.rs :: pub (crate) use regular_file :: RegularFile
+system/linuxd/src/fs/page_cache.rs :: pub (in crate :: fs) fn status_error (status : native_runtime :: native_abi :: Status) -> FileSystemError
 system/linuxd/src/fs/page_cache.rs :: pub (super) use registry :: evict_if_unlinked
 system/linuxd/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
 system/linuxd/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
@@ -5051,19 +5125,19 @@ system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFile
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn prepare_content_write (& self) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn size (& self) -> u64
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) fn remote_file (inode : Arc < dyn Inode >) -> Result < Arc < RemoteFile > , FileSystemError >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) struct RemoteFile
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) struct RemoteWrite < 'a >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: id : SharedFileId
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: inode : Arc < dyn Inode >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: memory : Arc < MemoryObject >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: write_sequence : TaskMutex < () >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: _sequence : TaskMutexGuard < 'a , () >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: file : & 'a RemoteFile
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: identity : AccessIdentity
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
-system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (crate) fn vmo_file (inode : Arc < dyn Inode >) -> Result < Arc < VmoFile > , FileSystemError >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (crate) struct VmoFile
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (crate) struct VmoWrite < 'a >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoFile :: id : SharedFileId
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoFile :: inode : Arc < dyn Inode >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoFile :: memory : Arc < MemoryObject >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoFile :: write_sequence : TaskMutex < () >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoWrite :: _sequence : TaskMutexGuard < 'a , () >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoWrite :: file : & 'a VmoFile
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) VmoWrite :: identity : AccessIdentity
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) impl VmoFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) impl VmoWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
+system/linuxd/src/fs/page_cache/vmo_file.rs :: pub (super) impl VmoWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 system/linuxd/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64 , durable : bool ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: bytes : usize
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: offset : u64
@@ -5190,6 +5264,7 @@ system/linuxd/src/fs/procfs/attributes.rs :: pub (super) impl ProcAttributes :: 
 system/linuxd/src/fs/procfs/attributes.rs :: pub (super) impl ProcAttributes :: fn touch_access (& self , now : u64 , relatime : bool)
 system/linuxd/src/fs/procfs/attributes.rs :: pub (super) impl ProcAttributes :: fn truncate (& self)
 system/linuxd/src/fs/procfs/attributes.rs :: pub (super) struct ProcAttributes
+system/linuxd/src/fs/procfs/directory.rs :: pub (super) impl ProcInode :: fn read_entries (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
 system/linuxd/src/fs/procfs/identity.rs :: pub (super) ProcIdentities :: live : super :: super :: inode_identity :: LiveInodes < T , (ProcNode , u64) >
 system/linuxd/src/fs/procfs/identity.rs :: pub (super) impl ProcIdentities < T > :: fn allocate_number (& self) -> Result < u64 , FileSystemError >
 system/linuxd/src/fs/procfs/identity.rs :: pub (super) impl ProcIdentities < T > :: fn new () -> Self
@@ -5215,10 +5290,11 @@ system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: offset : u64
 system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: permissions : [bool ; 3]
 system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: shared : bool
 system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: start : usize
+system/linuxd/src/fs/procfs/maps.rs :: pub (crate) ProcMapping :: statistics : crate :: memory :: MappingStatistics
 system/linuxd/src/fs/procfs/maps.rs :: pub (crate) struct ProcMapping
 system/linuxd/src/fs/procfs/maps.rs :: pub (crate) trait ProcMemoryMaps
-system/linuxd/src/fs/procfs/maps.rs :: pub (super) fn contents (mappings : & [ProcMapping] , root : & Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
-system/linuxd/src/fs/procfs/maps.rs :: trait ProcMemoryMaps :: fn snapshot (& self) -> Result < Vec < ProcMapping > , FileSystemError >
+system/linuxd/src/fs/procfs/maps.rs :: pub (super) fn contents (mappings : & [ProcMapping] , root : & Arc < OpenedFile > , format : ProcMapFormat ,) -> Result < Vec < u8 > , FileSystemError >
+system/linuxd/src/fs/procfs/maps.rs :: trait ProcMemoryMaps :: fn snapshot (& self , detailed : bool) -> Result < Vec < ProcMapping > , FileSystemError >
 system/linuxd/src/fs/procfs/mount.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource > , pid_namespace : Arc < crate :: namespace :: PidNamespace > ,) -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/fs/procfs/networking.rs :: enum NetworkTable :: Devices
 system/linuxd/src/fs/procfs/networking.rs :: enum NetworkTable :: Routes
@@ -5245,6 +5321,9 @@ system/linuxd/src/fs/procfs/networking.rs :: pub (crate) struct ProcRouteSnapsho
 system/linuxd/src/fs/procfs/networking.rs :: pub (super) enum NetworkTable
 system/linuxd/src/fs/procfs/networking.rs :: pub (super) fn contents (table : NetworkTable , interfaces : & [ProcNetworkSnapshot] , routes : & [ProcRouteSnapshot] ,) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/networking.rs :: pub (super) impl NetworkTable :: fn from_node (node : ProcNode) -> Option < Self >
+system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Maps
+system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Rollup
+system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Smaps
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: BuddyInfo
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: Cmdline
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: CoreBufferLimit (crate :: net :: CoreBufferLimit)
@@ -5274,7 +5353,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCwd (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessIo (usize)
-system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMaps (usize)
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMaps (usize , ProcMapFormat)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMountInfo (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMountStats (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessMounts (usize)
@@ -5299,7 +5378,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadComm (usize , usiz
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadCwd (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadDir (usize , usize , ProcThreadDirectory)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadIo (usize , usize)
-system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMaps (usize , usize)
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMaps (usize , usize , ProcMapFormat)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMountInfo (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMountStats (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ThreadMounts (usize)
@@ -5317,6 +5396,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcTaskDirectory :: Process
 system/linuxd/src/fs/procfs/node.rs :: enum ProcTaskDirectory :: Thread (ProcThreadDirectory)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcThreadDirectory :: Group
 system/linuxd/src/fs/procfs/node.rs :: enum ProcThreadDirectory :: Root
+system/linuxd/src/fs/procfs/node.rs :: pub (super) enum ProcMapFormat
 system/linuxd/src/fs/procfs/node.rs :: pub (super) enum ProcNode
 system/linuxd/src/fs/procfs/node.rs :: pub (super) enum ProcTaskDirectory
 system/linuxd/src/fs/procfs/node.rs :: pub (super) enum ProcThreadDirectory
@@ -5435,6 +5515,8 @@ system/linuxd/src/fs/procfs/text.rs :: pub (super) impl ProcText :: fn write_byt
 system/linuxd/src/fs/procfs/text.rs :: pub (super) struct ProcText
 system/linuxd/src/fs/procfs/time_offsets.rs :: pub (super) fn contents (source : & dyn ProcSource , tid : usize) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/time_offsets.rs :: pub (super) fn write (source : & dyn ProcSource , tid : usize , opener : & NamespaceAuthority , input : & mut dyn UserInput , offset : u64 ,) -> Result < () , DeviceError >
+system/linuxd/src/fs/shared_memory_file.rs :: pub (crate) impl SharedMemoryFile :: fn create_opened (label : Vec < u8 > , length : u64 , object : Arc < MemoryObject > , creator : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+system/linuxd/src/fs/shared_memory_file.rs :: pub (crate) struct SharedMemoryFile
 system/linuxd/src/fs/storage_budget.rs :: pub (super) BudgetSnapshot :: inode_limit : Option < u64 >
 system/linuxd/src/fs/storage_budget.rs :: pub (super) BudgetSnapshot :: page_limit : Option < u64 >
 system/linuxd/src/fs/storage_budget.rs :: pub (super) BudgetSnapshot :: used_inodes : u64
@@ -6379,7 +6461,7 @@ system/linuxd/src/ipc/namespace/description.rs :: pub (crate) impl IpcNamespace 
 system/linuxd/src/ipc/namespace/description.rs :: pub (crate) impl IpcTable :: fn name (self) -> & 'static [u8]
 system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn set_shared_memory_limit (& self , limit : SharedMemoryLimit , value : u64 , access : & crate :: namespace :: NamespaceAuthority ,) -> Result < () , IpcError >
 system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_close (& self , segment : & Arc < SharedMemorySegment > , actor : Option < (Arc < PidIdentity > , u64) > ,)
-system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_get (self : & Arc < Self > , key : i32 , size : usize , flags : u32 , access : & IpcAccess , pid : Arc < PidIdentity > , now : u64 , creator : & Arc < SharedMemoryCreatorList > ,) -> Result < i32 , IpcError >
+system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_get (self : & Arc < Self > , key : i32 , size : usize , flags : u32 , access : & IpcAccess , pid : Arc < PidIdentity > , now : u64 , creator : & Arc < SharedMemoryCreatorList > , allocate : impl FnOnce (usize) -> Result < Arc < SharedMemoryBacking > , IpcError > ,) -> Result < i32 , IpcError >
 system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_info (& self) -> (i32 , [u64 ; 3] , i32)
 system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_limit (& self , limit : SharedMemoryLimit) -> u64
 system/linuxd/src/ipc/namespace/shared_memory.rs :: pub (crate) impl IpcNamespace :: fn shared_memory_limits (& self) -> ([u64 ; 5] , i32)
@@ -6697,6 +6779,20 @@ system/linuxd/src/memory/initial_stack.rs :: pub (super) ElfAuxInfo :: phent : u
 system/linuxd/src/memory/initial_stack.rs :: pub (super) ElfAuxInfo :: phnum : usize
 system/linuxd/src/memory/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , input : InitialStack < '_ > , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
 system/linuxd/src/memory/initial_stack.rs :: pub (super) struct ElfAuxInfo
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: anonymous : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: private_clean : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: private_dirty : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: pss : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: pss_anon : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: pss_dirty : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: pss_file : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: pss_shmem : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: rss : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: shared_clean : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) MappingStatistics :: shared_dirty : u64
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) impl MappingStatistics :: fn add (& mut self , other : & Self)
+system/linuxd/src/memory/mapping_statistics.rs :: pub (crate) struct MappingStatistics
+system/linuxd/src/memory/mapping_statistics.rs :: pub (super) impl MappingStatistics :: fn account (& mut self , range : & VmarMappingStats , bytes : u64 , shared_anonymous : bool)
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn access_forced (& self , address : usize , buffer : & mut [u8] , write : bool) -> usize
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn compare_exchange_user_u32 (& self , address : usize , current : u32 , replacement : u32 ,) -> Result < Result < u32 , u32 > , UserAccessError >
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& self , address : usize , output : & mut [u8] ,) -> Result < () , UserAccessError >
@@ -6715,22 +6811,35 @@ system/linuxd/src/memory/mm/area.rs :: enum AnonymousRole :: Plain
 system/linuxd/src/memory/mm/area.rs :: enum AnonymousRole :: Stack
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " SysV 共享内存段。"] SystemV { source : SharedMemoryMembership , offset : u64 , }
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 信号返回跳板（全部地址空间共享的只读可执行页）。"] Trampoline { object : Arc < MemoryObject > }
-system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 共享匿名：fork 后父子映射同一对象。"] SharedAnonymous { object : Arc < MemoryObject > , offset : u64 , }
+system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 共享匿名：fork 后父子映射同一对象。"] SharedAnonymous { object : Arc < MemoryObject > , file : Arc < dyn crate :: memory :: MappedFileOwner > , offset : u64 , }
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 文件共享映射：直接映射页缓存对象，`offset` 即文件偏移。"] SharedFile { source : FileMappingSource , object : Arc < MemoryObject > , offset : u64 , writable : bool , }
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 文件私有映射：对象是页缓存的写时复制子对象，`file_offset` 是区间起点对应的文件偏移。"] PrivateFile { source : FileMappingSource , object : Arc < MemoryObject > , offset : u64 , file_offset : u64 , }
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 私有匿名：对象只属于本地址空间。"] Anonymous { object : Arc < MemoryObject > , offset : u64 , role : AnonymousRole , }
 system/linuxd/src/memory/mm/area.rs :: enum Backing :: # [doc = " 设备缓冲。"] Device { source : DeviceMappingSource , offset : u64 , }
+system/linuxd/src/memory/mm/area.rs :: enum MappingBacking :: Anonymous (AnonymousRole)
+system/linuxd/src/memory/mm/area.rs :: enum MappingBacking :: Device { file : Option < Arc < dyn crate :: memory :: MappedFileOwner > > , offset : u64 , }
+system/linuxd/src/memory/mm/area.rs :: enum MappingBacking :: File { mapping : Arc < dyn crate :: memory :: SharedFileMapping > , offset : u64 , }
+system/linuxd/src/memory/mm/area.rs :: enum MappingBacking :: SharedMemory { file : Arc < dyn crate :: memory :: MappedFileOwner > , offset : u64 , }
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: backing : Backing
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: end : usize
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: flags : AreaFlags
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: name : Option < Arc < [u8] > >
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: permission : MapPermission
 system/linuxd/src/memory/mm/area.rs :: pub (crate) Area :: start : usize
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: backing : MappingBacking
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: end : usize
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: name : Option < Arc < [u8] > >
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: permission : MapPermission
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: shared : bool
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: start : usize
+system/linuxd/src/memory/mm/area.rs :: pub (crate) MappingSnapshot :: statistics : super :: MappingStatistics
 system/linuxd/src/memory/mm/area.rs :: pub (crate) enum AnonymousRole
 system/linuxd/src/memory/mm/area.rs :: pub (crate) enum Backing
+system/linuxd/src/memory/mm/area.rs :: pub (crate) enum MappingBacking
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Area :: fn counts_as_data (& self) -> bool
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Area :: fn install (& self , vmar : & Vmar , base : usize) -> Result < () , MemoryError >
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Area :: fn len (& self) -> usize
+system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Area :: fn observe (& self) -> MappingSnapshot
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Area :: fn split_off (& mut self , address : usize) -> Self
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Backing :: fn advanced (& self , delta : u64) -> Self
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Backing :: fn is_shared (& self) -> bool
@@ -6738,6 +6847,7 @@ system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Backing :: fn may (& sel
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Backing :: fn object (& self) -> & Arc < MemoryObject >
 system/linuxd/src/memory/mm/area.rs :: pub (crate) impl Backing :: fn offset (& self) -> u64
 system/linuxd/src/memory/mm/area.rs :: pub (crate) struct Area
+system/linuxd/src/memory/mm/area.rs :: pub (crate) struct MappingSnapshot
 system/linuxd/src/memory/mm/fault.rs :: enum PageFaultAccess :: Execute
 system/linuxd/src/memory/mm/fault.rs :: enum PageFaultAccess :: Read
 system/linuxd/src/memory/mm/fault.rs :: enum PageFaultAccess :: Write
@@ -6771,20 +6881,17 @@ system/linuxd/src/memory/mm/mod.rs :: pub (crate) UserPageStatistics :: text_pag
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) UserPageStatistics :: virtual_pages : usize
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn area_at (& self , address : usize) -> Option < & Area >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn argument_range (& self) -> Range < usize >
-system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn classify_mapped_memory (& self , seen : & mut Vec < usize > , totals : & mut MappedMemory ,) -> Result < () , MemoryError >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn data_bytes (& self) -> u64
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn executable_owner (& self) -> Option < Arc < dyn MappedFileOwner > >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn has_user_vma_at_or_after (& self , address : usize) -> bool
-system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn mapping_snapshot (& self) -> Result < Vec < Area > , MemoryError >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn process (& self) -> & Arc < Process >
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn trampoline (& self) -> usize
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn try_new (name : & [u8]) -> Result < Self , MemoryError >
-system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> UserPageStatistics
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) impl MemorySet :: fn virtual_bytes (& self) -> u64
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) struct MappedMemory
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) struct MemorySet
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) struct UserPageStatistics
-system/linuxd/src/memory/mm/mod.rs :: pub (crate) use area :: { AnonymousRole , Area , AreaFlags , Backing }
+system/linuxd/src/memory/mm/mod.rs :: pub (crate) use area :: { AnonymousRole , Area , AreaFlags , Backing , MappingBacking , MappingSnapshot }
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) use fault :: { PageFaultAccess , PageFaultOutcome , SegmentationCause }
 system/linuxd/src/memory/mm/mod.rs :: pub (crate) use request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , RemapError , RemapPlacement , RemapRequest , UserMappingRequest , UserMappingSource , }
 system/linuxd/src/memory/mm/mod.rs :: pub (super) MemorySet :: arguments : Range < usize >
@@ -6795,6 +6902,9 @@ system/linuxd/src/memory/mm/mod.rs :: pub (super) MemorySet :: mmap_top : usize
 system/linuxd/src/memory/mm/mod.rs :: pub (super) MemorySet :: stack : Range < usize >
 system/linuxd/src/memory/mm/mod.rs :: pub (super) impl MemorySet :: fn insert (& mut self , area : Area) -> Result < () , MemoryError >
 system/linuxd/src/memory/mm/mod.rs :: pub (super) impl MemorySet :: fn remove_range (& mut self , start : usize , end : usize) -> Result < () , MemoryError >
+system/linuxd/src/memory/mm/observation.rs :: pub (crate) impl MemorySet :: fn classify_mapped_memory (& self , seen : & mut Vec < usize > , totals : & mut MappedMemory ,) -> Result < () , MemoryError >
+system/linuxd/src/memory/mm/observation.rs :: pub (crate) impl MemorySet :: fn mapping_snapshot (& self , detailed : bool ,) -> Result < Vec < MappingSnapshot > , MemoryError >
+system/linuxd/src/memory/mm/observation.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> Result < UserPageStatistics , MemoryError >
 system/linuxd/src/memory/mm/request.rs :: enum FileMappingError :: Invalid
 system/linuxd/src/memory/mm/request.rs :: enum FileMappingError :: Overflow
 system/linuxd/src/memory/mm/request.rs :: enum MappingPlacement :: Fixed
@@ -6822,12 +6932,13 @@ system/linuxd/src/memory/mm/request.rs :: enum RemapPlacement :: MayMove
 system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: Device (DeviceMappingSource)
 system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: PrivateAnonymous
 system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: PrivateFile (FileMappingSource)
-system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: SharedAnonymous
+system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: SharedAnonymous { object : Arc < crate :: memory :: MemoryObject > , file : Arc < dyn MappedFileOwner > , }
 system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: SharedFile (FileMappingSource)
 system/linuxd/src/memory/mm/request.rs :: enum UserMappingSource :: SystemV (crate :: memory :: SharedMemoryMappingSource)
 system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: backing : Arc < DeviceBacking >
+system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: file : Option < Arc < dyn MappedFileOwner > >
+system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: file_offset : u64
 system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: object : Arc < crate :: memory :: MemoryObject >
-system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: owners : alloc :: vec :: Vec < Arc < dyn MappedFileOwner > >
 system/linuxd/src/memory/mm/request.rs :: pub (crate) DeviceMappingSource :: page_offset : usize
 system/linuxd/src/memory/mm/request.rs :: pub (crate) FileMappingSource :: mapping : Arc < dyn SharedFileMapping >
 system/linuxd/src/memory/mm/request.rs :: pub (crate) FileMappingSource :: offset : u64
@@ -6851,8 +6962,8 @@ system/linuxd/src/memory/mm/request.rs :: pub (crate) enum RemapError
 system/linuxd/src/memory/mm/request.rs :: pub (crate) enum RemapPlacement
 system/linuxd/src/memory/mm/request.rs :: pub (crate) enum UserMappingSource
 system/linuxd/src/memory/mm/request.rs :: pub (crate) impl DeviceMappingSource :: fn new (backing : Arc < DeviceBacking >) -> Result < Self , MemoryError >
-system/linuxd/src/memory/mm/request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_file (& mut self , file : Arc < dyn MappedFileOwner > ,) -> Result < () , alloc :: alloc :: AllocError >
-system/linuxd/src/memory/mm/request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_object (& mut self , object : Arc < dyn MappedFileOwner >)
+system/linuxd/src/memory/mm/request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_buffer (& mut self , buffer : Arc < dyn MappedFileOwner >)
+system/linuxd/src/memory/mm/request.rs :: pub (crate) impl DeviceMappingSource :: fn set_file (& mut self , file : Arc < dyn MappedFileOwner > , offset : u64)
 system/linuxd/src/memory/mm/request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64 , length : usize ,) -> Result < Self , FileMappingError >
 system/linuxd/src/memory/mm/request.rs :: pub (crate) impl MappingResourceLimits :: const fn new (address_space : u64 , data : u64) -> Self
 system/linuxd/src/memory/mm/request.rs :: pub (crate) struct DeviceMappingSource
@@ -6883,7 +6994,8 @@ system/linuxd/src/memory/mod.rs :: pub (crate) impl MemoryError :: fn is_out_of_
 system/linuxd/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 system/linuxd/src/memory/mod.rs :: pub (crate) use futex :: { FutexAccessError , FutexKey , UserAtomicU32 , UserAtomicU32Op }
 system/linuxd/src/memory/mod.rs :: pub (crate) use initial_stack :: { InitialStack , InitialStackCredentials }
-system/linuxd/src/memory/mod.rs :: pub (crate) use mm :: { AnonymousRole , Area , Backing , DeviceMappingSource , FileMappingError , FileMappingSource , MappedMemory , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserMappingRequest , UserMappingSource , UserPageStatistics , }
+system/linuxd/src/memory/mod.rs :: pub (crate) use mapping_statistics :: MappingStatistics
+system/linuxd/src/memory/mod.rs :: pub (crate) use mm :: { AnonymousRole , DeviceMappingSource , FileMappingError , FileMappingSource , MappedMemory , MappingBacking , MappingPlacement , MappingResourceLimits , MappingSnapshot , MemoryAdvice , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserMappingRequest , UserMappingSource , UserPageStatistics , }
 system/linuxd/src/memory/mod.rs :: pub (crate) use object :: MemoryObject
 system/linuxd/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , SharedFileError , SharedFileId , SharedFileMapping }
 system/linuxd/src/memory/mod.rs :: pub (crate) use shared_memory :: { SharedMemoryBacking , SharedMemoryMappingSource , SharedMemoryMembership , SharedMemoryVma , }
@@ -6913,9 +7025,10 @@ system/linuxd/src/memory/shared_memory.rs :: pub (crate) SharedMemoryMappingSour
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) SharedMemoryMappingSource :: lifetime : Arc < dyn SharedMemoryVma >
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) SharedMemoryMappingSource :: may_write : bool
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) SharedMemoryMembership :: source : SharedMemoryMappingSource
-system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn allocate (pages : usize) -> Result < Arc < Self > , MemoryError >
+system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn file (& self) -> Arc < dyn MappedFileOwner >
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn freeze_lock_state (& self) -> Result < SharedMemoryLockGuard < '_ > , MemoryError >
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn locked (& self) -> bool
+system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn new (object : Arc < MemoryObject > , file : Arc < dyn MappedFileOwner > ,) -> Result < Arc < Self > , MemoryError >
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn object (& self) -> & Arc < MemoryObject >
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryBacking :: fn shared_memory_statistics (& self) -> (usize , usize)
 system/linuxd/src/memory/shared_memory.rs :: pub (crate) impl SharedMemoryLockGuard < '_ > :: fn set_locked (& self , value : bool)
@@ -8438,7 +8551,7 @@ system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessS
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: start_time_us : u64
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: text_pages : usize
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: virtual_pages : usize
-system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) impl AddressSpace :: fn mapping_snapshot (& self ,) -> Result < Vec < crate :: memory :: Area > , MemoryError >
+system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) impl AddressSpace :: fn mapping_snapshot (& self , detailed : bool ,) -> Result < Vec < crate :: memory :: MappingSnapshot > , MemoryError >
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) impl AddressSpace :: fn process (& self) -> & Arc < native_runtime :: Process >
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) struct AddressSpace
 system/linuxd/src/task/model/address_space.rs :: pub (in crate :: task) struct ProcessStatistics

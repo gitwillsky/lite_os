@@ -84,19 +84,8 @@ fn main(mut startup: Startup) -> i64 {
     let directory =
         DirectoryClient::new(Channel::from_handle(startup.take(fshost::DEVICE_DIRECTORY)));
     let source = native_runtime::Vmo::from_handle(startup.take(fshost::EXT4_IMAGE));
-    let size = source.size().expect("ext4 image size") as usize;
-    let address = native_runtime::heap::vmar()
-        .map(native_abi::vm::READ, 0, &source, 0, size)
-        .expect("ext4 image mapping");
-    // SAFETY: 完整只读映射在 parse 期间有效；映像不保留输入借用。
-    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
-    let image = native_runtime::elf::Image::parse(bytes).expect("ext4 ELF");
-    // SAFETY: parse 已复制段内容且不保留 bytes；此映射没有其他使用者。
-    unsafe {
-        native_runtime::heap::vmar()
-            .unmap(address, size.next_multiple_of(native_abi::PAGE_SIZE))
-            .expect("ext4 image unmapping");
-    }
+    // 映像在 bootfs 子对象里：各段成为它的写时复制子对象，不复制字节也不需要映射整份映像。
+    let image = native_runtime::elf::Image::from_vmo(&source, 0).expect("ext4 ELF");
     drop(source);
     let launcher = Arc::new(volumes::Launcher::new(
         native_runtime::Job::from_handle(startup.take(fshost::FILESYSTEM_JOB)),

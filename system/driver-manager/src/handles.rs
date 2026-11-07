@@ -1,7 +1,6 @@
 //! 启动时取得、服务存活期间不变的全局句柄（角色约定见 `launch_protocol::driver_manager`）。
 
 use device_protocol::directory::Publisher;
-use native_runtime::native_abi;
 use native_runtime::sync::Once;
 use native_runtime::{Channel, Job, Resource, Startup, Vmo};
 
@@ -28,19 +27,8 @@ pub(crate) fn install(startup: &mut Startup) -> Vmo {
             startup.take(driver_manager::DEVICE_PUBLISHER),
         ));
         let image = Vmo::from_handle(startup.take(driver_manager::DRIVER_HOST_IMAGE));
-        let size = image.size().expect("driver-host image size") as usize;
-        let address = native_runtime::heap::vmar()
-            .map(native_abi::vm::READ, 0, &image, 0, size)
-            .expect("driver-host image mapping");
-        // SAFETY: 只读映射覆盖完整映像，parse 不保留借用；完成后才能解除映射。
-        let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
-        let host_image = native_runtime::elf::Image::parse(bytes).expect("driver-host ELF");
-        // SAFETY: parse 已复制段内容且不保留 bytes；此映射没有其他使用者。
-        unsafe {
-            native_runtime::heap::vmar()
-                .unmap(address, size.next_multiple_of(native_abi::PAGE_SIZE))
-                .expect("driver-host image unmapping");
-        }
+        // 映像在 bootfs 子对象里：各段成为它的写时复制子对象，不复制字节。
+        let host_image = native_runtime::elf::Image::from_vmo(&image, 0).expect("driver-host ELF");
         Handles {
             resource: Resource::from_handle(startup.take(driver_manager::RESOURCE)),
             directory,

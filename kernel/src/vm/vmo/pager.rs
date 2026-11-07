@@ -214,6 +214,52 @@ impl Vmo {
 }
 
 impl Vmo {
+    /// 读取无需等待 pager 的内容；树锁正忙或任一页需要补入时返回 `false`。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 首字节偏移。
+    /// - `output`: 目标缓冲；返回 `false` 或错误时前缀可能已修改，调用者不得发布这些字节。
+    ///
+    /// # Returns
+    ///
+    /// 全部字节已复制为 `true`；不会发出 pager 请求，也不登记树锁等待者。
+    ///
+    /// # Errors
+    ///
+    /// 越界、匿名页分配失败或对象不支持读取。
+    pub(crate) fn read_available(
+        self: &Arc<Self>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<bool, VmError> {
+        let Some(_tree) = self.tree.lock.try_lock() else {
+            return Ok(false);
+        };
+        let offset = usize::try_from(offset).map_err(|_| VmError::OutOfRange)?;
+        let end = offset
+            .checked_add(output.len())
+            .ok_or(VmError::OutOfRange)?;
+        let mut cursor = offset;
+        while cursor < end {
+            let page = match self.resolve_locked(cursor / PAGE_SIZE, false) {
+                Ok(page) => page,
+                Err(Resolve::NeedPage { .. }) => return Ok(false),
+                Err(Resolve::Error(error)) => return Err(error),
+            };
+            let page_offset = cursor % PAGE_SIZE;
+            let chunk = (PAGE_SIZE - page_offset).min(end - cursor);
+            PageAccess(page.ppn).read(
+                page_offset,
+                &mut output[cursor - offset..cursor - offset + chunk],
+            );
+            cursor += chunk;
+        }
+        Ok(true)
+    }
+}
+
+impl Vmo {
     /// 完成缩小后越界的读取请求，让等待者回到解析循环重新判断大小（Zircon `InvalidateReadRequestsLocked`）。
     /// 调用者持树锁。完成结果只允许解析继续，不承诺该页存在或驻留；缺失时等待越界页的线程永远等不到 supply。
     pub(super) fn invalidate_read_requests_locked(&self, range: core::ops::Range<usize>) {

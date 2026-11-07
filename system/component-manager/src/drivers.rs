@@ -51,14 +51,11 @@ impl Drivers {
         let resource = resource.duplicate(rights::SAME)?;
         let (client, requests) = Channel::create()?;
         let hosts = Job::create(&root)?;
-        let host_image = super::bootfs_copy(bootfs, driver_host::IMAGE);
-        let image = bootfs
-            .find(driver_manager::IMAGE)
-            .ok_or(native_abi::ERR_NOT_FOUND)?
-            .data;
+        let host_image = bootfs.file_vmo(driver_host::IMAGE)?;
+        let image = bootfs.image(driver_manager::IMAGE)?;
         let current = launch(
             &root,
-            image,
+            &image,
             vec![
                 resource.duplicate(rights::SAME)?.into_handle(),
                 device_tree.duplicate(rights::SAME)?,
@@ -181,9 +178,10 @@ impl Drivers {
         let (transfer, receive) = Channel::create()?;
         let decision = Event::create()?;
         let old_decision = decision.duplicate(rights::SAME)?;
+        // 客户端提供的 VMO 之后可能被它自己改写：先复制成映像，不能与其共享页。
         let candidate = launch(
             &self.root,
-            &bytes,
+            &native_runtime::elf::Image::parse(&bytes)?,
             vec![
                 self.resource.duplicate(rights::SAME)?.into_handle(),
                 self.device_tree.duplicate(rights::SAME)?,
@@ -265,7 +263,11 @@ async fn request(
         .map_err(|_| native_abi::ERR_INVALID_ARGS)
 }
 
-fn launch(root: &Job, image: &[u8], mut handles: Vec<Handle>) -> Result<Instance, Status> {
+fn launch(
+    root: &Job,
+    image: &native_runtime::elf::Image,
+    mut handles: Vec<Handle>,
+) -> Result<Instance, Status> {
     let job = Job::create(root)?;
     let result = (|| {
         let (process, vmar) = Process::create(&job, b"driver-manager", 0)?;
@@ -280,7 +282,7 @@ fn launch(root: &Job, image: &[u8], mut handles: Vec<Handle>) -> Result<Instance
             image_vmar: &vmar,
             runtime_vmar,
             name: b"driver-manager",
-            image: &native_runtime::elf::Image::parse(image)?,
+            image,
             arguments: &[],
             handles,
             stack_size: 256 * 1024,

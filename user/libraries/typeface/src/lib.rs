@@ -5,6 +5,7 @@
 extern crate liteos_runtime as _;
 mod bdf;
 mod catalog;
+mod glyph_cache;
 mod hinting;
 mod layout;
 mod raster;

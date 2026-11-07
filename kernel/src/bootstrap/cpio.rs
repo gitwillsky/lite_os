@@ -1,7 +1,7 @@
 //! cpio `newc`（SVR4，无 CRC）归档的只读遍历。
 //!
-//! 每个成员：110 字节 ASCII 头（魔数 `070701` 与 13 个 8 位十六进制字段）、NUL 结尾的路径名、
-//! 填充到 4 字节对齐、文件内容、再填充到 4 字节对齐；以名为 `TRAILER!!!` 的成员结束。
+//! 每个成员：110 字节 ASCII 头（魔数 `070701` 与 13 个 8 位十六进制字段）、NUL 结尾的路径名（其后可有
+//! 额外 NUL 填充）、填充到 4 字节对齐、文件内容、再填充到 4 字节对齐；以名为 `TRAILER!!!` 的成员结束。
 
 const HEADER: usize = 110;
 const MAGIC: &[u8] = b"070701";
@@ -73,7 +73,8 @@ pub(super) fn find<'a>(archive: &'a [u8], path: &[u8]) -> Result<Option<Entry<'a
         let name = archive
             .get(name_start..name_start + name_size)
             .ok_or(CpioError::Truncated)?;
-        let name = name.strip_suffix(&[0]).unwrap_or(name);
+        // 名称在第一个 NUL 处结束；其后可有任意 NUL 填充（打包器借此让文件内容页对齐）。
+        let name = name.split(|byte| *byte == 0).next().unwrap_or(name);
         let data_start = align4(name_start + name_size);
         let data = archive
             .get(data_start..data_start + file_size)

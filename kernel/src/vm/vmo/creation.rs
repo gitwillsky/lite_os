@@ -20,6 +20,7 @@ impl Vmo {
                 mappings: Vec::new(),
                 requested: FallibleMap::new(),
                 detached: false,
+                zero_mapped: false,
             }),
             supplied: WaitQueue::new(),
         };

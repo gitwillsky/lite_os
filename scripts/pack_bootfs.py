@@ -5,7 +5,8 @@
 2. 根服务再从同一 bootfs 启动 ``bin/driver-manager``（它再按节点启动 ``bin/driver-host``）、``bin/ext4``、``bin/fshost``、``bin/netstack``、
    ``bin/dhcp-client``、``bin/netcfg``、``bin/audio-core`` 与 ``bin/linuxd``，并把 ``data/`` 下的只读配置交给对应服务
    （Fuchsia 的 ``/config/data``）；
-3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节。
+3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节；
+4. 文件内容按 4 KiB 页对齐，使装载 ELF 段与交付大文件成为 bootfs VMO 的写时复制子对象而不复制。
 """
 
 from __future__ import annotations
@@ -43,12 +44,27 @@ _REGULAR_EXECUTABLE = 0o100755
 _REGULAR_FILE = 0o100644
 
 
-def _member(name: str, mode: int, data: bytes, inode: int) -> bytes:
+PAGE = 4096
+_HEADER = 110
+
+
+def _member(name: str, mode: int, data: bytes, inode: int, start: int = 0) -> bytes:
+    """编码一个 cpio ``newc`` 成员。
+
+    ``start`` 是该成员在归档中的起始偏移。非空文件的内容按页对齐：多余的填充放进路径名字段
+    （NUL 之后的 NUL），这是标准 cpio 读取器都接受的写法。内容页对齐让 ELF 段与大文件
+    成为 bootfs VMO 的写时复制子对象，装载时不复制字节。
+    """
     encoded = name.encode() + b"\0"
+    if data:
+        padding = -(start + _HEADER + len(encoded)) % PAGE
+    else:
+        padding = -(start + _HEADER + len(encoded)) % 4
+    encoded += b"\0" * padding
     fields = (inode, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(encoded), 0)
     header = b"070701" + b"".join(f"{field:08x}".encode() for field in fields)
     member = header + encoded
-    member += b"\0" * (-len(member) % 4)
+    assert not data or (start + len(member)) % PAGE == 0
     member += data
     member += b"\0" * (-len(member) % 4)
     return member
@@ -80,8 +96,8 @@ def pack(target: BuildTarget, profile: str) -> Path:
                 data = stripped.read_bytes()
             else:
                 data = source.read_bytes()
-            archive += _member(path, mode, data, inode)
-    archive += _member("TRAILER!!!", 0, b"", 0)
+            archive += _member(path, mode, data, inode, len(archive))
+    archive += _member("TRAILER!!!", 0, b"", 0, len(archive))
     output = ROOT / target.bootfs(profile)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp")

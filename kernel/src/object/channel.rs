@@ -22,8 +22,12 @@ use super::signals::SignalState;
 use crate::execution::sync::{SpareStorage, lock_with_spare};
 use crate::execution::sync::{TaskEvent, WaitResult};
 
-/// 单个端点允许积压的消息数；超过时写入返回 `ERR_NO_RESOURCES`，防止失控的发送者耗尽内存。
-const MAX_PENDING_MESSAGES: usize = 4096;
+/// 单个端点允许积压的消息所占字节（含每条消息的固定开销）；超过时写入返回 `ERR_NO_RESOURCES`，
+/// 防止失控的发送者耗尽内存。按字节而非条数限额：条数上限对 64 KiB 的整消息会放大到数百 MiB，
+/// 对小消息又过紧（Fuchsia/Linux 套接字缓冲同样按字节记账）。
+const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
+/// 每条积压消息的固定开销（队列槽与 `Vec` 头）；让海量空消息也受同一个字节上限约束。
+const MESSAGE_OVERHEAD: usize = 64;
 const KERNEL_TXID_BIT: u32 = 1 << 31;
 
 /// 一条 channel 消息。
@@ -42,6 +46,11 @@ impl Message {
         }
     }
 
+    /// 在端点队列中占用的字节数。
+    fn charge(&self) -> usize {
+        self.bytes.len() + MESSAGE_OVERHEAD
+    }
+
     fn txid(&self) -> Option<u32> {
         let bytes = self.bytes.get(..native_abi::CHANNEL_TXID_BYTES)?;
         Some(u32::from_ne_bytes(bytes.try_into().expect("txid width")))
@@ -58,6 +67,8 @@ struct CallWaiter {
 #[derive(Default)]
 struct Side {
     inbound: VecDeque<Message>,
+    // OWNER: `inbound` 中全部消息的 `charge` 之和，与队列同锁增减；缺失时字节上限无法判定。
+    queued_bytes: usize,
     open: bool,
     calls: Vec<Arc<CallWaiter>>,
 }
@@ -92,6 +103,7 @@ impl Channel {
     pub(crate) fn create_pair() -> Result<(Self, Self), Status> {
         let side = || Side {
             inbound: VecDeque::new(),
+            queued_bytes: 0,
             open: true,
             calls: Vec::new(),
         };
@@ -156,9 +168,10 @@ impl Channel {
             call.event.signal_on_current_cpu();
             return Ok(());
         }
-        if state[peer].inbound.len() >= MAX_PENDING_MESSAGES {
+        if state[peer].queued_bytes + message.charge() > MAX_PENDING_BYTES {
             return Err((native_abi::ERR_NO_RESOURCES, message));
         }
+        state[peer].queued_bytes += message.charge();
         state[peer].inbound.push_back(message);
         self.shared.signals[peer].update(0, signals::READABLE);
         Ok(())
@@ -194,6 +207,7 @@ impl Channel {
             });
         }
         let message = side.inbound.pop_front().expect("front message exists");
+        side.queued_bytes -= message.charge();
         if side.inbound.is_empty() {
             self.shared.signals[self.side].update(signals::READABLE, 0);
         }
@@ -310,6 +324,7 @@ impl Drop for Channel {
             let mut state = self.shared.state.lock();
             state[self.side].open = false;
             let retired = core::mem::take(&mut state[self.side].inbound);
+            state[self.side].queued_bytes = 0;
             for call in state[peer].calls.drain(..) {
                 *call.reply.lock() = Some(Err(native_abi::ERR_PEER_CLOSED));
                 call.event.signal();

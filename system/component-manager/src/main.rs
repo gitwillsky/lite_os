@@ -199,8 +199,10 @@ fn main(mut startup: Startup) -> i64 {
 
     let exceptions =
         native_runtime::task::create_exception_channel(&job).expect("root exception channel");
+    // bootfs VMO 随进程存活：各服务映像与大文件是它的写时复制子对象，装载时不复制字节。
+    let bootfs_vmo: &'static Vmo = alloc::boxed::Box::leak(alloc::boxed::Box::new(bootfs_vmo));
     let bootfs = BOOTFS
-        .call_once(|| native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping"));
+        .call_once(|| native_runtime::bootfs::Bootfs::map(bootfs_vmo).expect("bootfs mapping"));
     let (directory, directory_server) = Channel::create().expect("device directory channel");
     let directory = DirectoryClient::new(directory);
     let aggregate = Directory::new().expect("device directory");
@@ -215,7 +217,9 @@ fn main(mut startup: Startup) -> i64 {
         .expect("driver-manager launch");
     // fshost 为每块盘启动 ext4 实例（Fuchsia fshost 启动文件系统）：只交给它实例的 Job 与映像。
     let filesystems = Job::create(&job).expect("filesystem job");
-    let ext4_image = bootfs_copy(bootfs, ext4::IMAGE);
+    let ext4_image = bootfs
+        .file_vmo(ext4::IMAGE)
+        .expect("ext4 image from bootfs");
     let (storage, storage_server) = Channel::create().expect("fshost outgoing channel");
     let storage_host = start_service(
         &job,
@@ -407,8 +411,9 @@ fn private_storage(name: &[u8]) -> Channel {
         .expect("private storage")
 }
 
-/// 把 bootfs 中的文件复制为 VMO 交给服务：只读配置（Fuchsia `/config/data`），或自行启动子进程的服务
-/// （driver-manager、fshost）所需的映像。
+/// 把 bootfs 中的小文件复制为 VMO 交给服务：只读配置（Fuchsia `/config/data`）。
+/// 服务映像不走这里，而是 [`native_runtime::bootfs::Bootfs::file_vmo`] 的零复制子对象；
+/// 配置需要精确长度，而子对象大小向上取整到页。
 fn bootfs_copy(bootfs: &native_runtime::bootfs::Bootfs, path: &[u8]) -> Vmo {
     let data = bootfs
         .find(path)
@@ -540,15 +545,7 @@ fn start_linuxd(
     services: Channel,
     command_line: &[u8],
 ) -> (Process, Job) {
-    let image = bootfs
-        .find(linuxd::IMAGE)
-        .unwrap_or_else(|| {
-            panic!(
-                "bootfs lacks {}",
-                core::str::from_utf8(linuxd::IMAGE).unwrap_or("")
-            )
-        })
-        .data;
+    let image = bootfs.image(linuxd::IMAGE).expect("linuxd ELF");
     let job = Job::create(root).expect("linuxd job");
     let (shared, shared_vmar) = Process::create(&job, b"linuxd-image", native_abi::process::SHARED)
         .expect("linuxd shared process");
@@ -573,7 +570,7 @@ fn start_linuxd(
         image_vmar: &shared_vmar,
         runtime_vmar,
         name: b"linuxd",
-        image: &native_runtime::elf::Image::parse(image).expect("linuxd ELF"),
+        image: &image,
         arguments: command_line,
         handles: vec![
             shared.into_handle(),
@@ -603,9 +600,8 @@ fn start_service(
 ) -> Process {
     let label = core::str::from_utf8(name).unwrap_or("");
     let image = bootfs
-        .find(image)
-        .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(image).unwrap_or("")))
-        .data;
+        .image(image)
+        .unwrap_or_else(|status| panic!("{label} ELF: {status}"));
     let job = Job::create(root).unwrap_or_else(|status| panic!("{label} job: {status}"));
     let (process, vmar) =
         Process::create(&job, name, 0).unwrap_or_else(|status| panic!("{label} process: {status}"));
@@ -617,8 +613,7 @@ fn start_service(
         image_vmar: &vmar,
         runtime_vmar,
         name,
-        image: &native_runtime::elf::Image::parse(image)
-            .unwrap_or_else(|status| panic!("{label} ELF: {status}")),
+        image: &image,
         arguments: &[],
         handles,
         stack_size,

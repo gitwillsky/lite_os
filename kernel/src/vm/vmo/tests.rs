@@ -350,6 +350,42 @@ fn fault_around_collects_only_resident_file_pages_read_only_without_requests() {
 }
 
 #[test]
+fn reading_an_uncommitted_root_anonymous_page_maps_the_shared_zero_page_until_it_is_written() {
+    super::zero_page::initialize();
+    let object = Vmo::create((3 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
+    let read = |vmo: &Arc<Vmo>, index: usize| {
+        let _tree = vmo.lock_tree().unwrap();
+        vmo.resolve_locked(index, false).ok().unwrap()
+    };
+    let first = read(&object, 0);
+    let second = read(&object, 1);
+    assert!(!first.writable, "the zero page is never mapped writable");
+    assert_eq!(first.ppn.as_usize(), second.ppn.as_usize(), "one global zero page");
+    assert_eq!(object.committed_bytes().unwrap(), 0, "a read commits nothing");
+
+    // 写入提交真实页；读到的不再是零页，其余下标仍共享零页。
+    object.write(0, &[5]).unwrap();
+    assert_eq!(object.committed_bytes().unwrap(), PAGE_SIZE as u64);
+    let after = read(&object, 0);
+    assert_ne!(after.ppn.as_usize(), first.ppn.as_usize());
+    assert_eq!(read(&object, 2).ppn.as_usize(), first.ppn.as_usize());
+    let mut byte = [0xff];
+    object.read(PAGE_SIZE as u64, &mut byte).unwrap();
+    assert_eq!(byte, [0], "reading through the zero page observes zeros");
+
+    // 有祖先的对象不使用零页：祖先之后的写入必须对读者可见。
+    let child = object
+        .create_child(0, object.size(), ChildKind::AtLeastOnWrite)
+        .unwrap();
+    assert_ne!(read(&child, 2).ppn.as_usize(), first.ppn.as_usize());
+    // 写解析永远得到真实页。
+    let _tree = object.lock_tree().unwrap();
+    let written = object.resolve_locked(1, true).ok().unwrap();
+    assert!(written.writable);
+    assert_ne!(written.ppn.as_usize(), first.ppn.as_usize());
+}
+
+#[test]
 fn available_read_does_not_enqueue_behind_a_held_tree_lock() {
     let object = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
     object.write(0, &[11]).unwrap();
