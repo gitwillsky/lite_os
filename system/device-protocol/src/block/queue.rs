@@ -9,6 +9,9 @@ pub(super) const MAX_BATCH: usize = 64;
 pub(super) const READ: u64 = 0;
 pub(super) const WRITE: u64 = 1;
 pub(super) const FLUSH: u64 = 2;
+/// 一次调用的组结束标记：整组原子发表且不交错，consumer 不把不同调用合并成一个聚合结果。
+/// 缺失时某个调用的 I/O 错误会污染同一领取窗口里其他调用的成功结果。
+pub(super) const GROUP_LAST: u64 = 1 << 63;
 const HEADER_BYTES: usize = 256;
 const REQUEST_WORDS: usize = 6;
 const RESPONSE_WORDS: usize = 2;
@@ -136,7 +139,7 @@ impl Queue {
                 );
             }
             count += 1;
-            if stop_at_flush && record[1] == FLUSH {
+            if stop_at_flush && (record[1] & !GROUP_LAST == FLUSH || record[1] & GROUP_LAST != 0) {
                 break;
             }
         }

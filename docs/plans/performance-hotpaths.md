@@ -316,6 +316,7 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   登记 VMO 与区间直接 DMA、按 virtqueue 容量协商槽数、virtio-blk 批内并发发布/收割、ext4 extent 合并和 journal 连续写已接通。
   块协议升级 LBLOCK04：控制仅处理登记/派生/取得队列；读写与 flush 经共享 SQ/CQ，删除 TRANSFER/TRANSFER_BATCH RPC。
   环与 credits 表连接时准备，直接写固定原子记录、批量完成；完整 request identity 防止槽复用 ABA，全部完成后才归还借用缓冲。
+  GROUP_LAST 保留调用边界，聚合批错误不能污染相邻调用的成功结果。
   同一弹性池接收控制和 Event，客户端由当前调用者分派完成；无新增常驻转发线程。
   提交可覆盖全部协商容量，领取保持 64 项有界窗口；范围/分区、远端和 virtio 均在批内记录无效项并完成其余有效项。
   flush 封闭后续批次并等待此前 active DMA；协议/source 失败先排空在途 handler，最后 SessionDrop 发布 closed。
@@ -338,6 +339,8 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   扩展既有页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
 - M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
   并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
+  最后一个空闲 RPC 读者永久等真实通知，取消每 5 s 的周期检查；只为多余空闲读者武装收缩截止，忙线程不占读者名额。
+  停止 Event 的每 worker 预留登记无分配广播，保证无限等待的读者也能在 source 失败时退出；空闲收缩自动退订。
   块数据面虽已用共享环，provider 仍为同步批接口，最多 8 个 worker 各等 64 项；极深队列仍受该并发量约束。
   仍需将设备完成并入 reactor，以 1–2 个线程保留完整队列并发；不以共享环接通替代这部分完成。
   内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；

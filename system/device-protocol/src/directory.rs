@@ -99,19 +99,20 @@ pub struct SessionEnd {
     watch: Option<Arc<Mutex<SessionWatch>>>,
 }
 
-struct SessionWatch {
-    server: Option<Channel>,
-    // FLAG: 工作线程可能在 OPEN 安装观测句柄之前退出；完成后禁止再次安装句柄保活死亡端点。
-    finished: bool,
+enum SessionWatch {
+    /// OPEN 尚未安装观测句柄；服务可能先于 OPEN 返回而结束。
+    Opening,
+    Active(Channel),
+    /// 不得再次安装句柄保活死亡端点。
+    Finished,
 }
 
 impl Drop for SessionEnd {
     fn drop(&mut self) {
-        let retired = self.watch.as_ref().and_then(|watch| {
-            let mut watch = watch.lock();
-            watch.finished = true;
-            watch.server.take()
-        });
+        let retired = self
+            .watch
+            .as_ref()
+            .map(|watch| core::mem::replace(&mut *watch.lock(), SessionWatch::Finished));
         // 目录观测不能延长已经停止的服务端寿命，否则未回复的 channel_call 永久等待。
         // 状态先于本结束标记析构；在锁外关闭最后的观测句柄，之后才通知可重新 OPEN。
         drop(retired);
@@ -229,7 +230,7 @@ impl Device {
             // 使用者仍持有请求 channel：拒绝；已离开：等服务线程退出、会话状态回收完毕。
             {
                 let watch = current.watch.lock();
-                if let Some(server) = &watch.server {
+                if let SessionWatch::Active(server) = &*watch {
                     match server.wait_one(signals::PEER_CLOSED, 0) {
                         Err(native_abi::ERR_TIMED_OUT) => {
                             return Err(native_abi::ERR_ALREADY_BOUND);
@@ -247,11 +248,8 @@ impl Device {
         let ended = Event::create()?;
         let watch = if exclusive {
             Some(
-                Arc::try_new(Mutex::new(SessionWatch {
-                    server: None,
-                    finished: false,
-                }))
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                Arc::try_new(Mutex::new(SessionWatch::Opening))
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
             )
         } else {
             None
@@ -264,8 +262,8 @@ impl Device {
         if let Some(watch) = watch {
             {
                 let mut state = watch.lock();
-                if !state.finished {
-                    state.server = Some(session.server);
+                if matches!(*state, SessionWatch::Opening) {
+                    *state = SessionWatch::Active(session.server);
                 }
             }
             *live = Some(Live { watch, ended });

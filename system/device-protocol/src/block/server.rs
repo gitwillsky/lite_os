@@ -29,14 +29,15 @@ impl BlockSession {
             let table = self.buffers.lock();
             for (index, record) in wire.iter().enumerate() {
                 responses[index] = [record[0], native_abi::OK as u64];
-                if record[1] == queue::FLUSH {
+                let operation = record[1] & !queue::GROUP_LAST;
+                if operation == queue::FLUSH {
                     continue;
                 }
                 let buffer = Self::index(record[2])
                     .ok()
                     .and_then(|id| table.get(id))
                     .and_then(Option::as_ref);
-                if !matches!(record[1], queue::READ | queue::WRITE)
+                if !matches!(operation, queue::READ | queue::WRITE)
                     || usize::try_from(record[4]).is_err()
                     || buffer.is_none()
                 {
@@ -52,7 +53,7 @@ impl BlockSession {
         for (index, record) in wire.iter().enumerate() {
             if let Some(buffer) = &buffers[index] {
                 requests[count].write(BlockRequest {
-                    operation: if record[1] == queue::READ {
+                    operation: if record[1] & !queue::GROUP_LAST == queue::READ {
                         BlockOperation::Read
                     } else {
                         BlockOperation::Write
@@ -139,7 +140,7 @@ impl ServerQueue {
             if count == 0 {
                 return Ok(());
             }
-            let barrier = wire[count - 1][1] == queue::FLUSH;
+            let barrier = wire[count - 1][1] & !queue::GROUP_LAST == queue::FLUSH;
             consumer.active += 1;
             consumer.barrier = barrier;
             (count, barrier)

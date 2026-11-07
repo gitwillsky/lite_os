@@ -47,7 +47,7 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
    request identity 与完成分派；硬件 slot/descriptor credits 仍只属于驱动的 RequestOwner。
    VMO 固定大小，容量为 `max(queue_depth, 64)` 向上取 2 的幂（上限 65536）；头部 256 字节，之后是 capacity 个 48 字节请求、
    capacity 个 16 字节完成，按页取整。头部 SQ head/tail 在 0/64、CQ head/tail 在 128/192（u32），closed/abort 在 8/12。
-   请求为六个小端 u64：request ID、operation（0 读/1 写/2 flush）、vmoid、设备首块、块数、VMO 字节偏移；
+   请求为六个小端 u64：request ID、operation（0 读/1 写/2 flush，bit63 为 GROUP_LAST）、vmoid、设备首块、块数、VMO 字节偏移；
    完成为 request ID 与低 32 位保存的 Status（高位零）。所有字段用对应宽度的原子访问，错误对端也不能制造非原子数据竞争。
    各端分别用本地短锁串行 producer/consumer，索引按 u32 环绕、差值不超过 capacity；写完记录 Release head，读完记录 Release tail，
    另一端 Acquire 后读取/复用。观察 has_requests 也持 consumer 锁，避免把跨两个快照的 head/tail 误判为损坏。
@@ -60,6 +60,8 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
    归还本地 credits 也通知完成 Event，不能让代表其他提交者等空位的分派者睡在没有新 DMA 的 port 上；无常驻转发线程。
 8. 服务复用 `service-rpc::serve_events` 的弹性池，由同一 port 接收控制与请求 Event；先清除/重新武装通知再处理共享环。
    SQ 领取后剩余记录会再次通知一个空闲工作者，批内经 `BlockDevice::transfer_batch` 并发发布，不依赖同步 RPC 往返。
+   一个调用的整组记录原子发表、组间不交错；领取到 GROUP_LAST 即停止，不能把不同调用混成一个聚合 I/O 结果。
+   大组可拆成多个 64 项窗口；这些窗口仍只含同一调用，错误不会污染别的调用。
    每次领取至多 64 项；有效请求先克隆登记、在表锁外等 DMA；完成只在同步设备方法确认 DMA 已结束后发表。
    范围/分区适配、远端和 virtio provider 均累积无效项错误并继续其余有效请求，不能在预校验时静默跳过整批。
    block::server 的分派描述符是有界栈内初始化前缀，不再为该分派步骤分配 Vec；provider 的 DMA 视图和分区平移仍由各自 owner 准备。合法请求可批量执行；设备按接口返回首个批错误，所涉有效项均收到该错误，已提交 DMA 全部结束后才返回。
@@ -71,7 +73,7 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
    BlockSession 最后析构先释放登记，再发布 closed 和完成通知。等待资源暂时不足只限速重查，不提前归还在途 credits；
    正常路径按通知阻塞，无定时轮询。设备宿主退出仍由实际 channel PEER_CLOSED 及既有 PMT quarantine 契约处理。
    目录的观测句柄由 SessionEnd 共享 owner 持有，状态回收后主动摘除，再发布 ended；服务退出不能被观测句柄伪装为在线。
-   若服务在线程启动后、OPEN 安装观测前已退出，finished 禁止重新安装并保活死亡端点。
+   若服务在线程启动后、OPEN 安装观测前已退出，观测 owner 的 Finished 状态禁止重新安装并保活死亡端点。
    未登记 CPU 缓冲仍经 BlockBufferPool 暂存 VMO 适配，read_block_ranges 合并多个区间；直接供页保持登记 VMO DMA 路径。
 
 ## 运行时换版

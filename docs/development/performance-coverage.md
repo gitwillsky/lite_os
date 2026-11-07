@@ -202,6 +202,8 @@ completion gate 同时约束 volatile status read 与 decode 都在 used-length 
 客户端的完整 ticket 暂存以 128 项为栈内边界，超出时在发表前一次性分配，受协商容量约束；不按 64 项接收窗口降低单调用者提交深度。
 容量 128 的共享区按布局占三页，另有 pending/空闲表；这是并发 I/O 的有界存储，不随历史请求数增长。
 控制与 Event 复用弹性池，客户端借当前调用者分派完成；不增加常驻桥接线程。
+服务池每连接准备 port/停止 Event，每个 worker 创建前准备停止登记；停机广播不分配，空闲收缩会归还登记。
+纯控制积压仍直接读取，不新增每条消息的 port/rearm 往返；仅多余空闲读者有收缩截止，保留的读者不再周期唤醒。
 该变更不增加 host wall-clock 阈值：实际成本来自跨进程 cacheline、通知/等待与设备队列，host 模拟不能代表该链路；
 旧逐项 Writer/Reader codec 已删除，固定记录的循环与边界由代码审查覆盖。
 最终以既有 guest 顺序/并发文件 I/O、pager、fsync/fsstress 门禁诊断吞吐、延迟、线程数及回收，

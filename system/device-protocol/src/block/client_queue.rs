@@ -184,6 +184,9 @@ impl ClientQueue {
                     };
                     tickets[position] = ticket;
                     record[0] = ticket;
+                    if position + 1 == count {
+                        record[1] |= queue::GROUP_LAST;
+                    }
                     record
                 }) {
                     // push 的全部检查在回调前完成；失败时既没领 credits，也没有已发表请求。

@@ -207,7 +207,10 @@ struct Pool {
     handler: Arc<Handler<'static>>,
     name: Vec<u8>,
     max: usize,
-    // OWNER: 可选共享数据面的通知与 port；无活动源的控制服务不分配 port 或新增线程。
+    // OWNER: 控制、可选数据面与停止统一进入此 port，不靠周期轮询检查停止。
+    port: Port,
+    // OWNER: 每个工作者有一份独立句柄登记，创建线程前预留 packet；置位时无分配广播停止。
+    stop: Event,
     activity: Option<Activity>,
     // OWNER: 当前存活的工作线程数与其中阻塞在读上的空闲数。二者与“始终保留一个空闲读者”的不变量
     // 一起决定何时增长；缺失空闲计数会在全部线程都忙于阻塞调用时没有任何读者，请求无人接收。
@@ -223,7 +226,6 @@ struct PoolState {
 }
 
 struct Activity {
-    port: Port,
     event: Event,
     handler: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
 }
@@ -233,20 +235,43 @@ enum Work {
 }
 
 impl Pool {
+    fn spawn(self: &Arc<Self>) -> Result<(), Status> {
+        // 1. 每个工作者单独登记停止；所有可能失败的准备都在创建线程前完成。
+        // 2. stop 置位会向共享 port 发布每工作者一份预留 packet，忙线程和空闲线程都算在内。
+        // 3. 空闲收缩/创建失败时关闭本句柄，内核自动摘除未触发的登记并归还预留。
+        let stop = self.stop.duplicate(native_abi::rights::SAME)?;
+        stop.wait_async(&self.port, 2, native_abi::signals::SIGNALED)?;
+        let next = self.clone();
+        native_runtime::thread::spawn(&self.name, move || serve_loop(&next, stop)).map(drop)
+    }
+    fn stop(&self) {
+        self.state.lock().stopped = true;
+        // 私有有效 Event 的 signal 不分配；所有 reader 的 packet 已由 spawn 预留。
+        self.stop
+            .signal(0, native_abi::signals::SIGNALED)
+            .expect("prepared service stop event must remain usable");
+    }
     fn next(&self, deadline: i64) -> Result<Work, Status> {
         loop {
             if self.state.lock().stopped {
                 return Err(native_abi::ERR_CANCELED);
             }
-            let Some(activity) = &self.activity else {
-                return self.channel.read_wait(deadline).map(Work::Message);
-            };
-            let packet = activity.port.wait(deadline)?;
+            // 纯控制服务积压时直接消费，不为每条消息额外往返 port/rearm。
+            // 有数据源时保留 port 的来源顺序，避免连续控制请求饿死数据面。
+            // 已投递的 channel packet 最多一份；读空后再消费它并重新武装，通知不会丢失。
+            if self.activity.is_none() {
+                match self.channel.read() {
+                    Ok(message) => return Ok(Work::Message(message)),
+                    Err(native_abi::ERR_SHOULD_WAIT) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            let packet = self.port.wait(deadline)?;
             match packet.key {
                 0 => {
                     let message = self.channel.read();
                     self.channel.wait_async(
-                        &activity.port,
+                        &self.port,
                         0,
                         native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
                     )?;
@@ -257,13 +282,15 @@ impl Pool {
                     }
                 }
                 1 => {
+                    let activity = self.activity.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
                     // 先清除再重新登记；处理期间的新通知仍会留在 port，不能在工作后清除。
                     activity.event.signal(native_abi::signals::SIGNALED, 0)?;
                     activity
                         .event
-                        .wait_async(&activity.port, 1, native_abi::signals::SIGNALED)?;
+                        .wait_async(&self.port, 1, native_abi::signals::SIGNALED)?;
                     return Ok(Work::Activity);
                 }
+                2 => return Err(native_abi::ERR_CANCELED),
                 _ => return Err(native_abi::ERR_BAD_STATE),
             }
         }
@@ -272,17 +299,17 @@ impl Pool {
 
 /// 服务 `channel`：按需增长到最多 `workers` 个线程；对端关闭时线程退出。
 ///
-/// 1. 每个线程阻塞读取一条请求（多个线程读同一 channel，内核保证每条消息只交给一个读者）；
+/// 1. 工作者消费控制消息；空队列时在同一 port 等待来源或停止，纯控制积压直接读取；
 /// 2. 调用 `handler`，失败时回复只含状态；
 /// 3. 对非零事务号写回回复；零事务号由协议自行交付完成/错误事件。
 ///
 /// 线程数是弹性的：从一个读者开始，取走一条请求而再无空闲读者时先补一个新读者（直至 `workers`），
-/// 所以并发能力与固定 `workers` 个线程相同；空闲超过 5 s 的多余线程退出，保留一个读者。
+/// 所以并发能力与固定 `workers` 个线程相同；空闲超过 5 s 的多余读者退出，保留至少一个空闲读者（忙线程不算）。
 /// 弹性用来避免每个会话常驻一组几乎总是空闲的线程（各占内核栈与用户栈）。
 ///
 /// # Errors
 ///
-/// 线程创建失败。
+/// port、异步登记、内存或线程创建失败。
 pub fn serve(
     channel: Channel,
     workers: usize,
@@ -310,20 +337,12 @@ pub fn serve_events(
     event: Event,
     activity: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
 ) -> Result<(), Status> {
-    let port = Port::create()?;
-    channel.wait_async(
-        &port,
-        0,
-        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
-    )?;
-    event.wait_async(&port, 1, native_abi::signals::SIGNALED)?;
     start(
         channel,
         workers,
         name,
         handler,
         Some(Activity {
-            port,
             event,
             handler: activity,
         }),
@@ -342,11 +361,25 @@ fn start(
         .try_reserve_exact(name.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     owned_name.extend_from_slice(name);
+    let port = Port::create()?;
+    let stop = Event::create()?;
+    channel.wait_async(
+        &port,
+        0,
+        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
+    )?;
+    if let Some(activity) = &activity {
+        activity
+            .event
+            .wait_async(&port, 1, native_abi::signals::SIGNALED)?;
+    }
     let pool = Arc::try_new(Pool {
         channel,
         handler,
         name: owned_name,
         max: workers.max(1),
+        port,
+        stop,
         activity,
         state: native_runtime::sync::Mutex::new(PoolState {
             workers: 1,
@@ -355,22 +388,24 @@ fn start(
         }),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    let first = pool.clone();
-    // 服务线程在对端关闭时自行结束。
-    drop(native_runtime::thread::spawn(name, move || {
-        serve_loop(&first)
-    })?);
+    pool.spawn()?;
     Ok(())
 }
 
-fn serve_loop(pool: &Arc<Pool>) {
+// _stop 的独立句柄把本工作者的停止登记保活到退出；Drop 负责退订。
+fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
     loop {
-        let deadline = native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
+        // 最后一个读者没有收缩任务，永久等真实通知；只给多余读者武装空闲退出截止，避免每个服务每 5 s 唤醒。
+        let deadline = if pool.state.lock().idle <= 1 {
+            DEADLINE_INFINITE
+        } else {
+            native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS)
+        };
         let work = match pool.next(deadline) {
             Ok(work) => work,
             Err(native_abi::ERR_TIMED_OUT) => {
                 let mut state = pool.state.lock();
-                if state.stopped || state.workers > 1 {
+                if state.stopped || state.idle > 1 {
                     state.workers -= 1;
                     state.idle -= 1;
                     return;
@@ -379,9 +414,10 @@ fn serve_loop(pool: &Arc<Pool>) {
             }
             Err(_) => {
                 let mut state = pool.state.lock();
-                state.stopped = true;
                 state.workers -= 1;
                 state.idle -= 1;
+                drop(state);
+                pool.stop();
                 return;
             }
         };
@@ -396,17 +432,11 @@ fn serve_loop(pool: &Arc<Pool>) {
             }
             grow
         };
-        if grow {
-            let next = pool.clone();
-            match native_runtime::thread::spawn(&pool.name, move || serve_loop(&next)) {
-                Ok(thread) => drop(thread),
-                Err(_) => {
-                    // 创建失败：撤销登记，当前线程处理完后仍会回到读上。
-                    let mut state = pool.state.lock();
-                    state.workers -= 1;
-                    state.idle -= 1;
-                }
-            }
+        if grow && pool.spawn().is_err() {
+            // 创建失败撤销计数，当前线程继续处理；准备的停止句柄已自动退订。
+            let mut state = pool.state.lock();
+            state.workers -= 1;
+            state.idle -= 1;
         }
         let result = match work {
             Work::Message(message) => respond(&pool.channel, message, &*pool.handler),
@@ -419,9 +449,10 @@ fn serve_loop(pool: &Arc<Pool>) {
         pool.state.lock().idle += 1;
         if result.is_err() {
             let mut state = pool.state.lock();
-            state.stopped = true;
             state.workers -= 1;
             state.idle -= 1;
+            drop(state);
+            pool.stop();
             return;
         }
     }
