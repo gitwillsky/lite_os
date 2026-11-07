@@ -11,7 +11,7 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-/// 桌面背景层（背景色 + 墙纸）按图层尺寸合成后的像素；`key` 任一项变化才重建。
+/// 上次绘制的桌面画面。图标覆盖区下次先恢复背景，避免保留一份纯背景或克隆整屏。
 struct Backdrop {
     key: (
         i32,
@@ -21,6 +21,7 @@ struct Backdrop {
         desktop_settings::WallpaperStyle,
     ),
     pixels: Vec<u32>,
+    covered: Vec<Rect>,
 }
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
@@ -33,7 +34,7 @@ pub struct Art {
     pictures: PictureLoader,
     // OWNER: 记录合成背景所用的路径；路径变化或新图片就绪都必须清除 backdrop，避免显示旧墙纸。
     wallpaper: Option<PathBuf>,
-    // OWNER: 合成后的背景层；没有它每帧都要重新缩放/平铺整张墙纸。
+    // OWNER: 背景层画布及其上次覆盖区；没有它每帧都要重新缩放/平铺整张墙纸。
     backdrop: Option<Backdrop>,
 }
 impl Art {
@@ -112,57 +113,6 @@ impl Art {
         Ok(selected || loaded)
     }
 
-    /// 返回与当前设置和图层配置一致的背景层像素（物理像素，行宽为图层宽）。
-    ///
-    /// 墙纸文件缺失或损坏时只画背景色，与 Windows 2000 找不到墙纸文件时一致。
-    fn backdrop(
-        &mut self,
-        settings: &desktop_settings::Settings,
-        c: Configuration,
-    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-        let theme = self.resources.theme().clone();
-        let color = settings.background.map_or_else(
-            || theme.color(C::Background),
-            |[red, green, blue]| classic_theme::Rgb { red, green, blue },
-        );
-        let (w, h) = c.pixel_size()?;
-        let key = (w, h, c.scale, color, settings.wallpaper_style);
-        if self
-            .backdrop
-            .as_ref()
-            .is_none_or(|backdrop| backdrop.key != key)
-        {
-            let mut pixels = vec![0; w as usize * h as usize];
-            let fonts = self.resources.fonts(c.scale)?;
-            let surface =
-                Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
-            let mut p = Painter::new(surface, &theme, &fonts, c.scale);
-            let screen = Rect::new(0, 0, c.width, c.height);
-            p.fill_rgb(screen, color);
-            if let Some(image) = self
-                .wallpaper
-                .as_deref()
-                .and_then(|path| self.pictures.get(path))
-            {
-                let style = match settings.wallpaper_style {
-                    desktop_settings::WallpaperStyle::Center => classic_ui::WallpaperStyle::Center,
-                    desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,
-                    desktop_settings::WallpaperStyle::Stretch => {
-                        classic_ui::WallpaperStyle::Stretch
-                    }
-                };
-                image.paint_wallpaper(&mut p, screen, style, (c.width, c.width));
-            }
-            p.into_surface();
-            self.backdrop = Some(Backdrop { key, pixels });
-        }
-        Ok(self
-            .backdrop
-            .as_ref()
-            .expect("backdrop built")
-            .pixels
-            .clone())
-    }
     /// 工具提示文字所需的图层大小（逻辑像素）：用状态栏字体度量，与 `Painter::tooltip` 的版式一致。
     pub fn tooltip_size(&mut self, text: &str, scale: i32) -> io::Result<(i32, i32)> {
         let fonts = self.resources.fonts(scale)?;
@@ -435,6 +385,125 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
 fn text(p: &mut Painter<'_>, x: i32, y: i32, text: &str) {
     p.text(x, y, text, Ink::Color(C::ButtonText), false);
 }
+/// 绘制背景层并借出其完整画面供 Wayland 比较损伤；不借用协议缓冲的写权限。
+///
+/// 配置或墙纸变化时重建背景。平时只恢复上一帧图标、标题和编辑框占用过的区域。
+/// 缺失的墙纸显示背景色；无效尺寸或字体加载失败时返回错误。
+pub fn background_frame<'a>(
+    s: &Desktop,
+    d: &Display,
+    c: Configuration,
+    art: &'a mut Art,
+) -> Result<&'a [u32], Box<dyn std::error::Error>> {
+    let theme = art.resources.theme().clone();
+    let color = s.settings.background.map_or_else(
+        || theme.color(C::Background),
+        |[red, green, blue]| classic_theme::Rgb { red, green, blue },
+    );
+    let (w, h) = c.pixel_size()?;
+    let key = (w, h, c.scale, color, s.settings.wallpaper_style);
+    let screen = Rect::new(0, 0, c.width, c.height);
+    let fonts = art.resources.fonts(c.scale)?;
+    // 暂时取出画布，绘制期间还需借用 Art 的图标与墙纸。
+    let mut backdrop = match art.backdrop.take() {
+        Some(backdrop) if backdrop.key == key => backdrop,
+        _ => Backdrop {
+            key,
+            pixels: vec![0; w as usize * h as usize],
+            covered: vec![screen],
+        },
+    };
+    let surface =
+        Surface::new(&mut backdrop.pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
+    let mut p = Painter::new(surface, &theme, &fonts, c.scale);
+    let image = art
+        .wallpaper
+        .as_deref()
+        .and_then(|path| art.pictures.get(path));
+    let style = match s.settings.wallpaper_style {
+        desktop_settings::WallpaperStyle::Center => classic_ui::WallpaperStyle::Center,
+        desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,
+        desktop_settings::WallpaperStyle::Stretch => classic_ui::WallpaperStyle::Stretch,
+    };
+    for rect in backdrop.covered.drain(..) {
+        let rect = rect.intersect(screen);
+        if !rect.is_empty() {
+            p.clipped(rect, |p| {
+                p.fill_rgb(rect, color);
+                if let Some(image) = image {
+                    image.paint_wallpaper(p, screen, style, (c.width, c.width));
+                }
+            });
+        }
+    }
+
+    let focused = d.keyboard_focus() == Some(s.background);
+    let recycle_hover = s.drop_hover || s.drag.as_ref().is_some_and(|drag| drag.recycle);
+    for (i, icon) in s.icons.items.iter().enumerate() {
+        // 正在拖动的图标跟随指针，不画在原位。
+        let mut r = s.icons.rect(i);
+        if let Some(drag) = s.drag.as_ref().filter(|d| d.index == i && d.moved) {
+            r = Rect::new(
+                drag.pos.0 - drag.grab.0,
+                drag.pos.1 - drag.grab.1,
+                r.width,
+                r.height,
+            );
+        }
+        // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
+        // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
+        let selected = s.selected == Some(i)
+            || (recycle_hover
+                && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
+        let bitmap = art.desktop_icon_bitmap(icon, s.icons.trash_full);
+        let editing = s.rename.as_ref().filter(|rename| {
+            matches!(&icon.target, super::icons::Target::Path(path) if path == rename.operation.path())
+        });
+        let (width, height) = bitmap.map_or((32, 32), |bitmap| (bitmap.width(), bitmap.height()));
+        if bitmap.is_some() {
+            backdrop
+                .covered
+                .push(classic_ui::large_icon_image_rect(r, width, height));
+        }
+        let label = p.with_role(FontRole::Icon, |p| {
+            let label = p.large_icon_item(
+                r,
+                bitmap,
+                editing.is_none().then_some(&icon.label),
+                classic_ui::ItemLook {
+                    selected,
+                    active: true,
+                    focused: focused && s.selected == Some(i),
+                    text: C::HilightText,
+                },
+            );
+            if let Some(rename) = editing {
+                let edit = classic_ui::large_icon_edit_rect(r, height);
+                p.edit(edit, &rename.edit, focused, false);
+                edit
+            } else {
+                label
+            }
+        });
+        if !label.is_empty() {
+            backdrop.covered.push(label);
+        }
+    }
+    if !s.message.is_empty() {
+        // 状态文字没有固定的绘制矩形（字体可溢出字高），下次重建背景以免残留。
+        backdrop.covered.clear();
+        backdrop.covered.push(screen);
+        p.text(
+            100,
+            40,
+            &p.fit(&s.message, c.width - 120),
+            Ink::Color(C::HilightText),
+            false,
+        );
+    }
+    Ok(&art.backdrop.insert(backdrop).pixels)
+}
+
 pub fn frame(
     s: &Desktop,
     d: &Display,
@@ -444,67 +513,12 @@ pub fn frame(
     minute: u64,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let (w, h) = c.pixel_size()?;
-    let mut pixels = if id == s.background {
-        art.backdrop(&s.settings, c)?
-    } else {
-        vec![0; w as usize * h as usize]
-    };
+    let mut pixels = vec![0; w as usize * h as usize];
     let fonts = art.resources.fonts(c.scale)?;
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
     let theme = art.resources.theme().clone();
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
-    if id == s.background {
-        let focused = d.keyboard_focus() == Some(id);
-        let recycle_hover = s.drop_hover || s.drag.as_ref().is_some_and(|drag| drag.recycle);
-        for (i, icon) in s.icons.items.iter().enumerate() {
-            // 正在拖动的图标跟随指针，不画在原位。
-            let mut r = s.icons.rect(i);
-            if let Some(drag) = s.drag.as_ref().filter(|d| d.index == i && d.moved) {
-                r = Rect::new(
-                    drag.pos.0 - drag.grab.0,
-                    drag.pos.1 - drag.grab.1,
-                    r.width,
-                    r.height,
-                );
-            }
-            // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
-            // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
-            let selected = s.selected == Some(i)
-                || (recycle_hover
-                    && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
-            let bitmap = art.desktop_icon_bitmap(icon, s.icons.trash_full);
-            let editing = s.rename.as_ref().filter(|rename| {
-                matches!(&icon.target, super::icons::Target::Path(path) if path == rename.operation.path())
-            });
-            p.with_role(FontRole::Icon, |p| {
-                p.large_icon_item(
-                    r,
-                    bitmap,
-                    editing.is_none().then_some(&icon.label),
-                    classic_ui::ItemLook {
-                        selected,
-                        active: true,
-                        focused: focused && s.selected == Some(i),
-                        text: C::HilightText,
-                    },
-                );
-                if let Some(rename) = editing {
-                    let edit =
-                        classic_ui::large_icon_edit_rect(r, bitmap.map_or(32, Bitmap::height));
-                    p.edit(edit, &rename.edit, focused, false);
-                }
-            });
-        }
-        if !s.message.is_empty() {
-            p.text(
-                100,
-                40,
-                &p.fit(&s.message, c.width - 120),
-                Ink::Color(C::HilightText),
-                false,
-            );
-        }
-    } else if id == s.taskbar {
+    if id == s.taskbar {
         let rects = areas(s, d, id, c);
         p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
         p.edge(Rect::new(0, 0, c.width, c.height + 2), Edge::RaisedInner);

@@ -335,6 +335,11 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   fs::GraphicsSysfsSource 由 DRM 注入只读实际 MMIO identity，sysfs 仅投影 card/render、设备号与 subsystem/uevent，fs 不依赖 driver。
 - capset 按实际版本分别读取，不把最高版本 payload 当作 v0。virtio_gpu DRM version=0.0，不宣称未实现的 sync_file FD。
   非 blob legacy transfer 的 stride/layer_stride 必须为零；resource_create 的 size/stride 分别为 Linux u32 字段。
+  VirGL 扫描面按 host 纹理的二维布局、格式和尺寸验证。其 GEM 大小只限制 CPU 映射与 transfer；
+  与 Linux virtgpu 一致，`RESOURCE_CREATE` 的 `size=0` 分配一个来宾页。
+  合成器保留两张原分辨率扫描纹理，通过 VirGL2 双向 `COPY_TRANSFER3D` 使用独立暂存。
+  启动画面只占用一块暂存，首次桌面合成时释放；RFB 按请求矩形扩充暂存，由连接持有到断开。
+  暂存和扫描纹理都登记提交 fence；启动画面等前次 flip 完成才重写，截图等暂存 fence 完成才读。
 - DRM `DeviceFile::write_file_information` 在现有 GEM namespace 锁内只捕获数值、锁外格式化标准
   `drm-driver`、`drm-client-id`、`drm-total-memory`、`drm-shared-memory`、`drm-resident-memory`。client-id 来自唯一设备的
   monotonic OFD identity，dup/fork 共用；handle 关闭后不再归属该客户端，残留 VMA/KMS/退休 pins 仍按原寿命保活。

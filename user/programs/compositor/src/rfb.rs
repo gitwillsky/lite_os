@@ -96,6 +96,8 @@ struct Client {
     phase: Phase,
     incoming: Vec<u8>,
     output: Vec<u8>,
+    // 只在远程读屏时分配，连接独占并复用；断开即释放。大小由已验证的请求矩形限制。
+    capture_backing: Option<linux_uapi::drm::VirglResource>,
     sent: usize,
     dimensions: (u16, u16),
     position: (i32, i32),
@@ -111,6 +113,7 @@ impl Client {
             phase: Phase::Version,
             incoming: Vec::new(),
             output: VERSION.to_vec(),
+            capture_backing: None,
             sent: 0,
             dimensions: (scanout.width() as u16, scanout.height() as u16),
             position: (0, 0),
@@ -292,7 +295,11 @@ impl Client {
         self.output.extend_from_slice(&[0, 0, 0, 1]); // FramebufferUpdate, one Raw rectangle.
         self.output.extend_from_slice(&bytes[2..10]);
         self.output.extend_from_slice(&[0; 4]);
-        scanout.capture(x, y, width, height, &mut self.output)
+        scanout.capture(
+            [x as u32, y as u32, width as u32, height as u32],
+            &mut self.capture_backing,
+            &mut self.output,
+        )
     }
 }
 

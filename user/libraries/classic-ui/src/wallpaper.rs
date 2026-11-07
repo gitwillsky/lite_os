@@ -51,8 +51,18 @@ impl Bitmap {
                 ),
             ),
             WallpaperStyle::Tile => {
-                for y in (screen.y..screen.bottom()).step_by(height as usize) {
-                    for x in (screen.x..screen.right()).step_by(width as usize) {
+                // 局部重绘只遍历触及裁剪区的瓦片，起点仍锚在屏幕原点。
+                let clip = painter.surface.clip();
+                if clip.is_empty() {
+                    return;
+                }
+                let scale = painter.scale();
+                let first_x = screen.x + ((clip.x / scale - screen.x) / width) * width;
+                let first_y = screen.y + ((clip.y / scale - screen.y) / height) * height;
+                let end_x = painter.logical_ceil(clip.right());
+                let end_y = painter.logical_ceil(clip.bottom());
+                for y in (first_y..end_y).step_by(height as usize) {
+                    for x in (first_x..end_x).step_by(width as usize) {
                         self.paint_scaled(painter, Rect::new(x, y, width, height));
                     }
                 }

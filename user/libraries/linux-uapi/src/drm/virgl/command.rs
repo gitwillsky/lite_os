@@ -13,6 +13,7 @@ const SET_SAMPLER_VIEWS: u32 = 10;
 const SET_CONSTANT_BUFFER: u32 = 12;
 const BIND_SAMPLER_STATES: u32 = 18;
 const BIND_SHADER: u32 = 31;
+const COPY_TRANSFER3D: u32 = 45;
 const LINK_SHADER: u32 = 52;
 const INLINE_WRITE_PARAMETERS: usize = 11;
 
@@ -60,6 +61,22 @@ pub struct CommandEncoder {
 }
 
 impl CommandEncoder {
+    /// Encodes an ordered VirGL COPY_TRANSFER3D between a texture and a staging backing.
+    pub(super) fn copy_transfer(
+        &mut self,
+        texture: u32,
+        staging: u32,
+        [x, y, width, height]: [u32; 4],
+        stride: u32,
+        readback: bool,
+    ) {
+        self.header_raw(COPY_TRANSFER3D, 0, 14);
+        let flags = 1 | (u32::from(readback) << 1); // SYNCHRONIZED | READ_FROM_HOST
+        self.words.extend([
+            texture, 0, 0, stride, 0, x, y, 0, width, height, 1, staging, 0, flags,
+        ]);
+    }
+
     /// Creates an empty command stream.
     pub fn new() -> Self {
         Self { words: Vec::new() }

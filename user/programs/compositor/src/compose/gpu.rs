@@ -45,6 +45,8 @@ struct TextureView {
 pub(crate) struct Gpu {
     context: VirglContext,
     targets: [Target; 2],
+    // 启动进度条的 CPU 暂存，唯一使用期到第一次桌面合成。两个扫描纹理不保留全屏来宾副本。
+    boot_staging: Option<VirglResource>,
     // OWNER: GPU context 独占采样视图和纹理引用，键为仍被 Rc 保活的真实 GEM resource ID。
     // 只在上帧 flip 完成后的下一次 render 淘汰旧项；既保活在途纹理，也避免每帧创建/销毁同一视图。
     // 缺少资源引用会在客户端退出时悬空，直接把 GEM ID 当对象句柄会撞到 shader/state/FBO。
@@ -68,8 +70,14 @@ struct Overlay {
 impl Gpu {
     pub(crate) fn new(device: &DrmDevice, width: u32, height: u32) -> io::Result<Self> {
         let context = device.initialize_virgl("liteos-compositor")?;
+        if !context.capabilities().supports_staged_transfer() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "VirGL2 scanout needs bidirectional staged transfer",
+            ));
+        }
         let target = || -> io::Result<Target> {
-            let resource = context.create_render_target(width, height)?;
+            let resource = context.create_scanout_target(width, height)?;
             let framebuffer = device.add_virgl_framebuffer(&resource, 24)?;
             Ok(Target {
                 resource,
@@ -103,6 +111,7 @@ impl Gpu {
         Ok(Self {
             context,
             targets,
+            boot_staging: None,
             views: BTreeMap::new(),
             frame_contents: Vec::new(),
             next_view: FIRST_VIEW,
@@ -121,35 +130,50 @@ impl Gpu {
     pub(crate) fn capture(
         &self,
         front: usize,
-        x: usize,
-        y: usize,
-        width: usize,
-        height: usize,
+        rect: [u32; 4],
+        staging: &mut Option<VirglResource>,
         output: &mut Vec<u8>,
     ) -> io::Result<()> {
         let target = &self.targets[front].resource;
-        target.transfer_from_host(x as u32, y as u32, width as u32, height as u32)?;
-        target.wait()?;
-        let mut row = vec![0; width];
-        for line in y..y + height {
-            target.read_row(line, x, &mut row);
-            for &pixel in &row {
-                output.extend_from_slice(&pixel.to_le_bytes());
-            }
+        let [_, _, width, height] = rect;
+        let size = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| io::Error::other("capture size overflow"))?;
+        if staging
+            .as_ref()
+            .is_none_or(|buffer| buffer.size() < size as usize)
+        {
+            *staging = Some(self.context.create_vertex_buffer(size)?);
         }
+        let staging = staging.as_mut().expect("capture backing");
+        self.context.staged_transfer(target, staging, rect, true)?;
+        staging.wait()?;
+        output.extend_from_slice(&staging.bytes_mut()[..size as usize]);
         Ok(())
     }
-    /// 直接把启动画面写入 GPU 扫描目标的 guest backing，并用标准 transfer 发布。
-    /// 调用方保证该 back 没有 flip 在途；不创建第二对 CPU framebuffer。
+    /// 用一块启动期暂存上传画面。调用方保证前一帧 flip 已完成，设备已经读完暂存。
     pub(crate) fn paint_boot(
         &mut self,
         back: usize,
         scene: &[u8],
         permille: u16,
     ) -> io::Result<()> {
-        let target = &mut self.targets[back].resource;
-        crate::boot::paint(target, scene, permille).map_err(io::Error::other)?;
-        target.transfer_to_host(0, 0, target.width(), target.height())
+        let target = &self.targets[back].resource;
+        let staging = match &mut self.boot_staging {
+            Some(staging) => staging,
+            slot => slot.insert(
+                self.context
+                    .create_render_target(target.width(), target.height())?,
+            ),
+        };
+        crate::boot::paint(staging, scene, permille).map_err(io::Error::other)?;
+        self.context.staged_transfer(
+            target,
+            staging,
+            [0, 0, target.width(), target.height()],
+            false,
+        )
     }
     /// 合成一帧，纹理由采样视图保活到后续 render 淘汰；调用方保证没有上一帧 flip 在途。
     /// 主机声明支持 VirGL2 后发生的错误直接返回，不悄悄切换到另一条显示路径。
@@ -161,6 +185,7 @@ impl Gpu {
         overlay_bounds: Option<Rect>,
         overlay: impl FnOnce(Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
+        self.boot_staging = None;
         let (width, height) = (
             self.targets[back].resource.width(),
             self.targets[back].resource.height(),

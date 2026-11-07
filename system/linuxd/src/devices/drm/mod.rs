@@ -621,25 +621,17 @@ impl DrmFile {
                 return Err(DrmError::NotFound);
             }
         };
-        let (buffer_pitch, buffer_size, buffer_width, buffer_height) = match &backing {
-            FramebufferBacking::Dumb(buffer) => (buffer.pitch, buffer.size, None, None),
-            FramebufferBacking::Virgl(buffer) => (
-                buffer.stride,
-                buffer.size,
-                Some(buffer.width),
-                Some(buffer.height),
-            ),
-        };
         let required = usize::try_from(pitch)
             .ok()
             .and_then(|pitch| pitch.checked_mul(height as usize))
-            .filter(|required| *required <= buffer_size)
             .ok_or(DrmError::Invalid)?;
+        let layout_valid = match &backing {
+            FramebufferBacking::Dumb(buffer) => pitch == buffer.pitch && required <= buffer.size,
+            // SET_SCANOUT 使用 host 纹理；guest GEM extent 只约束传输与映射，可以小于扫描图像。
+            FramebufferBacking::Virgl(buffer) => buffer.supports_scanout(width, height, pitch),
+        };
         if width == 0
-            || height == 0
-            || pitch != buffer_pitch
-            || buffer_width.is_some_and(|buffer_width| buffer_width != width)
-            || buffer_height.is_some_and(|buffer_height| buffer_height != height)
+            || !layout_valid
             || width.checked_mul(4).is_none_or(|minimum| pitch < minimum)
             || required == 0
         {

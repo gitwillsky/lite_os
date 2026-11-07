@@ -22,6 +22,11 @@ const CAPSET_BYTES: usize = 4096;
 const CONTEXT_PARAM_CAPSET_ID: u64 = 1;
 const CONTEXT_PARAM_DEBUG_NAME: u64 = 4;
 const WAIT_NOWAIT: u32 = 1;
+// Offsets in virglrenderer-1.1.0's virgl_caps_v2.
+const CAPABILITY_BITS: usize = 392;
+const CAPABILITY_BITS_V2: usize = 688;
+const CAP_COPY_TRANSFER: u32 = 1 << 26;
+const CAP_COPY_TRANSFER_BOTH_DIRECTIONS: u32 = 1 << 7;
 
 /// Gallium `PIPE_TEXTURE_2D` resource target。
 pub const PIPE_TEXTURE_2D: u32 = 2;
@@ -58,6 +63,15 @@ impl VirglCapabilities {
     /// Returns the exact fixed-size capability response buffer.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Reports whether a staged transfer can both upload and read back a texture.
+    pub fn supports_staged_transfer(&self) -> bool {
+        let bits = |offset| {
+            u32::from_le_bytes(self.bytes[offset..][..4].try_into().expect("capset extent"))
+        };
+        bits(CAPABILITY_BITS) & CAP_COPY_TRANSFER != 0
+            && bits(CAPABILITY_BITS_V2) & CAP_COPY_TRANSFER_BOTH_DIRECTIONS != 0
     }
 }
 
@@ -102,13 +116,20 @@ impl VirglContext {
     /// (guest row 0 is the top GL row) and scans it out upright. Render into it with
     /// [`CommandEncoder::set_viewport`], whose GL-style Y axis maps NDC +1 to guest row 0.
     pub fn create_render_target(&self, width: u32, height: u32) -> io::Result<VirglResource> {
-        self.create_resource(ResourceSpec::texture(
-            width,
-            height,
-            FORMAT_B8G8R8X8_UNORM,
-            BIND_RENDER_TARGET | BIND_SAMPLER_VIEW | BIND_DISPLAY_TARGET | BIND_SCANOUT,
-            RESOURCE_Y_0_TOP,
-        )?)
+        self.create_resource(ResourceSpec::render_target(width, height)?)
+    }
+
+    /// Creates a full-resolution XRGB scanout texture with only the minimum GEM backing.
+    ///
+    /// CPU pixel access must go through a staging resource. Invalid dimensions or failed
+    /// allocation and DRM ioctls return an error.
+    pub fn create_scanout_target(&self, width: u32, height: u32) -> io::Result<VirglResource> {
+        // Linux VIRTGPU_RESOURCE_CREATE interprets size=0 as a single page. The renderer
+        // allocates its texture from the independent width, height, and format fields.
+        self.create_resource(ResourceSpec {
+            size: 0,
+            ..ResourceSpec::render_target(width, height)?
+        })
     }
 
     /// Creates one premultiplied BGRA texture sampled by the compositor.
@@ -192,7 +213,8 @@ impl VirglContext {
                 "VirtIO-GPU returned inconsistent resource metadata",
             ));
         }
-        let mapping = self.device.map_virgl(handle, spec.size as usize)?;
+        let backing_size = if spec.size == 0 { info.size } else { spec.size };
+        let mapping = self.device.map_virgl(handle, backing_size as usize)?;
         Ok(VirglResource {
             _owner: owner,
             device: self.device.clone(),
@@ -204,6 +226,48 @@ impl VirglContext {
             height: spec.height,
             stride: spec.stride,
         })
+    }
+
+    /// Transfers a packed XRGB rectangle between a host texture and another GEM's backing.
+    ///
+    /// `rect` is [x, y, width, height] in texture pixels. `readback` selects texture to
+    /// backing. The staging resource must cover the complete packed rectangle from offset
+    /// zero. Wait on it before the CPU reads or reuses its bytes.
+    ///
+    /// Returns InvalidInput for invalid format or bounds, Unsupported if the required
+    /// VirGL capabilities are absent, or the submission error.
+    pub fn staged_transfer(
+        &self,
+        texture: &VirglResource,
+        staging: &VirglResource,
+        rect: [u32; 4],
+        readback: bool,
+    ) -> io::Result<()> {
+        let [x, y, width, height] = rect;
+        let stride = width
+            .checked_mul(4)
+            .ok_or_else(|| invalid_input("staged transfer stride overflow"))?;
+        if texture.format != FORMAT_B8G8R8X8_UNORM
+            || width == 0
+            || height == 0
+            || x.checked_add(width).is_none_or(|end| end > texture.width)
+            || y.checked_add(height).is_none_or(|end| end > texture.height)
+            || u64::from(stride) * u64::from(height) > staging.size() as u64
+        {
+            return Err(invalid_input("staged transfer rectangle is invalid"));
+        }
+        if !self.capabilities.supports_staged_transfer() {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let mut commands = CommandEncoder::new();
+        commands.copy_transfer(
+            texture.resource_id,
+            staging.resource_id,
+            rect,
+            stride,
+            readback,
+        );
+        self.exec(commands.words(), &[texture, staging])
     }
 
     /// 将标准 PRIME dma-buf 导入当前 context，作为直接采样纹理，不执行 CPU 拷贝或 transfer 上传。
@@ -364,6 +428,16 @@ struct ResourceSpec {
 }
 
 impl ResourceSpec {
+    fn render_target(width: u32, height: u32) -> io::Result<Self> {
+        Self::texture(
+            width,
+            height,
+            FORMAT_B8G8R8X8_UNORM,
+            BIND_RENDER_TARGET | BIND_SAMPLER_VIEW | BIND_DISPLAY_TARGET | BIND_SCANOUT,
+            RESOURCE_Y_0_TOP,
+        )
+    }
+
     fn texture(width: u32, height: u32, format: u32, bind: u32, flags: u32) -> io::Result<Self> {
         let bytes_per_pixel = match format {
             FORMAT_B8G8R8A8_UNORM | FORMAT_B8G8R8X8_UNORM => 4,
@@ -490,14 +564,11 @@ impl VirglResource {
 
     /// Returns one mutable XRGB8888 row.
     pub fn row_mut(&mut self, row: usize) -> &mut [u32] {
-        assert!(row < self.height as usize);
+        let start = self.row_offset(row, 0, self.width as usize);
+        // SAFETY: row_offset checks that the full row fits the aligned guest mapping.
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.mapping
-                    .pointer
-                    .as_ptr()
-                    .add(row * self.stride as usize)
-                    .cast(),
+                self.mapping.pointer.as_ptr().add(start).cast(),
                 self.width as usize,
             )
         }
@@ -563,7 +634,13 @@ impl VirglResource {
             x.checked_add(len)
                 .is_some_and(|end| end <= self.width as usize)
         );
-        row * self.stride as usize + x * 4
+        let start = row * self.stride as usize + x * 4;
+        assert!(
+            start
+                .checked_add(len * 4)
+                .is_some_and(|end| end <= self.mapping.size)
+        );
+        start
     }
 
     /// Uploads a guest-backed rectangle to the host resource asynchronously.

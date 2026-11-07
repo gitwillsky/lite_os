@@ -2,7 +2,7 @@
 
 use std::io;
 
-use linux_uapi::drm::{DrmDevice, DumbBuffer, Topology};
+use linux_uapi::drm::{DrmDevice, DumbBuffer, Topology, VirglResource};
 
 struct Target {
     buffer: DumbBuffer,
@@ -60,7 +60,7 @@ impl Scanout {
             u32::from(topology.mode.height()),
         );
         // 1. 先协商能力，再分配唯一后端。Unsupported 之外的错误必须向上传播。
-        // 2. 启动画面也消费所选后端的像素存储，不能因此永久保留另一对全屏目标。
+        // 2. GPU 的启动画面通过一块临时 backing 写入同一对 host 扫描目标。
         let backend = match device.validate_virgl2() {
             Ok(()) => Backend::Gpu(crate::compose::gpu::Gpu::new(&device, width, height)?),
             Err(error) if error.kind() == io::ErrorKind::Unsupported => {
@@ -113,16 +113,15 @@ impl Scanout {
     /// Append a validated rectangle from the last completed front buffer as BGRX.
     pub(super) fn capture(
         &self,
-        x: usize,
-        y: usize,
-        width: usize,
-        height: usize,
+        rect: [u32; 4],
+        staging: &mut Option<VirglResource>,
         output: &mut Vec<u8>,
     ) -> io::Result<()> {
         let front = self.back ^ 1;
         match &self.backend {
-            Backend::Gpu(gpu) => gpu.capture(front, x, y, width, height, output),
+            Backend::Gpu(gpu) => gpu.capture(front, rect, staging, output),
             Backend::Cpu(targets) => {
+                let [x, y, width, height] = rect.map(|value| value as usize);
                 for row in y..y + height {
                     for &pixel in &targets[front].buffer.row(row)[x..x + width] {
                         output.extend_from_slice(&pixel.to_le_bytes());

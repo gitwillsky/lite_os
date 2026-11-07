@@ -365,34 +365,6 @@ impl Desktop {
             .map_or((1280, 800), |c| (c.width, c.height))
     }
 
-    fn close_overlay(&mut self, display: &mut Display) -> io::Result<()> {
-        if let Some((window, overlay)) = self.overlay.take() {
-            if matches!(overlay, popups::Overlay::Volume(_)) {
-                self.volume.cancel();
-            }
-            display.destroy_window(window)?;
-        }
-        Ok(())
-    }
-
-    fn open_overlay(&mut self, display: &mut Display, overlay: popups::Overlay) -> io::Result<()> {
-        self.close_overlay(display)?;
-        if self.menu.is_some() {
-            self.toggle_menu(display)?;
-        }
-        let window = display.create_layer(
-            "org.liteos.popup",
-            LayerSettings {
-                layer: Layer::Overlay,
-                exclusive_zone: -1,
-                keyboard: KeyboardInteractivity::Exclusive,
-                ..Default::default()
-            },
-        )?;
-        self.overlay = Some((window, overlay));
-        Ok(())
-    }
-
     /// 在资源管理器里打开桌面图标或菜单对应的位置。
     fn open_place(&mut self, place: start::Place) {
         use start::Place;
@@ -542,212 +514,6 @@ impl Desktop {
             Action::Window(id, request) => display.control_toplevel(id, request)?,
         }
         Ok(())
-    }
-
-    /// 弹出层表面上的事件：菜单点击项执行、点击外部关闭；音量面板拖动滑块、点击静音。
-    fn overlay_event(&mut self, display: &mut Display, event: Event) -> io::Result<()> {
-        use popups::Overlay;
-        let window = event.window;
-        match event.kind {
-            EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
-                self.pointer = (window, x, y);
-                match &mut self.overlay {
-                    Some((_, Overlay::Menu(menu))) => menu.hover = menu.hit(x, y),
-                    Some((_, Overlay::Volume(panel))) => {
-                        self.volume.motion(&sndvol::Layout::popup(*panel), x, y)
-                    }
-                    None => {}
-                }
-            }
-            EventKind::Button {
-                code: 0x110,
-                pressed,
-                ..
-            } => {
-                let (_, x, y) = self.pointer;
-                match &self.overlay {
-                    Some((_, Overlay::Menu(menu))) if !pressed => {
-                        match menu.hit(x, y).map(|index| &menu.items[index]) {
-                            Some(item) if !item.disabled => {
-                                self.activate_context_item(display, item.action)?;
-                            }
-                            None => self.close_overlay(display)?,
-                            _ => {}
-                        }
-                    }
-                    Some((_, Overlay::Volume(panel))) => {
-                        let panel = *panel;
-                        let inside = sndvol::Contains::contains(&panel, x, y);
-                        if pressed && inside {
-                            self.volume
-                                .button(&sndvol::Layout::popup(panel), x, y, true);
-                        } else if !pressed && !inside && !self.volume.dragging() {
-                            self.close_overlay(display)?;
-                        } else if !pressed {
-                            self.volume.cancel();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            EventKind::Key(key) if key.pressed => {
-                if key.code == 1 {
-                    self.close_overlay(display)?;
-                } else {
-                    match &mut self.overlay {
-                        Some((_, Overlay::Volume(_))) => self.volume.key(key.code),
-                        Some((_, Overlay::Menu(menu))) => match key.code {
-                            103 | 108 => menu.step(key.code == 108),
-                            28 if !key.repeat => {
-                                let action = menu
-                                    .hover
-                                    .map(|index| &menu.items[index])
-                                    .filter(|item| !item.disabled)
-                                    .map(|item| item.action);
-                                if let Some(action) = action {
-                                    self.activate_context_item(display, action)?;
-                                }
-                            }
-                            _ => {}
-                        },
-                        None => {}
-                    }
-                }
-            }
-            EventKind::Close | EventKind::Focus(false) => self.close_overlay(display)?,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn activate_context_item(
-        &mut self,
-        display: &mut Display,
-        action: popups::Action,
-    ) -> io::Result<()> {
-        // 剪贴板操作需要菜单仍持有焦点。其余操作先关闭菜单，再启动目标。
-        if matches!(
-            action,
-            popups::Action::FileSelection { .. } | popups::Action::PasteFiles
-        ) {
-            self.perform(display, action)?;
-            self.close_overlay(display)
-        } else {
-            self.close_overlay(display)?;
-            self.perform(display, action)
-        }
-    }
-
-    /// 右键使用指针命中项，键盘使用当前选中项和它的网格位置。
-    fn context_menu(
-        &mut self,
-        display: &mut Display,
-        art: &mut paint::Art,
-        window: WindowId,
-        keyboard: bool,
-    ) -> io::Result<()> {
-        let Some(c) = display.configuration(window) else {
-            return Ok(());
-        };
-        let (_, pointer_x, pointer_y) = self.pointer;
-        let (x, y, hit) = if keyboard {
-            let (x, y) = self.selected.map_or((0, 0), |index| {
-                let cell = self.icons.rect(index);
-                (cell.x + cell.width / 2, cell.bottom())
-            });
-            (
-                f64::from(x.clamp(0, c.width)),
-                f64::from(y.clamp(0, c.height)),
-                self.selected,
-            )
-        } else if window == self.background {
-            let expanded = self
-                .selected
-                .filter(|_| display.keyboard_focus() == Some(window));
-            let hit = art
-                .icon_at(&self.icons, c.scale, (pointer_x, pointer_y), expanded)?
-                .map(|(index, _)| index);
-            (pointer_x, pointer_y, hit)
-        } else {
-            let hit = paint::areas(self, display, window, c).iter().position(|r| {
-                pointer_x >= f64::from(r.x)
-                    && pointer_x < f64::from(r.right())
-                    && pointer_y >= f64::from(r.y)
-                    && pointer_y < f64::from(r.bottom())
-            });
-            (pointer_x, pointer_y, hit)
-        };
-        let (screen, origin) = if window == self.taskbar {
-            let screen = Self::screen(display, self.background);
-            (screen, (x as i32, screen.1 - TASKBAR_HEIGHT + y as i32))
-        } else {
-            ((c.width, c.height), (x as i32, y as i32))
-        };
-        let items = if window == self.taskbar {
-            match hit {
-                Some(paint::VOLUME) => popups::tray_volume_items(),
-                Some(paint::USB) => popups::tray_usb_items(),
-                Some(paint::NETWORK) => popups::tray_network_items(
-                    self.network
-                        .current(&self.settings)
-                        .filter(|link| link.state != network_config::LinkState::Disabled)
-                        .map(|link| link.index),
-                    self.network.disabling(),
-                ),
-                Some(paint::CLOCK) => return Ok(()),
-                Some(n) if n >= paint::TASKS_FROM => {
-                    let ids = paint::task_ids(self, display, c.width);
-                    match ids
-                        .get(n - paint::TASKS_FROM)
-                        .and_then(|id| display.toplevels().find(|(t, _)| t == id))
-                    {
-                        Some((id, info)) => popups::window_items(id, info),
-                        None => return Ok(()),
-                    }
-                }
-                Some(_) => return Ok(()),
-                None => popups::taskbar_items(),
-            }
-        } else if window == self.background {
-            match hit {
-                Some(index) => {
-                    self.selected = Some(index);
-                    popups::icon_items(index, self.icon_kind(index))
-                }
-                None => {
-                    popups::desktop_items(self.paste.is_none() && clipboard::can_paste(display))
-                }
-            }
-        } else {
-            return Ok(());
-        };
-        let size = art.menu_size(&items, c.scale)?;
-        let menu = popups::ContextMenu::new(origin, items, screen, size);
-        self.open_overlay(display, popups::Overlay::Menu(menu))
-    }
-
-    fn open_volume_panel(
-        &mut self,
-        display: &mut Display,
-        art: &mut paint::Art,
-        icon_center_x: i32,
-    ) -> io::Result<()> {
-        self.volume = sndvol::Volume::open();
-        let screen = Self::screen(display, self.background);
-        let scale = display.configuration(self.taskbar).map_or(1, |c| c.scale);
-        let mut measure_failed = None;
-        let size = sndvol::Layout::popup_size(|text| match art.text_width(text, scale) {
-            Ok(width) => width,
-            Err(error) => {
-                measure_failed = Some(error);
-                0
-            }
-        });
-        if let Some(error) = measure_failed {
-            return Err(error);
-        }
-        let panel = popups::volume_panel(icon_center_x, screen, TASKBAR_HEIGHT, size);
-        self.open_overlay(display, popups::Overlay::Volume(panel))
     }
 
     /// 执行开始菜单的叶子动作；先关闭菜单，使弹出的窗口拿到键盘焦点。
@@ -1530,8 +1296,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let c = display
                 .configuration(id)
                 .ok_or("missing desktop configure")?;
-            let pixels = paint::frame(&state, &display, id, c, &mut art, minute)?;
-            display.present(id, &pixels)?;
+            if id == state.background {
+                let pixels = paint::background_frame(&state, &display, c, &mut art)?;
+                display.present(id, pixels)?;
+            } else {
+                let pixels = paint::frame(&state, &display, id, c, &mut art, minute)?;
+                display.present(id, &pixels)?;
+            }
             pending.remove(&id);
         }
         if !ready && presented.contains(&state.background) && presented.contains(&state.taskbar) {

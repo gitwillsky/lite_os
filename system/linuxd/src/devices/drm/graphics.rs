@@ -18,6 +18,7 @@ use super::{
 };
 
 const PIPE_BUFFER: u32 = 0;
+const PIPE_TEXTURE_2D: u32 = 2;
 const FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const FORMAT_R8_UNORM: u32 = 64;
@@ -91,6 +92,7 @@ pub(super) struct VirglBuffer {
     pub(super) resource_id: u32,
     pub(super) size: usize,
     pub(super) target: u32,
+    format: u32,
     pub(super) stride: u32,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -101,6 +103,15 @@ pub(super) struct VirglBuffer {
     // OWNER: 等价 dma_resv 的提交保留锁；跨 context 的隐式 wait、queue publication 与 fence 记录不可被插入。
     // 多资源提交按 resource_id 排序并去重获取，防止 ABBA；只用 task mutex，不持 spin guard 睡眠。
     pub(super) reservation: crate::sync::TaskMutex<()>,
+}
+
+impl VirglBuffer {
+    /// 校验 host 扫描纹理的像素布局。CPU transfer 与 mmap 另外校验 guest backing 的边界。
+    pub(super) fn supports_scanout(&self, width: u32, height: u32, pitch: u32) -> bool {
+        self.target == PIPE_TEXTURE_2D
+            && matches!(self.format, FORMAT_B8G8R8X8_UNORM | FORMAT_B8G8R8A8_UNORM)
+            && (self.width, self.height, self.stride) == (width, height, pitch)
+    }
 }
 
 pub(super) struct VirglLifecycle {
@@ -682,6 +693,7 @@ impl DrmFile {
             resource_id,
             size,
             target: create.target,
+            format: create.format,
             stride,
             width: create.width,
             height: create.height,
