@@ -86,6 +86,23 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 
 Linux timer transaction、权限锁序和进程退休的具体契约分别由[进程契约](process-scheduling.md)及[生命周期](process-lifecycle.md)维护。
 
+## 系统服务映像装载
+
+`native-runtime::elf::Image` 校验静态 ELF 并一次初始化各段。启动者持有映像，同程序的多个
+实例从不可变段模板创建 `CHILD_SNAPSHOT_AT_LEAST_ON_WRITE` 私有视图，未修改的物理页共享，
+进程首次写入时才取得私有页。只读段也保留 COW 隔离，后续提升写权限或调试写入不改动其他实例。
+模板句柄保持私有且初始化后不再写入，因此实例之间不会串写，
+也不需要为每次启动建立 hidden-parent。映射保活内容，启动者释放模板不影响已运行实例。
+
+driver-manager 的启动句柄状态拥有默认驱动宿主映像；fshost 的 Launcher 拥有 ext4 映像。
+原始 ELF 临时映射在解析后撤销，fshost 同时释放来源 VMO。热更新仍按原协议传递原始 ELF，
+候选和回退各自解析对应版本；默认模板不会被更新内容修改。准备失败释放新段和 COW 子对象，
+部分装载的映射仍由现有未启动进程/Job 的失败清理路径回收。
+
+这是冷启动装载优化，不改变运行期指令路径；不新增 benchmark 或测试入口。使用产品实例的
+多驱动、双 ext4 启动与现有驱动替换流程确认 COW 实例隔离及回退，内存收益以系统物理页统计为准，
+不能相加包含共享段的服务 RSS。Linux 应用继续使用其文件映射和页缓存装载路径。
+
 ## 系统服务同步
 
 以下 `sync` 指 `service-sync`，其短锁委托 `native-runtime::sync` 的 native futex 互斥锁；

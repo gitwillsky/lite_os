@@ -19,7 +19,7 @@ const EXT4_STACK_SIZE: usize = 256 * 1024;
 /// 启动 ext4 实例所需的 Job 与映像。
 pub(crate) struct Launcher {
     job: Job,
-    image: &'static [u8],
+    image: native_runtime::elf::Image,
 }
 
 /// 一个运行中的 ext4 实例。
@@ -29,7 +29,7 @@ pub(crate) struct Instance {
 }
 
 impl Launcher {
-    pub(crate) fn new(job: Job, image: &'static [u8]) -> Self {
+    pub(crate) fn new(job: Job, image: native_runtime::elf::Image) -> Self {
         Self { job, image }
     }
 
@@ -48,7 +48,7 @@ impl Launcher {
             image_vmar: &vmar,
             runtime_vmar,
             name: b"ext4",
-            image: self.image,
+            image: &self.image,
             arguments: &[],
             handles: alloc::vec![server.into_handle()],
             stack_size: EXT4_STACK_SIZE,

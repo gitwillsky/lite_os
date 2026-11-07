@@ -16,8 +16,8 @@ pub struct Launch<'a> {
     pub runtime_vmar: Vmar,
     /// 线程名。
     pub name: &'a [u8],
-    /// 静态 ELF 映像。
-    pub image: &'a [u8],
+    /// 已准备的静态 ELF 映像；同程序的多个实例共享只读段。
+    pub image: &'a crate::elf::Image,
     /// 参数字节。
     pub arguments: &'a [u8],
     /// 角色句柄。
@@ -67,7 +67,7 @@ impl Prepared {
 ///
 /// 映像无效、资源不足或启动句柄无法交付。
 pub fn prepare(launch: Launch<'_>) -> Result<Prepared, Status> {
-    let entry = crate::elf::load(launch.image, launch.image_vmar)?;
+    let entry = launch.image.load(launch.image_vmar)?;
     let stack_size = launch.stack_size.next_multiple_of(native_abi::PAGE_SIZE);
     let stack = Vmo::create(stack_size as u64, 0)?;
     let stack_base = launch.runtime_vmar.map(

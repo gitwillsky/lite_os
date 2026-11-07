@@ -9,7 +9,7 @@ struct Handles {
     resource: Resource,
     directory: Publisher,
     job: Job,
-    host_image: &'static [u8],
+    host_image: native_runtime::elf::Image,
 }
 
 // OWNER: 启动时安装一次；之后只读。
@@ -32,8 +32,15 @@ pub(crate) fn install(startup: &mut Startup) -> Vmo {
         let address = native_runtime::heap::vmar()
             .map(native_abi::vm::READ, 0, &image, 0, size)
             .expect("driver-host image mapping");
-        // SAFETY: 只读映射永不解除；映像在服务存活期间不变，每次启动宿主都从中装载。
-        let host_image = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+        // SAFETY: 只读映射覆盖完整映像，parse 不保留借用；完成后才能解除映射。
+        let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+        let host_image = native_runtime::elf::Image::parse(bytes).expect("driver-host ELF");
+        // SAFETY: parse 已复制段内容且不保留 bytes；此映射没有其他使用者。
+        unsafe {
+            native_runtime::heap::vmar()
+                .unmap(address, size.next_multiple_of(native_abi::PAGE_SIZE))
+                .expect("driver-host image unmapping");
+        }
         Handles {
             resource: Resource::from_handle(startup.take(driver_manager::RESOURCE)),
             directory,
@@ -66,6 +73,6 @@ pub(crate) fn job() -> &'static Job {
 }
 
 /// 驱动宿主映像。
-pub(crate) fn host_image() -> &'static [u8] {
-    handles().host_image
+pub(crate) fn host_image() -> &'static native_runtime::elf::Image {
+    &handles().host_image
 }

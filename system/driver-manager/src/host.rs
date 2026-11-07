@@ -96,23 +96,24 @@ fn prepare(
         for mmio in &bound.mmio {
             handles.push(mmio.duplicate(rights::SAME)?.into_handle());
         }
-        let bytes = image.map(crate::image_bytes).transpose()?;
-        let image_bytes = match &bytes {
-            Some(bytes) => {
+        let updated = image
+            .map(|image| {
+                let bytes = crate::image_bytes(image)?;
                 let note = driver_update::note(driver_update::HOST_NOTE);
-                if !native_runtime::elf::has_note(bytes, &note)? {
+                if !native_runtime::elf::has_note(&bytes, &note)? {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
                 }
-                bytes.as_slice()
-            }
-            None => crate::handles::host_image(),
-        };
+                native_runtime::elf::Image::parse(&bytes)
+            })
+            .transpose()?;
         let prepared = native_runtime::launch::prepare(native_runtime::launch::Launch {
             process: &process,
             image_vmar: &vmar,
             runtime_vmar,
             name,
-            image: image_bytes,
+            image: updated
+                .as_ref()
+                .unwrap_or_else(|| crate::handles::host_image()),
             arguments: &bound.node.encode(),
             handles,
             stack_size: HOST_STACK_SIZE,

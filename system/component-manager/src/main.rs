@@ -573,7 +573,7 @@ fn start_linuxd(
         image_vmar: &shared_vmar,
         runtime_vmar,
         name: b"linuxd",
-        image,
+        image: &native_runtime::elf::Image::parse(image).expect("linuxd ELF"),
         arguments: command_line,
         handles: vec![
             shared.into_handle(),
@@ -617,7 +617,8 @@ fn start_service(
         image_vmar: &vmar,
         runtime_vmar,
         name,
-        image,
+        image: &native_runtime::elf::Image::parse(image)
+            .unwrap_or_else(|status| panic!("{label} ELF: {status}")),
         arguments: &[],
         handles,
         stack_size,

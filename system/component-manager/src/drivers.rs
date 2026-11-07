@@ -280,7 +280,7 @@ fn launch(root: &Job, image: &[u8], mut handles: Vec<Handle>) -> Result<Instance
             image_vmar: &vmar,
             runtime_vmar,
             name: b"driver-manager",
-            image,
+            image: &native_runtime::elf::Image::parse(image)?,
             arguments: &[],
             handles,
             stack_size: 256 * 1024,

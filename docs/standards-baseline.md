@@ -55,6 +55,7 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 
 - VMO COW 与 hidden-parent collapse 的成熟内核参照：[Zircon VmCowPages 固定源码](https://fuchsia.googlesource.com/fuchsia/+/2f4a80e20d0dab1b08e1b2c85f2719c99df6f689/zircon/kernel/vm/vm_cow_pages.cc)。只参照所有权/页可见性语义，不导入 Linux 对象政策。
 - VMAR 允许将缺 backing 的页留到访问时故障的语义：[固定 vmar_map 规范](https://fuchsia.googlesource.com/fuchsia/+/118359eadf6aabbd11106f12df9a1e95c8d0847b/docs/reference/syscalls/vmar_map.md)。
+- 不可变 ELF 段模板使用单向 COW，语义参照[固定 vmo_create_child 规范](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/vmo_create_child.md)的 `SNAPSHOT_AT_LEAST_ON_WRITE`：子对象写入不改父对象，模板必须不再写入。
 - Arm SMMU architecture v3，ARM IHI 0070 G.a（2024-08-15）：[Arm 固定 PDF](https://documentation-service.arm.com/static/66c5c097882fec713ef4a8ff)。
 - RISC-V IOMMU Base Architecture 1.0.0：[官方固定 release](https://github.com/riscv-non-isa/riscv-iommu/releases/tag/v1.0.0) 与 [PDF](https://github.com/riscv-non-isa/riscv-iommu/releases/download/v1.0.0/riscv-iommu.pdf)。
 - BTI/PMT 的设备地址、页固定与完成失效后的退休，以对应 IOMMU 规范和固定 Linux `drivers/iommu/arm/arm-smmu-v3/`、`drivers/iommu/riscv/` 为参照；实际支持范围由设备契约维护。
