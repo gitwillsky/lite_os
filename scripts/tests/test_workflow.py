@@ -19,8 +19,8 @@ class WorkflowTests(unittest.TestCase):
             with (
                 self.subTest(value=value),
                 patch.object(workflow, "build_kernel") as build,
-                patch.object(workflow, "build_bootloader"),
-                patch.object(workflow, "sync_userland"),
+                patch.object(workflow, "build_bootloader") as bootloader,
+                patch.object(workflow, "sync_userland") as synchronize,
                 patch.object(workflow, "run_utm_gui") as launch,
             ):
                 environment = {"ARCH": "aarch64", "ACCEL": "hvf"}
@@ -36,6 +36,13 @@ class WorkflowTests(unittest.TestCase):
                         environment.update(DIAGNOSTIC_PORT="0", DRIVER_UPDATE="0")
                     workflow.dispatch("run-gui", environment)
                     options = launch.call_args.kwargs
+                    build.assert_not_called()
+                    bootloader.assert_not_called()
+                    synchronize.assert_not_called()
+                    options["synchronize"]()
+                    build.assert_called_once_with(environment)
+                    bootloader.assert_called_once_with(environment)
+                    synchronize.assert_called_once_with(environment)
                     self.assertEqual(options["usb_passthrough"], value != "0")
                     self.assertEqual(options["diagnostic_port"], None if value == "0" else 2222)
                     self.assertEqual(options["kernel_arguments"], "" if value == "0" else "liteos.driver_update=1")

@@ -2,7 +2,7 @@
 
 use super::{Display, WindowId};
 use canvas::Rect;
-use linux_uapi::shared_memory::MemFd;
+use linux_uapi::shared_memory::{MemFd, SharedMapping};
 use std::{collections::VecDeque, io, os::fd::AsFd};
 use wayland_wire::{
     protocol::{Interface, wl_buffer, wl_shm, wl_shm_pool, wl_surface, wp_viewport, wp_viewporter},
@@ -18,10 +18,20 @@ pub(super) struct Buffer {
     pub window: WindowId,
     pub size: (i32, i32),
     pub busy: bool,
-    /// 内存里是第几次提交的完整画面；0 表示从未写入，复用时必须整幅写。
+    /// 内存里是第几次提交的完整画面；0 表示内容未确认，复用时必须整幅写。
     commit: u64,
     memory: MemFd,
+    mapping: SharedMapping,
     pool: ObjectId,
+}
+
+impl Buffer {
+    fn pixels(&self, count: usize) -> &[u32] {
+        assert!(count <= self.mapping.len() / size_of::<u32>());
+        // SAFETY: mmap 按页对齐，memfd 封印尺寸。客户端是唯一写入者，
+        // 比较阶段不写缓冲且不跨提交保留借用；合成器只读取 wl_shm。
+        unsafe { std::slice::from_raw_parts(self.mapping.as_non_null().cast().as_ptr(), count) }
+    }
 }
 
 /// 一个窗口最近几次提交的损伤：复用的缓冲落后几帧，就补写这几帧的损伤。
@@ -32,54 +42,29 @@ pub(super) struct History {
     damage: VecDeque<Vec<Rect>>,
     /// 历史对应的缓冲像素尺寸与 scale，也是上一次提交的内容规格；变化时历史作废。
     key: Option<(i32, i32, i32)>,
-    /// 上一次提交的完整画面；新画面与它逐行比较得出损伤。缺少它只能整幅提交，
-    /// 一次标题栏变色也要搬运整窗像素。只按损伤更新，不每帧整幅复制。
-    frame: Vec<u32>,
+    /// 上一次有像素提交的缓冲。它已保留完整画面，供下一次计算损伤。
+    latest: Option<ObjectId>,
 }
 
 impl History {
-    /// 本次画面相对上一次提交的损伤；规格变化或首次提交为整幅。
-    fn damage(&self, key: (i32, i32, i32), pixels: &[u32]) -> Vec<Rect> {
-        if self.key == Some(key) && self.frame.len() == pixels.len() {
-            changed(&self.frame, pixels, key.0 as usize)
-        } else {
-            vec![Rect::new(0, 0, key.0, key.1)]
-        }
+    /// 取消映射后丢弃比较基线。序号继续递增，避免尚未 release 的旧缓冲冒充新提交。
+    pub(super) fn invalidate(&mut self) {
+        self.key = None;
+        self.latest = None;
+        self.damage.clear();
     }
 
-    fn record(&mut self, key: (i32, i32, i32), pixels: &[u32], damage: Vec<Rect>) {
-        if self.key != Some(key) || self.frame.len() != pixels.len() {
+    fn record(&mut self, key: (i32, i32, i32), buffer: ObjectId, damage: Vec<Rect>) {
+        if self.key != Some(key) {
             self.damage.clear();
             self.key = Some(key);
-            if pixels.len() == 1 {
-                // 单色帧替代整幅画面时归还历史像素，不能把整屏容量留在后台。
-                self.frame = pixels.to_vec();
-            } else {
-                self.frame.clear();
-                self.frame.extend_from_slice(pixels);
-            }
-        } else {
-            let width = key.0 as usize;
-            for rect in &damage {
-                for row in rect.y as usize..rect.bottom() as usize {
-                    let start = row * width + rect.x as usize;
-                    let end = start + rect.width as usize;
-                    self.frame[start..end].copy_from_slice(&pixels[start..end]);
-                }
-            }
         }
+        self.latest = Some(buffer);
         self.commits += 1;
         if self.damage.len() == WINDOW_BUFFER_LIMIT {
             self.damage.pop_front();
         }
         self.damage.push_back(damage);
-    }
-
-    /// 交互缩放完成后归还显著超出当前画面的容量，小尺寸往返仍可复用。
-    fn trim(&mut self, resizing: bool) {
-        if !resizing && self.frame.len() <= self.frame.capacity() / 2 {
-            self.frame.shrink_to_fit();
-        }
     }
 
     /// 持有第 `held` 次提交的缓冲需要补写的损伤；`None` 表示必须整幅写。
@@ -159,10 +144,17 @@ impl Display {
         let key = (width, height, scale);
         let bounds = Rect::new(0, 0, width, height);
         let mapped = state.mapped && state.history.key == Some(key);
-        let damage = if mapped {
-            state.history.damage(key, pixels)
-        } else {
-            vec![bounds]
+        let previous = state.history.latest.and_then(|id| self.buffers.get(&id));
+        let damage = match previous {
+            Some(buffer)
+                if mapped
+                    && buffer.window == window
+                    && buffer.size == (width, height)
+                    && buffer.commit == state.history.commits =>
+            {
+                changed(buffer.pixels(pixels.len()), pixels, width as usize)
+            }
+            _ => vec![bounds],
         };
         self.set_solid_viewport(
             window,
@@ -198,7 +190,6 @@ impl Display {
                 .encode(window.0, writer)
                 .map_err(io::Error::other)?;
             let state = self.windows.get_mut(&window).expect("validated window");
-            state.history.trim(configuration.resizing);
             state.frame = Some(callback);
             return self.transport.flush();
         }
@@ -238,8 +229,10 @@ impl Display {
         };
         // 4. 复用的缓冲停在它上次提交的画面：补写之后各帧与本帧的损伤，新缓冲整幅写。
         let history = &self.windows[&window].history;
-        let buffer = self.buffers.get(&id).expect("allocated buffer");
+        let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
         let lagging = history.since(buffer.commit, key);
+        // 写入或请求编码中途失败时，这块缓冲不再能作为上一帧或损伤补写的基线。
+        buffer.commit = 0;
         let current: &[Rect] = if lagging.is_some() {
             &damage
         } else {
@@ -292,8 +285,7 @@ impl Display {
         // 5. flush 前冻结 busy 与历史，错误后关闭连接，不能重写可能已交付的内存。
         let state = self.windows.get_mut(&window).expect("validated window");
         state.frame = Some(callback);
-        state.history.record(key, pixels, damage);
-        state.history.trim(configuration.resizing);
+        state.history.record(key, id, damage);
         let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
         buffer.busy = true;
         buffer.commit = state.history.commits;
@@ -354,6 +346,7 @@ impl Display {
         capacity: usize,
     ) -> io::Result<ObjectId> {
         let memory = MemFd::create("classic-ui", capacity)?;
+        let mapping = SharedMapping::map(memory.as_fd(), capacity)?;
         let pool = self.transport.allocate(Interface::WlShmPool)?;
         let mut request = Writer::new();
         request.begin(self.shm, 0);
@@ -368,6 +361,7 @@ impl Display {
                 busy: false,
                 commit: 0,
                 memory,
+                mapping,
                 pool,
             },
             stride,
@@ -500,6 +494,7 @@ fn changed(previous: &[u32], next: &[u32], width: usize) -> Vec<Rect> {
 mod tests {
     use super::{History, changed};
     use canvas::Rect;
+    use wayland_wire::wire::ObjectId;
 
     /// 模拟一块缓冲：按矩形从当前画面复制，与 `present` 写共享内存的方式相同。
     fn write(buffer: &mut [u32], pixels: &[u32], rects: &[Rect], width: usize) {
@@ -516,19 +511,21 @@ mod tests {
     fn a_lagging_buffer_catches_up_on_every_missed_commit() {
         let key = (4, 3, 1);
         let mut history = History::default();
+        let a = ObjectId::new(2).unwrap();
+        let b = ObjectId::new(3).unwrap();
         let first = [1; 12];
-        assert_eq!(history.damage(key, &first), [Rect::new(0, 0, 4, 3)]);
-        history.record(key, &first, vec![Rect::new(0, 0, 4, 3)]);
+        history.record(key, a, vec![Rect::new(0, 0, 4, 3)]);
         let mut lagging = first;
         // 第二帧写进另一块缓冲，`lagging` 停在第 1 次提交。
         let mut second = first;
         second[0] = 2;
-        let damage = history.damage(key, &second);
+        let damage = changed(&first, &second, 4);
         assert_eq!(damage, [Rect::new(0, 0, 1, 1)]);
-        history.record(key, &second, damage);
+        history.record(key, b, damage);
+        assert_eq!(history.latest, Some(b));
         let mut third = second;
         third[11] = 3;
-        let damage = history.damage(key, &third);
+        let damage = changed(&second, &third, 4);
         assert_eq!(damage, [Rect::new(3, 2, 1, 1)]);
         let missed: Vec<Rect> = history
             .since(1, key)
@@ -541,8 +538,7 @@ mod tests {
             lagging, third,
             "the second frame's damage is replayed into the lagging buffer"
         );
-        history.record(key, &third, damage);
-        assert!(history.damage(key, &third).is_empty());
+        history.record(key, a, damage);
         assert!(
             history.since(0, key).is_none(),
             "a never-written buffer is written whole"
@@ -552,21 +548,27 @@ mod tests {
             "a size change invalidates the history"
         );
         for _ in 0..super::WINDOW_BUFFER_LIMIT {
-            history.record(key, &third, Vec::new());
+            history.record(key, a, Vec::new());
         }
         assert!(
             history.since(1, key).is_none(),
             "lag beyond the history is written whole"
         );
-        let solid = (1, 1, 1);
-        let pixel = [4];
-        history.record(solid, &pixel, history.damage(solid, &pixel));
+        let old_commit = history.commits;
+        history.invalidate();
+        assert_eq!(history.latest, None);
+        assert!(history.since(old_commit, key).is_none());
+        history.record(key, b, vec![Rect::new(0, 0, 4, 3)]);
+        assert!(history.commits > old_commit);
         assert_eq!(
-            history.frame.capacity(),
-            1,
-            "solid frame frees full-size history"
+            history
+                .since(old_commit, key)
+                .unwrap()
+                .copied()
+                .collect::<Vec<_>>(),
+            [Rect::new(0, 0, 4, 3)],
+            "a buffer left busy across unmap must be refreshed in full"
         );
-        assert_eq!(history.damage(key, &third), [Rect::new(0, 0, 4, 3)]);
     }
 
     #[test]

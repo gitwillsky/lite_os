@@ -154,6 +154,8 @@ pub(crate) struct Thread {
     user: Option<UserState>,
     // OWNER: 只为保活内核栈映射；上下文切换经 `kernel_context` 中保存的栈指针使用它。
     _kernel_stack: KernelStack,
+    // OWNER: 从创建到最后一个队列 token 归还期间保有可调度容量。
+    _scheduler_slot: processor::ThreadSlot,
     kernel_context: Mutex<KernelContext>,
     scheduling: SchedulingEntity,
     // FLAG: KILLED/KICKED，见模块文档；Release 发布、Acquire 观察。
@@ -182,7 +184,7 @@ impl Thread {
     /// - `start`: 首次进入用户态的寄存器。
     ///
     /// # Errors
-    /// 内核栈、上下文页或对象分配失败返回 `Err(())`；不留下已分配的上下文页。
+    /// 调度存储、内核栈、上下文页或对象分配失败返回 `Err(())`；不留下已分配的上下文页。
     pub(crate) fn create_user(
         space: Arc<AddressSpace>,
         owner: Arc<dyn ThreadOwner>,
@@ -190,6 +192,7 @@ impl Thread {
     ) -> Result<Arc<Self>, ()> {
         let entry = *USER_ENTRY.get().expect("user entry not installed");
         let kernel_stack = KernelStack::try_new()?;
+        let scheduler_slot = processor::ThreadSlot::try_new()?;
         let top = kernel_stack.get_top();
         let (address, pointer, context_page) = match kernel_stack.user_context_address() {
             Some(address) => (address, address as *mut UserContext, None),
@@ -221,6 +224,7 @@ impl Thread {
                 owner,
             }),
             _kernel_stack: kernel_stack,
+            _scheduler_slot: scheduler_slot,
             kernel_context: Mutex::new(KernelContext::goto_trap_return(top, run_user_thread)),
             scheduling: SchedulingEntity::new(
                 DEFAULT_PRIORITY,

@@ -25,7 +25,12 @@
   应用已有的有界 credit；不得直接比较不同 CPU 的绝对坐标，也不得把换算计入实际 CPU 时间。
   Ready affinity 迁移与 Preempting/WakePending 由状态中的 CPU 确定 source；Blocked 的 source 由上次执行 CPU
   确定，begin_runtime 写入与 Blocking/Blocked 的锁交接保证该值稳定。generation 与新坐标一同发表，旧 entry 仍按 generation 淘汰。
-  不新增状态、锁、Atomic 或分配，只读原有 floor；实际 Policy 夹具保护正/负 lag、睡眠 credit 与 CPU 计费不变。
+  坐标换算读取既有 floor。实际 Policy 夹具保护正/负 lag、睡眠 credit 与 CPU 计费不变。
+- 负载并列时，只有同核存在竞争且线程自上次迁移以来已经实际运行满一个轮转窗口，才允许为公平性再次迁移。
+  跨核 rebase 保存既有计费总量作为驻留基线，同核休眠或等待不增加计费，也不重置基线。刚迁入的线程
+  跳过当前轮转并保留机会，避免固定抢占节拍反复迁移同一线程。并列目标从源核的下一个允许 CPU 开始选取，
+  严格更低负载的目标和强制亲和迁移仍优先。只在轮转到期时读取既有 Policy 锁，无新锁、分配或每 tick 记账。
+  以同一来宾的 2 核 3 任务、4 核 5 任务 CPU 时间分布验证。
 - channel_call 的成功回复优先在 reply CPU 唤醒 caller；server 即将再次等请求，局部交接避免把就绪回复
   留在另一忙 CPU 等下一 tick。该提示复用 TaskEvent/TaskWaitTarget，仍验证精确 wait membership、active 与 affinity，
   不强置抢占或改变权重。peer close 与普通 event 维持正常选核，未保存的 Blocking context 仍沿原 handoff 完成。
@@ -58,6 +63,15 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 ## 等待、IRQ 与清理
 
 - Ready publication/retirement token 必须在同一 SchedulingState transaction 中交给唯一 per-CPU committer；旧 generation 不可 dispatch，遗失 token fail-stop。
+- 线程创建持有一个容量凭据，直至最后一个线程引用（包括过期队列条目）退休。超过当前高水位时，
+  在可失败的创建阶段按倍数准备每个 CPU 的 runqueue 和 mailbox 备用存储，再以 admission → inbound
+  的锁序发布整批。任何分配失败都撤销本次凭据，原有线程仍可调度。退出只归还凭据，容量保留供下一次创建复用。
+- 每个队列仍能容纳所有存活线程集中到一个 CPU。正常入队不取 admission 锁。容量不足时，在既有
+  队列所有权下转移条目到已准备的存储，保留 mailbox 顺序及 runqueue 排序键。旧 generation 继续沿原
+  校验和回收路径处理。转移工作随旧队列长度增长，每个队列每次倍增最多一次，IRQ-off 路径始终不分配。
+  容量的成本取决于线程数高水位和 CPU 数，与可分配 RAM 无关。以同实例空闲堆占用、并发创建和单核集中
+  负载验证。现有公平调度负载检验运行时顺序。参照 [Zircon 的调度队列](https://fuchsia.googlesource.com/fuchsia/+/17cd5efd427a/zircon/kernel/include/kernel/scheduler.h)，
+  LiteOS 保留现有二叉堆和跨核投递的所有权。
 - Blocking/Preempting 到 Blocked/Ready 的提交只在 outgoing context 保存后执行；pending slot 保活 outgoing owner，next/idle continuation 恰好消费一次。
 - IRQ guard 不可跨 logical CPU，持有 spin/IRQ-safe guard 时禁止阻塞、可失败分配或等待 remote completion。
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。

@@ -120,6 +120,22 @@ pub fn format_mac([a, b, c, d, e, f]: [u8; 6]) -> String {
     format!("{a:02X}-{b:02X}-{c:02X}-{d:02X}-{e:02X}-{f:02X}")
 }
 
+/// 将租约的 UTC 秒数按系统本地时区格式化，供状态页和 `ipconfig` 共用。
+pub fn format_lease_time(unix: i64) -> String {
+    let local = calendar::zone::to_local(unix);
+    let date = calendar::civil_from_days(local.div_euclid(86_400));
+    let seconds = local.rem_euclid(86_400);
+    format!(
+        "{}年{}月{}日 {:02}:{:02}:{:02}",
+        date.year,
+        date.month,
+        date.day,
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 /// 接口 `name` 的当前设置；netcfg 尚未安装该接口时为 Windows 默认。
 ///
 /// # Errors

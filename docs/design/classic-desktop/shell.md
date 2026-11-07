@@ -19,14 +19,21 @@
    |---|---|---|
    | 我的文档 | `file-explorer` 定位到用户主目录 | |
    | 我的电脑 | `file-explorer` 的"我的电脑"视图 | 列出各磁盘（挂载点）与"控制面板" |
+   | 网上邻居 | `file-explorer` 的"网上邻居"视图 | 浏览网络位置 |
    | 回收站 | `file-explorer` 的回收站视图 | 空/满两种图标 |
 
-   Windows 2000 默认还有"网上邻居""Internet Explorer""连接到 Internet"。LiteOS 没有对应后端，**不提供**
+   Windows 2000 默认还有"Internet Explorer"和"连接到 Internet"。LiteOS 尚未提供这两个入口
    （范围决策，记录于此）。
 3. 图标外观：32 × 32 图标，下方居中标题文字（白色，带 1 像素黑色阴影以保证在任意壁纸上可读，待核：
    Windows 2000 在纯色背景下是图标标题背景取桌面色、文字白色、无阴影）。选中时图标叠加 50% `HIGHLIGHT`
    色调，标题背景变为 `HIGHLIGHT`、文字 `HIGHLIGHTTEXT`；获得焦点时标题外加点状虚线框。
-4. 图标标题最多两行，超出以"..."截断；选中时展开显示全文（确定）。
+4. 图标标题最多两行，超出以"..."截断。选中项有键盘焦点时展开显示全文。
+   桌面点击只命中绘出的图像或标题，包括焦点项展开的标题。图标旁的格子留白按桌面处理。
+   命中类型参照 [Win32 列表视图命中测试](https://learn.microsoft.com/zh-cn/windows/win32/api/commctrl/ns-commctrl-lvhittestinfo)。
+   单击已经选中的标题可开始原地重命名，快速双击仍打开项目。F2 对当前选中项目生效。
+   桌面有键盘焦点时，方向键按实际网格位置选择图标，可越过空格。没有选中项时从最左列的第一个可见图标开始。
+   Shift+F10 或菜单键在选中图标旁打开右键菜单。上下键在可执行项之间移动，Enter 执行，Esc 关闭。
+   方向选择按 [Win32 的位置关系](https://learn.microsoft.com/en-us/windows/win32/controls/lvm-getnextitem)。
 5. 右键空白处菜单：
    - "排列图标(I)" ▸ "按名称(N)""按类型(T)""按大小(S)""按日期(D)"、分隔线、"自动排列(A)"
    - "对齐图标(E)"

@@ -16,10 +16,12 @@ use crate::execution::cpu::{self, CpuId, CpuSet};
 use crate::execution::sync::{IrqMutex, LocalIrqGuard, LocalIrqTransfer, WaitResult};
 use crate::platform;
 
+mod admission;
 mod handoff;
 mod placement;
 mod ready_membership;
 mod ready_queue;
+pub(super) use admission::ThreadSlot;
 pub(super) use handoff::{publish_pending_handoff, resume_without_switch, take_pending_handoff};
 pub(super) use placement::enqueue_new;
 use placement::{ready_entry, select_cpu, select_cpu_after_preemption};
@@ -48,15 +50,14 @@ pub(super) struct Processor {
 }
 
 impl Processor {
-    fn new(cpu_id: CpuId, queue_capacity: usize) -> Self {
+    fn new(cpu_id: CpuId) -> Self {
         let mut idle_context = KernelContext::zero_init();
         idle_context.set_resume_target(idle_return);
         Self {
             cpu_id,
             current: None,
             idle_context,
-            runqueue: CfsRunQueue::try_with_capacity(queue_capacity)
-                .expect("scheduler runqueue allocation failed"),
+            runqueue: CfsRunQueue::new(),
             pending_handoff: None,
             deferred_reap: None,
         }
@@ -122,8 +123,14 @@ struct PerCpuProcessor {
     // OWNER: 只有本 CPU 读写，记录自上次放宽亲和偏置以来的抢占次数（见 `placement_policy`）。
     preemptions_since_rotation: AtomicU32,
     // timer softirq 可远端投递；IRQ-safe 锁防止打断本 CPU drain 后再入。
-    inbound: IrqMutex<VecDeque<RunQueueEntry>>,
-    queue_capacity: usize,
+    inbound: IrqMutex<Inbound>,
+}
+
+/// 目标 CPU 的跨核投递和两份已在创建线程时准备好的替换存储。
+struct Inbound {
+    entries: VecDeque<RunQueueEntry>,
+    spare_entries: VecDeque<RunQueueEntry>,
+    spare_runqueue: CfsRunQueue,
 }
 
 impl PerCpuProcessor {
@@ -135,11 +142,7 @@ impl PerCpuProcessor {
         }
     }
 
-    fn new(queue_capacity: usize) -> Self {
-        let mut inbound = VecDeque::new();
-        inbound
-            .try_reserve_exact(queue_capacity)
-            .expect("scheduler inbound allocation failed");
+    fn new() -> Self {
         Self {
             local: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicBool::new(false),
@@ -150,8 +153,11 @@ impl PerCpuProcessor {
             placement_vruntime: AtomicU64::new(0),
             busy_us: AtomicU64::new(0),
             preemptions_since_rotation: AtomicU32::new(0),
-            inbound: IrqMutex::new(inbound),
-            queue_capacity,
+            inbound: IrqMutex::new(Inbound {
+                entries: VecDeque::new(),
+                spare_entries: VecDeque::new(),
+                spare_runqueue: CfsRunQueue::new(),
+            }),
         }
     }
 }
@@ -188,24 +194,22 @@ struct ProcessorSlot {
 
 struct ProcessorTopology {
     slots: Box<[ProcessorSlot]>,
+    // OWNER: admission 串行发布所有 CPU 的备用存储。普通入队不取该锁；没有它会出现
+    // 并发创建时部分 CPU 仍只有旧容量，已接纳的线程无法在 IRQ-off 路径投递。
+    admitted_capacity: IrqMutex<usize>,
+    // OWNER: 每个 ThreadSlot 恰好计入一次（包括尚未发布和仍被旧 generation 保活的线程）。
+    // Drop 可发生在队列锁内，所以不能反向获取 admission 锁。
+    thread_slots: AtomicUsize,
 }
 
 // OWNER: 每个平台 CPU 的调度状态。
 static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
 
-/// 按逻辑 CPU 序构造调度状态；队列容量按“物理页最多容纳的 kernel stack 数”预留，运行期入队不分配。
+/// 按逻辑 CPU 序构造调度状态。队列 backing 由创建线程的事务按需准备。
 pub(super) fn init_topology() {
     assert!(
         PROCESSOR_TOPOLOGY.get().is_none(),
         "processor topology initialized twice"
-    );
-    let stack_pages = crate::memory::KERNEL_STACK_SIZE / crate::memory::PAGE_SIZE;
-    let queue_capacity = crate::memory::frame_statistics()
-        .capacity_pages
-        .div_ceil(stack_pages);
-    assert!(
-        queue_capacity != 0,
-        "physical memory cannot host one thread stack"
     );
     let mut slots = Vec::new();
     slots
@@ -214,11 +218,13 @@ pub(super) fn init_topology() {
     for cpu_id in cpu::possible().iter() {
         slots.push(ProcessorSlot {
             cpu_id,
-            processor: PerCpuProcessor::new(queue_capacity),
+            processor: PerCpuProcessor::new(),
         });
     }
     PROCESSOR_TOPOLOGY.call_once(|| ProcessorTopology {
         slots: slots.into_boxed_slice(),
+        admitted_capacity: IrqMutex::new(0),
+        thread_slots: AtomicUsize::new(0),
     });
 }
 
@@ -253,7 +259,7 @@ pub(super) fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> 
     if !processor.initialized.load(Ordering::Relaxed) {
         // SAFETY: 只有当前 CPU 能到达自己的 slot.local，borrowed flag 证明没有其他引用。
         unsafe {
-            (*processor.local.get()).write(Processor::new(slot.cpu_id, processor.queue_capacity));
+            (*processor.local.get()).write(Processor::new(slot.cpu_id));
         }
         processor.initialized.store(true, Ordering::Relaxed);
     }

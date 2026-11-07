@@ -9,18 +9,23 @@
 //!
 //! # 做法：周期性放宽亲和偏置
 //!
-//! 每个 CPU 每发生 `ROTATION_INTERVAL_PREEMPTIONS` 次抢占，就有一次抢占的重新选核放宽亲和偏置：
-//! 负载并列时优先选**不是** `last` 的那个 CPU。这样被迁移的总是“刚跑完一个时间片的任务”，不会饿死；
-//! 放宽只发生在 `last` 上确有任务在排队时，单个任务自己 yield 不会无谓地来回迁移。
+//! 每个 CPU 每发生 `ROTATION_INTERVAL_PREEMPTIONS` 次抢占，就可以在负载并列时放宽亲和偏置，
+//! 选取 `last` 之外的 CPU。放宽只发生在本核还有竞争线程时，单个任务自己 yield 不会无谓地来回迁移。
 //!
-//! 一个 CPU 上有 2 个任务、另一个 CPU 上有 1 个时，两边轮流把刚跑完的任务让给对方，每个任务大约有
-//! 1/3 的时间独占一个 CPU、2/3 的时间与别人对半分，长期平均就是 2/3。
+//! 迁移者必须先在新 CPU 累积一个轮转窗口的实际执行时间，轮转机会才能再次选中它。
+//! 否则 2 个线程在每核交替执行时，固定抢占节拍会反复选中同一个刚迁入的线程，
+//! 其他线程仍长期独占各自的 CPU。严格更低负载的目标不受这一限制。
 
-/// 同一 CPU 每发生多少次抢占，就有一次放宽亲和偏置。
+/// 同一 CPU 在多少次抢占后允许放宽亲和偏置。
 ///
 /// 时间片是一个 scheduler tick（10 ms），所以约每 100 ms 轮转一次；再短会让缓存亲和形同虚设，
 /// 再长则公平性收敛太慢。
 pub(crate) const ROTATION_INTERVAL_PREEMPTIONS: u32 = 10;
+
+/// 线程在本核执行满一个轮转窗口后，才可为负载并列再次迁移。
+pub(crate) const fn can_rotate(runtime_on_cpu_us: u64, quantum_us: u64) -> bool {
+    runtime_on_cpu_us >= quantum_us.saturating_mul(ROTATION_INTERVAL_PREEMPTIONS as u64)
+}
 
 /// 推进一个 CPU 的抢占计数。
 ///

@@ -11,6 +11,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import BinaryIO
 
@@ -32,6 +33,22 @@ VM_NAME = "LiteOS"
 VM_UUID = "11E05A11-7E05-4A11-8E7A-11E05A110001"
 VM_PACKAGE = UTM_DOCUMENTS / "LiteOS-generated" / f"{VM_NAME}.utm"
 VM_DOCUMENT_PACKAGE = UTM_DOCUMENTS / f"{VM_NAME}.utm"
+
+
+def _claim_managed_vm() -> int:
+    """Lock the shared UTM registration and artifacts; the caller owns the returned fd."""
+    VM_PACKAGE.parent.mkdir(parents=True, exist_ok=True)
+    lock = os.open(VM_PACKAGE.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException as error:
+        os.close(lock)
+        if isinstance(error, BlockingIOError):
+            raise RuntimeError(
+                "another GUI session or graphics gate already owns the LiteOS development VM"
+            ) from error
+        raise
+    return lock
 
 
 def _installed_version() -> str:
@@ -483,6 +500,7 @@ class GateRuntime:
         memory: str,
         cpu_count: int,
         restore: tuple[bytes | None, Path | None, Path | None, Path | None],
+        launch_lock: int,
     ) -> None:
         self._serial_socket = serial_socket
         self.stdout: BinaryIO = serial_socket.makefile("rb", buffering=0)
@@ -491,6 +509,7 @@ class GateRuntime:
         self.memory = memory
         self.cpu_count = cpu_count
         self._restore = restore
+        self._launch_lock = launch_lock
         self._closed = False
 
     def write(self, data: bytes) -> None:
@@ -516,18 +535,20 @@ class GateRuntime:
         if self._closed:
             return
         self._closed = True
-        _stop_managed()
-        self.stdout.close()
-        self._serial_socket.close()
-        _remove_registered()
-        _restore_after_gate(
-            self._restore,
-            kernel=self.kernel,
-            rootfs=self.rootfs,
-            memory=self.memory,
-            cpu_count=self.cpu_count,
-        )
-        _ensure_registered()
+        with ExitStack() as cleanup:
+            cleanup.callback(os.close, self._launch_lock)
+            cleanup.callback(self._serial_socket.close)
+            cleanup.callback(self.stdout.close)
+            _stop_managed()
+            _remove_registered()
+            _restore_after_gate(
+                self._restore,
+                kernel=self.kernel,
+                rootfs=self.rootfs,
+                memory=self.memory,
+                cpu_count=self.cpu_count,
+            )
+            _ensure_registered()
 
 
 def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None, Path | None]:
@@ -590,53 +611,66 @@ def start_gate(
     kernel_arguments: str | None = None,
 ) -> GateRuntime:
     """Start the sole product VirGL path as a hidden disposable UTM runtime."""
-    _installed_version()
-    kernel = kernel.resolve(strict=True)
-    rootfs = rootfs.resolve(strict=True)
-    serial_listener, serial_port = _open_serial_listener()
-    restore = _backup_for_gate()
-    _remove_registered()
-    try:
-        prepare(
-            kernel=kernel,
-            rootfs=rootfs,
-            memory=memory,
-            cpu_count=cpu_count,
-            serial_tcp_port=serial_port,
-            kernel_arguments=kernel_arguments,
-        )
-        _ensure_registered()
-        if _status() != "stopped":
-            raise RuntimeError("UTM gate VM must be stopped before launch")
-        _ctl("start", "--hide", VM_UUID, "--disposable")
-        serial_listener.settimeout(15.0)
-        try:
-            serial_socket, _ = serial_listener.accept()
-        except TimeoutError as error:
-            raise RuntimeError("UTM gate serial endpoint did not become ready") from error
-        serial_socket.setblocking(False)
-        return GateRuntime(
-            serial_socket,
-            kernel=kernel,
-            rootfs=rootfs,
-            memory=memory,
-            cpu_count=cpu_count,
-            restore=restore,
-        )
-    except BaseException:
-        _stop_managed()
-        _remove_registered()
-        _restore_after_gate(
-            restore,
-            kernel=kernel,
-            rootfs=rootfs,
-            memory=memory,
-            cpu_count=cpu_count,
-        )
-        _ensure_registered()
-        raise
-    finally:
-        serial_listener.close()
+    with ExitStack() as resources:
+        launch_lock = _claim_managed_vm()
+        resources.callback(os.close, launch_lock)
+        _installed_version()
+        kernel = kernel.resolve(strict=True)
+        rootfs = rootfs.resolve(strict=True)
+        serial_listener, serial_port = _open_serial_listener()
+        with serial_listener:
+            restore = _backup_for_gate()
+            try:
+                _remove_registered()
+            except BaseException:
+                for backup in restore[1:]:
+                    if backup is not None:
+                        backup.unlink(missing_ok=True)
+                raise
+            try:
+                prepare(
+                    kernel=kernel,
+                    rootfs=rootfs,
+                    memory=memory,
+                    cpu_count=cpu_count,
+                    serial_tcp_port=serial_port,
+                    kernel_arguments=kernel_arguments,
+                )
+                _ensure_registered()
+                if _status() != "stopped":
+                    raise RuntimeError("UTM gate VM must be stopped before launch")
+                _ctl("start", "--hide", VM_UUID, "--disposable")
+                serial_listener.settimeout(15.0)
+                try:
+                    serial_socket, _ = serial_listener.accept()
+                except TimeoutError as error:
+                    raise RuntimeError("UTM gate serial endpoint did not become ready") from error
+                resources.callback(serial_socket.close)
+                serial_socket.setblocking(False)
+                runtime = GateRuntime(
+                    serial_socket,
+                    kernel=kernel,
+                    rootfs=rootfs,
+                    memory=memory,
+                    cpu_count=cpu_count,
+                    restore=restore,
+                    launch_lock=launch_lock,
+                )
+            except BaseException:
+                _stop_managed()
+                _remove_registered()
+                _restore_after_gate(
+                    restore,
+                    kernel=kernel,
+                    rootfs=rootfs,
+                    memory=memory,
+                    cpu_count=cpu_count,
+                )
+                _ensure_registered()
+                raise
+        # GateRuntime keeps both resources until the development configuration is restored.
+        resources.pop_all()
+        return runtime
 
 
 def run_gui(
@@ -652,29 +686,24 @@ def run_gui(
     usb_passthrough: bool = True,
     diagnostic_port: int | None = None,
 ) -> None:
-    """Capture the GUI session; optional USB forwarding requires local sudo authorization."""
-    _installed_version()
-    serial_listener, serial_port = _open_serial_listener()
+    """Own the managed VM before running artifact preparation and starting the GUI."""
+    serial_listener: socket.socket | None = None
     serial_socket: socket.socket | None = None
-    serial_log = serial_log.resolve()
-    serial_log.parent.mkdir(parents=True, exist_ok=True)
-    print(f"LiteOS serial log: {serial_log}")
     debug: DebugSession | None = None
     usb: UsbRedirection | None = None
     launch_lock: int | None = None
     # 只有删除旧的 stopped 注册后才取得本次 VM 的清理权；前置失败不能停止用户已有实例。
     owns_vm = False
     try:
-        # The UTM registry check alone cannot arbitrate two simultaneous launches of a stopped VM.
-        VM_PACKAGE.parent.mkdir(parents=True, exist_ok=True)
-        launch_lock = os.open(VM_PACKAGE.parent, os.O_RDONLY)
-        try:
-            fcntl.flock(launch_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError("another make run-gui already owns the LiteOS development VM") from error
+        launch_lock = _claim_managed_vm()
+        _installed_version()
         _remove_registered()
         owns_vm = True
         synchronize()
+        serial_listener, serial_port = _open_serial_listener()
+        serial_log = serial_log.resolve()
+        serial_log.parent.mkdir(parents=True, exist_ok=True)
+        print(f"LiteOS serial log: {serial_log}")
         if usb_passthrough:
             usb = UsbRedirection()
             usb.authorize()
@@ -753,6 +782,7 @@ def run_gui(
                     debug.close()
                 if serial_socket is not None:
                     serial_socket.close()
-                serial_listener.close()
+                if serial_listener is not None:
+                    serial_listener.close()
                 if launch_lock is not None:
                     os.close(launch_lock)

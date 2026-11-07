@@ -33,6 +33,7 @@ pub(crate) use native_runtime::{debug, error, info, warn};
 use launch_protocol::driver_host::{self, Driver};
 use native_runtime::{Event, Startup};
 
+// OWNER: driver-host 入口发布本映像的换版角色和协议代际，driver-manager 在装载前校验。
 // SAFETY: 链接脚本将独立 ELF note 保留于只读段，装载前可校验角色与协议代际。
 #[used]
 #[unsafe(link_section = ".note.liteos.lifecycle")]

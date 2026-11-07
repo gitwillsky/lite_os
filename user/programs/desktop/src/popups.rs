@@ -296,6 +296,25 @@ impl ContextMenu {
         })
     }
 
+    /// 上下键在可执行项间循环，跳过禁用项。没有高亮时从相应边缘开始。
+    pub fn step(&mut self, down: bool) {
+        let count = self.items.len();
+        let mut index = self
+            .hover
+            .unwrap_or(if down { count.saturating_sub(1) } else { 0 });
+        for _ in 0..count {
+            index = if down {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            };
+            if !self.items[index].disabled {
+                self.hover = Some(index);
+                return;
+            }
+        }
+    }
+
     pub fn paint(&self, p: &mut Painter<'_>) {
         p.menu_popup(self.rect);
         for (index, (item, row)) in self.items.iter().zip(self.rows()).enumerate() {

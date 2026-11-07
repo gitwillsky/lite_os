@@ -208,17 +208,75 @@ impl Art {
         self.icon_geometry(scale, |p| p.edit_hit(rect, edit, false, x))
     }
 
-    /// 可点击的标题矩形，和桌面实际绘制使用相同的图标高度、字体与换行。
-    pub fn icon_label_rect(
-        &mut self,
-        scale: i32,
-        cell: Rect,
+    /// 桌面图标的实际位图。绘制、命中和重命名框都使用它的尺寸。
+    pub fn desktop_icon_bitmap(
+        &self,
         icon: &super::icons::Icon,
-    ) -> io::Result<Rect> {
-        let height = self.bitmap(&icon.art).map_or(32, Bitmap::height);
-        self.icon_geometry(scale, |p| {
-            p.icon_label(cell, height, &icon.label, true).rect
-        })
+        trash_full: bool,
+    ) -> Option<&Bitmap> {
+        let name =
+            if trash_full && icon.target == super::icons::Target::Place(start::Place::RecycleBin) {
+                "recycle-bin-full-32"
+            } else {
+                &icon.art
+            };
+        self.bitmap(name).or_else(|| self.bitmap("file-app-32"))
+    }
+
+    fn icon_hit(
+        &mut self,
+        icons: &super::icons::Icons,
+        index: usize,
+        scale: i32,
+        point: (f64, f64),
+        expanded: bool,
+    ) -> io::Result<Option<bool>> {
+        let cell = icons.rect(index);
+        let icon = &icons.items[index];
+        let hit = |rect: Rect| {
+            (f64::from(rect.x)..f64::from(rect.right())).contains(&point.0)
+                && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&point.1)
+        };
+        if !hit(cell) && !expanded {
+            return Ok(None);
+        }
+        let (width, height) = self
+            .desktop_icon_bitmap(icon, icons.trash_full)
+            .map_or((32, 32), |image| (image.width(), image.height()));
+        let image = classic_ui::large_icon_image_rect(cell, width, height);
+        if hit(image) {
+            return Ok(Some(false));
+        }
+        // 标题可能在焦点项下向下展开，但宽度始终受网格约束。
+        if point.1 < f64::from(image.bottom())
+            || !(f64::from(cell.x)..f64::from(cell.right())).contains(&point.0)
+        {
+            return Ok(None);
+        }
+        let label = self.icon_geometry(scale, |p| {
+            p.icon_label(cell, height, &icon.label, expanded).rect
+        })?;
+        Ok(hit(label).then_some(true))
+    }
+
+    /// 查找指针下最上层的桌面项目，第二项表示命中标题。
+    /// # Errors
+    /// 无法加载当前比例的图标字体时返回错误。
+    pub fn icon_at(
+        &mut self,
+        icons: &super::icons::Icons,
+        scale: i32,
+        point: (f64, f64),
+        expanded: Option<usize>,
+    ) -> io::Result<Option<(usize, bool)>> {
+        for index in (0..icons.items.len()).rev() {
+            if let Some(label) =
+                self.icon_hit(icons, index, scale, point, expanded == Some(index))?
+            {
+                return Ok(Some((index, label)));
+            }
+        }
+        Ok(None)
     }
 
     /// 文件拖放只命中回收站图像或标题，格子留白仍属于桌面。
@@ -229,27 +287,10 @@ impl Art {
         point: (f64, f64),
     ) -> io::Result<bool> {
         let target = super::icons::Target::Place(start::Place::RecycleBin);
-        let Some((index, icon)) = icons
-            .items
-            .iter()
-            .enumerate()
-            .find(|(_, icon)| icon.target == target)
-        else {
+        let Some(index) = icons.items.iter().position(|icon| icon.target == target) else {
             return Ok(false);
         };
-        let hit = |rect: Rect| {
-            (f64::from(rect.x)..f64::from(rect.right())).contains(&point.0)
-                && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&point.1)
-        };
-        let cell = icons.rect(index);
-        if !hit(cell) {
-            return Ok(false);
-        }
-        let (width, height) = self
-            .bitmap(&icon.art)
-            .map_or((32, 32), |image| (image.width(), image.height()));
-        Ok(hit(classic_ui::large_icon_image_rect(cell, width, height))
-            || hit(self.icon_label_rect(scale, cell, icon)?))
+        Ok(self.icon_hit(icons, index, scale, point, false)?.is_some())
     }
 
     fn icon_geometry<T>(
@@ -367,9 +408,6 @@ pub fn task_ids(s: &Desktop, d: &Display, width: i32) -> Vec<ToplevelId> {
         .collect()
 }
 pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Rect> {
-    if id == s.background {
-        return (0..s.icons.items.len()).map(|i| s.icons.rect(i)).collect();
-    }
     if id == s.taskbar {
         let layout = taskbar_layout(s, d, c.width);
         let mut result = vec![
@@ -415,13 +453,12 @@ pub fn frame(
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
     let theme = art.resources.theme().clone();
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
-    let rects = areas(s, d, id, c);
     if id == s.background {
         let focused = d.keyboard_focus() == Some(id);
         let recycle_hover = s.drop_hover || s.drag.as_ref().is_some_and(|drag| drag.recycle);
         for (i, icon) in s.icons.items.iter().enumerate() {
             // 正在拖动的图标跟随指针，不画在原位。
-            let mut r = rects[i];
+            let mut r = s.icons.rect(i);
             if let Some(drag) = s.drag.as_ref().filter(|d| d.index == i && d.moved) {
                 r = Rect::new(
                     drag.pos.0 - drag.grab.0,
@@ -435,14 +472,7 @@ pub fn frame(
             let selected = s.selected == Some(i)
                 || (recycle_hover
                     && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
-            let art_name = if s.icons.trash_full
-                && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin)
-            {
-                "recycle-bin-full-32"
-            } else {
-                &icon.art
-            };
-            let bitmap = art.bitmap(art_name).or_else(|| art.bitmap("file-app-32"));
+            let bitmap = art.desktop_icon_bitmap(icon, s.icons.trash_full);
             let editing = s.rename.as_ref().filter(|rename| {
                 matches!(&icon.target, super::icons::Target::Path(path) if path == rename.operation.path())
             });
@@ -475,6 +505,7 @@ pub fn frame(
             );
         }
     } else if id == s.taskbar {
+        let rects = areas(s, d, id, c);
         p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
         p.edge(Rect::new(0, 0, c.width, c.height + 2), Edge::RaisedInner);
         let start = s.menu.is_some();

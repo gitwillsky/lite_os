@@ -30,12 +30,11 @@
 //!
 //! 代价是堆里会暂存一些过期 entry，它们占用的是预先分配好的空间。
 //!
-//! # 为什么堆容量在启动时一次性预留
+//! # 为什么在线程创建时准备堆容量
 //!
-//! 入队在调度器的热路径上，不能分配；若入队因 OOM 失败，就会丢掉一个本该运行的任务。
-//! `PreallocatedHeap` 按“可能同时存在的 Thread 数上界”（由物理页数与每个 Thread 的 kernel stack
-//! 页数推导）在启动时预留存储，运行期 `push` 只做原地操作。物理容量不足时 `make_room` 才一次性
-//! 清掉过期 entry 腾位置（有空位时不会被调用）；清完仍不够就 panic，那表示容量上界推导有 bug。
+//! 入队在调度器的热路径上，不能分配。若入队因 OOM 失败，就会丢掉一个本该运行的任务。
+//! 线程创建先为新的存活线程数高水位准备备用队列。关中断入队容量不足时接管这块存储，
+//! 必要时再清理过期 entry。清完仍不够意味着线程接纳和实际队列容量的契约已损坏。
 //!
 //! # 抢占与负载均衡
 //!
@@ -43,7 +42,8 @@
 //!
 //! 每个 CPU 一个队列，任务被抢占后重新入队时按各 CPU 的负载重新选核，所以大的负载差会被自动修正。负载并列时
 //! 倾向留在原 CPU，这会把 N+1 个任务在 N 个 CPU 上的分布锁死；因此每隔固定次数的抢占会放宽这个倾向，让任务在
-//! 并列的 CPU 之间轮转（见 `placement_policy`）。已知局限：没有跨 CPU 拉取或推送 Ready 任务。
+//! 并列的 CPU 之间轮转（见 `placement_policy`）。刚迁入的任务累积足够的本地运行时间后才能再次参与轮转。
+//! 当前跨核平衡发生在切出时。
 //!
 //! # 阅读顺序
 //!
@@ -71,11 +71,18 @@ pub(crate) struct RunQueueEntry {
 }
 
 impl CfsRunQueue {
-    /// 在 scheduler 发布前为所有可能 live Thread 预留 heap storage。
+    /// 创建尚未接管 backing 的空 Ready 队列。
+    pub(crate) const fn new() -> Self {
+        Self {
+            tasks: PreallocatedHeap::new(),
+        }
+    }
+
+    /// 在创建线程时为本地 Ready 队列准备替换存储。
     ///
     /// # Parameters
     ///
-    /// - `capacity`: 由物理页数与每 Thread kernel-stack 页数推导的上界。
+    /// - `capacity`: 本次准备接纳的存活线程数上界。
     ///
     /// # Returns
     ///
@@ -84,6 +91,18 @@ impl CfsRunQueue {
         Ok(Self {
             tasks: PreallocatedHeap::try_with_capacity(capacity)?,
         })
+    }
+
+    /// 是否能在当前 backing 中直接容纳新增条目。
+    pub(crate) fn has_room(&self, additional: usize) -> bool {
+        self.tasks.has_room(additional)
+    }
+
+    /// 在当前 backing 已满时接管更大的备用队列；没有备用存储时维持现状。
+    pub(crate) fn adopt_spare(&mut self, spare: &mut Self) {
+        if spare.has_room(1) {
+            self.tasks.grow(core::mem::take(spare).tasks);
+        }
     }
 
     /// 仅在 backing capacity 不足时原地清理失效 generation。
@@ -143,6 +162,12 @@ impl CfsRunQueue {
     /// 队列为空时为 `None`。
     pub(crate) fn minimum_vruntime(&self) -> Option<u64> {
         self.tasks.peek().map(|entry| entry.vruntime)
+    }
+}
+
+impl Default for CfsRunQueue {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

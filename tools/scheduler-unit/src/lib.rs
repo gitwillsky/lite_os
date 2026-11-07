@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_pressure_compacts_once_and_preserves_reserved_backing() {
+    fn batch_pressure_compacts_and_can_adopt_larger_backing() {
         let mut heap = PreallocatedHeap::try_with_capacity(8).unwrap();
         for value in 0..8 {
             heap.make_room(1, |_| true);
@@ -99,11 +99,17 @@ mod tests {
         assert_eq!(checks, 8);
         assert_eq!(heap.len(), 8);
         assert_eq!(heap.capacity(), reserved);
+        let spare = PreallocatedHeap::try_with_capacity(16).unwrap();
+        let new_capacity = spare.capacity();
+        heap.grow(spare);
+        assert_eq!(heap.capacity(), new_capacity);
+        assert!(heap.has_room(1));
+        heap.push(12);
         let mut popped = alloc::vec::Vec::new();
         while let Some(value) = heap.pop() {
             popped.push(value);
         }
-        assert_eq!(popped, [11, 10, 9, 8, 6, 4, 2, 0]);
+        assert_eq!(popped, [12, 11, 10, 9, 8, 6, 4, 2, 0]);
     }
 
     #[test]
@@ -204,7 +210,9 @@ mod preemption_policy_tests {
 
 #[cfg(test)]
 mod placement_policy_tests {
-    use super::placement_policy::{ROTATION_INTERVAL_PREEMPTIONS, advance_rotation, choose_cpu};
+    use super::placement_policy::{
+        ROTATION_INTERVAL_PREEMPTIONS, advance_rotation, can_rotate, choose_cpu,
+    };
 
     fn choose(candidates: &[(usize, usize)], last: Option<usize>, rotate: bool) -> Option<usize> {
         choose_cpu(candidates.iter().copied(), last, rotate)
@@ -258,11 +266,19 @@ mod placement_policy_tests {
     }
 
     #[test]
-    fn three_tasks_on_two_cpus_alternate_between_the_cpus() {
-        // CPU0 上 A 被抢占，B 在排队；CPU1 上 C 在运行：A 离开后两边各一个。
+    fn a_recent_migrant_does_not_take_the_next_balancing_turn() {
+        // 两核负载并列时，刚迁入的线程只运行了半个窗口，驻留更久的线程接过轮转机会。
         let after_a_leaves = [(0, 1), (1, 1)];
-        assert_eq!(choose(&after_a_leaves, Some(0), false), Some(0));
-        assert_eq!(choose(&after_a_leaves, Some(0), true), Some(1));
+        let quantum_us = 10_000;
+        let window = quantum_us * u64::from(ROTATION_INTERVAL_PREEMPTIONS);
+        assert_eq!(
+            choose(&after_a_leaves, Some(0), can_rotate(window / 2, quantum_us)),
+            Some(0)
+        );
+        assert_eq!(
+            choose(&after_a_leaves, Some(0), can_rotate(window, quantum_us)),
+            Some(1)
+        );
     }
 
     #[test]

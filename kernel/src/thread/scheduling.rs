@@ -262,6 +262,8 @@ pub(crate) struct Policy {
     /// Q10 微秒 vruntime；1024 单位等于默认权重的 1µs CPU 时间。
     pub(crate) vruntime: u64,
     total_runtime_us: u64,
+    // OWNER: 跨核 rebase 时记录已计费总量。缺失时按固定抢占节拍迁移会反复选中刚迁入的线程。
+    runtime_at_migration_us: u64,
     // FLAG: 线程当前在 restricted mode；之后提交的时间同时计入 `restricted_runtime_us`。
     // 缺失时服务无法区分受限代码与自身代码消耗的时间（例如兼容层的 user/system 时间）。
     restricted: bool,
@@ -277,6 +279,7 @@ impl Policy {
             priority,
             vruntime,
             total_runtime_us: 0,
+            runtime_at_migration_us: 0,
             restricted: false,
             restricted_runtime_us: 0,
         }
@@ -306,6 +309,11 @@ impl Policy {
         self.total_runtime_us
     }
 
+    /// 本次 CPU 驻留以来已计费的执行时间，用于并列负载的跨核轮转。
+    pub(super) fn runtime_on_cpu_us(&self) -> u64 {
+        self.total_runtime_us - self.runtime_at_migration_us
+    }
+
     /// 限制睡眠后可保留的虚拟时间优势，不把未运行的睡眠记为 CPU 使用。
     ///
     /// # Parameters
@@ -330,6 +338,7 @@ impl Policy {
             self.active_start.is_none(),
             "cannot migrate an active slice"
         );
+        self.runtime_at_migration_us = self.total_runtime_us;
         self.vruntime = if self.vruntime >= source_floor {
             target_floor.saturating_add(self.vruntime - source_floor)
         } else {

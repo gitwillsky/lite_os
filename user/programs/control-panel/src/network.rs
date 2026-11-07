@@ -9,7 +9,7 @@ use liteos_ui::{
 use network_config::LinkState;
 use std::{borrow::Cow, fs, net::Ipv4Addr, time::Duration};
 
-const ADDRESS_FIELDS: [&str; 8] = [
+const ADDRESS_FIELDS: [&str; 10] = [
     "物理地址：",
     "地址状态：",
     "IP 地址：",
@@ -18,6 +18,8 @@ const ADDRESS_FIELDS: [&str; 8] = [
     "DNS 服务器：",
     "DNS 后缀：",
     "DHCP 服务器：",
+    "获得租约：",
+    "租约过期：",
 ];
 
 fn address(value: Ipv4Addr) -> Cow<'static, str> {
@@ -83,7 +85,18 @@ impl Sample {
             })
             .flatten();
         let mut addresses = std::array::from_fn(|_| Cow::Borrowed("—"));
-        let [mac, allocation, ip, mask, gateway, dns, suffix, dhcp] = &mut addresses;
+        let [
+            mac,
+            allocation,
+            ip,
+            mask,
+            gateway,
+            dns,
+            suffix,
+            dhcp,
+            obtained,
+            expires,
+        ] = &mut addresses;
         if let Some(config) = configured {
             *mac = network_config::format_mac(config.mac).into();
         }
@@ -111,6 +124,11 @@ impl Sample {
                 }
                 if let Some(lease) = config.lease {
                     *dhcp = address(lease.server);
+                    *obtained = network_config::format_lease_time(lease.obtained_at).into();
+                    *expires = lease.expires_at.map_or_else(
+                        || Cow::Borrowed("无限期"),
+                        |unix| network_config::format_lease_time(unix).into(),
+                    );
                     "由 DHCP 分配"
                 } else {
                     "已配置 IPv4 地址"

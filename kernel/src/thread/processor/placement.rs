@@ -31,26 +31,43 @@ pub(super) fn select_cpu(task: &Thread, affinity: CpuAffinity) -> CpuId {
 ///
 /// 被选中的 CPU ID。
 pub(super) fn select_cpu_after_preemption(task: &Thread, affinity: CpuAffinity) -> CpuId {
+    let current = cpu::current_id();
     let slot = current_per_cpu();
     // OWNER 见 `PerCpuProcessor::preemptions_since_rotation`：只有本 CPU 读写。
     let (due, next) =
         placement_policy::advance_rotation(slot.preemptions_since_rotation.load(Ordering::Relaxed));
-    slot.preemptions_since_rotation
-        .store(next, Ordering::Relaxed);
     // 此刻被抢占的 task 已离开 Running，而它的继任者已从 Ready 变成 Running，所以“还有别的任务在
     // 本 CPU 上竞争”要看 Ready 与 Running 之和，只看 Ready 在两个任务轮流跑时恒为零。
-    let contended = slot
-        .ready_entries
-        .load(Ordering::Relaxed)
-        .saturating_add(slot.running_entries.load(Ordering::Relaxed))
-        != 0;
-    select_cpu_with(task, affinity, due && contended)
+    let rotation_pending = due
+        && (slot.ready_entries.load(Ordering::Relaxed) != 0
+            || slot.running_entries.load(Ordering::Relaxed) != 0)
+        && affinity.effective_bits().count_ones() > 1;
+    let rotate = rotation_pending
+        && placement_policy::can_rotate(
+            task.scheduling.policy.lock().runtime_on_cpu_us(),
+            crate::execution::timer::scheduler_quantum_ns() / 1000,
+        );
+    let target = select_cpu_with(task, affinity, rotate);
+    // 最近迁入的线程若仍留在本核，保留本轮机会，让下一个已驻留足够久的线程使用。
+    let next = if rotation_pending && !rotate && target == current {
+        placement_policy::ROTATION_INTERVAL_PREEMPTIONS - 1
+    } else {
+        next
+    };
+    slot.preemptions_since_rotation
+        .store(next, Ordering::Relaxed);
+    target
 }
 
 fn select_cpu_with(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId {
-    // Relaxed 只用于分散扫描起点，不承担任何状态发布。
-    let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % cpu::count();
     let current = cpu::current_id();
+    // 轮转从源核的后继开始，沿实际允许的核循环。普通 placement 保留轮换扫描起点。
+    // 若轮转沿用普通计数器，稀疏亲和掩码会把不同起点反复折叠到同一个目标。
+    let start = if rotate {
+        current.index() + 1
+    } else {
+        NEXT_CPU.fetch_add(1, Ordering::Relaxed) % cpu::count()
+    };
     // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
     let last = task.scheduling.last_cpu.load(Ordering::Relaxed);
     let candidates = (0..cpu::count()).filter_map(|offset| {

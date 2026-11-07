@@ -89,6 +89,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   当前 UTM/HVF 的 GDB 连接会在 `hvf_arch_update_guest_debug` 断言退出，即使先暂停也可复现，因此产品实例不开放 GDB stub。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
+  `run-gui` 与 `run-agent-development` 先取得同一开发虚拟机的启动锁，再检查 UTM 运行时、构建内核或同步镜像。
+  图形验收也使用这把锁，持有到原注册项和产物链接恢复完成。已有持有者时，新命令在接触 UTM 注册项或备份之前退出；
+  正在运行的开发会话仍可通过 SSH 使用。
 - `run-gui` 默认启用 USB 直通；不需要转发主机 USB 设备时使用 `make run-gui USB_PASSTHROUGH=0`，
   此时不创建 USB 转发会话、不请求管理员授权，VirtIO 键鼠与虚拟声卡仍可使用。该选项仅接受 `0` 或 `1`。
 
@@ -250,26 +253,7 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 
 ## 经典桌面素材导入
 
-普通构建只消费受 Git 管理的 `assets/classic/`，不读取 `.local/` 的素材覆盖；clone 后资源完整可用。
-`scripts/classic_assets.py` 校验产品 manifest、全部字节摘要与清单完整性；缺失或损坏立即失败。
-来源、格式和消费者由[资源清单](../design/classic-desktop/assets.md)拥有。
-
-只有更新素材时需要宿主离线工具和本地 ISO：
-
-```bash
-source ~/.zshrc
-brew install sevenzip cabextract icoutils
-python3 -m venv .local/tools/classic-assets
-.local/tools/classic-assets/bin/pip install Pillow==13.0.0
-.local/tools/classic-assets/bin/python scripts/extract_windows2000_assets.py
-python3 scripts/extract_windows2000_assets.py --check
-```
-
-ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pack 4 CHS.iso`。
-导入器只读取 ISO/PE 数据，将完整提取结果保留在 `.local/inputs/windows2000/assets/`，
-只转换并发布产品依赖到 `assets/classic/`，同步删除旧素材。提取配方改变时使用新的 `--output` 目录。
-提交生成的产品文件与 manifest；不提交 ISO、DLL、中间 PNG 或无引用的资源。
-`--check` 无需 ISO、Pillow 和外部提取工具。普通构建和开发镜像同步安装完全相同的清单，资源内容进入各自指纹。
+导入命令与输入位置见[经典桌面资源](../design/classic-desktop/assets.md#导入与校验)。
 
 ## 推荐入口
 

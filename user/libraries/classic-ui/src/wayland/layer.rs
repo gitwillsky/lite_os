@@ -190,7 +190,7 @@ impl Display {
         state.configured = false;
         state.frame = None;
         // 撤销映射后合成器没有内容；保留历史会让下一次空损伤只 commit 不 attach，表面永远不再出现。
-        state.history = Default::default();
+        state.history.invalidate();
         self.events.retain(|event| event.window != window);
         if self.keyboard == Some(window) {
             self.keyboard = None;

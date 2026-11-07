@@ -7,7 +7,10 @@ use super::*;
 /// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
 /// - `entry`: 已属于 processor CPU 的 membership token。
 pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) {
-    make_runqueue_room(processor, 1);
+    if !processor.runqueue.has_room(1) {
+        let mut spare = core::mem::take(&mut current_per_cpu().inbound.lock().spare_runqueue);
+        make_runqueue_room(processor, 1, &mut spare);
+    }
     processor.runqueue.push(entry);
     // Membership/floor 与抢占是不同事实；delivery 原因决定能否请求抢占。
     update_floor(processor);
@@ -29,8 +32,10 @@ pub(super) fn update_floor(processor: &mut Processor) {
     }
 }
 
-#[inline(always)]
-fn make_runqueue_room(processor: &mut Processor, additional: usize) {
+#[cold]
+#[inline(never)]
+fn make_runqueue_room(processor: &mut Processor, additional: usize, spare: &mut CfsRunQueue) {
+    processor.runqueue.adopt_spare(spare);
     let cpu = processor.cpu_id;
     processor
         .runqueue
@@ -107,9 +112,9 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
 pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
     let slot = current_per_cpu();
     // 锁内只消费进入本轮时的 snapshot；后续 delivery 等待锁，
-    // 解锁后留给下一轮。VecDeque 不 swap，始终保留启动期预留 backing。
+    // 解锁后留给下一轮。
     let mut inbound = slot.inbound.lock();
-    if inbound.is_empty() {
+    if inbound.entries.is_empty() {
         return false;
     }
     let current = processor.current.as_ref().map(|thread| {
@@ -120,7 +125,7 @@ pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
             .checkpoint_for_wakeup(crate::execution::timer::get_time_us())
     });
     let mut preempt = false;
-    inbound.retain(|candidate| {
+    inbound.entries.retain(|candidate| {
         let live = candidate.is_current_ready(processor.cpu_id);
         if live {
             preempt |= crate::thread::scheduler::preemption_policy::local_ready_preempts(
@@ -130,18 +135,20 @@ pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
         }
         live
     });
-    if inbound.is_empty() {
+    if inbound.entries.is_empty() {
         return false;
     }
 
     // inbound 每个 entry 都在这一次全量 pass 中验证；合并后只可能按 heap root
-    // 可见性复查连续 root，不再扫描 batch。local heap 仅在 batch 将越过已预留
-    // capacity 时执行全量 compaction。
-    let batch = inbound.len();
-    make_runqueue_room(processor, batch);
+    // 可见性复查连续 root。只有容量不足时才采用已准备的存储或清理过期 entry。
+    let batch = inbound.entries.len();
+    if !processor.runqueue.has_room(batch) {
+        make_runqueue_room(processor, batch, &mut inbound.spare_runqueue);
+    }
     for _ in 0..batch {
         processor.runqueue.push(
             inbound
+                .entries
                 .pop_front()
                 .expect("inbound batch shrank without mailbox owner"),
         );
@@ -198,14 +205,21 @@ fn deliver_remote(cpu_id: CpuId, entry: RunQueueEntry) {
     let target = processor_at(cpu_id.index());
     assert!(cpu::is_active(cpu_id));
     let mut inbound = target.inbound.lock();
-    if inbound.len() == target.queue_capacity {
-        compact_full_mailbox(&mut inbound, cpu_id, target.queue_capacity);
+    if inbound.entries.len() == inbound.entries.capacity() {
+        if inbound.spare_entries.capacity() > inbound.entries.capacity() {
+            let mut spare = core::mem::take(&mut inbound.spare_entries);
+            spare.append(&mut inbound.entries);
+            inbound.entries = spare;
+        } else {
+            let capacity = inbound.entries.capacity();
+            compact_full_mailbox(&mut inbound.entries, cpu_id, capacity);
+        }
     }
     assert!(
-        inbound.len() < target.queue_capacity,
+        inbound.entries.len() < inbound.entries.capacity(),
         "preallocated scheduler mailbox capacity exhausted"
     );
-    inbound.push_back(entry);
+    inbound.entries.push_back(entry);
     drop(inbound);
     // Sender 不读取远端 current/runqueue，也不强置 reschedule。目标在安全点接管 mailbox，
     // 使用自己已计费的 current 与 Ready root 裁决；缺失时跨服务 wake 可被拖到下一 10 ms tick。

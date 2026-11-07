@@ -8,11 +8,7 @@ fn processor_for_cpu(cpu: CpuId) -> &'static PerCpuProcessor {
 #[inline(always)]
 fn publish(cpu: CpuId) {
     let slot = processor_for_cpu(cpu);
-    let previous = slot.ready_entries.fetch_add(1, Ordering::Relaxed);
-    assert!(
-        previous < slot.queue_capacity,
-        "Ready membership exceeds fixed-stack capacity"
-    );
+    slot.ready_entries.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 消费线性 Ready token 并提交唯一 per-CPU logical-load projection。

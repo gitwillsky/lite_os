@@ -812,9 +812,13 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         diagnostic_port = source.get("DIAGNOSTIC_PORT", "2222")
         if diagnostic_port != "0" and (not diagnostic_port.isdecimal() or not 1024 <= int(diagnostic_port) <= 65535):
             raise RuntimeError("DIAGNOSTIC_PORT must be 0 or a local TCP port from 1024 to 65535")
-        build_kernel(environment)
-        build_bootloader(environment)
         paths = target_paths(environment)
+
+        def synchronize_gui() -> None:
+            build_kernel(environment)
+            build_bootloader(environment)
+            sync_userland(environment)
+
         run_utm_gui(
             kernel=paths["boot"],
             kernel_elf=paths["kernel"],
@@ -822,7 +826,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
-            synchronize=lambda: sync_userland(environment),
+            synchronize=synchronize_gui,
             kernel_arguments="liteos.driver_update=1" if driver_update == "1" else "",
             usb_passthrough=usb_passthrough == "1",
             diagnostic_port=int(diagnostic_port) or None,
@@ -832,8 +836,9 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         run_qemu("gdb", environment)
         return
     if scope == "run-agent-development":
-        prepare_agent_development(environment)
         source = os.environ if environment is None else environment
+        if target_from_environment(source).arch != "aarch64":
+            raise RuntimeError("Agent development currently supports only ARCH=aarch64")
         paths = target_paths(environment)
         run_utm_gui(
             kernel=paths["boot"],
@@ -842,6 +847,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("AGENT_QEMU_MEMORY", "6G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-agent-development-serial.log",
+            synchronize=lambda: prepare_agent_development(environment),
             kernel_arguments="",
         )
         return

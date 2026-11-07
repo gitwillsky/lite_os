@@ -239,6 +239,46 @@ impl Icons {
         )
     }
 
+    /// 在 `work_area` 内按网格移动选择。方向是单轴的一格偏移。
+    /// 无选择时返回最左列的第一个项目，到达边缘时保留当前项。
+    pub fn step(
+        &self,
+        current: Option<usize>,
+        direction: (i32, i32),
+        work_area: (i32, i32),
+    ) -> Option<usize> {
+        let (width, height) = (work_area.0 - ORIGIN.0, work_area.1 - ORIGIN.1);
+        let visible = |&(column, row): &(i32, i32)| {
+            i64::from(column) * i64::from(self.cell.0) < i64::from(width)
+                && i64::from(row) * i64::from(self.cell.1) < i64::from(height)
+        };
+        let candidates = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| visible(cell));
+        let Some((index, &(column, row))) = current
+            .and_then(|index| self.cells.get(index).map(|cell| (index, cell)))
+            .filter(|(_, cell)| visible(cell))
+        else {
+            return candidates.min_by_key(|(_, cell)| **cell).map(|(i, _)| i);
+        };
+        candidates
+            .filter_map(|(i, &(x, y))| {
+                let (dx, dy) = (x - column, y - row);
+                if dx * direction.0 + dy * direction.1 <= 0 {
+                    return None;
+                }
+                // 从相邻格的中心比较距离，允许跨过空格和不齐的列。
+                let x = i64::from(dx - direction.0) * i64::from(self.cell.0);
+                let y = i64::from(dy - direction.1) * i64::from(self.cell.1);
+                Some((x * x + y * y, i))
+            })
+            .min()
+            .map(|(_, i)| i)
+            .or(Some(index))
+    }
+
     /// 把图标拖放到屏幕位置 `center`（图标中心）：落在被占用的格子上则选最近的空格；保存新位置。
     ///
     /// # Errors

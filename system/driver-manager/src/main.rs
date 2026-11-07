@@ -31,6 +31,7 @@ use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, Status, rights, signals};
 use native_runtime::{Channel, Event, Startup, Vmo};
 
+// OWNER: driver-manager 入口发布本映像的换版角色和协议代际，component-manager 在装载前校验。
 // SAFETY: 链接脚本将独立 ELF note 保留于只读段，装载前可校验角色与协议代际。
 #[used]
 #[unsafe(link_section = ".note.liteos.lifecycle")]

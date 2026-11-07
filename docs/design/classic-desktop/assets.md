@@ -6,11 +6,30 @@ Windows 2000 Professional SP4 简中 ISO。ISO、原始 PE、全部导出资源�
 
 `scripts/extract_windows2000_assets.py` 拥有提取、转换和发布；`scripts/classic_assets.py` 只校验并返回
 受版本管理的产品清单。不存在本地覆盖、原创默认素材或替代字体的选择分支。任何必需文件缺失、损坏或
-未登记冗余文件都会使构建失败。导入操作见[构建与验证](../../development/build-and-verify.md#经典桌面素材导入)。
+未登记冗余文件都会使构建失败。
 
 `manifest.json` 记录 ISO 名称、字节数、SHA256、语言、工具版本，以及逐产物字节数、SHA256、来源资源号和转换方式。
 只发布当前消费者需要的原生尺寸；不提交 ICO/PNG/BMP 三套重复表示，不保留无调用者的素材，也不生成伪造 64px 原图。
 图标清单与尺寸由导入器的 `ICONS` / `ICON_SIZES` 拥有；新增消费者时在此入口增加明确的 ISO 资源映射。
+
+## 导入与校验
+
+只有更新素材时需要宿主离线工具和本地 ISO。
+
+```bash
+source ~/.zshrc
+brew install sevenzip cabextract icoutils
+python3 -m venv .local/tools/classic-assets
+.local/tools/classic-assets/bin/pip install Pillow==13.0.0
+.local/tools/classic-assets/bin/python scripts/extract_windows2000_assets.py
+python3 scripts/extract_windows2000_assets.py --check
+```
+
+ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pack 4 CHS.iso`。
+导入器只读取 ISO/PE 数据，将完整提取结果保留在 `.local/inputs/windows2000/assets/`，
+只转换并发布产品依赖到 `assets/classic/`，同步删除旧素材。提取配方改变时使用新的 `--output` 目录。
+提交生成的产品文件与 manifest；不提交 ISO、DLL、中间 PNG 或无引用的资源。
+`--check` 无需 ISO、Pillow 和外部提取工具。普通构建与开发镜像同步使用同一份清单，资源内容计入构建及同步指纹。
 
 ## ISO 身份与资源映射
 

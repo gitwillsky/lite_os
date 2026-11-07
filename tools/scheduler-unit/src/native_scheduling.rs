@@ -144,9 +144,11 @@ mod tests {
         let mut policy = entity.policy.lock();
         policy.begin(0);
         policy.finish(100);
+        assert_eq!(policy.runtime_on_cpu_us(), 100);
         policy.vruntime = 101_000 * 1024;
         policy.rebase(100_000 * 1024, 10_000 * 1024);
         assert_eq!(policy.vruntime, 11_000 * 1024);
+        assert_eq!(policy.runtime_on_cpu_us(), 0);
         policy.rebase(10_000 * 1024, 100_000 * 1024);
         assert_eq!(policy.vruntime, 101_000 * 1024);
         assert_eq!(policy.total_runtime_us(), 100);
@@ -159,6 +161,10 @@ mod tests {
         policy.rebase(100_000 * 1024, 10_000 * 1024);
         policy.place_waking(10_000 * 1024, 1000);
         assert_eq!(policy.vruntime, 9000 * 1024);
+        policy.begin(500);
+        policy.finish(525);
+        assert_eq!(policy.runtime_on_cpu_us(), 25);
+        assert_eq!(policy.total_runtime_us(), 125);
     }
     #[test]
     fn waking_credit_is_bounded_and_never_charged_as_cpu_runtime() {

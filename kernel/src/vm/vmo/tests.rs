@@ -61,9 +61,13 @@ fn snapshot_retirement_cpu_cost() {
 
 #[test]
 fn fork_exit_churn_releases_hidden_ancestors() {
-    let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
-    parent.write(0, &[37]).unwrap();
+    let parent = Vmo::create((4 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
+    for index in 0..3 {
+        parent.write((index * PAGE_SIZE) as u64, &[37]).unwrap();
+    }
     for _ in 0..64 {
+        let original = byte(&parent, 0);
+        let changed = original ^ 1;
         let child = parent
             .create_child(0, parent.size(), ChildKind::Snapshot)
             .unwrap();
@@ -71,10 +75,14 @@ fn fork_exit_churn_releases_hidden_ancestors() {
             Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
             _ => panic!("snapshot must freeze the original contents"),
         };
-        child.write(0, &[91]).unwrap();
-        assert_eq!(byte(&parent, 0), 37);
+        child.write(PAGE_SIZE as u64, &[91]).unwrap();
+        parent.write(0, &[changed]).unwrap();
+        parent.write((3 * PAGE_SIZE) as u64, &[17]).unwrap();
+        assert_eq!(byte(&child, 0), original);
         drop(child);
-        assert_eq!(byte(&parent, 0), 37);
+        assert_eq!(byte(&parent, 0), changed);
+        assert_eq!(byte(&parent, PAGE_SIZE as u64), 37);
+        assert_eq!(byte(&parent, (3 * PAGE_SIZE) as u64), 17);
         assert!(
             hidden.upgrade().is_none(),
             "exited child retained a hidden ancestor"

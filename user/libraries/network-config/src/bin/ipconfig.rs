@@ -1,6 +1,6 @@
 //! Windows 2000 风格的 IP 配置与 DHCP 租约操作。当前状态和租约由 netcfg 提供。
 use netcfg_protocol::{DhcpAction, Method};
-use network_config::{Link, LinkState, ethernet_links_with_settings};
+use network_config::{Link, LinkState, ethernet_links_with_settings, format_lease_time};
 use std::{
     io::{self, Write},
     net::Ipv4Addr,
@@ -13,21 +13,6 @@ fn address(value: Ipv4Addr) -> String {
     } else {
         value.to_string()
     }
-}
-
-fn lease_date(unix: i64) -> String {
-    let local = calendar::zone::to_local(unix);
-    let date = calendar::civil_from_days(local.div_euclid(86_400));
-    let seconds = local.rem_euclid(86_400);
-    format!(
-        "{}年{}月{}日 {:02}:{:02}:{:02}",
-        date.year,
-        date.month,
-        date.day,
-        seconds / 3_600,
-        seconds / 60 % 60,
-        seconds % 60
-    )
 }
 
 fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
@@ -132,8 +117,10 @@ fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
                 writeln!(output, "                                     {server}")?;
             }
             if let Some(lease) = interface.lease {
-                let obtained = lease_date(lease.obtained_at);
-                let expires = lease.expires_at.map_or_else(|| "无限期".into(), lease_date);
+                let obtained = format_lease_time(lease.obtained_at);
+                let expires = lease
+                    .expires_at
+                    .map_or_else(|| "无限期".into(), format_lease_time);
                 writeln!(output, "        获得租约的时间  . . . . . . . : {obtained}")?;
                 writeln!(output, "        租约过期的时间  . . . . . . . : {expires}")?;
             }

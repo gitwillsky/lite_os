@@ -20,7 +20,7 @@
 1. Microsoft Learn 的 Win32 文档：`GetSysColor`、`GetSystemMetrics`、`SystemParametersInfo`、`DrawEdge`、
    `DrawFrameControl`、`NONCLIENTMETRICS` 等 API 的语义与默认值说明。
 2. 用户提供的 Windows 2000 简中 SP4 安装介质与静态资源。
-   素材来源与映射见 [assets.md](assets.md)，操作见[构建与验证](../../development/build-and-verify.md#经典桌面素材导入)。
+   素材来源与映射见 [assets.md](assets.md)，操作见[导入与校验](assets.md#导入与校验)。
 
 ## 置信度
 

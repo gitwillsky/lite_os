@@ -1,6 +1,6 @@
 use alloc::collections::BinaryHeap;
 
-/// 启动期预留完整 backing、运行期只做原地 heap mutation 的有界容器。
+/// backing 由线程创建阶段准备，调度阶段只做原地 mutation 或采用准备好的空容器。
 ///
 /// `make_room` 把昂贵的 retain 隐藏在 capacity-pressure seam 后；只要已有空间，
 /// predicate 不会被调用。`discard_invalid_roots` 只维护调度可见的 heap minimum，
@@ -10,6 +10,13 @@ pub(super) struct PreallocatedHeap<T: Ord> {
 }
 
 impl<T: Ord> PreallocatedHeap<T> {
+    /// 创建尚未准备 backing 的空队列，不分配。
+    pub(super) const fn new() -> Self {
+        Self {
+            entries: BinaryHeap::new(),
+        }
+    }
+
     /// 构造运行期无需扩容的空 heap。
     ///
     /// # Parameters
@@ -20,9 +27,23 @@ impl<T: Ord> PreallocatedHeap<T> {
     ///
     /// 成功返回完整预留的 heap；allocator OOM 返回错误。
     pub(super) fn try_with_capacity(capacity: usize) -> Result<Self, ()> {
-        let mut entries = BinaryHeap::new();
-        entries.try_reserve_exact(capacity).map_err(|_| ())?;
-        Ok(Self { entries })
+        let mut heap = Self::new();
+        heap.entries.try_reserve_exact(capacity).map_err(|_| ())?;
+        Ok(heap)
+    }
+
+    /// 是否能直接插入而无需更换 backing 或移除过期条目。
+    pub(super) fn has_room(&self, additional: usize) -> bool {
+        additional <= self.entries.capacity() - self.entries.len()
+    }
+
+    /// 采用创建线程时预留的更大空容器，保留所有 entry 的排序键。
+    pub(super) fn grow(&mut self, spare: Self) {
+        assert!(spare.entries.is_empty() && spare.entries.capacity() > self.entries.capacity());
+        let mut replacement = spare.entries.into_vec();
+        let mut previous = core::mem::take(&mut self.entries).into_vec();
+        replacement.append(&mut previous);
+        self.entries = BinaryHeap::from(replacement);
     }
 
     /// 在不分配的前提下保证 `additional` 个空 slot。
@@ -38,7 +59,7 @@ impl<T: Ord> PreallocatedHeap<T> {
     #[inline(always)]
     pub(super) fn make_room(&mut self, additional: usize, keep: impl FnMut(&T) -> bool) -> usize {
         assert!(additional <= self.entries.capacity());
-        if additional <= self.entries.capacity() - self.entries.len() {
+        if self.has_room(additional) {
             return 0;
         }
         compact_for_capacity(&mut self.entries, additional, keep)

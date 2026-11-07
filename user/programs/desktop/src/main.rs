@@ -567,24 +567,12 @@ impl Desktop {
                 let (_, x, y) = self.pointer;
                 match &self.overlay {
                     Some((_, Overlay::Menu(menu))) if !pressed => {
-                        if menu.hit(x, y).is_some_and(|i| menu.items[i].disabled) {
-                            return Ok(());
-                        }
-                        let action = menu.hit(x, y).map(|i| menu.items[i].action);
-                        let action = match action {
-                            // 选择必须由仍持有键盘焦点的来源发送，关闭菜单后焦点可能已归还其他客户端。
-                            Some(
-                                action @ (popups::Action::FileSelection { .. }
-                                | popups::Action::PasteFiles),
-                            ) => {
-                                self.perform(display, action)?;
-                                None
+                        match menu.hit(x, y).map(|index| &menu.items[index]) {
+                            Some(item) if !item.disabled => {
+                                self.activate_context_item(display, item.action)?;
                             }
-                            action => action,
-                        };
-                        self.close_overlay(display)?;
-                        if let Some(action) = action {
-                            self.perform(display, action)?;
+                            None => self.close_overlay(display)?,
+                            _ => {}
                         }
                     }
                     Some((_, Overlay::Volume(panel))) => {
@@ -605,8 +593,25 @@ impl Desktop {
             EventKind::Key(key) if key.pressed => {
                 if key.code == 1 {
                     self.close_overlay(display)?;
-                } else if matches!(self.overlay, Some((_, Overlay::Volume(_)))) {
-                    self.volume.key(key.code);
+                } else {
+                    match &mut self.overlay {
+                        Some((_, Overlay::Volume(_))) => self.volume.key(key.code),
+                        Some((_, Overlay::Menu(menu))) => match key.code {
+                            103 | 108 => menu.step(key.code == 108),
+                            28 if !key.repeat => {
+                                let action = menu
+                                    .hover
+                                    .map(|index| &menu.items[index])
+                                    .filter(|item| !item.disabled)
+                                    .map(|item| item.action);
+                                if let Some(action) = action {
+                                    self.activate_context_item(display, action)?;
+                                }
+                            }
+                            _ => {}
+                        },
+                        None => {}
+                    }
                 }
             }
             EventKind::Close | EventKind::Focus(false) => self.close_overlay(display)?,
@@ -615,23 +620,63 @@ impl Desktop {
         Ok(())
     }
 
-    /// 右键：在任务栏/桌面的命中区域上弹出菜单。`local` 是指针在该表面内的位置。
+    fn activate_context_item(
+        &mut self,
+        display: &mut Display,
+        action: popups::Action,
+    ) -> io::Result<()> {
+        // 剪贴板操作需要菜单仍持有焦点。其余操作先关闭菜单，再启动目标。
+        if matches!(
+            action,
+            popups::Action::FileSelection { .. } | popups::Action::PasteFiles
+        ) {
+            self.perform(display, action)?;
+            self.close_overlay(display)
+        } else {
+            self.close_overlay(display)?;
+            self.perform(display, action)
+        }
+    }
+
+    /// 右键使用指针命中项，键盘使用当前选中项和它的网格位置。
     fn context_menu(
         &mut self,
         display: &mut Display,
         art: &mut paint::Art,
         window: WindowId,
+        keyboard: bool,
     ) -> io::Result<()> {
         let Some(c) = display.configuration(window) else {
             return Ok(());
         };
-        let (_, x, y) = self.pointer;
-        let hit = paint::areas(self, display, window, c).iter().position(|r| {
-            x >= f64::from(r.x)
-                && x < f64::from(r.right())
-                && y >= f64::from(r.y)
-                && y < f64::from(r.bottom())
-        });
+        let (_, pointer_x, pointer_y) = self.pointer;
+        let (x, y, hit) = if keyboard {
+            let (x, y) = self.selected.map_or((0, 0), |index| {
+                let cell = self.icons.rect(index);
+                (cell.x + cell.width / 2, cell.bottom())
+            });
+            (
+                f64::from(x.clamp(0, c.width)),
+                f64::from(y.clamp(0, c.height)),
+                self.selected,
+            )
+        } else if window == self.background {
+            let expanded = self
+                .selected
+                .filter(|_| display.keyboard_focus() == Some(window));
+            let hit = art
+                .icon_at(&self.icons, c.scale, (pointer_x, pointer_y), expanded)?
+                .map(|(index, _)| index);
+            (pointer_x, pointer_y, hit)
+        } else {
+            let hit = paint::areas(self, display, window, c).iter().position(|r| {
+                pointer_x >= f64::from(r.x)
+                    && pointer_x < f64::from(r.right())
+                    && pointer_y >= f64::from(r.y)
+                    && pointer_y < f64::from(r.bottom())
+            });
+            (pointer_x, pointer_y, hit)
+        };
         let (screen, origin) = if window == self.taskbar {
             let screen = Self::screen(display, self.background);
             (screen, (x as i32, screen.1 - TASKBAR_HEIGHT + y as i32))
@@ -913,7 +958,9 @@ impl Desktop {
             && let Some(configuration) = display.configuration(window)
         {
             let icon = &self.icons.items[index];
-            let height = art.bitmap(&icon.art).map_or(32, classic_ui::Bitmap::height);
+            let height = art
+                .desktop_icon_bitmap(icon, self.icons.trash_full)
+                .map_or(32, classic_ui::Bitmap::height);
             let rect = classic_ui::large_icon_edit_rect(self.icons.rect(index), height);
             match event.kind {
                 EventKind::Key(key) if key.pressed => {
@@ -1046,15 +1093,29 @@ impl Desktop {
                     }
                     return Ok(());
                 }
-                let hit = paint::areas(self, display, window, c).iter().position(|r| {
-                    self.pointer.1 >= f64::from(r.x)
-                        && self.pointer.1 < f64::from(r.right())
-                        && self.pointer.2 >= f64::from(r.y)
-                        && self.pointer.2 < f64::from(r.bottom())
-                });
-                if !pressed && hit.is_none() && Some(window) == self.menu {
-                    self.toggle_menu(display)?;
-                }
+                let icon_hit = if window == self.background {
+                    let expanded = self
+                        .selected
+                        .filter(|_| display.keyboard_focus() == Some(window));
+                    art.icon_at(
+                        &self.icons,
+                        c.scale,
+                        (self.pointer.1, self.pointer.2),
+                        expanded,
+                    )?
+                } else {
+                    None
+                };
+                let hit = if window == self.background {
+                    icon_hit.map(|(index, _)| index)
+                } else {
+                    paint::areas(self, display, window, c).iter().position(|r| {
+                        self.pointer.1 >= f64::from(r.x)
+                            && self.pointer.1 < f64::from(r.right())
+                            && self.pointer.2 >= f64::from(r.y)
+                            && self.pointer.2 < f64::from(r.bottom())
+                    })
+                };
                 let point = (self.pointer.1 as i32, self.pointer.2 as i32);
                 let drag = (!pressed).then(|| self.drag.take()).flatten();
                 if pressed {
@@ -1170,6 +1231,7 @@ impl Desktop {
                             self.clicked = Some(ItemClick::new((window, index), point, now));
                             let modifiers = display.keyboard_modifiers();
                             if drag.is_some_and(|drag| drag.was_selected && drag.index == index)
+                                && icon_hit == Some((index, true))
                                 && !modifiers.shift
                                 && !modifiers.control
                                 && !modifiers.alt
@@ -1177,13 +1239,7 @@ impl Desktop {
                                 && let Some(icon) = self.icons.items.get(index)
                                 && matches!(icon.target, icons::Target::Path(_))
                             {
-                                let label =
-                                    art.icon_label_rect(c.scale, self.icons.rect(index), icon)?;
-                                if (label.x..label.right()).contains(&point.0)
-                                    && (label.y..label.bottom()).contains(&point.1)
-                                {
-                                    self.rename_click = Some((index, now + ITEM_DOUBLE_CLICK));
-                                }
+                                self.rename_click = Some((index, now + ITEM_DOUBLE_CLICK));
                             }
                         }
                     }
@@ -1200,6 +1256,39 @@ impl Desktop {
                         }
                         1 if key.modifiers.control => self.toggle_menu(display)?,
                         19 if key.modifiers.super_key => self.dialog(display, Kind::Run)?,
+                        103 | 105 | 106 | 108
+                            if window == self.background
+                                && self.drag.is_none()
+                                && !key.modifiers.shift
+                                && !key.modifiers.control
+                                && !key.modifiers.alt
+                                && !key.modifiers.super_key =>
+                        {
+                            let direction = match key.code {
+                                103 => (0, -1),
+                                105 => (-1, 0),
+                                106 => (1, 0),
+                                _ => (0, 1),
+                            };
+                            let (width, height) = Self::screen(display, window);
+                            self.selected = self.icons.step(
+                                self.selected,
+                                direction,
+                                (width, height - TASKBAR_HEIGHT),
+                            );
+                            self.clicked = None;
+                        }
+                        68 | 127 | 139
+                            if window == self.background
+                                && self.drag.is_none()
+                                && !key.repeat
+                                && !key.modifiers.control
+                                && !key.modifiers.alt
+                                && !key.modifiers.super_key
+                                && key.modifiers.shift == (key.code == 68) =>
+                        {
+                            self.context_menu(display, art, window, true)?;
+                        }
                         45..=47
                             if window == self.background
                                 && !key.repeat
@@ -1253,7 +1342,7 @@ impl Desktop {
                 code: 0x111,
                 pressed: false,
                 ..
-            } if Some(window) != self.menu => self.context_menu(display, art, window)?,
+            } if Some(window) != self.menu => self.context_menu(display, art, window, false)?,
             EventKind::Close if Some(window) == self.menu => self.toggle_menu(display)?,
             _ => {}
         }
