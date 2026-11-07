@@ -682,19 +682,26 @@ impl BlockDevice for VirtIOBlockDevice {
     }
 
     fn transfer_batch(&self, requests: &[BlockRequest<'_>]) -> Result<(), BlockError> {
-        // 1. 先校验整批并构造 DMA 视图：无效请求在任何请求发布之前失败。
-        let mut payloads: Vec<DmaSlice<'_>> = Vec::new();
+        // 1. 先校验并构造 DMA 视图；记录无效项，但不能因此跳过批内其他有效请求。
+        let mut payloads: Vec<Option<DmaSlice<'_>>> = Vec::new();
+        let mut first_error = None;
         payloads
             .try_reserve_exact(requests.len())
             .map_err(|_| BlockError::OutOfMemory)?;
         for request in requests {
-            payloads.push(self.payload(
+            match self.payload(
                 request.operation,
                 request.first_block,
                 request.blocks,
                 request.buffer,
                 request.buffer_offset,
-            )?);
+            ) {
+                Ok(payload) => payloads.push(Some(payload)),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    payloads.push(None);
+                }
+            }
         }
         // 2. 并发提交：自己的在途请求占满容量时先收割最老的一个。若只靠阻塞等待容量，
         //    自己持有的 slot/credit 在 finish 之前不会归还，会自我死锁。
@@ -703,8 +710,8 @@ impl BlockDevice for VirtIOBlockDevice {
         inflight
             .try_reserve(self.slots.len().min(requests.len()))
             .map_err(|_| BlockError::OutOfMemory)?;
-        let mut first_error = None;
         for (request, payload) in requests.iter().zip(payloads) {
+            let Some(payload) = payload else { continue };
             let descriptors = 2 + payload.segment_count();
             let identity = loop {
                 match self.try_reserve(descriptors) {

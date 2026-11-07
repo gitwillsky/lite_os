@@ -317,6 +317,7 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   块协议升级 LBLOCK04：控制仅处理登记/派生/取得队列；读写与 flush 经共享 SQ/CQ，删除 TRANSFER/TRANSFER_BATCH RPC。
   环与 credits 表连接时准备，直接写固定原子记录、批量完成；完整 request identity 防止槽复用 ABA，全部完成后才归还借用缓冲。
   同一弹性池接收控制和 Event，客户端由当前调用者分派完成；无新增常驻转发线程。
+  提交可覆盖全部协商容量，领取保持 64 项有界窗口；范围/分区、远端和 virtio 均在批内记录无效项并完成其余有效项。
   flush 封闭后续批次并等待此前 active DMA；协议/source 失败先排空在途 handler，最后 SessionDrop 发布 closed。
   会话结束也退休目录观测句柄，避免死亡服务被观测引用保活、控制 call 永久等回复。
   双架构静态检查与运行验收分开；尚未运行块 I/O、环绕/断开或性能门禁，不把源码接通记作运行已通过。
@@ -337,6 +338,8 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   扩展既有页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
 - M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
   并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
+  块数据面虽已用共享环，provider 仍为同步批接口，最多 8 个 worker 各等 64 项；极深队列仍受该并发量约束。
+  仍需将设备完成并入 reactor，以 1–2 个线程保留完整队列并发；不以共享环接通替代这部分完成。
   内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；
   零初始化扫描不能可靠识别零写入。32 KiB 槽位保持不变；最终工作负载采样与深栈帧审查后再决定是否缩小，不把测量留给用户补做。
 - M5 已实现待运行验收：bootfs 文件内容按页对齐（打包器把填充放进路径名字段，标准 cpio 读取器兼容）；`Image::from_vmo`
@@ -381,5 +384,5 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
   P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
 
-分代索引的双架构 kernel 与 kernel-unit Clippy 已通过；共享块环的服务/依赖源码验证在本轮收口。
+分代索引的双架构 kernel 与 kernel-unit Clippy 已通过；共享块环及其 driver-host/ext4/fshost/linuxd 依赖的双架构 Clippy 已通过。
 接口派生清单由唯一生成器更新。没有运行本轮测试、基准、来宾采样或 `make verify`；全部计划实现后统一运行验收。

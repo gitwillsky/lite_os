@@ -370,7 +370,7 @@ fn serve_loop(pool: &Arc<Pool>) {
             Ok(work) => work,
             Err(native_abi::ERR_TIMED_OUT) => {
                 let mut state = pool.state.lock();
-                if state.workers > 1 {
+                if state.stopped || state.workers > 1 {
                     state.workers -= 1;
                     state.idle -= 1;
                     return;
@@ -378,7 +378,10 @@ fn serve_loop(pool: &Arc<Pool>) {
                 continue;
             }
             Err(_) => {
-                pool.state.lock().stopped = true;
+                let mut state = pool.state.lock();
+                state.stopped = true;
+                state.workers -= 1;
+                state.idle -= 1;
                 return;
             }
         };
@@ -386,7 +389,7 @@ fn serve_loop(pool: &Arc<Pool>) {
         let grow = {
             let mut state = pool.state.lock();
             state.idle -= 1;
-            let grow = state.idle == 0 && state.workers < pool.max;
+            let grow = !state.stopped && state.idle == 0 && state.workers < pool.max;
             if grow {
                 state.workers += 1;
                 state.idle += 1;

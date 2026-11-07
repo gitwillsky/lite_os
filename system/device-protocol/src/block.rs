@@ -101,13 +101,22 @@ impl BlockDevice for BlockRange {
         translated
             .try_reserve_exact(requests.len())
             .map_err(|_| BlockError::OutOfMemory)?;
+        let mut first_error = None;
         for request in requests {
-            translated.push(BlockRequest {
-                first_block: self.translate(request.first_block, request.blocks)?,
-                ..*request
-            });
+            match self.translate(request.first_block, request.blocks) {
+                Ok(first_block) => translated.push(BlockRequest {
+                    first_block,
+                    ..*request
+                }),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
         }
-        self.device.transfer_batch(&translated)
+        if let Err(error) = self.device.transfer_batch(&translated) {
+            first_error.get_or_insert(error);
+        }
+        first_error.map_or(Ok(()), Err)
     }
     fn read_block_ranges(&self, ranges: &mut [(usize, &mut [u8])]) -> Result<(), BlockError> {
         let block_size = self.block_size();
@@ -300,47 +309,58 @@ pub fn connect(mut announcement: OpenedDevice) -> Result<Arc<RemoteBlock>, Statu
     from_description(channel, announcement.reader())
 }
 impl RemoteBlock {
-    /// 已登记数据只进入共享环，控制连接只负责连接寿命；栈内描述符不再经 RPC 编解码。
+    /// 已登记数据只进入共享环，控制连接只负责连接寿命；描述符直接从输入写入共享槽。
     fn send_batch(&self, requests: &[BlockRequest<'_>]) -> Result<(), BlockError> {
-        for request in requests {
+        let valid = |request: &BlockRequest<'_>| {
             let owner: &dyn core::any::Any = request.buffer;
-            let buffer = owner
-                .downcast_ref::<RemoteBuffer>()
-                .ok_or(BlockError::InvalidBlock)?;
-            if buffer.session.as_ptr() != Arc::as_ptr(&self.session)
-                || request.blocks == 0
-                || request.blocks > self.max_transfer_blocks
-                || request
-                    .first_block
-                    .checked_add(request.blocks as u64)
-                    .is_none_or(|end| end > self.block_count)
-            {
-                return Err(BlockError::InvalidBlock);
+            owner.downcast_ref::<RemoteBuffer>().is_some_and(|buffer| {
+                buffer.session.as_ptr() == Arc::as_ptr(&self.session)
+                    && request.blocks != 0
+                    && request.blocks <= self.max_transfer_blocks
+                    && request
+                        .first_block
+                        .checked_add(request.blocks as u64)
+                        .is_some_and(|end| end <= self.block_count)
+            })
+        };
+        let count = requests.iter().filter(|request| valid(request)).count();
+        let mut first_error = (count != requests.len()).then_some(BlockError::InvalidBlock);
+        if count != 0 {
+            // 预校验后重用输入迭代器，不再分配/清零一个与描述符数等长的中间数组。
+            let mut selected = requests.iter().filter(|request| valid(request));
+            let result = self
+                .session
+                .channel()
+                .map_err(decode_error)
+                .and_then(|_channel| {
+                    self.session
+                        .queue
+                        .transfer(count, |_| {
+                            let request =
+                                selected.next().expect("validated immutable block request");
+                            let owner: &dyn core::any::Any = request.buffer;
+                            let buffer = owner
+                                .downcast_ref::<RemoteBuffer>()
+                                .expect("buffer identity validated before publication");
+                            [
+                                0,
+                                match request.operation {
+                                    BlockOperation::Read => queue::READ,
+                                    BlockOperation::Write => queue::WRITE,
+                                },
+                                buffer.id,
+                                request.first_block,
+                                request.blocks as u64,
+                                request.buffer_offset,
+                            ]
+                        })
+                        .map_err(decode_error)
+                });
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
             }
         }
-        // 保活实际 channel 句柄；会话退休后不再接受新的提交，已有调用继续等待各自完成。
-        let _channel = self.session.channel().map_err(decode_error)?;
-        self.session
-            .queue
-            .transfer(requests.len(), |index| {
-                let request = requests[index];
-                let owner: &dyn core::any::Any = request.buffer;
-                let buffer = owner
-                    .downcast_ref::<RemoteBuffer>()
-                    .expect("buffer identity validated before publication");
-                [
-                    0,
-                    match request.operation {
-                        BlockOperation::Read => queue::READ,
-                        BlockOperation::Write => queue::WRITE,
-                    },
-                    buffer.id,
-                    request.first_block,
-                    request.blocks as u64,
-                    request.buffer_offset,
-                ]
-            })
-            .map_err(decode_error)
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -401,7 +421,7 @@ impl BlockDevice for RemoteBlock {
     }
     fn transfer_batch(&self, requests: &[BlockRequest<'_>]) -> Result<(), BlockError> {
         let mut first_error = None;
-        for chunk in requests.chunks(MAX_BATCH) {
+        for chunk in requests.chunks(self.session.queue.capacity()) {
             let result = self.send_batch(chunk);
             if let Err(error) = result {
                 first_error.get_or_insert(error);

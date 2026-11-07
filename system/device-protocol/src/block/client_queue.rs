@@ -79,6 +79,9 @@ impl ClientQueue {
             changed: AtomicU32::new(0),
         })
     }
+    pub(super) fn capacity(&self) -> usize {
+        self.ring.capacity()
+    }
     fn signal(&self) {
         // 只有本对象持有这些句柄；publish 后的通知不能因内存分配失败而丢失。
         self.ready
@@ -138,10 +141,22 @@ impl ClientQueue {
         count: usize,
         mut record: impl FnMut(usize) -> Request,
     ) -> Result<(), Status> {
-        if count == 0 || count > MAX_BATCH {
+        if count == 0 || count > self.ring.capacity() {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
-        let mut tickets = [0; MAX_BATCH];
+        // 常见 virtqueue 的全部在途身份放栈上；更大的协商容量只在发表前准备一次有界暂存。
+        // 不按服务端每次 64 项的领取窗口截断客户端提交，否则单个调用者无法填满较深的硬件队列。
+        let mut inline = [0; MAX_BATCH * 2];
+        let mut overflow = Vec::new();
+        let tickets = if count <= inline.len() {
+            &mut inline[..count]
+        } else {
+            overflow
+                .try_reserve_exact(count)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            overflow.resize(count, 0);
+            overflow.as_mut_slice()
+        };
         loop {
             let mut state = self.state.lock();
             state.disconnected |= self.ring.closed();

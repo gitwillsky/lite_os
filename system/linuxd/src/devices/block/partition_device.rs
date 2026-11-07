@@ -74,17 +74,25 @@ impl BlockDevice for PartitionDevice {
         translated
             .try_reserve_exact(requests.len())
             .map_err(|_| BlockError::OutOfMemory)?;
+        let mut first_error = None;
         for request in requests {
-            let first = self.translate(
-                usize::try_from(request.first_block).map_err(|_| BlockError::InvalidBlock)?,
-                request.blocks,
-            )?;
-            translated.push(BlockRequest {
-                first_block: first as u64,
-                ..*request
-            });
+            let first = usize::try_from(request.first_block)
+                .map_err(|_| BlockError::InvalidBlock)
+                .and_then(|first| self.translate(first, request.blocks));
+            match first {
+                Ok(first) => translated.push(BlockRequest {
+                    first_block: first as u64,
+                    ..*request
+                }),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
         }
-        self.parent.transfer_batch(&translated)
+        if let Err(error) = self.parent.transfer_batch(&translated) {
+            first_error.get_or_insert(error);
+        }
+        first_error.map_or(Ok(()), Err)
     }
     fn read_block_ranges(&self, ranges: &mut [(usize, &mut [u8])]) -> Result<(), BlockError> {
         let block_size = self.block_size();
@@ -96,7 +104,10 @@ impl BlockDevice for PartitionDevice {
             if !output.len().is_multiple_of(block_size) {
                 return Err(BlockError::InvalidBlock);
             }
-            translated.push((self.translate(*first, output.len() / block_size)?, &mut **output));
+            translated.push((
+                self.translate(*first, output.len() / block_size)?,
+                &mut **output,
+            ));
         }
         self.parent.read_block_ranges(&mut translated)
     }
