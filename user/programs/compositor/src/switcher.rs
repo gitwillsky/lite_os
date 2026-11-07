@@ -107,8 +107,17 @@ pub fn bounds(screen: (i32, i32), scale: i32, switcher: &Switcher) -> Rect {
     )
 }
 
-pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Switcher) {
-    let panel = panel(screen, p.scale(), switcher);
+/// 按物理 `screen` 居中，并以 `origin` 为逻辑画布原点绘制切换面板。
+pub fn paint(
+    p: &mut Painter<'_>,
+    art: &Art,
+    screen: (i32, i32),
+    switcher: &Switcher,
+    origin: (i32, i32),
+) {
+    let mut panel = panel(screen, p.scale(), switcher);
+    panel.x -= origin.0;
+    panel.y -= origin.1;
     let width = panel.width;
     let inner = p.edge(panel, Edge::Raised);
     p.fill(inner, C::ButtonFace);

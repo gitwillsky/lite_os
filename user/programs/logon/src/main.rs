@@ -578,11 +578,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if dirty && display.ready_to_draw(window) {
-            let configuration = display
-                .configuration(window)
-                .ok_or("missing logon configure")?;
-            let pixels = paint::frame(&state, configuration, &mut art)?;
-            display.present(window, &pixels)?;
+            if state.page == Page::Desktop {
+                display.present_solid(window, art.desktop_pixel())?;
+            } else {
+                let configuration = display
+                    .configuration(window)
+                    .ok_or("missing logon configure")?;
+                let pixels = paint::frame(&state, configuration, &mut art)?;
+                display.present(window, &pixels)?;
+            }
             dirty = false;
         }
     }

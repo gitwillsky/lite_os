@@ -13,8 +13,11 @@ use classic_ui::{
     Display, Edit, Event, EventKind, ITEM_DOUBLE_CLICK, ItemClick, KeyboardInteractivity, Layer,
     LayerSettings, ToplevelRequest, WindowId,
 };
+use desktop_entry::file_uris;
 use dialogs::{Dialog, Kind};
+use linux_uapi::shared_memory::MemFd;
 use std::{
+    collections::HashSet,
     io::{self, Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
@@ -38,13 +41,15 @@ struct Drag {
     grab: (i32, i32),
     pos: (i32, i32),
     moved: bool,
+    /// 最近一次移动命中回收站；绘制高亮和释放按钮使用同一判定。
+    recycle: bool,
     /// 按下时该项已选中，释放时点击标签可以请求重命名。
     was_selected: bool,
 }
 
 /// 编辑绑定到原始路径，目录刷新或重新排序不会改到另一项。
 struct Rename {
-    path: PathBuf,
+    operation: desktop_entry::fileops::Rename,
     edit: Edit,
     selecting: bool,
 }
@@ -230,35 +235,77 @@ impl Desktop {
         if edit.text() != name {
             return;
         }
+        let operation = match desktop_entry::fileops::Rename::prepare(path.clone()) {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.message = format!("无法重命名：{error}");
+                return;
+            }
+        };
         edit.select_position(0, false);
         edit.select_position(name.len(), true);
         self.selected = Some(index);
         self.clicked = None;
         self.rename = Some(Rename {
-            path: path.clone(),
+            operation,
             edit,
             selecting: false,
         });
         self.message.clear();
     }
 
+    fn refresh_icons(&mut self) {
+        let selected = self
+            .selected
+            .and_then(|index| self.icons.items.get(index))
+            .map(|icon| icon.target.clone());
+        self.icons.refresh();
+        self.selected = selected.and_then(|target| {
+            self.icons
+                .items
+                .iter()
+                .position(|icon| icon.target == target)
+        });
+        self.clicked = None;
+        self.rename_click = None;
+        self.apps_changed = true;
+        if let Some(rename) = &self.rename {
+            let visible = self.icons.items.iter().any(|icon| {
+                matches!(&icon.target, icons::Target::Path(path) if path == rename.operation.path())
+            });
+            let error = match rename.operation.verify() {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Some(error.to_string()),
+                _ if !visible => Some("正在编辑的项目已不在桌面上，请重新选择。".into()),
+                _ => None,
+            };
+            if let Some(error) = error {
+                self.rename = None;
+                self.selected = None;
+                self.message = format!("无法重命名：{error}");
+            }
+        }
+    }
+
     fn commit_rename(&mut self) {
         let Some(rename) = self.rename.take() else {
             return;
         };
-        match self.icons.rename(&rename.path, rename.edit.text()) {
+        match self.icons.rename(&rename.operation, rename.edit.text()) {
             Ok(path) => {
                 self.message.clear();
-                self.selected = self
-                    .icons
-                    .items
-                    .iter()
-                    .position(|icon| icon.target == icons::Target::Path(path.clone()));
+                self.selected = self.icons.items.iter().position(
+                    |icon| matches!(&icon.target, icons::Target::Path(current) if *current == path),
+                );
                 self.apps_changed = true;
             }
             Err(error) => {
                 self.message = format!("无法重命名：{error}");
-                self.rename = Some(rename);
+                if error.kind() == io::ErrorKind::NotFound {
+                    self.selected = None;
+                    self.refresh_icons();
+                } else {
+                    self.rename = Some(rename);
+                }
             }
         }
     }
@@ -274,17 +321,6 @@ impl Desktop {
         }
     }
 
-    fn recycle_target(&self, point: (f64, f64)) -> bool {
-        self.icons.items.iter().enumerate().any(|(index, icon)| {
-            if icon.target != icons::Target::Place(start::Place::RecycleBin) {
-                return false;
-            }
-            let rect = self.icons.rect(index);
-            (f64::from(rect.x)..f64::from(rect.right())).contains(&point.0)
-                && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&point.1)
-        })
-    }
-
     /// 启动控制面板的某个小程序。
     fn control_panel(&mut self, applet: &str) {
         let mut command = Command::new("/bin/control-panel");
@@ -295,14 +331,27 @@ impl Desktop {
         self.launch(Command::new("/bin/taskmgr"));
     }
     fn launch(&mut self, mut command: Command) {
-        command
-            .env_remove("WAYLAND_SOCKET")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null());
-        match command.spawn() {
-            Ok(child) => self.children.push(child),
-            Err(error) => self.message = format!("无法启动程序: {error}"),
+        command.stdin(Stdio::null());
+        if let Err(error) = self.launch_with_stdin(command) {
+            self.message = format!("无法启动程序: {error}");
         }
+    }
+
+    fn launch_with_stdin(&mut self, mut command: Command) -> io::Result<()> {
+        command.env_remove("WAYLAND_SOCKET").stdout(Stdio::null());
+        self.children.push(command.spawn()?);
+        Ok(())
+    }
+
+    fn recycle_dropped(&mut self, paths: &[PathBuf]) -> io::Result<()> {
+        let payload = file_uris::encode(paths, file_uris::MAX_PATHS)?;
+        // 标准输入携带完整列表。否则接近 URI 字节上限时，argv 的指针与环境会使 exec 返回 E2BIG。
+        let input = MemFd::from_bytes("desktop-recycle", payload.as_bytes())?;
+        let mut command = Command::new("/bin/file-explorer");
+        command
+            .args(["--recycle", "-"])
+            .stdin(Stdio::from(input.as_fd().try_clone_to_owned()?));
+        self.launch_with_stdin(command)
     }
     /// 在资源管理器中打开位置：路径，或 `::my-computer` 这样的虚拟文件夹名。
     fn files(&mut self, place: impl AsRef<std::ffi::OsStr>) {
@@ -470,27 +519,25 @@ impl Desktop {
             }
             Action::NewFolder => match self.icons.new_folder() {
                 Ok(path) => {
-                    self.apps_changed = true;
+                    self.refresh_icons();
                     if let Some(index) = self
                         .icons
                         .items
                         .iter()
-                        .position(|icon| icon.target == icons::Target::Path(path.clone()))
+                        .position(|icon| matches!(&icon.target, icons::Target::Path(current) if *current == path))
                     {
                         self.rename_icon(index);
                     }
                 }
                 Err(error) => self.message = error.to_string(),
             },
-            Action::ArrangeIcons => {
-                if let Err(error) = self.icons.auto_arrange() {
-                    self.message = error.to_string();
-                }
-            }
+            Action::ArrangeIcons => match self.icons.auto_arrange() {
+                Ok(()) => self.refresh_icons(),
+                Err(error) => self.message = error.to_string(),
+            },
             Action::Refresh => {
                 self.apps = installed_programs();
-                self.apps_changed = true;
-                self.icons.refresh();
+                self.refresh_icons();
             }
             Action::Window(id, request) => display.control_toplevel(id, request)?,
         }
@@ -744,8 +791,13 @@ impl Desktop {
         display: &mut Display,
         art: &mut paint::Art,
         event: Event,
+        pending: &mut HashSet<WindowId>,
     ) -> io::Result<()> {
         let window = event.window;
+        let motion = matches!(
+            event.kind,
+            EventKind::PointerEnter { .. } | EventKind::PointerMove { .. }
+        );
         if matches!(
             event.kind,
             EventKind::Button { pressed: true, .. }
@@ -756,20 +808,41 @@ impl Desktop {
         {
             self.rename_click = None;
         }
+        if window == self.background
+            && (matches!(event.kind, EventKind::Focus(false))
+                || matches!(event.kind, EventKind::Key(key) if key.pressed && key.code == 1))
+            && self.drag.take().is_some()
+        {
+            self.armed = None;
+            self.clicked = None;
+            return Ok(());
+        }
         match &event.kind {
             EventKind::FileDragOver { x, y } => {
-                self.drop_hover = window == self.background && self.recycle_target((*x, *y));
-                return display.accept_file_drag(self.drop_hover);
+                let accept = if window == self.background
+                    && let Some(configuration) = display.configuration(window)
+                {
+                    art.recycle_target(&self.icons, configuration.scale, (*x, *y))?
+                } else {
+                    false
+                };
+                if std::mem::replace(&mut self.drop_hover, accept) != accept {
+                    pending.insert(self.background);
+                }
+                return display.accept_file_drag(accept);
             }
             EventKind::FileDragLeave => {
-                self.drop_hover = false;
+                if std::mem::take(&mut self.drop_hover) {
+                    pending.insert(self.background);
+                }
                 return Ok(());
             }
-            EventKind::FilesDropped { x, y, paths } => {
-                if window == self.background && self.recycle_target((*x, *y)) {
-                    let mut command = Command::new("/bin/file-explorer");
-                    command.arg("--recycle").args(paths);
-                    self.launch(command);
+            EventKind::FilesDropped(paths) => {
+                if window == self.background
+                    && let Err(error) = self.recycle_dropped(paths)
+                {
+                    self.message = format!("无法移入回收站：{error}");
+                    pending.insert(window);
                 }
                 return Ok(());
             }
@@ -789,6 +862,9 @@ impl Desktop {
             }
         }
         if self.overlay.as_ref().is_some_and(|(w, _)| *w == window) {
+            if motion {
+                pending.insert(window);
+            }
             return self.overlay_event(display, event);
         }
         if window == self.taskbar {
@@ -810,6 +886,9 @@ impl Desktop {
             }
         }
         if let Some(index) = self.dialogs.iter().position(|d| d.window == window) {
+            if motion {
+                pending.insert(window);
+            }
             match self.dialogs[index].event(display, event)? {
                 dialogs::Action::Close => {
                     display.destroy_window(window)?;
@@ -829,7 +908,7 @@ impl Desktop {
         if window == self.background
             && let Some(rename) = &mut self.rename
             && let Some(index) = self.icons.items.iter().position(
-                |icon| matches!(&icon.target, icons::Target::Path(path) if *path == rename.path),
+                |icon| matches!(&icon.target, icons::Target::Path(path) if path == rename.operation.path()),
             )
             && let Some(configuration) = display.configuration(window)
         {
@@ -874,6 +953,7 @@ impl Desktop {
                     let position =
                         art.icon_edit_hit(configuration.scale, rect, &rename.edit, x as i32)?;
                     rename.edit.select_position(position, true);
+                    pending.insert(window);
                     return Ok(());
                 }
                 EventKind::Button {
@@ -900,18 +980,35 @@ impl Desktop {
                 self.pointer = (window, x, y);
                 if let Some(drag) = &mut self.drag
                     && window == self.background
+                    && drag.pos != (x as i32, y as i32)
                 {
                     drag.pos = (x as i32, y as i32);
                     let start = self.icons.rect(drag.index);
                     drag.moved |= (drag.pos.0 - drag.grab.0 - start.x).abs() > 4
                         || (drag.pos.1 - drag.grab.1 - start.y).abs() > 4;
+                    if drag.moved {
+                        if let Some(configuration) = display.configuration(window) {
+                            drag.recycle = matches!(
+                                self.icons.items[drag.index].target,
+                                icons::Target::Path(_)
+                            ) && art.recycle_target(
+                                &self.icons,
+                                configuration.scale,
+                                (x, y),
+                            )?;
+                        }
+                        pending.insert(window);
+                    }
                 }
                 if Some(window) == self.menu
                     && let Some(c) = display.configuration(window)
                 {
                     let (_, geometry) = self.menu_geometry(c);
-                    if let Some(selection) = start::hit(&geometry, (x as i32, y as i32)) {
+                    if let Some(selection) = start::hit(&geometry, (x as i32, y as i32))
+                        && self.menu_selection != selection
+                    {
                         self.menu_selection = selection;
+                        pending.insert(window);
                     }
                 }
             }
@@ -974,6 +1071,7 @@ impl Desktop {
                                 grab: (pos.0 - rect.x, pos.1 - rect.y),
                                 pos,
                                 moved: false,
+                                recycle: false,
                                 was_selected: self.selected == Some(index),
                             }
                         });
@@ -982,12 +1080,7 @@ impl Desktop {
                 } else if let Some(drag) = drag.as_ref().filter(|d| d.moved) {
                     self.armed = None;
                     self.clicked = None;
-                    if hit.is_some_and(|index| {
-                        window == self.background
-                            && self.icons.items[index].target
-                                == icons::Target::Place(start::Place::RecycleBin)
-                    }) && matches!(self.icons.items[drag.index].target, icons::Target::Path(_))
-                    {
+                    if window == self.background && drag.recycle {
                         self.delete_icon(drag.index, "--recycle");
                     } else if window == self.background {
                         let screen = Self::screen(display, self.background);
@@ -1175,13 +1268,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     state.launch(Command::new("/bin/savedump"));
     let mut dirty = true;
     let mut ready = false;
-    let mut presented = std::collections::HashSet::new();
+    let mut presented = HashSet::new();
     let mut minute = 0;
     let mut last_unix_minute = 0;
     let mut revision = 0;
     // 外部安装器会写入 XDG 应用目录；每秒刷新一次，避免每个输入事件都扫描完整应用树。
     let mut application_poll = Instant::now();
-    let mut pending = std::collections::HashSet::new();
+    // 持续移动鼠标时也按普通空闲循环的频率查目录，避免每个输入批次都查询文件系统。
+    let mut icon_poll = Instant::now();
+    let mut pending = HashSet::new();
     loop {
         // 1. 同批已到达的输入先按顺序交付，再绘制最终状态；逐事件重画全屏会让滑块追赶旧坐标。
         // 2. 每轮至多处理 64 项，持续输入时仍给绘制、外部状态和会话回收执行机会。
@@ -1210,24 +1305,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if matches!(event.kind, EventKind::FrameReady { .. }) {
                 presented.insert(event.window);
             }
-            // 弹出层的 hover/滑块移动只改变该层；重画背景和任务栏会产生无关的全屏分配与提交。
-            if state
-                .overlay
-                .as_ref()
-                .is_some_and(|(id, _)| *id == event.window)
-                && matches!(
-                    event.kind,
-                    EventKind::PointerEnter { .. } | EventKind::PointerMove { .. }
-                )
-            {
-                pending.insert(event.window);
-            } else if !matches!(
+            // 指针移动由命中的交互单独失效，空白背景与托盘提示计时不要求重画桌面。
+            if !matches!(
                 event.kind,
-                EventKind::FrameReady { .. } | EventKind::BufferAvailable
+                EventKind::FrameReady { .. }
+                    | EventKind::BufferAvailable
+                    | EventKind::PointerEnter { .. }
+                    | EventKind::PointerMove { .. }
+                    | EventKind::FileDragOver { .. }
+                    | EventKind::FileDragLeave
+                    | EventKind::FilesDropped(_)
             ) {
                 dirty = true;
             }
-            state.event(&mut display, &mut art, event)?;
+            state.event(&mut display, &mut art, event, &mut pending)?;
         }
         dirty |= state.volume.poll();
         dirty |= state.poll_paste(&mut display);
@@ -1266,30 +1357,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if apps != state.apps {
                 state.apps = apps;
                 if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
-                    state.icons.refresh();
-                    state.selected = None;
-                    state.clicked = None;
-                    state.rename_click = None;
+                    state.refresh_icons();
                 }
                 state.apps_changed = true;
             }
         }
-        if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
-            let target = state
-                .selected
-                .and_then(|index| state.icons.items.get(index))
-                .map(|icon| icon.target.clone());
-            if state.icons.poll() {
-                state.selected = target.and_then(|target| {
-                    state
-                        .icons
-                        .items
-                        .iter()
-                        .position(|icon| icon.target == target)
-                });
-                state.clicked = None;
-                state.rename_click = None;
-                state.apps_changed = true;
+        if icon_poll.elapsed() >= Duration::from_millis(100)
+            && state.overlay.is_none()
+            && state.drag.is_none()
+            && !state.drop_hover
+        {
+            icon_poll = Instant::now();
+            if state.icons.changed() {
+                state.refresh_icons();
             }
         }
         if let Some((index, deadline)) = state.rename_click

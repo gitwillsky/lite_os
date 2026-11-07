@@ -61,7 +61,7 @@ pub fn compose(
     target: &mut DumbBuffer,
     theme: &Theme,
     windows: &[Drawable<'_>],
-    overlay: impl FnOnce(Surface<'_>),
+    overlay: impl FnOnce(Surface<'_>, (i32, i32)),
 ) -> std::io::Result<bool> {
     let (width, height, stride) = (
         target.width() as i32,
@@ -85,6 +85,6 @@ pub fn compose(
         };
         surface.blit_sampled(image, window.rect, window.content.source);
     }
-    overlay(surface);
+    overlay(surface, (0, 0));
     Ok(true)
 }

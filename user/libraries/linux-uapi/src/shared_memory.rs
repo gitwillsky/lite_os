@@ -2,6 +2,7 @@
 
 use std::{
     ffi::CString,
+    fs::File,
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
     ptr::NonNull,
@@ -26,7 +27,7 @@ const F_SEAL_WRITE: i32 = 0x0008;
 
 /// A sized anonymous shared-memory file.
 pub struct MemFd {
-    fd: OwnedFd,
+    file: File,
     len: usize,
 }
 
@@ -46,9 +47,9 @@ impl MemFd {
     ///
     /// `name` 和 `bytes` 只在本次创建中借用；空输入、fd、写入或 sealing 失败返回 io::Error。
     pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<Self> {
-        use std::{fs::File, os::unix::fs::FileExt};
+        use std::os::unix::fs::FileExt;
         let memory = Self::allocate(name, bytes.len())?;
-        File::from(memory.fd.try_clone()?).write_all_at(bytes, 0)?;
+        memory.file.write_all_at(bytes, 0)?;
         #[cfg(target_os = "linux")]
         memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
         Ok(memory)
@@ -68,13 +69,16 @@ impl MemFd {
         if unsafe { raw::ftruncate(fd.as_raw_fd(), len as i64) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { fd, len })
+        Ok(Self {
+            file: File::from(fd),
+            len,
+        })
     }
 
     #[cfg(target_os = "linux")]
     fn seal(&self, seals: i32) -> io::Result<()> {
         // SAFETY: 标准 fcntl F_ADD_SEALS，参数是整数 mask，不传指针。
-        if unsafe { raw::fcntl(self.fd.as_raw_fd(), F_ADD_SEALS, seals) } != 0 {
+        if unsafe { raw::fcntl(self.file.as_raw_fd(), F_ADD_SEALS, seals) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -100,12 +104,12 @@ impl MemFd {
     ///
     /// # Errors
     /// Returns `InvalidInput` before writing anything when a segment exceeds the extent,
-    /// or the first fd duplication/write error.
+    /// or the first write error.
     pub fn write_segments<'a>(
         &self,
         segments: impl IntoIterator<Item = (usize, &'a [u32])>,
     ) -> io::Result<()> {
-        use std::{fs::File, os::unix::fs::FileExt};
+        use std::os::unix::fs::FileExt;
         let segments: Vec<_> = segments.into_iter().collect();
         if segments.iter().any(|(index, words)| {
             index
@@ -118,8 +122,6 @@ impl MemFd {
                 "word segment exceeds memfd",
             ));
         }
-        // One duplicate serves every segment; per-row damage would otherwise dup once per row.
-        let file = File::from(self.fd.try_clone()?);
         for (index, words) in segments {
             // SAFETY: u32 has no padding; all bytes are initialized, and the byte view
             // borrows the immutable input only for write_all_at. u8 requires no alignment.
@@ -131,7 +133,7 @@ impl MemFd {
                     std::mem::size_of_val(words),
                 )
             };
-            file.write_all_at(bytes, index as u64 * 4)?;
+            self.file.write_all_at(bytes, index as u64 * 4)?;
         }
         Ok(())
     }
@@ -139,7 +141,7 @@ impl MemFd {
 
 impl AsFd for MemFd {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.file.as_fd()
     }
 }
 

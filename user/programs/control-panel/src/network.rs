@@ -7,9 +7,11 @@ use liteos_ui::{
     Background, Clock, Event, EventKind, Layout, PropertySheet, Widget, WidgetKind as Kind, state,
 };
 use network_config::LinkState;
-use std::{fs, net::Ipv4Addr, time::Duration};
+use std::{borrow::Cow, fs, net::Ipv4Addr, time::Duration};
 
-const ADDRESS_FIELDS: [&str; 6] = [
+const ADDRESS_FIELDS: [&str; 8] = [
+    "物理地址：",
+    "地址状态：",
     "IP 地址：",
     "子网掩码：",
     "默认网关：",
@@ -18,11 +20,11 @@ const ADDRESS_FIELDS: [&str; 6] = [
     "DHCP 服务器：",
 ];
 
-fn address(value: Ipv4Addr) -> String {
+fn address(value: Ipv4Addr) -> Cow<'static, str> {
     if value.is_unspecified() {
         "—".into()
     } else {
-        value.to_string()
+        value.to_string().into()
     }
 }
 
@@ -34,17 +36,20 @@ fn counters(name: &str) -> Option<[u64; 4]> {
         if interface.trim() != name {
             return None;
         }
-        let fields: Vec<u64> = rest
-            .split_whitespace()
-            .map(str::parse)
-            .collect::<Result<_, _>>()
-            .ok()?;
-        Some([
-            *fields.first()?,
-            *fields.get(8)?,
-            *fields.get(2)?,
-            *fields.get(10)?,
-        ])
+        let mut values = [0; 4];
+        for (index, field) in rest.split_whitespace().enumerate() {
+            match index {
+                0 => values[0] = field.parse().ok()?,
+                8 => values[1] = field.parse().ok()?,
+                2 => values[2] = field.parse().ok()?,
+                10 => {
+                    values[3] = field.parse().ok()?;
+                    return Some(values);
+                }
+                _ => {}
+            }
+        }
+        None
     })
 }
 
@@ -54,7 +59,7 @@ struct Sample {
     speed: Option<u32>,
     seconds: Option<u32>,
     counts: Option<[u64; 4]>,
-    addresses: [String; ADDRESS_FIELDS.len()],
+    addresses: [Cow<'static, str>; ADDRESS_FIELDS.len()],
 }
 
 impl Sample {
@@ -77,49 +82,51 @@ impl Sample {
                 text.trim().parse().ok()
             })
             .flatten();
+        let mut addresses = std::array::from_fn(|_| Cow::Borrowed("—"));
+        let [mac, allocation, ip, mask, gateway, dns, suffix, dhcp] = &mut addresses;
+        if let Some(config) = configured {
+            *mac = network_config::format_mac(config.mac).into();
+        }
+        *allocation = match (state, configured) {
+            (Some(LinkState::Connected), Some(config)) if config.address.is_unspecified() => {
+                "尚未获得 IPv4 地址"
+            }
+            (Some(LinkState::Connected), Some(config)) => {
+                *ip = config.address.to_string().into();
+                *mask = network_config::prefix_mask(config.prefix_length)
+                    .to_string()
+                    .into();
+                *gateway = address(config.gateway);
+                if !config.dns.is_empty() {
+                    *dns = config
+                        .dns
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .into();
+                }
+                if !config.dns_suffix.is_empty() {
+                    *suffix = config.dns_suffix.clone().into();
+                }
+                if let Some(lease) = config.lease {
+                    *dhcp = address(lease.server);
+                    "由 DHCP 分配"
+                } else {
+                    "已配置 IPv4 地址"
+                }
+            }
+            (Some(LinkState::Disconnected), _) => "网络电缆被拔出",
+            (Some(LinkState::Disabled), _) => "已禁用",
+            _ => "状态不可用",
+        }
+        .into();
         Self {
             state,
             speed,
             seconds,
             counts: counters(interface),
-            addresses: configured
-                .filter(|_| matches!(state, Some(LinkState::Connected | LinkState::Disconnected)))
-                .map_or_else(
-                    || std::array::from_fn(|_| "—".into()),
-                    |config| {
-                        let mask = if config.address.is_unspecified() {
-                            Ipv4Addr::UNSPECIFIED
-                        } else {
-                            network_config::prefix_mask(config.prefix_length)
-                        };
-                        let dns = if config.dns.is_empty() {
-                            "—".into()
-                        } else {
-                            config
-                                .dns
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        };
-                        [
-                            address(config.address),
-                            address(mask),
-                            address(config.gateway),
-                            dns,
-                            if config.dns_suffix.is_empty() {
-                                "—".into()
-                            } else {
-                                config.dns_suffix.clone()
-                            },
-                            address(
-                                config
-                                    .lease
-                                    .map_or(Ipv4Addr::UNSPECIFIED, |lease| lease.server),
-                            ),
-                        ]
-                    },
-                ),
+            addresses,
         }
     }
 }
@@ -301,10 +308,12 @@ impl Page for Network {
             ])));
         }
         if event.node == self.disable.id() {
-            // “禁用”：经网络设置关闭接口，然后关闭状态窗口（与 Windows 2000 相同）。
-            network_config::set_enabled(&self.interface, false)
-                .map_err(|error| liteos_ui::Error::invalid(format!("无法禁用连接：{error}")))?;
-            return Ok(Some(Response::Close));
+            // “禁用”要等网络设置服务确认；后台等待期间仍可处理窗口事件。
+            let interface = self.interface.clone();
+            return Ok(Some(Response::CloseAfter(Box::new(move || {
+                network_config::set_enabled(&interface, false)
+                    .map_err(|error| format!("无法禁用连接：{error}"))
+            }))));
         }
         Ok(None)
     }

@@ -124,7 +124,7 @@ impl Node {
         }
     }
     pub fn editing_text(&self) -> bool {
-        self.kind == widget::EDIT
+        self.text_editable()
             || self.kind == widget::TEXT_EDITOR
             || self
                 .label_edit

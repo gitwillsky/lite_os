@@ -35,6 +35,28 @@ fn snapshot_retirement_cpu_cost() {
         siblings.len(),
         started.elapsed().as_secs_f64() * 1_000_000.0 / 4096.0
     );
+
+    let resident = Vmo::create((1024 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
+    resident
+        .write(0, &vec![37; resident.size() as usize])
+        .unwrap();
+    for written_pages in [0, 1] {
+        let started = std::time::Instant::now();
+        for _ in 0..256 {
+            let child = resident
+                .create_child(0, resident.size(), ChildKind::Snapshot)
+                .unwrap();
+            if written_pages == 1 {
+                resident.write(0, &[91]).unwrap();
+            }
+            drop(child);
+            assert_eq!(byte(&resident, resident.size() - 1), 37);
+        }
+        println!(
+            "snapshot/retirement with 1024 resident pages, {written_pages} private pages: {:.2} us/op",
+            started.elapsed().as_secs_f64() * 1_000_000.0 / 256.0
+        );
+    }
 }
 
 #[test]

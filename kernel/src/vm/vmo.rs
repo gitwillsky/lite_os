@@ -325,19 +325,24 @@ impl Vmo {
             let visible = limit
                 .min(state.pages)
                 .min(hidden.pages.saturating_sub(offset));
-            // 1. 复用 AVL 节点转移可见且未被覆盖的页，不分配；已有页框的物理地址不变。
-            // 被覆盖页没有存活子对象的翻译：COW 替换先 zap/fence，死亡兄弟的映射也已退休。
-            while let Some((&index, _)) = hidden.committed.first_key_value() {
-                let mut entry = hidden
-                    .committed
-                    .take_entry(&index)
-                    .expect("hidden page disappeared");
-                if index >= offset
-                    && index - offset < visible
-                    && !state.committed.contains_key(&(index - offset))
-                {
-                    entry.set_key(index - offset);
-                    state.committed.commit_vacant(entry);
+            // 1. 原索引全部可见且幸存对象未写入私有页时，整体移交页索引，避免持树锁逐页重排。
+            // 部分继承或已有覆盖页时仍逐项求交；两条路径均不分配，也不改变页框地址。
+            if offset == 0 && visible == hidden.pages && state.committed.is_empty() {
+                core::mem::swap(&mut state.committed, &mut hidden.committed);
+            } else {
+                // 被覆盖页没有存活子对象的翻译：COW 替换先 zap/fence，死亡兄弟的映射也已退休。
+                while let Some((&index, _)) = hidden.committed.first_key_value() {
+                    let mut entry = hidden
+                        .committed
+                        .take_entry(&index)
+                        .expect("hidden page disappeared");
+                    if index >= offset
+                        && index - offset < visible
+                        && !state.committed.contains_key(&(index - offset))
+                    {
+                        entry.set_key(index - offset);
+                        state.committed.commit_vacant(entry);
+                    }
                 }
             }
             // 2. 替换祖父的直接子对象，并把两段可见窗口求交；不可达祖先不再保活。

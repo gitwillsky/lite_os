@@ -14,11 +14,10 @@ use wayland_wire::{
 };
 
 use super::{Display, EventKind, WindowId};
-use desktop_entry::file_uris::{MAX_BYTES as LIMIT, URI_LIST, decode, encode};
+use desktop_entry::file_uris::{MAX_BYTES as LIMIT, MAX_PATHS, URI_LIST, decode, encode};
 
 use wl_data_device_manager::dnd_action::COPY;
 const TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_PATHS: usize = 64;
 
 #[derive(Default)]
 pub(super) struct Offer {
@@ -31,14 +30,12 @@ pub(super) struct Hover {
     pub(super) offer: ObjectId,
     pub(super) window: WindowId,
     pub(super) serial: u32,
-    pub(super) point: (f64, f64),
     accepted: bool,
 }
 
 pub(super) struct Reading {
     offer: ObjectId,
     window: WindowId,
-    point: (f64, f64),
     pub(super) stream: UnixStream,
     pub(super) deadline: Instant,
     bytes: Vec<u8>,
@@ -142,7 +139,6 @@ impl Display {
             offer,
             window,
             serial,
-            point,
             accepted: false,
         });
         self.file_drag_motion(point);
@@ -150,8 +146,7 @@ impl Display {
     }
 
     pub(super) fn file_drag_motion(&mut self, point: (f64, f64)) {
-        if let Some(hover) = &mut self.clipboard.hover {
-            hover.point = point;
+        if let Some(hover) = &self.clipboard.hover {
             let window = hover.window;
             if !self
                 .clipboard
@@ -209,7 +204,6 @@ impl Display {
         self.clipboard.reading = Some(Reading {
             offer: hover.offer,
             window: hover.window,
-            point: hover.point,
             stream,
             bytes: Vec::new(),
             deadline: Instant::now() + TIMEOUT,
@@ -244,14 +238,7 @@ impl Display {
             wl_data_offer::Request::Finish
                 .encode(reading.offer, &mut self.transport.writer)
                 .map_err(io::Error::other)?;
-            self.emit(
-                Some(reading.window),
-                EventKind::FilesDropped {
-                    x: reading.point.0,
-                    y: reading.point.1,
-                    paths,
-                },
-            );
+            self.emit(Some(reading.window), EventKind::FilesDropped(paths));
         }
         self.destroy_offer(reading.offer)
     }

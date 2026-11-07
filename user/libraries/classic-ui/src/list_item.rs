@@ -40,6 +40,16 @@ const IMAGE_PADDING: i32 = 2;
 /// 标签框相对文字的左右内边距。
 const LABEL_PADDING: i32 = 2;
 
+/// 大图标在网格 `cell` 中的图像矩形，供绘制和命中共用。
+pub fn large_icon_image_rect(cell: Rect, width: i32, height: i32) -> Rect {
+    Rect::new(
+        cell.x + (cell.width - width) / 2,
+        cell.y + ICON_TOP,
+        width,
+        height,
+    )
+}
+
 /// 大图标原位改名框。上缘比标签提前两像素，给编辑边框留出空间。
 pub fn large_icon_edit_rect(cell: Rect, icon_height: i32) -> Rect {
     Rect::new(
@@ -137,17 +147,13 @@ impl Painter<'_> {
         text: Option<&str>,
         look: ItemLook,
     ) -> Rect {
-        let size = icon.map_or(32, Bitmap::height);
-        look.icon(
-            self,
-            icon,
-            cell.x + (cell.width - size) / 2,
-            cell.y + ICON_TOP,
-        );
+        let (width, height) = icon.map_or((32, 32), |icon| (icon.width(), icon.height()));
+        let image = large_icon_image_rect(cell, width, height);
+        look.icon(self, icon, image.x, image.y);
         let Some(text) = text else {
             return Rect::new(cell.x, cell.y, 0, 0);
         };
-        let label = self.icon_label(cell, size, text, look.focused);
+        let label = self.icon_label(cell, height, text, look.focused);
         let (background, ink) = look.colors();
         if let Some(background) = background {
             self.fill(label.rect, background);

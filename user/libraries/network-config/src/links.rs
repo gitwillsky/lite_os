@@ -55,8 +55,14 @@ pub fn link_state(interface: &str, settings: Option<&crate::Snapshot>) -> io::Re
 /// 其余读取中的热拔插错误由调用方下一轮重试，不发布半份扫描结果。
 /// `carrier` 在接口关闭时允许读取失败，仍按管理状态显示 Disabled。
 pub fn ethernet_links() -> io::Result<Vec<Link>> {
-    let root = Path::new(NET_CLASS);
     let settings = crate::snapshot().ok();
+    ethernet_links_with_settings(settings.as_ref())
+}
+
+/// 以调用者已有的 `settings` 快照读取以太网链路，避免同一次展示混用两代网络设置。
+/// 没有快照时按管理状态判断；返回值及 I/O 错误与 [`ethernet_links`] 相同。
+pub fn ethernet_links_with_settings(settings: Option<&crate::Snapshot>) -> io::Result<Vec<Link>> {
+    let root = Path::new(NET_CLASS);
     let mut links = Vec::new();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
@@ -76,9 +82,8 @@ pub fn ethernet_links() -> io::Result<Vec<Link>> {
         let index = read(&path, "ifindex")?
             .parse()
             .map_err(|_| io::Error::other("invalid interface index"))?;
-        let state = link_state(&interface, settings.as_ref())?;
+        let state = link_state(&interface, settings)?;
         let name = settings
-            .as_ref()
             .and_then(|snapshot| {
                 snapshot
                     .interfaces

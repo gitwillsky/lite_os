@@ -49,36 +49,11 @@ pub fn mount_path(mut field: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(bytes))
 }
 
-/// 在同目录改名；名称不能空、含 / 或 NUL，也不能是 . 或 ..。
-/// 目标已存在返回 AlreadyExists，其他失败返回 I/O 错误；不覆盖竞争创建的文件。
-pub fn rename_leaf(path: &Path, new_name: &str) -> io::Result<PathBuf> {
-    if new_name.is_empty() || new_name.contains(['/', '\0']) || matches!(new_name, "." | "..") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "文件名不能为空，也不能包含 / 或 NUL",
-        ));
-    }
-    let target = path.with_file_name(new_name);
-    if target == path {
-        return Ok(target);
-    }
-    rename_noreplace(path, &target).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("已存在名为“{new_name}”的文件或文件夹。"),
-            )
-        } else {
-            error
-        }
-    })?;
-    Ok(target)
-}
-/// An inotify instance following one directory. The owner consumes changes and reads a fresh listing.
+/// An inotify instance following directories. The owner consumes changes and reads a fresh listing.
 pub struct DirectoryChanges {
     file: File,
     #[cfg(target_os = "linux")]
-    watch: Option<i32>,
+    watches: Vec<i32>,
 }
 
 impl DirectoryChanges {
@@ -101,27 +76,29 @@ impl DirectoryChanges {
             // SAFETY: fd is newly allocated and uniquely owned.
             Ok(Self {
                 file: unsafe { File::from_raw_fd(fd) },
-                watch: None,
+                watches: Vec::new(),
             })
         }
         #[cfg(not(target_os = "linux"))]
         Err(io::ErrorKind::Unsupported.into())
     }
 
-    /// Set the single directory to monitor; None clears it. Changes include entry and metadata mutations.
+    /// Follow `paths`, adding new watches before retiring old ones. An empty iterator clears the set.
     ///
     /// # Errors
     ///
-    /// The new directory is inaccessible, invalid or beyond the watch limit. The previous watch is retired.
-    pub fn follow(&mut self, path: Option<&Path>) -> io::Result<()> {
+    /// Returns the first invalid path or watch error. Successfully registered directories remain watched.
+    pub fn follow<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
             use std::{ffi::CString, os::unix::ffi::OsStrExt};
             const DIRECTORY_MUTATIONS: u32 =
                 0x4 | 0x8 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800;
             const ONLY_DIRECTORY: u32 = 0x0100_0000;
-            let next = path
-                .map(|path| {
+            let mut next = Vec::new();
+            let mut result = Ok(());
+            for path in paths {
+                let add = (|| {
                     let path = CString::new(path.as_os_str().as_bytes())
                         .map_err(|_| io::ErrorKind::InvalidInput)?;
                     // SAFETY: fd is owned by this instance and path is live and NUL-terminated.
@@ -137,20 +114,24 @@ impl DirectoryChanges {
                     } else {
                         Ok(watch)
                     }
-                })
-                .transpose();
-            let current = next.as_ref().ok().copied().flatten();
-            if let Some(old) = std::mem::replace(&mut self.watch, current)
-                && Some(old) != current
-            {
-                // SAFETY: fd remains live; removing an already retired watch is harmless.
-                let _ = unsafe { crate::raw::inotify_rm_watch(self.file.as_raw_fd(), old) };
+                })();
+                match add {
+                    Ok(watch) if !next.contains(&watch) => next.push(watch),
+                    Err(error) if result.is_ok() => result = Err(error),
+                    _ => {}
+                }
             }
-            next.map(drop)
+            for old in std::mem::replace(&mut self.watches, next) {
+                if !self.watches.contains(&old) {
+                    // SAFETY: fd remains live; removing an already retired watch is harmless.
+                    let _ = unsafe { crate::raw::inotify_rm_watch(self.file.as_raw_fd(), old) };
+                }
+            }
+            result
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = path;
+            let _ = paths;
             Err(io::ErrorKind::Unsupported.into())
         }
     }
@@ -161,7 +142,7 @@ impl DirectoryChanges {
         self.file.as_fd()
     }
 
-    /// Consume one bounded batch, reporting whether the watched directory may have changed.
+    /// Consume one bounded batch, reporting active-directory changes or a queue overflow.
     ///
     /// # Errors
     ///
@@ -170,7 +151,32 @@ impl DirectoryChanges {
         use std::io::Read;
         let mut buffer = [0u8; 8192];
         match self.file.read(&mut buffer) {
-            Ok(bytes) => Ok(bytes != 0),
+            Ok(bytes) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let mut records = &buffer[..bytes];
+                    while !records.is_empty() {
+                        // struct inotify_event: wd, mask, cookie, len, then len bytes of name.
+                        let (header, body) = records
+                            .split_at_checked(16)
+                            .ok_or(io::ErrorKind::InvalidData)?;
+                        let watch =
+                            i32::from_ne_bytes(header[..4].try_into().expect("watch field"));
+                        let length =
+                            u32::from_ne_bytes(header[12..].try_into().expect("name length"))
+                                as usize;
+                        records = body.get(length..).ok_or(io::ErrorKind::InvalidData)?;
+                        // The kernel uses wd == -1 for overflow. A retired watch's queued
+                        // events (including IN_IGNORED) must not invalidate the new listing.
+                        if watch == -1 || self.watches.contains(&watch) {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                #[cfg(not(target_os = "linux"))]
+                Ok(bytes != 0)
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
             Err(error) => Err(error),
         }

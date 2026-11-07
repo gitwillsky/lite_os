@@ -1,6 +1,6 @@
 //! 登录界面的几何与绘制；输入命中与按钮绘制读取同一组区域。
 use super::{Logon, Page};
-use canvas::{Rect, Surface};
+use canvas::{Color, Rect, Surface};
 use classic_theme::SystemColor as C;
 use classic_ui::{
     Bitmap, ButtonState, Configuration, FontRole, FrameKind, Ink, Painter, Resources,
@@ -20,6 +20,12 @@ impl Art {
             keyboard: Bitmap::load(Path::new("/usr/share/liteos/ui/ctrl-alt-del-32.bmp"))?,
             resources: Resources::system()?,
         })
+    }
+
+    /// 普通桌面状态下登录层兜底色的预乘 ARGB 像素。
+    pub fn desktop_pixel(&self) -> u32 {
+        let color = self.resources.theme().color(C::Background);
+        Color::rgb(color.red, color.green, color.blue).0
     }
 }
 /// 登录类对话框的宽度：横幅位图 `logon-banner` 是 413 像素宽，加上左右各 3 像素的窗口框正好铺满客户区；
@@ -127,9 +133,6 @@ pub fn frame(
     let theme = art.resources.theme().clone();
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     p.fill(Rect::new(0, 0, c.width, c.height), C::Background);
-    if s.page == Page::Desktop {
-        return Ok(pixels);
-    }
     let d = dialog(c);
     p.fill(d, C::ButtonFace);
     let inner = p.window_frame(d, FrameKind::Fixed);
@@ -143,7 +146,7 @@ pub fn frame(
         Page::Message => "登录消息",
         Page::Shutdown => "关闭 LiteOS",
         Page::Password => "更改密码",
-        Page::Desktop => "",
+        Page::Desktop => unreachable!("desktop background is submitted as a solid pixel"),
     };
     p.caption_bar(
         Rect::new(inner.x, inner.y, inner.width, 19),

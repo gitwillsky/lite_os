@@ -12,7 +12,7 @@ use liteos_ui::{
 };
 use menus::{Command, CpuGraph, Page, Speed};
 use processes::{Column, Kind as ProcessKind, Process, Sort};
-use sampling::{Refresh, Sampler};
+use sampling::{Refresh, Sample, Sampler};
 use std::{
     cell::RefCell,
     process::{Child, Command as ProcessCommand, ExitCode, Stdio},
@@ -355,7 +355,8 @@ struct State {
     // 只读采样快照用于 resize 后重新投影曲线；canonical 采样历史由后台 Sampler 独占。
     monitor: Monitor,
     // 只读 GPU 快照用于点击列标题后按新顺序重排，不等待下一次采样。
-    gpu: gpu::Snapshot,
+    gpu: Option<gpu::Snapshot>,
+    services: services::Snapshot,
     gpu_sort: gpu::Sort,
     children: Vec<Child>,
     applications: Vec<Toplevel>,
@@ -365,70 +366,105 @@ impl State {
         &mut self,
         view: &View,
         monitor: &Monitor,
-        mut rows: Vec<Process>,
-        gpu: &gpu::Snapshot,
-        services: &services::Snapshot,
+        Sample {
+            rows,
+            gpu,
+            services,
+        }: Sample,
     ) -> liteos_ui::Result<()> {
-        self.sort.apply(&mut rows);
         let application_count = rows
             .iter()
             .filter(|row| row.kind == ProcessKind::Application)
             .count() as u64;
-        let service_threads = services
+        let (used, limit) = monitor.memory.usage();
+        let status = if let Some(error) = &services.error {
+            format!("系统服务查询失败：{error}")
+        } else {
+            format!(
+                "进程：{}，系统服务：{}\tCPU 使用：{}%\t内存使用：{} / {}",
+                application_count,
+                services.rows.len(),
+                monitor.cpu_percent,
+                system::memory_text(used),
+                system::memory_text(limit)
+            )
+        };
+        view.status.set_text(&status)?;
+        self.rows = rows;
+        self.monitor = monitor.clone();
+        self.services = services;
+        if let Some(gpu) = gpu {
+            self.gpu = Some(gpu);
+        }
+        self.children
+            .retain_mut(|child| child.try_wait().ok().flatten().is_none());
+        self.present_page(view, view.page()?)
+    }
+
+    fn present_page(&mut self, view: &View, page: Page) -> liteos_ui::Result<()> {
+        match page {
+            Page::Applications => Ok(()),
+            Page::Processes => {
+                self.sort.apply(&mut self.rows);
+                view.processes(&self.rows, self.show_workers)
+            }
+            Page::Services => {
+                let text: Vec<_> = self
+                    .services
+                    .rows
+                    .iter()
+                    .map(|service| service.text(&service.display_name()))
+                    .collect();
+                let rows: Vec<_> = self
+                    .services
+                    .rows
+                    .iter()
+                    .zip(&text)
+                    .map(|(service, text)| (service.record.koid, text.as_str()))
+                    .collect();
+                view.services.set_rows(&rows)
+            }
+            Page::Performance => view
+                .performance
+                .update(&self.monitor, self.totals(), self.graph),
+            Page::Gpu => {
+                if let Some(gpu) = &self.gpu {
+                    view.gpu.update(gpu, self.gpu_sort)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn totals(&self) -> Totals {
+        let service_threads = self
+            .services
             .rows
             .iter()
             .try_fold(0u64, |sum, service| {
                 (service.record.threads != task_observer_protocol::UNAVAILABLE)
                     .then_some(sum + service.record.threads)
             })
-            .filter(|_| services.error.is_none());
-        let application_threads: u64 = rows
+            .filter(|_| self.services.error.is_none());
+        let applications = self
+            .rows
             .iter()
-            .filter(|row| row.kind == ProcessKind::Application)
-            .map(|row| u64::from(row.threads))
-            .sum();
-        let totals = Totals {
-            handles: rows.iter().map(|row| u64::from(row.handles)).sum(),
-            threads: service_threads.map(|threads| threads + application_threads),
-            processes: services
+            .filter(|row| row.kind == ProcessKind::Application);
+        Totals {
+            handles: self.rows.iter().map(|row| u64::from(row.handles)).sum(),
+            threads: service_threads.map(|threads| {
+                threads
+                    + applications
+                        .clone()
+                        .map(|row| u64::from(row.threads))
+                        .sum::<u64>()
+            }),
+            processes: self
+                .services
                 .error
                 .is_none()
-                .then_some(application_count + services.rows.len() as u64),
-        };
-        view.processes(&rows, self.show_workers)?;
-        view.performance.update(monitor, totals, self.graph)?;
-        view.gpu.update(gpu, self.gpu_sort)?;
-        let service_text: Vec<_> = services
-            .rows
-            .iter()
-            .map(|service| service.text(&service.display_name()))
-            .collect();
-        let service_rows: Vec<_> = services
-            .rows
-            .iter()
-            .zip(&service_text)
-            .map(|(service, text)| (service.record.koid, text.as_str()))
-            .collect();
-        view.services.set_rows(&service_rows)?;
-        let (used, limit) = monitor.memory.usage();
-        view.status.set_text(&format!(
-            "进程：{}，系统服务：{}\tCPU 使用：{}%\t内存使用：{} / {}",
-            application_count,
-            services.rows.len(),
-            monitor.cpu_percent,
-            system::memory_text(used),
-            system::memory_text(limit)
-        ))?;
-        if let Some(error) = &services.error {
-            view.status
-                .set_text(&format!("系统服务查询失败：{error}"))?;
+                .then(|| applications.count() as u64 + self.services.rows.len() as u64),
         }
-        self.rows = rows;
-        self.monitor = monitor.clone();
-        self.gpu = gpu.clone();
-        self.children
-            .retain_mut(|child| child.try_wait().ok().flatten().is_none());
-        Ok(())
     }
     fn refresh_applications(&mut self, app: &Application, view: &View) -> liteos_ui::Result<()> {
         self.applications = app
@@ -569,12 +605,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .skip(1)
         .any(|argument| argument == "--snapshot")
     {
-        let (sampler, rows) = Sampler::new().sample();
+        let (_, Sample { rows, services, .. }) = Sampler::new().sample(Page::Services);
         println!("系统服务\tKOID\t状态\tCPU\t累计 CPU 时间\t内存\t线程");
-        for service in &sampler.services.rows {
+        for service in &services.rows {
             println!("{}", service.text(service.name()));
         }
-        if let Some(error) = &sampler.services.error {
+        if let Some(error) = &services.error {
             return Err(error.clone().into());
         }
         println!("进程\tPID\t类型\tCPU\t累计 CPU 时间\t内存");
@@ -602,7 +638,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Windows 2000 在多处理器上默认每个 CPU 一张图。
         graph: CpuGraph::PerCpu,
         monitor: Monitor::new(),
-        gpu: gpu::Snapshot::default(),
+        gpu: None,
+        services: services::Snapshot::default(),
         gpu_sort: gpu::Sort::default(),
         children: Vec::new(),
         applications: Vec::new(),
@@ -625,22 +662,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut first = true;
         loop {
             let seen = sample_refresh.epoch();
-            let work = match background.run(move || sampler.sample()) {
+            let page = match sample_view.page() {
+                Ok(page) => page,
+                Err(error) => {
+                    eprintln!("taskmgr: {error}");
+                    break;
+                }
+            };
+            let work = match background.run(move || sampler.sample(page)) {
                 Ok(work) => work,
                 Err(error) => {
                     eprintln!("taskmgr: {error}");
                     break;
                 }
             };
-            let (next, rows) = work.await;
+            let (next, sample) = work.await;
             sampler = next;
-            if let Err(error) = sample_state.borrow_mut().publish(
-                &sample_view,
-                &sampler.monitor,
-                rows,
-                &sampler.gpu,
-                &sampler.services,
-            ) {
+            if let Err(error) =
+                sample_state
+                    .borrow_mut()
+                    .publish(&sample_view, &sampler.monitor, sample)
+            {
                 eprintln!("taskmgr: {error}");
                 break;
             }
@@ -746,11 +788,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut switch = false;
         match event.kind {
             EventKind::Select { .. } if event.node == view.tabs.id() => {
-                let state = state.borrow();
-                menus::install(&view.menu, view.page()?, state.speed, state.graph)?;
-                view.performance.charts(&state.monitor, state.graph)?;
+                let page = view.page()?;
+                let mut state = state.borrow_mut();
+                menus::install(&view.menu, page, state.speed, state.graph)?;
+                state.present_page(&view, page)?;
+                // 首次打开 GPU 页即取一份数据；暂停后再次打开保留上次快照，F5 可主动更新。
+                if page == Page::Gpu && (state.gpu.is_none() || state.speed != Speed::Paused) {
+                    refresh.request();
+                }
             }
-            EventKind::Configure { .. } => {
+            EventKind::Configure { .. } if view.page()? == Page::Performance => {
                 let state = state.borrow();
                 view.performance.charts(&state.monitor, state.graph)?
             }
@@ -758,7 +805,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(column) = gpu::Column::ALL.get(column.saturating_sub(1) as usize) {
                     let mut state = state.borrow_mut();
                     state.gpu_sort.click(*column);
-                    view.gpu.update(&state.gpu, state.gpu_sort)?;
+                    state.present_page(&view, Page::Gpu)?;
                 }
             }
             EventKind::Column { column } if event.node == view.processes.id() => {

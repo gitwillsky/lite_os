@@ -219,13 +219,13 @@ impl WindowMenu {
         }
     }
 
-    /// 绘制菜单。
-    pub fn paint(&self, p: &mut Painter<'_>) {
+    /// 在逻辑坐标原点为 `origin` 的画布中绘制菜单。
+    pub fn paint(&self, p: &mut Painter<'_>, origin: (i32, i32)) {
         let scale = self.scale;
         p.set_cues(self.cues);
         let panel = Rect::new(
-            self.origin.0 / scale,
-            self.origin.1 / scale,
+            self.origin.0 / scale - origin.0,
+            self.origin.1 / scale - origin.1,
             WIDTH,
             height(),
         );

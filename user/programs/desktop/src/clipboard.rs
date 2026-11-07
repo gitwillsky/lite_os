@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_PATHS: usize = 4096;
 // 文件管理器格式比 URI 列表多一个剪切或复制的动词行。
 const LIMIT: usize = file_uris::MAX_BYTES + "copy\n".len();
 
@@ -34,7 +33,7 @@ pub(super) fn offer(
     let formats = if paths.is_empty() {
         Vec::new()
     } else {
-        file_uris::encode_selection(paths, cut, MAX_PATHS)?
+        file_uris::encode_selection(paths, cut, file_uris::MAX_PATHS)?
             .into_iter()
             .map(|(mime, data)| (mime.into(), data.into()))
             .collect()
@@ -125,7 +124,7 @@ impl Paste {
                         Err(error) => return Err(error),
                     }
                 }
-                let (cut, paths) = file_uris::decode_selection(mime, &bytes, MAX_PATHS)?;
+                let (cut, paths) = file_uris::decode_selection(mime, &bytes, file_uris::MAX_PATHS)?;
                 let home = home.to_owned();
                 let job = thread::Builder::new()
                     .name("desktop-paste".into())

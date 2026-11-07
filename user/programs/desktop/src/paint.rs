@@ -221,6 +221,37 @@ impl Art {
         })
     }
 
+    /// 文件拖放只命中回收站图像或标题，格子留白仍属于桌面。
+    pub fn recycle_target(
+        &mut self,
+        icons: &super::icons::Icons,
+        scale: i32,
+        point: (f64, f64),
+    ) -> io::Result<bool> {
+        let target = super::icons::Target::Place(start::Place::RecycleBin);
+        let Some((index, icon)) = icons
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, icon)| icon.target == target)
+        else {
+            return Ok(false);
+        };
+        let hit = |rect: Rect| {
+            (f64::from(rect.x)..f64::from(rect.right())).contains(&point.0)
+                && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&point.1)
+        };
+        let cell = icons.rect(index);
+        if !hit(cell) {
+            return Ok(false);
+        }
+        let (width, height) = self
+            .bitmap(&icon.art)
+            .map_or((32, 32), |image| (image.width(), image.height()));
+        Ok(hit(classic_ui::large_icon_image_rect(cell, width, height))
+            || hit(self.icon_label_rect(scale, cell, icon)?))
+    }
+
     fn icon_geometry<T>(
         &mut self,
         scale: i32,
@@ -386,6 +417,8 @@ pub fn frame(
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     let rects = areas(s, d, id, c);
     if id == s.background {
+        let focused = d.keyboard_focus() == Some(id);
+        let recycle_hover = s.drop_hover || s.drag.as_ref().is_some_and(|drag| drag.recycle);
         for (i, icon) in s.icons.items.iter().enumerate() {
             // 正在拖动的图标跟随指针，不画在原位。
             let mut r = rects[i];
@@ -400,7 +433,7 @@ pub fn frame(
             // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
             // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
             let selected = s.selected == Some(i)
-                || (s.drop_hover
+                || (recycle_hover
                     && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
             let art_name = if s.icons.trash_full
                 && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin)
@@ -411,7 +444,7 @@ pub fn frame(
             };
             let bitmap = art.bitmap(art_name).or_else(|| art.bitmap("file-app-32"));
             let editing = s.rename.as_ref().filter(|rename| {
-                matches!(&icon.target, super::icons::Target::Path(path) if *path == rename.path)
+                matches!(&icon.target, super::icons::Target::Path(path) if path == rename.operation.path())
             });
             p.with_role(FontRole::Icon, |p| {
                 p.large_icon_item(
@@ -421,14 +454,14 @@ pub fn frame(
                     classic_ui::ItemLook {
                         selected,
                         active: true,
-                        focused: selected,
+                        focused: focused && s.selected == Some(i),
                         text: C::HilightText,
                     },
                 );
                 if let Some(rename) = editing {
                     let edit =
                         classic_ui::large_icon_edit_rect(r, bitmap.map_or(32, Bitmap::height));
-                    p.edit(edit, &rename.edit, true, false);
+                    p.edit(edit, &rename.edit, focused, false);
                 }
             });
         }

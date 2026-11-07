@@ -555,11 +555,8 @@ impl Location {
                     .filter_map(Result::ok)
                     .take(MAX_ENTRIES)
                     .map(|entry| {
-                        describe(
-                            &entry.path(),
-                            entry.file_name().to_string_lossy(),
-                            &associations,
-                        )
+                        let path = entry.path();
+                        describe(&path, &path, &associations)
                     })
                     .collect();
                 files.sort_by(|a, b| {
@@ -606,15 +603,14 @@ impl Location {
                             break 'volumes;
                         }
                         let path = entry.path();
-                        let mut item =
-                            describe(&path, entry.file_name().to_string_lossy(), &associations);
+                        let info = fileops::trash_info_of(&volume, &path);
+                        let named_path =
+                            info.as_ref().map_or(path.as_path(), |info| &info.original);
+                        let mut item = describe(&path, named_path, &associations);
                         item.target = None;
                         item.launch = None;
-                        match fileops::trash_info_of(&volume, &path) {
+                        match info {
                             Ok(info) => {
-                                if let Some(name) = info.original.file_name() {
-                                    item.name = name.to_string_lossy().into_owned();
-                                }
                                 item.details = Details::Trashed {
                                     original: info
                                         .original
@@ -638,11 +634,8 @@ impl Location {
                         truncated = true;
                         break;
                     }
-                    items.push(describe(
-                        &entry.path(),
-                        entry.file_name().to_string_lossy(),
-                        &associations,
-                    ));
+                    let path = entry.path();
+                    items.push(describe(&path, &path, &associations));
                 }
                 items
             }
@@ -796,11 +789,7 @@ pub(super) fn network_drives() -> io::Result<Vec<Item>> {
 }
 
 /// 描述一个文件系统条目；元数据读取失败时按普通文件处理，不让单个坏条目挡住整个目录。
-fn describe(
-    path: &Path,
-    name: impl Into<String>,
-    associations: &desktop_entry::Associations,
-) -> Item {
+fn describe(path: &Path, named_path: &Path, associations: &desktop_entry::Associations) -> Item {
     let metadata = fs::metadata(path).ok();
     let timestamp = |time: io::Result<std::time::SystemTime>| {
         time.ok()
@@ -811,23 +800,29 @@ fn describe(
     let executable = metadata
         .as_ref()
         .is_some_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
-    let extension = path
+    let name = named_path
+        .file_name()
+        .unwrap_or(named_path.as_os_str())
+        .to_string_lossy();
+    let extension = named_path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let (icon, mut kind) = if directory {
+    let (icon, kind) = if directory {
         (Icon::Folder, "文件夹".to_owned())
     } else if executable && extension.is_empty() {
-        (Icon::Application, "应用程序".to_owned())
+        let kind = if associations.mime_for(named_path).is_some() {
+            associations.type_name(named_path)
+        } else {
+            "应用程序".to_owned()
+        };
+        (Icon::Application, kind)
     } else {
-        (Icon::File, associations.type_name(path))
+        (Icon::File, associations.type_name(named_path))
     };
-    if !directory && associations.mime_for(path).is_some() {
-        kind = associations.type_name(path);
-    }
     Item {
         application_icon: (!directory)
-            .then(|| associations.icon_for(path))
+            .then(|| associations.icon_for(named_path))
             .flatten()
             .map(str::to_owned),
         size: (!directory).then(|| metadata.as_ref().map_or(0, fs::Metadata::len)),

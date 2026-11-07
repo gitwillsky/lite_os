@@ -139,18 +139,24 @@ impl Session {
             })
             .map(|bounds| bounds.intersect(screen))
         });
-        let overlay = |mut surface: canvas::Surface<'_>| {
+        let overlay = |mut surface: canvas::Surface<'_>, (x, y): (i32, i32)| {
             let (Some(art), Some(bounds)) = (art, overlay_bounds) else {
                 return;
             };
-            let screen = (surface.width(), surface.height());
-            surface.set_clip(bounds);
+            surface.set_clip(canvas::Rect::new(
+                bounds.x - x,
+                bounds.y - y,
+                bounds.width,
+                bounds.height,
+            ));
+            // 菜单和切换面板的屏幕原点均按输出 scale 对齐，换到局部画布后不改变像素位置。
+            let origin = (x / scale, y / scale);
             let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);
             if let Some(switcher) = switcher {
-                switcher::paint(&mut painter, art, screen, switcher);
+                switcher::paint(&mut painter, art, screen_size, switcher, origin);
             }
             if let Some(menu) = menu {
-                menu.paint(&mut painter);
+                menu.paint(&mut painter, origin);
             }
         };
         self.scanout

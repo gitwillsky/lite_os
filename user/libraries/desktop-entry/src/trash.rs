@@ -234,17 +234,32 @@ fn can_create(path: &Path) -> bool {
     }
 }
 
-/// Identities and change times of the directories contributing to the aggregate view.
-pub fn stamp(home: &Path) -> Vec<(PathBuf, u64, u64, std::time::SystemTime)> {
-    volumes(home)
+/// Identity and modification time of a directory contributing to the aggregate view.
+#[derive(PartialEq, Eq)]
+pub struct DirectoryStamp {
+    pub path: PathBuf,
+    pub identity: (u64, u64),
+    pub modified: std::time::SystemTime,
+}
+
+/// Discover the current Trash directories to watch. Modification times are used
+/// when a watch cannot be registered.
+pub fn stamp(home: &Path) -> Vec<DirectoryStamp> {
+    let mut directories: Vec<_> = volumes(home)
         .into_iter()
-        .filter_map(|volume| {
-            let files = volume.files();
-            let metadata = fs::metadata(&files).ok()?;
-            let modified = metadata.modified().ok()?;
-            Some((files, metadata.dev(), metadata.ino(), modified))
+        .flat_map(|volume| [volume.files(), volume.info()])
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            metadata.is_dir().then_some(DirectoryStamp {
+                path,
+                identity: (metadata.dev(), metadata.ino()),
+                modified: metadata.modified().ok()?,
+            })
         })
-        .collect()
+        .collect();
+    directories.sort_by(|left, right| left.path.cmp(&right.path));
+    directories.dedup_by(|left, right| left.path == right.path);
+    directories
 }
 
 /// Whether any visible Trash contains an item.

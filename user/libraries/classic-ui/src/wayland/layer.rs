@@ -112,6 +112,7 @@ impl Display {
                 mapped: false,
                 frame: None,
                 history: Default::default(),
+                viewport: None,
             },
         );
         self.configure_layer(id, settings)?;

@@ -132,12 +132,8 @@ pub enum EventKind {
         y: f64,
     },
     FileDragLeave,
-    /// 收到一个完整的本地文件 URI 列表。
-    FilesDropped {
-        x: f64,
-        y: f64,
-        paths: Vec<std::path::PathBuf>,
-    },
+    /// 已接受的目标收到完整的本地文件 URI 列表；无需按当前布局再次命中。
+    FilesDropped(Vec<std::path::PathBuf>),
     Button {
         code: u32,
         pressed: bool,
@@ -212,6 +208,8 @@ struct Window {
     frame: Option<ObjectId>,
     /// 最近提交的损伤；复用缓冲按它补写落后的画面，缺失时只能每帧整幅写入共享内存。
     history: frame::History,
+    /// 单色帧的标准 viewport；随正常帧恢复默认采样或随窗口销毁。
+    viewport: Option<ObjectId>,
 }
 
 struct Repeat {
@@ -227,6 +225,7 @@ pub struct Display {
     transport: Transport,
     compositor: ObjectId,
     shm: ObjectId,
+    viewporter: Option<ObjectId>,
     wm_base: ObjectId,
     seat: ObjectId,
     scale: i32,
@@ -388,10 +387,16 @@ impl Display {
         } else {
             None
         };
+        let viewporter = if globals.iter().any(|(_, name, _)| name == "wp_viewporter") {
+            Some(bind(Interface::WpViewporter, 1)?)
+        } else {
+            None
+        };
         let mut display = Self {
             transport,
             compositor,
             shm,
+            viewporter,
             wm_base,
             seat,
             scale: 1,
@@ -535,6 +540,7 @@ impl Display {
                 mapped: false,
                 frame: None,
                 history: Default::default(),
+                viewport: None,
             },
         );
         self.transport.flush()?;
@@ -755,6 +761,11 @@ impl Display {
         self.pending_parents
             .retain(|child, parent| *child != window && *parent != window);
         let writer = &mut self.transport.writer;
+        if let Some(viewport) = state.viewport {
+            wayland_wire::protocol::wp_viewport::Request::Destroy
+                .encode(viewport, writer)
+                .map_err(io::Error::other)?;
+        }
         if let Some(dialog) = self.dialogs.remove(&window) {
             wayland_wire::protocol::xdg_dialog_v1::Request::Destroy
                 .encode(dialog, writer)

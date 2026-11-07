@@ -5,7 +5,9 @@
 //! 启用、自动获得 IP 与 DNS。
 mod links;
 mod settings;
-pub use links::{Link, LinkState, ethernet_links, link_state, rename_connection};
+pub use links::{
+    Link, LinkState, ethernet_links, ethernet_links_with_settings, link_state, rename_connection,
+};
 pub use netcfg_protocol::DNS_MAX;
 pub use netcfg_protocol::valid_search_list;
 pub use settings::{Snapshot, dhcp, snapshot, wait};
@@ -111,6 +113,11 @@ pub fn prefix_mask(prefix_length: u8) -> Ipv4Addr {
             .checked_shl(32 - u32::from(prefix_length.min(32)))
             .unwrap_or(0),
     )
+}
+
+/// 按经典网络工具的格式显示六字节硬件地址，例如 `02-4C-49-54-45-01`。
+pub fn format_mac([a, b, c, d, e, f]: [u8; 6]) -> String {
+    format!("{a:02X}-{b:02X}-{c:02X}-{d:02X}-{e:02X}-{f:02X}")
 }
 
 /// 接口 `name` 的当前设置；netcfg 尚未安装该接口时为 Windows 默认。

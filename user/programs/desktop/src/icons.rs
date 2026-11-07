@@ -141,13 +141,9 @@ impl Icons {
             .ok()
     }
 
-    /// 桌面文件夹自上次读取后是否变化；变化时重读。返回是否需要重绘。
-    pub fn poll(&mut self) -> bool {
-        if self.modified() == self.stamp {
-            return false;
-        }
-        self.refresh();
-        true
+    /// 桌面文件夹自上次读取后是否变化。
+    pub fn changed(&self) -> bool {
+        self.modified() != self.stamp
     }
 
     /// 回收站满/空状态变化时返回 true；目录不存在的账户使用空图标。
@@ -292,15 +288,20 @@ impl Icons {
     }
 
     /// 同目录改名并保留原来的网格位置；文件系统冲突由原子 rename 裁决。
-    pub fn rename(&mut self, path: &Path, name: &str) -> io::Result<PathBuf> {
-        let target = linux_uapi::filesystem::rename_leaf(path, name)?;
+    pub fn rename(
+        &mut self,
+        draft: &desktop_entry::fileops::Rename,
+        name: &str,
+    ) -> io::Result<PathBuf> {
+        let path = draft.path();
+        let target = draft.commit(name)?;
         if target == path {
             return Ok(target);
         }
         if let Some(index) = self
             .items
             .iter()
-            .position(|icon| icon.target == Target::Path(path.to_owned()))
+            .position(|icon| matches!(&icon.target, Target::Path(current) if current == path))
         {
             for (icon, cell) in self.items.iter().zip(&self.cells) {
                 self.saved.insert(icon.key.clone(), *cell);
@@ -319,29 +320,16 @@ impl Icons {
 
     /// 忘记所有保存的位置，图标按名称顺序重新排列。
     pub fn auto_arrange(&mut self) -> io::Result<()> {
-        self.saved.clear();
-        self.refresh();
         match fs::remove_file(&self.layout_file) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
         }
+        self.saved.clear();
+        Ok(())
     }
 
     /// 在桌面文件夹里新建"新建文件夹"（重名加序号）。
-    pub fn new_folder(&mut self) -> io::Result<PathBuf> {
-        let mut path = self.directory.join("新建文件夹");
-        for n in 2.. {
-            match fs::create_dir(&path) {
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    path = self.directory.join(format!("新建文件夹 ({n})"));
-                }
-                result => {
-                    result?;
-                    break;
-                }
-            }
-        }
-        self.refresh();
-        Ok(path)
+    pub fn new_folder(&self) -> io::Result<PathBuf> {
+        desktop_entry::fileops::new_folder(&self.directory)
     }
 }

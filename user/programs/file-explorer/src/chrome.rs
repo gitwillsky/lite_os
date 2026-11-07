@@ -185,8 +185,12 @@ impl Command {
 pub struct Availability {
     pub selected: bool,
     pub file_selected: bool,
-    /// 当前位置是可写的真实目录。
+    /// 当前位置支持普通文件操作（真实目录或桌面）。
     pub editable: bool,
+    /// 选区至少包含一个实际文件系统条目。
+    pub paths_selected: bool,
+    /// 焦点项支持文件改名。
+    pub rename_file: bool,
     pub paste: bool,
     pub undo: Option<&'static str>,
     /// 当前位置是回收站根目录。
@@ -377,6 +381,8 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     let enabled = !state.busy;
     let selected = state.selected && enabled;
     let modify = state.editable && enabled;
+    let transfer = modify && state.paths_selected;
+    let cut_or_delete = state.paths_selected && (modify || (state.trash && enabled));
     let mut file = Builder::new(HEADER);
     if let Some(connected) = state.connection {
         connection_verbs(&mut file, connected, enabled);
@@ -394,7 +400,7 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
             file.action(Action::Restore, "还原(E)", "", selected);
         } else {
             file.separator();
-            file.submenu("发送到(N)", selected, |b| {
+            file.submenu("发送到(N)", transfer, |b| {
                 b.action(Action::SendToDesktop, "桌面快捷方式", "", false);
                 b.action(Action::SendToDocuments, "我的文档", "", true);
             });
@@ -415,12 +421,12 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     }
     if state.connection.is_none() {
         file.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
-        file.action(Action::Delete, "删除(D)", "", selected && modify);
+        file.action(Action::Delete, "删除(D)", "", cut_or_delete);
         file.action(
             Action::Rename,
             "重命名(M)",
             "",
-            selected && modify && !state.trash,
+            enabled && state.rename_file,
         );
         file.action(Action::Properties, "属性(R)", "", selected);
     }
@@ -435,18 +441,13 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
         enabled && state.undo.is_some(),
     );
     edit.separator();
-    edit.action(Action::Cut, "剪切(T)", "Ctrl+X", selected && modify);
-    edit.action(Action::Copy, "复制(C)", "Ctrl+C", selected && !state.trash);
+    edit.action(Action::Cut, "剪切(T)", "Ctrl+X", cut_or_delete);
+    edit.action(Action::Copy, "复制(C)", "Ctrl+C", transfer);
     edit.action(Action::Paste, "粘贴(P)", "Ctrl+V", enabled && state.paste);
     edit.action(Action::PasteShortcut, "粘贴快捷方式(S)", "", false);
     edit.separator();
-    edit.action(
-        Action::CopyTo,
-        "复制到文件夹(F)...",
-        "",
-        selected && !state.trash,
-    );
-    edit.action(Action::MoveTo, "移动到文件夹(V)...", "", selected && modify);
+    edit.action(Action::CopyTo, "复制到文件夹(F)...", "", transfer);
+    edit.action(Action::MoveTo, "移动到文件夹(V)...", "", transfer);
     edit.separator();
     edit.action(Action::SelectAll, "全部选定(A)", "Ctrl+A", enabled);
     edit.action(Action::InvertSelection, "反向选择(I)", "", enabled);
@@ -555,29 +556,30 @@ pub fn context(state: &Availability, on_item: bool) -> Vec<Entry> {
     } else if on_item && state.trash {
         b.action(Action::Restore, "还原(E)", "", true);
         b.separator();
-        b.action(Action::Cut, "剪切(T)", "", state.editable);
+        b.action(Action::Cut, "剪切(T)", "", true);
         b.separator();
-        b.action(Action::Delete, "删除(D)", "", state.editable);
+        b.action(Action::Delete, "删除(D)", "", true);
         b.separator();
         b.action(Action::Properties, "属性(R)", "", true);
     } else if on_item {
+        let transfer = state.editable && state.paths_selected;
         b.push(Action::Open as u64, "打开(O)", "", DEFAULT);
         if state.file_selected {
             // 弹出菜单本身由 busy 事务持有；文件动作不能据此禁用自己。
             b.action(Action::OpenWith, "打开方式(H)...", "", true);
         }
         b.separator();
-        b.submenu("发送到(N)", true, |b| {
+        b.submenu("发送到(N)", transfer, |b| {
             b.action(Action::SendToDesktop, "桌面快捷方式", "", false);
             b.action(Action::SendToDocuments, "我的文档", "", true);
         });
         b.separator();
-        b.action(Action::Cut, "剪切(T)", "", state.editable);
-        b.action(Action::Copy, "复制(C)", "", true);
+        b.action(Action::Cut, "剪切(T)", "", transfer);
+        b.action(Action::Copy, "复制(C)", "", transfer);
         b.separator();
         b.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
-        b.action(Action::Delete, "删除(D)", "", state.editable);
-        b.action(Action::Rename, "重命名(M)", "", state.editable);
+        b.action(Action::Delete, "删除(D)", "", transfer);
+        b.action(Action::Rename, "重命名(M)", "", state.rename_file);
         b.separator();
         b.action(Action::Properties, "属性(R)", "", true);
     } else {
@@ -719,7 +721,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             44,
             "移至",
             false,
-            enabled && state.selected && state.editable,
+            enabled && state.paths_selected && state.editable,
         ),
         button(
             Action::CopyTo,
@@ -728,7 +730,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             45,
             "复制到",
             false,
-            enabled && state.selected && !state.trash,
+            enabled && state.paths_selected && state.editable,
         ),
         button(
             Action::Delete,
@@ -737,7 +739,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             10,
             "删除",
             false,
-            enabled && state.selected && state.editable,
+            enabled && state.paths_selected && (state.editable || state.trash),
         ),
         button(
             Action::Undo,

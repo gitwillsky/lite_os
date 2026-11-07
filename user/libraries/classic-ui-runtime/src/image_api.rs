@@ -72,17 +72,9 @@ pub(super) unsafe extern "C" fn canvas_frame(
         return abi::INVALID;
     }
     // SAFETY: Api 输入契约保证 pixels 在本次调用中指向 count 个 u32；先校验尺寸与非空，
-    // 复制完成前不替换旧帧，调用返回后运行库不再引用调用者内存。
+    // invoke 独占 Canvas，像素复制期间没有绘制者；调用返回后运行库不引用调用者内存。
     unsafe {
         invoke(pointer, |context| {
-            let frame = (!clear).then(|| {
-                // 源高字节来自 mpv 的 bgr0 填充，补成不透明预乘 ARGB。
-                let copied = slice::from_raw_parts(pixels, count)
-                    .iter()
-                    .map(|pixel| pixel | 0xff00_0000)
-                    .collect();
-                Rc::new(Bitmap::from_pixels(copied, width as i32, height as i32))
-            });
             let host = context.host_mut(window)?;
             let node = host
                 .controls_mut()?
@@ -92,7 +84,20 @@ pub(super) unsafe extern "C" fn canvas_frame(
             if node.kind != abi::widget::CANVAS {
                 return Err(invalid("frame requires a Canvas widget"));
             }
-            node.frame = frame;
+            if clear {
+                if node.frame.take().is_none() {
+                    return Ok(());
+                }
+            } else {
+                let pixels = slice::from_raw_parts(pixels, count);
+                if let Some(frame) = &mut node.frame {
+                    frame.replace_opaque_pixels(pixels, width as i32, height as i32)?;
+                } else {
+                    let mut frame = Bitmap::from_pixels(Vec::new(), 0, 0);
+                    frame.replace_opaque_pixels(pixels, width as i32, height as i32)?;
+                    node.frame = Some(Box::new(frame));
+                }
+            }
             host.frame.invalidate();
             Ok(())
         })

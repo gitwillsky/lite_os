@@ -7,6 +7,8 @@ use std::{
 
 /// 文件 URI 列表的字节上限。
 pub const MAX_BYTES: usize = 128 * 1024;
+/// 桌面文件传输最多接收的路径数，与字节上限同时生效。
+pub const MAX_PATHS: usize = 4096;
 /// 标准 URI 列表 MIME。
 pub const URI_LIST: &str = "text/uri-list";
 /// 文件管理器剪贴板格式，首行为 cut 或 copy，其后为本地文件 URI。
@@ -67,9 +69,16 @@ fn local_path(path: &Path) -> bool {
 
 /// 将本地绝对路径编码成 URI 列表，路径非法、超出 `max_paths` 或字节上限时返回错误。
 pub fn encode(paths: &[PathBuf], max_paths: usize) -> io::Result<String> {
-    if paths.is_empty() || paths.len() > max_paths {
+    if paths.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
+    if paths.len() > max_paths {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("一次最多传输 {max_paths} 个路径。"),
+        ));
+    }
+    let too_large = || io::Error::new(io::ErrorKind::InvalidInput, "文件路径列表超过 128 KiB。");
     let mut result = String::new();
     for path in paths {
         if !local_path(path) {
@@ -84,12 +93,12 @@ pub fn encode(paths: &[PathBuf], max_paths: usize) -> io::Result<String> {
                 write!(result, "%{byte:02X}").expect("writing to a string");
             }
             if result.len() > MAX_BYTES {
-                return Err(io::ErrorKind::InvalidInput.into());
+                return Err(too_large());
             }
         }
         result.push_str("\r\n");
         if result.len() > MAX_BYTES {
-            return Err(io::ErrorKind::InvalidInput.into());
+            return Err(too_large());
         }
     }
     Ok(result)

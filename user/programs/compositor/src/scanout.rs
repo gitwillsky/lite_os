@@ -204,13 +204,14 @@ impl Scanout {
     }
 
     /// 按设备能力选择一次后端；CPU/GPU 消费同一标准 Wayland 内容、几何与叠加顺序。
+    /// `overlay` 收到绘制面及其相对输出的物理原点。CPU 原点为零，GPU 使用叠加边界的左上角。
     /// 已有 flip 时拒绝覆盖 back；渲染/提交失败直接返回错误。
     pub fn compose(
         &mut self,
         theme: &classic_theme::Theme,
         windows: &[crate::compose::Drawable<'_>],
         overlay_bounds: Option<canvas::Rect>,
-        overlay: impl FnOnce(canvas::Surface<'_>),
+        overlay: impl FnOnce(canvas::Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
         if self.pending.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());

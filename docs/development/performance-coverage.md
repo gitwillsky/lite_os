@@ -28,13 +28,20 @@ whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作�
 单项光栅成本不能推导整帧瓶颈；窗口交互须分别测量应用绘制、像素传输、合成与显示完成，
 以实际分辨率、多窗口和缩放 workload 比较，不能由宿主微基准直接宣称 guest FPS。
 
+桌面交付前要在同一架构、CPU 数、内存、输出分辨率及设备配置下比较冷启动后的稳定桌面、窗口空闲、
+空白处指针移动、窗口缩放和视频播放。物理内存用 `MemTotal - MemAvailable` 记录，并分别追踪可回收缓存、
+内核堆/栈/页表、进程私有页、共享对象及显示缓冲。逐进程 RSS 仅用于定位，不能相加代替物理内存；
+未归属的页保留为待核查差额。缓存须有容量与回收边界，新增占用要有命中率或延迟收益。
+渲染以相同操作下的重绘次数、传输量和帧时分布验证，分开记应用光栅、缓冲提交、合成及 flip 完成。
+
 音频逐流增益使用 `cargo run --release -p architecture-bench --bin audio-mixer-bench` 诊断生产
 Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 linuxd softfloat，故不设置 host 时间阈值。
 steady period 不分配、不查 control registry；新增乘法的真实可持续性由 AArch64/HVF 八路、六秒、
 零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间播放或游戏延迟已经达标。
 VMO snapshot/hidden-parent 退休成本由实际生产 owner 的 release host fixture 作诊断：
 `cargo test -p kernel-unit --release --test vmo snapshot_retirement_cpu_cost -- --ignored --nocapture`。
-覆盖多个存活 sibling 与重叠的暂态分支；复用 AVL 节点折叠不分配，宿主锁/frame adapter 不代表目标 TLB 或调度延迟，不设置时间阈值。
+覆盖多个存活 sibling 与重叠的暂态分支，以及 1024 页驻留、父进程不写入的反复快照和退休。完整索引移交或复用 AVL 节点均不分配，
+宿主锁/frame adapter 不代表目标 TLB 或调度延迟，不设置时间阈值。
 
 MemoryFile 的稀疏补页复用唯一文件 pager 工作池，每次真实 page request 增加一次 PageSource 调用；
 quota lease 与 AVL 节点只在首次文件页提交时分配，普通洞读不分配，连续驻留读写仍批量调用 native copy。

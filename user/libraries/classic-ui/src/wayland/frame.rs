@@ -5,12 +5,14 @@ use canvas::Rect;
 use linux_uapi::shared_memory::MemFd;
 use std::{collections::VecDeque, io, os::fd::AsFd};
 use wayland_wire::{
-    protocol::{Interface, wl_buffer, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{Interface, wl_buffer, wl_shm, wl_shm_pool, wl_surface, wp_viewport, wp_viewporter},
     wire::{ObjectId, Writer},
 };
 
 /// 三个在途缓冲覆盖生产者/消费者交错，同时限制慢消费者占用的内存。
 const WINDOW_BUFFER_LIMIT: usize = 3;
+/// 交互缩放时每个槽最多预留 256 KiB；避免相邻尺寸重复创建和传递 memfd。
+const RESIZE_RESERVE: usize = 256 * 1024;
 
 pub(super) struct Buffer {
     pub window: WindowId,
@@ -19,6 +21,7 @@ pub(super) struct Buffer {
     /// 内存里是第几次提交的完整画面；0 表示从未写入，复用时必须整幅写。
     commit: u64,
     memory: MemFd,
+    pool: ObjectId,
 }
 
 /// 一个窗口最近几次提交的损伤：复用的缓冲落后几帧，就补写这几帧的损伤。
@@ -48,8 +51,13 @@ impl History {
         if self.key != Some(key) || self.frame.len() != pixels.len() {
             self.damage.clear();
             self.key = Some(key);
-            self.frame.clear();
-            self.frame.extend_from_slice(pixels);
+            if pixels.len() == 1 {
+                // 单色帧替代整幅画面时归还历史像素，不能把整屏容量留在后台。
+                self.frame = pixels.to_vec();
+            } else {
+                self.frame.clear();
+                self.frame.extend_from_slice(pixels);
+            }
         } else {
             let width = key.0 as usize;
             for rect in &damage {
@@ -65,6 +73,13 @@ impl History {
             self.damage.pop_front();
         }
         self.damage.push_back(damage);
+    }
+
+    /// 交互缩放完成后归还显著超出当前画面的容量，小尺寸往返仍可复用。
+    fn trim(&mut self, resizing: bool) {
+        if !resizing && self.frame.len() <= self.frame.capacity() / 2 {
+            self.frame.shrink_to_fit();
+        }
     }
 
     /// 持有第 `held` 次提交的缓冲需要补写的损伤；`None` 表示必须整幅写。
@@ -102,6 +117,18 @@ impl Display {
     /// 在途 callback/缓冲池满返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
     /// 连接错误后调用方应销毁 Display，不能继续使用部分发送的请求。
     pub fn present(&mut self, window: WindowId, pixels: &[u32]) -> io::Result<()> {
+        self.present_frame(window, pixels, false)
+    }
+
+    /// 用一个预乘 ARGB `pixel` 覆盖 `window` 的当前逻辑尺寸。
+    ///
+    /// # Errors
+    /// 需要标准 wp_viewporter；其余配置、在途缓冲和提交错误同 [`Self::present`]。
+    pub fn present_solid(&mut self, window: WindowId, pixel: u32) -> io::Result<()> {
+        self.present_frame(window, &[pixel], true)
+    }
+
+    fn present_frame(&mut self, window: WindowId, pixels: &[u32], solid: bool) -> io::Result<()> {
         let state = self
             .windows
             .get(&window)
@@ -111,7 +138,12 @@ impl Display {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let configuration = state.configuration;
-        let (width, height) = configuration.pixel_size()?;
+        let (width, height, scale) = if solid {
+            (1, 1, 1)
+        } else {
+            let (width, height) = configuration.pixel_size()?;
+            (width, height, configuration.scale)
+        };
         let stride = width
             .checked_mul(4)
             .ok_or_else(|| io::Error::other("shm stride overflow"))?;
@@ -124,7 +156,7 @@ impl Display {
                 "pixel count does not match window configuration",
             ));
         }
-        let key = (width, height, configuration.scale);
+        let key = (width, height, scale);
         let bounds = Rect::new(0, 0, width, height);
         let mapped = state.mapped && state.history.key == Some(key);
         let damage = if mapped {
@@ -132,8 +164,30 @@ impl Display {
         } else {
             vec![bounds]
         };
+        self.set_solid_viewport(
+            window,
+            solid.then_some((configuration.width, configuration.height)),
+        )?;
+        // 1. 缩放时保留能重建几何的空闲池；结束缩放时，即使像素不变也退休其他尺寸。
+        let retired: Vec<_> = self
+            .buffers
+            .iter()
+            .filter_map(|(id, buffer)| {
+                let fits = configuration.resizing
+                    && buffer
+                        .memory
+                        .len()
+                        .checked_sub(bytes as usize)
+                        .is_some_and(|slack| slack < RESIZE_RESERVE);
+                (buffer.window == window && !buffer.busy && buffer.size != (width, height) && !fits)
+                    .then_some(*id)
+            })
+            .collect();
+        for id in retired {
+            self.destroy_buffer(id)?;
+        }
         let callback = self.transport.allocate(Interface::WlCallback)?;
-        // 1. 画面没变且已按同一规格映射：只请求 frame 并 commit。configure 的 ack 要随 commit 生效，
+        // 2. 画面没变且已按同一规格映射：只请求 frame 并 commit。configure 的 ack 要随 commit 生效，
         //    不能因为像素相同就省掉 commit；也不 attach，免得占用缓冲和触发合成器读取。
         if damage.is_empty() && mapped {
             let writer = &mut self.transport.writer;
@@ -143,68 +197,75 @@ impl Display {
             wl_surface::Request::Commit
                 .encode(window.0, writer)
                 .map_err(io::Error::other)?;
-            self.windows
-                .get_mut(&window)
-                .expect("validated window")
-                .frame = Some(callback);
+            let state = self.windows.get_mut(&window).expect("validated window");
+            state.history.trim(configuration.resizing);
+            state.frame = Some(callback);
             return self.transport.flush();
         }
-        // 2. 淘汰不匹配尺寸的空闲缓冲；仍 busy 的旧尺寸保持 owner，直到 release。
-        let retired: Vec<_> = self
-            .buffers
-            .iter()
-            .filter_map(|(id, buffer)| {
-                (buffer.window == window && !buffer.busy && buffer.size != (width, height))
-                    .then_some(*id)
-            })
-            .collect();
-        for id in retired {
-            self.buffers.remove(&id);
-            wl_buffer::Request::Destroy
-                .encode(id, &mut self.transport.writer)
-                .map_err(io::Error::other)?;
-        }
+        // 3. 只在 release 后重新绑定原来的池；新几何不继承旧画面的损伤历史。
         let reusable = self
             .buffers
             .iter()
-            .find_map(|(id, buffer)| (buffer.window == window && !buffer.busy).then_some(*id));
+            .filter(|(_, buffer)| buffer.window == window && !buffer.busy)
+            .min_by_key(|(_, buffer)| buffer.size != (width, height))
+            .map(|(id, _)| *id);
         let id = match reusable {
-            Some(id) => id,
-            None => self.allocate_buffer(window, (width, height), stride, bytes)?,
+            Some(id) if self.buffers[&id].size == (width, height) => id,
+            Some(id) => {
+                let buffer = self.buffers.remove(&id).expect("idle buffer");
+                wl_buffer::Request::Destroy
+                    .encode(id, &mut self.transport.writer)
+                    .map_err(io::Error::other)?;
+                self.create_buffer(
+                    Buffer {
+                        size: (width, height),
+                        commit: 0,
+                        ..buffer
+                    },
+                    stride,
+                )?
+            }
+            None => {
+                let capacity = if configuration.resizing {
+                    (bytes as usize)
+                        .next_multiple_of(RESIZE_RESERVE)
+                        .min(i32::MAX as usize)
+                } else {
+                    bytes as usize
+                };
+                self.allocate_buffer(window, (width, height), stride, capacity)?
+            }
         };
-        // 3. 复用的缓冲停在它上次提交的画面：补写之后各帧与本帧的损伤，新缓冲整幅写。
+        // 4. 复用的缓冲停在它上次提交的画面：补写之后各帧与本帧的损伤，新缓冲整幅写。
         let history = &self.windows[&window].history;
         let buffer = self.buffers.get(&id).expect("allocated buffer");
-        let written: Vec<Rect> = match history.since(buffer.commit, key) {
-            Some(lagging) => lagging.chain(&damage).copied().collect(),
-            None => vec![bounds],
+        let lagging = history.since(buffer.commit, key);
+        let current: &[Rect] = if lagging.is_some() {
+            &damage
+        } else {
+            std::slice::from_ref(&bounds)
         };
         let row = width as usize;
-        buffer
-            .memory
-            .write_segments(written.iter().flat_map(|rect| {
+        let segments = lagging
+            .into_iter()
+            .flatten()
+            .chain(current)
+            .flat_map(|rect| {
                 let (x, y) = (rect.x as usize, rect.y as usize);
                 let (columns, rows) = (rect.width as usize, rect.height as usize);
                 // 宽矩形连同行间像素一次写入（写的是当前画面，多写也正确）；窄矩形逐行写，避免整段搬运。
-                let segments: Vec<(usize, &[u32])> = if columns * 2 >= row {
-                    let start = y * row + x;
-                    vec![(start, &pixels[start..(y + rows - 1) * row + x + columns])]
-                } else {
-                    (y..y + rows)
-                        .map(|line| {
-                            let start = line * row + x;
-                            (start, &pixels[start..start + columns])
-                        })
-                        .collect()
-                };
-                segments
-            }))?;
+                let lines_per_write = if columns * 2 >= row { rows } else { 1 };
+                (y..y + rows).step_by(lines_per_write).map(move |line| {
+                    let start = line * row + x;
+                    let end = start + (lines_per_write - 1) * row + columns;
+                    (start, &pixels[start..end])
+                })
+            });
+        buffer.memory.write_segments(segments)?;
         let writer = &mut self.transport.writer;
-        wl_surface::Request::SetBufferScale {
-            scale: configuration.scale,
-        }
-        .encode(window.0, writer)
-        .map_err(io::Error::other)?;
+        wl_surface::Request::SetBufferScale { scale }
+            .encode(window.0, writer)
+            .map_err(io::Error::other)?;
         wl_surface::Request::Attach {
             buffer: Some(id),
             x: 0,
@@ -228,10 +289,11 @@ impl Display {
         wl_surface::Request::Commit
             .encode(window.0, writer)
             .map_err(io::Error::other)?;
-        // 4. flush 前冻结 busy 与历史，错误后关闭连接，不能重写可能已交付的内存。
+        // 5. flush 前冻结 busy 与历史，错误后关闭连接，不能重写可能已交付的内存。
         let state = self.windows.get_mut(&window).expect("validated window");
         state.frame = Some(callback);
         state.history.record(key, pixels, damage);
+        state.history.trim(configuration.resizing);
         let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
         buffer.busy = true;
         buffer.commit = state.history.commits;
@@ -251,46 +313,91 @@ impl Display {
         Ok(())
     }
 
+    fn set_solid_viewport(
+        &mut self,
+        window: WindowId,
+        destination: Option<(i32, i32)>,
+    ) -> io::Result<()> {
+        let state = self.windows.get_mut(&window).expect("validated window");
+        if let Some((width, height)) = destination {
+            let viewport = match state.viewport {
+                Some(viewport) => viewport,
+                None => {
+                    let manager = self.viewporter.ok_or(io::ErrorKind::Unsupported)?;
+                    let viewport = self.transport.allocate(Interface::WpViewport)?;
+                    wp_viewporter::Request::GetViewport {
+                        id: viewport,
+                        surface: window.0,
+                    }
+                    .encode(manager, &mut self.transport.writer)
+                    .map_err(io::Error::other)?;
+                    state.viewport = Some(viewport);
+                    viewport
+                }
+            };
+            wp_viewport::Request::SetDestination { width, height }
+                .encode(viewport, &mut self.transport.writer)
+                .map_err(io::Error::other)?;
+        } else if let Some(viewport) = state.viewport.take() {
+            wp_viewport::Request::Destroy
+                .encode(viewport, &mut self.transport.writer)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
     fn allocate_buffer(
         &mut self,
         window: WindowId,
         size: (i32, i32),
         stride: i32,
-        bytes: i32,
+        capacity: usize,
     ) -> io::Result<ObjectId> {
-        let memory = MemFd::create("classic-ui", bytes as usize)?;
+        let memory = MemFd::create("classic-ui", capacity)?;
         let pool = self.transport.allocate(Interface::WlShmPool)?;
-        let id = self.transport.allocate(Interface::WlBuffer)?;
         let mut request = Writer::new();
         request.begin(self.shm, 0);
         request.object(Some(pool));
-        request.int(bytes);
+        request.int(capacity as i32);
         request.end().map_err(io::Error::other)?;
         self.transport.send_fd(request.bytes(), memory.as_fd())?;
-        wl_shm_pool::Request::CreateBuffer {
-            id,
-            offset: 0,
-            width: size.0,
-            height: size.1,
-            stride,
-            format: wl_shm::Format::Argb8888,
-        }
-        .encode(pool, &mut self.transport.writer)
-        .map_err(io::Error::other)?;
-        wl_shm_pool::Request::Destroy
-            .encode(pool, &mut self.transport.writer)
-            .map_err(io::Error::other)?;
-        self.buffers.insert(
-            id,
+        self.create_buffer(
             Buffer {
                 window,
                 size,
                 busy: false,
                 commit: 0,
                 memory,
+                pool,
             },
-        );
+            stride,
+        )
+    }
+
+    fn create_buffer(&mut self, buffer: Buffer, stride: i32) -> io::Result<ObjectId> {
+        let id = self.transport.allocate(Interface::WlBuffer)?;
+        wl_shm_pool::Request::CreateBuffer {
+            id,
+            offset: 0,
+            width: buffer.size.0,
+            height: buffer.size.1,
+            stride,
+            format: wl_shm::Format::Argb8888,
+        }
+        .encode(buffer.pool, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.buffers.insert(id, buffer);
         Ok(id)
+    }
+
+    fn destroy_buffer(&mut self, id: ObjectId) -> io::Result<()> {
+        let buffer = self.buffers.remove(&id).expect("known buffer");
+        wl_buffer::Request::Destroy
+            .encode(id, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
+        wl_shm_pool::Request::Destroy
+            .encode(buffer.pool, &mut self.transport.writer)
+            .map_err(io::Error::other)
     }
 
     pub(super) fn release_buffer(&mut self, object: ObjectId) -> io::Result<()> {
@@ -298,17 +405,24 @@ impl Display {
             return Ok(());
         };
         let window = buffer.window;
-        if self.windows.contains_key(&window) {
+        let state = self.windows.get(&window);
+        let live = state.is_some();
+        if state.is_none_or(|state| {
+            !state.configuration.resizing
+                && state
+                    .history
+                    .key
+                    .is_some_and(|(w, h, _)| buffer.size != (w, h))
+        }) {
+            self.destroy_buffer(object)?;
+        } else {
             buffer.busy = false;
+        }
+        if live {
             self.events.push_back(super::Event {
                 window,
                 kind: super::EventKind::BufferAvailable,
             });
-        } else {
-            self.buffers.remove(&object);
-            wl_buffer::Request::Destroy
-                .encode(object, &mut self.transport.writer)
-                .map_err(io::Error::other)?;
         }
         Ok(())
     }
@@ -320,10 +434,7 @@ impl Display {
             .filter_map(|(id, buffer)| (buffer.window == window && !buffer.busy).then_some(*id))
             .collect();
         for id in ids {
-            self.buffers.remove(&id);
-            wl_buffer::Request::Destroy
-                .encode(id, &mut self.transport.writer)
-                .map_err(io::Error::other)?;
+            self.destroy_buffer(id)?;
         }
         Ok(())
     }
@@ -447,6 +558,15 @@ mod tests {
             history.since(1, key).is_none(),
             "lag beyond the history is written whole"
         );
+        let solid = (1, 1, 1);
+        let pixel = [4];
+        history.record(solid, &pixel, history.damage(solid, &pixel));
+        assert_eq!(
+            history.frame.capacity(),
+            1,
+            "solid frame frees full-size history"
+        );
+        assert_eq!(history.damage(key, &third), [Rect::new(0, 0, 4, 3)]);
     }
 
     #[test]

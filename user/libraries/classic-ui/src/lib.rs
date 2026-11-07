@@ -16,7 +16,9 @@ mod editing;
 mod fonts;
 mod list_item;
 pub use fonts::{FontRole, Fonts};
-pub use list_item::{ITEM_DOUBLE_CLICK, IconLabel, ItemClick, ItemLook, large_icon_edit_rect};
+pub use list_item::{
+    ITEM_DOUBLE_CLICK, IconLabel, ItemClick, ItemLook, large_icon_edit_rect, large_icon_image_rect,
+};
 mod menu;
 mod menubar;
 mod painter;

@@ -41,6 +41,8 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   `.local/inputs/utm/`，可复制到其他 Apple Silicon Mac 离线重建。CI artifact 有保留期限，过期且无离线归档时
   必须显式更新基线，不改用滚动输入。源码、SDK 解包与编译中间文件在系统临时目录，完成后清理；
   `target/host/utm-build.json` 按输入、补丁、构建脚本和产物摘要判定缓存，普通启动不重编宿主 QEMU。
+  清理 `target/host` 前先退出 LiteOS 开发版 UTM。若应用文件已删除但旧进程仍在，先退出旧进程再运行 `make run-gui`，
+  构建会从已校验的归档恢复应用。
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
   kernel ISA baseline 由 target 定义，不使用 host `target-cpu=native`；跨 ISA 编译时 host CPU
   不属于目标 LLVM backend，native 会造成无效 CPU/codegen，且让同一源码随构建宿主改变指令。
@@ -166,6 +168,8 @@ python3 scripts/runtime_debug.py key liteos-gui 0xffeb 0x72
 
 `deploy` 在目标所在文件系统上传、校验 SHA-256 并通过 rename 替换应用。`--launch` 启动一个新进程，
 启动日志在 `/root/.liteos-launch.log`。桌面命令通过 SSH 的 Unix socket 转发访问 RFB，无独立网络监听。
+链接 Rust 系统动态库的程序（如桌面外壳）与其库应使用同次构建的产物。单独部署这类程序前可用来宾动态加载器的
+`--list` 在临时路径检查符号。正在运行的程序在下次启动时加载替换后的产物；桌面外壳退出会结束当前登录会话。
 当前 RFB 提供单连接、Raw XRGB8888 帧更新和常用键鼠操作。分辨率变化时重连，截图不包含独立的硬件光标。
 桌面进程卡住时，SSH 命令和文件服务仍可独立工作。串口保留用于网络未就绪的启动与故障恢复。
 `make verify-runtime-diagnostics` 从独立镜像冷启动，校验公钥认证、两次 SFTP 发布、截图及其键鼠回路。

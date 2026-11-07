@@ -11,7 +11,7 @@ mod view;
 mod webview;
 use browser::{Browser, Visit};
 use chrome::{Action, Command};
-use desktop_entry::fileops;
+use desktop_entry::{file_uris, fileops};
 use liteos_ui::{
     Application, ControlFlow, EditCommand, EventKind, MessageButtons, MessageResult, WindowOptions,
 };
@@ -20,6 +20,7 @@ use session::{Busy, Job, Launches, Session};
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::ExitCode,
     rc::Rc,
@@ -107,23 +108,20 @@ enum ShellDelete {
 
 fn delete_from_shell(home: &Path, request: ShellDelete) -> Result<()> {
     let operation = (|| -> Result<()> {
-        let ShellDelete::Entries { paths, intent } = request else {
-            if desktop_entry::trash::has_items(home)? {
-                let (title, text) = session::delete_prompt(&[], true, true);
-                if shell_message(title, &text, MessageButtons::YesNo)? == MessageResult::Yes {
-                    fileops::empty_trash(home)?;
-                }
+        let (entries, permanent, empty) = match request {
+            ShellDelete::EmptyRecycleBin => {
+                (fileops::Deletion::prepare_empty_trash(home)?, true, true)
             }
-            return Ok(());
+            ShellDelete::Entries { paths, intent } => (
+                fileops::Deletion::prepare(home, paths, intent)?,
+                intent == fileops::DeleteIntent::Permanent,
+                false,
+            ),
         };
-        let entries = fileops::Deletion::prepare(home, paths, intent)?;
-        let (title, mut text) =
-            session::delete_prompt(&entries, intent == fileops::DeleteIntent::Permanent, false);
-        if let [entry] = entries.as_slice()
-            && entry.mode == fileops::DeleteMode::Trash
-        {
-            text = format!("确实要将“{}”移动到回收站吗?", entry.path.display());
+        if entries.is_empty() {
+            return Ok(());
         }
+        let (title, text) = session::delete_prompt(&entries, permanent, empty);
         if shell_message(title, &text, MessageButtons::YesNo)? == MessageResult::Yes {
             fileops::Deletion::commit(home, entries, |_| {})?;
         }
@@ -150,8 +148,19 @@ fn run() -> Result<()> {
             return delete_from_shell(&home, ShellDelete::EmptyRecycleBin);
         }
         Some(verb @ ("--delete" | "--recycle" | "--delete-permanently")) => {
-            let paths: Vec<_> = args.map(PathBuf::from).collect();
-            if paths.is_empty() || paths.len() > 64 || paths.iter().any(|path| !path.is_absolute())
+            let mut paths: Vec<_> = args.map(PathBuf::from).collect();
+            if verb == "--recycle" && paths.len() == 1 && paths[0] == Path::new("-") {
+                // `-` 从标准输入读取同一 URI 列表，避免传输能力受 exec 参数长度限制。
+                let mut bytes = Vec::new();
+                io::stdin()
+                    .take((file_uris::MAX_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)?;
+                paths = file_uris::decode(&bytes, file_uris::MAX_PATHS)
+                    .ok_or("invalid recycle URI list")?;
+            }
+            if paths.is_empty()
+                || paths.len() > file_uris::MAX_PATHS
+                || paths.iter().any(|path| !path.is_absolute())
             {
                 return Err("delete requires absolute paths".into());
             }
@@ -194,7 +203,9 @@ fn run() -> Result<()> {
         clipboard: app.clipboard(),
         busy: Cell::new(true),
         directory_changes: RefCell::new(directory_changes),
+        trash_watch: RefCell::new(None),
         undo: RefCell::new(Vec::new()),
+        rename_draft: RefCell::new(None),
         closing: Cell::new(false),
         one_shot: launch.verb.is_some(),
         launches: launches.clone(),
@@ -265,38 +276,23 @@ fn run() -> Result<()> {
         let session = session.clone();
         let clock = app.clock();
         app.spawn_local(&window, async move {
-            let mut trash_stamp = None;
             loop {
-                let Ok(wait) = clock.sleep(Duration::from_secs(1)) else {
+                // 已有内容通知时降低拓扑扫描频率。首次创建、监听失败和网络驱动器仍按秒发现。
+                let watched_trash = session.directory_changes.borrow().is_some()
+                    && session
+                        .trash_watch
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(dirs, watched)| *watched && !dirs.is_empty());
+                let delay = Duration::from_secs(if watched_trash { 3 } else { 1 });
+                let Ok(wait) = clock.sleep(delay) else {
                     break;
                 };
                 wait.await;
-                // Mount changes have no notification endpoint. Read only the active virtual view.
+                // Mount changes have no notification endpoint. Discover only for the active view.
                 if session.browser.borrow().location == Location::RecycleBin {
-                    if session.busy.get() || !session.shown.get() {
-                        continue;
-                    }
-                    let home = session.home.clone();
-                    let Ok(work) = session
-                        .background
-                        .run(move || desktop_entry::trash::stamp(&home))
-                    else {
-                        continue;
-                    };
-                    let stamp = work.await;
-                    if session.busy.get()
-                        || session.browser.borrow().location != Location::RecycleBin
-                        || trash_stamp.as_ref() == Some(&stamp)
-                    {
-                        continue;
-                    }
-                    session.busy.set(true);
-                    let guard = Busy(session.clone());
-                    if guard.0.refresh_external().await.is_ok() {
-                        trash_stamp = Some(stamp);
-                    }
+                    session.refresh_trash().await;
                 } else {
-                    trash_stamp = None;
                     let _ = session.refresh_network_drives().await;
                 }
             }
@@ -329,6 +325,7 @@ fn run() -> Result<()> {
                     _ => break,
                 }
             }
+            session.directory_changes.borrow_mut().take();
         })?)
     } else {
         None
@@ -403,9 +400,9 @@ fn run() -> Result<()> {
                 }
             }
             EventKind::RenameRequested { row }
-                if event.node == view.list.id() && !session.busy.get() =>
+                if event.node == view.list.id() && view.list.selection()? == Some(row) =>
             {
-                session.begin_rename(row)?;
+                job = Some(Job::Command(Command::Do(Action::Rename)));
             }
             EventKind::LabelEdited { row } if event.node == view.list.id() => {
                 job = Some(Job::Rename(row, view.list.text()?))

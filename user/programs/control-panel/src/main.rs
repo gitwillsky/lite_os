@@ -29,8 +29,8 @@ type Activity = Pin<Box<dyn Future<Output = ()>>>;
 enum Response {
     /// 启动独立程序（程序与参数）。
     Launch(Vec<String>),
-    /// 关闭属性表（状态窗口的“禁用”）。
-    Close,
+    /// 后台操作成功后关闭属性表（例如状态窗口的“禁用”）。
+    CloseAfter(Apply),
     /// 在 UI 线程运行的异步流程（模态子对话框）；结束后重新计算属性表的“已修改”状态。
     Task(Activity),
 }
@@ -286,6 +286,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })?
     };
+    // 同一窗口只提交一次关闭前的操作，避免连续激活按钮重复修改系统状态。
+    let mut close_task: Option<liteos_ui::Task<()>> = None;
     app.run(|app, event| {
         tasks.retain(|task: &liteos_ui::Task<()>| !task.is_finished());
         if event.window != window.id() {
@@ -362,10 +364,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         })?);
                     }
-                    Ok(Some(Response::Close)) => {
-                        drop(page_borrow);
-                        window.close()?;
-                        return Ok(ControlFlow::Continue);
+                    Ok(Some(Response::CloseAfter(operation))) => {
+                        if close_task.as_ref().is_none_or(|task| task.is_finished()) {
+                            let work = background.run(operation)?;
+                            let closing_window = window.clone();
+                            close_task = Some(app.spawn_local(&window, async move {
+                                match work.await {
+                                    Ok(()) => {
+                                        let _ = closing_window.close();
+                                    }
+                                    Err(error) => report(error).await,
+                                }
+                            })?);
+                        }
                     }
                     Ok(Some(Response::Task(task))) => {
                         // 子对话框可能改了草稿：结束后按页面重新计算“已修改”，使“确定”写回。

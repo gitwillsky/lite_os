@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+glob = "=0.3.3"
 calendar = { path = "../calendar" }
 linux-uapi = { path = "../linux-uapi" }
 netcfg-protocol = { path = "../../../system/netcfg-protocol" }

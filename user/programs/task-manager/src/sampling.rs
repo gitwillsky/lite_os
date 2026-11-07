@@ -1,6 +1,7 @@
 //! 系统采样只在后台执行；UI 线程保存只读结果，刷新请求与单调期限唤醒同一个 Future。
 use crate::{
     gpu,
+    menus::Page,
     processes::{self, Process},
     services,
     system::Monitor,
@@ -17,29 +18,31 @@ use std::{
 };
 pub struct Sampler {
     pub monitor: Monitor,
-    pub gpu: gpu::Snapshot,
-    pub services: services::Snapshot,
     previous_services: HashMap<u64, u64>,
     previous: HashMap<(u32, u64), u64>,
+}
+/// 一轮后台读取的进程和服务快照，以及 GPU 页请求的设备快照。
+pub struct Sample {
+    pub rows: Vec<Process>,
+    pub gpu: Option<gpu::Snapshot>,
+    pub services: services::Snapshot,
 }
 impl Sampler {
     pub fn new() -> Self {
         Self {
             monitor: Monitor::new(),
-            gpu: gpu::Snapshot::default(),
-            services: services::Snapshot::default(),
             previous_services: HashMap::new(),
             previous: HashMap::new(),
         }
     }
-    pub fn sample(mut self) -> (Self, Vec<Process>) {
+    /// 为 `page` 采样，返回继续持有差分基线的采样器和本轮只读结果。
+    pub fn sample(mut self, page: Page) -> (Self, Sample) {
         self.monitor.sample();
         let rows = processes::list(&self.previous, &self.monitor);
-        self.gpu = gpu::Snapshot::read(&rows);
-        self.services =
+        let gpu = (page == Page::Gpu).then(|| gpu::Snapshot::read(&rows));
+        let services =
             services::Snapshot::read(&self.previous_services, self.monitor.interval_ticks);
-        self.previous_services = self
-            .services
+        self.previous_services = services
             .rows
             .iter()
             .map(|service| (service.record.koid, service.record.cpu_ns))
@@ -48,7 +51,14 @@ impl Sampler {
             .iter()
             .map(|row| ((row.pid, row.start_ticks), row.cpu_ticks))
             .collect();
-        (self, rows)
+        (
+            self,
+            Sample {
+                rows,
+                gpu,
+                services,
+            },
+        )
     }
 }
 #[derive(Default)]

@@ -491,6 +491,43 @@ impl Bitmap {
         }
     }
 
+    /// 用 `width * height` 个 RGB 像素替换位图，忽略输入的高字节并补成不透明 ARGB。
+    /// 尺寸必须为正且像素数必须匹配。复用已有容量，明显缩小时归还大缓冲。
+    ///
+    /// # Errors
+    /// 尺寸无效或分配失败时返回错误，保留原图。
+    pub fn replace_opaque_pixels(
+        &mut self,
+        pixels: &[u32],
+        width: i32,
+        height: i32,
+    ) -> io::Result<()> {
+        if width <= 0
+            || height <= 0
+            || (width as usize).checked_mul(height as usize) != Some(pixels.len())
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        // 拖动时的小幅缩放复用容量；退出全屏等明显缩小时不长期保留峰值缓冲。
+        if pixels.len() < self.pixels.capacity() / 2 {
+            let mut smaller = Vec::new();
+            if smaller.try_reserve_exact(pixels.len()).is_ok() {
+                self.pixels = smaller;
+            }
+        } else if pixels.len() > self.pixels.capacity() {
+            self.pixels
+                .try_reserve_exact(pixels.len() - self.pixels.len())
+                .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        }
+        self.pixels.clear();
+        self.pixels
+            .extend(pixels.iter().map(|pixel| pixel | 0xff00_0000));
+        self.width = width;
+        self.height = height;
+        self.indices = None;
+        Ok(())
+    }
+
     /// 按 Painter 的整数输出 scale 绘制，超出绘图区自动裁剪；坐标为逻辑像素。
     pub fn paint(&self, painter: &mut Painter<'_>, x: i32, y: i32) {
         self.paint_region(painter, x, y, 0, self.width);

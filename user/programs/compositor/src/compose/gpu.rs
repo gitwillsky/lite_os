@@ -60,13 +60,10 @@ pub(crate) struct Gpu {
     overlay: Option<Overlay>,
 }
 
-/// 整屏大小的叠加层画布与纹理，只重画、上传并采样当帧面板所在矩形。
-/// 缺少它每帧都要分配整屏像素、新建整屏纹理并整屏上传，菜单一打开悬停就会卡顿。
+/// 最近一次叠加矩形大小的画布与纹理；仅移动位置时复用，悬停重绘不重新分配。
 struct Overlay {
     pixels: Vec<u32>,
     texture: Rc<VirglResource>,
-    /// 上一帧画过的矩形；本帧先清成透明，否则面板缩小或移动后旧像素会残留在下一次采样里。
-    painted: Rect,
 }
 impl Gpu {
     pub(crate) fn new(device: &DrmDevice, width: u32, height: u32) -> io::Result<Self> {
@@ -162,7 +159,7 @@ impl Gpu {
         theme: &Theme,
         windows: &[Drawable<'_>],
         overlay_bounds: Option<Rect>,
-        overlay: impl FnOnce(Surface<'_>),
+        overlay: impl FnOnce(Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
         let (width, height) = (
             self.targets[back].resource.width(),
@@ -186,58 +183,32 @@ impl Gpu {
             });
         }
         if let Some(bounds) = overlay_bounds.filter(|bounds| !bounds.is_empty()) {
-            // 合成器自身的菜单/切换面板也作为透明纹理取样，不退回整屏 CPU 合成。
-            let layer = match &mut self.overlay {
-                Some(layer) => layer,
-                None => self.overlay.insert(Overlay {
+            let (width, height) = (bounds.width as u32, bounds.height as u32);
+            if self.overlay.as_ref().is_none_or(|layer| {
+                (layer.texture.width(), layer.texture.height()) != (width, height)
+            }) {
+                self.overlay = Some(Overlay {
                     pixels: vec![0; width as usize * height as usize],
                     texture: Rc::new(self.context.create_texture(width, height)?),
-                    painted: Rect::default(),
-                }),
-            };
-            let stride = width as usize;
-            for row in layer.painted.y..layer.painted.bottom() {
-                let start = row as usize * stride + layer.painted.x as usize;
-                layer.pixels[start..start + layer.painted.width as usize].fill(0);
+                });
             }
-            let surface = Surface::new(&mut layer.pixels, width as i32, height as i32, stride)
-                .expect("overlay geometry");
-            overlay(surface);
-            // 清掉的旧矩形与新面板一并上传；采样只取新面板，但旧像素必须在下一次出现前变透明。
-            let (x, y) = (bounds.x.min(layer.painted.x), bounds.y.min(layer.painted.y));
-            let upload = if layer.painted.is_empty() {
-                bounds
-            } else {
-                Rect::new(
-                    x,
-                    y,
-                    bounds.right().max(layer.painted.right()) - x,
-                    bounds.bottom().max(layer.painted.bottom()) - y,
-                )
-            };
-            // 纹理通常仍被上一帧引用；write_texture 走命令流内联写入，不等待 fence。
-            let mut rows = Vec::with_capacity(upload.width as usize * upload.height as usize);
-            for row in upload.y..upload.bottom() {
-                let start = row as usize * stride + upload.x as usize;
-                rows.extend_from_slice(&layer.pixels[start..start + upload.width as usize]);
-            }
-            self.context.write_texture(
-                &layer.texture,
-                upload.x as u32,
-                upload.y as u32,
-                upload.width as u32,
-                upload.height as u32,
-                &rows,
-            )?;
-            layer.painted = bounds;
+            let layer = self.overlay.as_mut().expect("overlay prepared");
+            layer.pixels.fill(0);
+            let surface = Surface::new(
+                &mut layer.pixels,
+                bounds.width,
+                bounds.height,
+                width as usize,
+            )
+            .expect("overlay geometry");
+            overlay(surface, (bounds.x, bounds.y));
+            // 画布与纹理同尺寸，直接上传连续像素。内联写入沿用上一帧的 GPU 命令顺序。
+            self.context
+                .write_texture(&layer.texture, 0, 0, width, height, &layer.pixels)?;
             quads.push(Quad {
                 texture: layer.texture.clone(),
                 rect: bounds,
-                source: canvas::ImageSource {
-                    origin: (f64::from(bounds.x), f64::from(bounds.y)),
-                    right: (f64::from(bounds.right()), f64::from(bounds.y)),
-                    bottom: (f64::from(bounds.x), f64::from(bounds.bottom())),
-                },
+                source: canvas::ImageSource::full(bounds.width, bounds.height),
             });
         }
         let bytes = quads

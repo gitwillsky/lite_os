@@ -1,5 +1,6 @@
 //! Windows 2000 风格的 IP 配置与 DHCP 租约操作。当前状态和租约由 netcfg 提供。
 use netcfg_protocol::{DhcpAction, Method};
+use network_config::{Link, LinkState, ethernet_links_with_settings};
 use std::{
     io::{self, Write},
     net::Ipv4Addr,
@@ -29,8 +30,9 @@ fn lease_date(unix: i64) -> String {
     )
 }
 
-fn show(all: bool, selected: Option<&[u8]>) -> io::Result<()> {
+fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
     let snapshot = network_config::snapshot()?;
+    let links = ethernet_links_with_settings(Some(&snapshot))?;
     let mut output = io::stdout().lock();
     writeln!(output, "\nLiteOS IP 配置")?;
     if all && let Ok(identity) = linux_uapi::uts::read() {
@@ -54,43 +56,62 @@ fn show(all: bool, selected: Option<&[u8]>) -> io::Result<()> {
             }
         }
     }
-    for interface in snapshot.interfaces {
-        if selected.is_some_and(|name| interface.name != name) {
+    for link in links {
+        if selected.is_some_and(|names| !names.contains(&link.interface.as_str())) {
             continue;
         }
-        let name = String::from_utf8_lossy(&interface.name);
-        writeln!(output, "\n以太网适配器 {name}:\n")?;
+        writeln!(output, "\n以太网适配器 {}:\n", link.name)?;
+        let interface = snapshot
+            .interfaces
+            .iter()
+            .find(|entry| entry.name == link.interface.as_bytes());
         if all {
             writeln!(
                 output,
                 "        连接特定的 DNS 后缀 . . . . . : {}",
-                interface.dns_suffix
+                interface.map_or("", |entry| entry.dns_suffix.as_str())
             )?;
+            writeln!(
+                output,
+                "        说明 . . . . . . . . . . . . : {}",
+                link.driver
+            )?;
+            if let Some(interface) = interface {
+                let mac = network_config::format_mac(interface.mac);
+                writeln!(output, "        物理地址 . . . . . . . . . . : {mac}")?;
+            }
         }
-        if interface.config.method == Method::Disabled {
-            writeln!(output, "        媒体状态 . . . . . . . . . . : 已禁用")?;
+        let media = match link.state {
+            LinkState::Disabled => Some("已禁用"),
+            LinkState::Disconnected => Some("网络电缆被拔出"),
+            LinkState::Connected => None,
+        };
+        if let Some(media) = media {
+            writeln!(output, "        媒体状态 . . . . . . . . . . : {media}")?;
             continue;
         }
+        let Some(interface) = interface else {
+            continue;
+        };
         if all {
-            let mac = interface.mac.map(|byte| format!("{byte:02X}")).join("-");
             let dhcp = if interface.config.method == Method::Dhcp {
                 "是"
             } else {
                 "否"
             };
-            writeln!(output, "        物理地址 . . . . . . . . . . : {mac}")?;
             writeln!(output, "        DHCP 已启用  . . . . . . . . : {dhcp}")?;
         }
+        let mask = if interface.address.is_unspecified() {
+            String::new()
+        } else {
+            network_config::prefix_mask(interface.prefix_length).to_string()
+        };
         writeln!(
             output,
             "        IP 地址  . . . . . . . . . . : {}",
-            interface.address
+            address(interface.address)
         )?;
-        writeln!(
-            output,
-            "        子网掩码 . . . . . . . . . . : {}",
-            network_config::prefix_mask(interface.prefix_length)
-        )?;
+        writeln!(output, "        子网掩码 . . . . . . . . . . : {mask}")?;
         writeln!(
             output,
             "        默认网关 . . . . . . . . . . : {}",
@@ -121,14 +142,45 @@ fn show(all: bool, selected: Option<&[u8]>) -> io::Result<()> {
     output.flush()
 }
 
-fn dhcp(action: DhcpAction, selected: Option<&[u8]>) -> io::Result<()> {
+fn matching_interfaces<'a>(links: &'a [Link], selected: Option<&str>) -> io::Result<Vec<&'a str>> {
+    let Some(selected) = selected else {
+        return Ok(links.iter().map(|link| link.interface.as_str()).collect());
+    };
+    // 保留已有脚本的精确接口名。通配只匹配显示名，避免一次操作误选同名接口。
+    if let Some(link) = links.iter().find(|link| link.interface == selected) {
+        return Ok(vec![&link.interface]);
+    }
+    let mut pattern = String::new();
+    for ch in selected.to_lowercase().chars() {
+        match ch {
+            // glob 的 ** 有目录递归语义，连接名中的连续 * 等价于一个 *。
+            '*' if pattern.ends_with('*') => {}
+            '[' => pattern.push_str("[[]"),
+            ']' => pattern.push_str("[]]"),
+            _ => pattern.push(ch),
+        }
+    }
+    let pattern = glob::Pattern::new(&pattern)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    Ok(links
+        .iter()
+        .filter(|link| pattern.matches(&link.name.to_lowercase()))
+        .map(|link| link.interface.as_str())
+        .collect())
+}
+
+fn dhcp(action: DhcpAction, selected: Option<&str>) -> io::Result<()> {
     let snapshot = network_config::snapshot()?;
+    let links = ethernet_links_with_settings(Some(&snapshot))?;
+    let selected = matching_interfaces(&links, selected)?;
     let mut interfaces = snapshot
         .interfaces
         .iter()
         .filter(|interface| {
             interface.config.method == Method::Dhcp
-                && selected.is_none_or(|name| interface.name == name)
+                && selected
+                    .iter()
+                    .any(|name| interface.name == name.as_bytes())
         })
         .peekable();
     if interfaces.peek().is_none() {
@@ -148,11 +200,11 @@ fn dhcp(action: DhcpAction, selected: Option<&[u8]>) -> io::Result<()> {
     if failed {
         return Err(io::Error::other("有适配器未完成 DHCP 操作"));
     }
-    show(false, selected)
+    show(false, Some(&selected))
 }
 
 fn main() -> ExitCode {
-    const USAGE: &str = "用法：ipconfig [/all | /renew [适配器] | /release [适配器]]";
+    const USAGE: &str = "用法：ipconfig [/all | /renew [适配器] | /release [适配器]]\n适配器使用连接名称，支持 * 和 ? 通配符。";
     let mut arguments = std::env::args_os().skip(1);
     let option = arguments.next();
     let adapter = arguments.next();
@@ -175,10 +227,18 @@ fn main() -> ExitCode {
             } else {
                 DhcpAction::Release
             };
-            dhcp(
-                action,
-                adapter.as_ref().map(|value| value.as_encoded_bytes()),
-            )
+            match adapter.as_ref() {
+                Some(value) => value.to_str().map_or_else(
+                    || {
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "无效的连接名称",
+                        ))
+                    },
+                    |name| dhcp(action, Some(name)),
+                ),
+                None => dhcp(action, None),
+            }
         }
         _ => {
             eprintln!("{USAGE}");
