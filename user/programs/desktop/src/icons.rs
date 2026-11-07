@@ -2,7 +2,7 @@
 use crate::start::Place;
 use canvas::Rect;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -239,6 +239,24 @@ impl Icons {
         )
     }
 
+    /// 图标视图的 Shift 范围是两端网格围成的矩形；自由移动后不能按目录行号取连续项。
+    /// 参数为仍有效的锚点和目标索引，返回矩形内按条目索引排序的项目，不分配集合。
+    pub fn rectangular_selection(
+        &self,
+        anchor: usize,
+        target: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let (a, b) = (self.cells[anchor], self.cells[target]);
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, &(x, y))| {
+                ((a.0.min(b.0)..=a.0.max(b.0)).contains(&x)
+                    && (a.1.min(b.1)..=a.1.max(b.1)).contains(&y))
+                .then_some(index)
+            })
+    }
+
     /// 在 `work_area` 内按网格移动选择。方向是单轴的一格偏移。
     /// 无选择时返回最左列的第一个项目，到达边缘时保留当前项。
     pub fn step(
@@ -279,36 +297,66 @@ impl Icons {
             .or(Some(index))
     }
 
-    /// 把图标拖放到屏幕位置 `center`（图标中心）：落在被占用的格子上则选最近的空格；保存新位置。
+    /// 按抓取项的中心 `center` 平移整组选中图标，保留相对网格位置，避开未选中项后保存。
     ///
     /// # Errors
     ///
-    /// 保存位置文件失败；内存中的位置已更新，下次启动才会丢失。
+    /// 无效选择或桌面没有容纳整组的空间时保持原位；保存失败时内存位置已更新。
     pub fn drop_at(
         &mut self,
+        selection: &[usize],
         index: usize,
         center: (i32, i32),
         screen: (i32, i32),
     ) -> io::Result<()> {
+        if selection.binary_search(&index).is_err()
+            || selection.iter().any(|i| *i >= self.cells.len())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "无效的图标选择",
+            ));
+        }
         let columns = ((screen.0 - ORIGIN.0) / self.cell.0).max(1);
         let rows = ((screen.1 - 28 - ORIGIN.1) / self.cell.1).max(1);
+        let origin = self.cells[index];
         let wanted = (
-            ((center.0 - ORIGIN.0) / self.cell.0).clamp(0, columns - 1),
-            ((center.1 - ORIGIN.1) / self.cell.1).clamp(0, rows - 1),
+            (center.0 - ORIGIN.0) / self.cell.0 - origin.0,
+            (center.1 - ORIGIN.1) / self.cell.1 - origin.1,
         );
-        let free = |cell: &(i32, i32)| {
-            !self
-                .cells
-                .iter()
-                .enumerate()
-                .any(|(i, c)| i != index && c == cell)
+        let bounds = selection.iter().fold(
+            (origin.0, origin.1, origin.0, origin.1),
+            |(left, top, right, bottom), i| {
+                let (x, y) = self.cells[*i];
+                (left.min(x), top.min(y), right.max(x), bottom.max(y))
+            },
+        );
+        // 只在释放抓取时建立局部占用索引。移动事件不分配，不逐项放置而打散整组的相对位置。
+        let occupied: HashSet<_> = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| selection.binary_search(i).is_err())
+            .map(|(_, cell)| *cell)
+            .collect();
+        let free = |&(dx, dy): &(i32, i32)| {
+            selection.iter().all(|i| {
+                let (x, y) = self.cells[*i];
+                !occupied.contains(&(x + dx, y + dy))
+            })
         };
-        let target = (0..columns)
-            .flat_map(|c| (0..rows).map(move |r| (c, r)))
+        let target = (-bounds.0..columns - bounds.2)
+            .flat_map(|dx| (-bounds.1..rows - bounds.3).map(move |dy| (dx, dy)))
             .filter(free)
-            .min_by_key(|(c, r)| (c - wanted.0).pow(2) + (r - wanted.1).pow(2))
-            .unwrap_or(wanted);
-        self.cells[index] = target;
+            .min_by_key(|(dx, dy)| {
+                (i64::from(*dx) - i64::from(wanted.0)).pow(2)
+                    + (i64::from(*dy) - i64::from(wanted.1)).pow(2)
+            })
+            .ok_or_else(|| io::Error::other("桌面空间不足，无法保持所选图标的排列"))?;
+        for i in selection {
+            self.cells[*i].0 += target.0;
+            self.cells[*i].1 += target.1;
+        }
         for (icon, cell) in self.items.iter().zip(&self.cells) {
             self.saved.insert(icon.key.clone(), *cell);
         }

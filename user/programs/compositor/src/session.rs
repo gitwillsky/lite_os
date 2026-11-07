@@ -392,6 +392,18 @@ impl Session {
             .map(|layer| (layer.client, layer.surface))
     }
 
+    /// 普通桌面的按需键盘目标；安全登录图层不参与桌面焦点回退。
+    fn desktop_keyboard(&self, boxes: &[LayerBox]) -> Option<(ClientId, ObjectId)> {
+        boxes
+            .iter()
+            .find(|layer| {
+                Some(layer.client) != self.logon_client
+                    && layer.layer == Layer::Background
+                    && layer.keyboard == KeyboardInteractivity::OnDemand
+            })
+            .map(|layer| (layer.client, layer.surface))
+    }
+
     /// 运行到出错为止；正常情况下不返回。
     ///
     /// # Errors
@@ -756,6 +768,15 @@ impl Session {
                         && layer.keyboard == KeyboardInteractivity::OnDemand
                 })
         });
+        // 最后一个普通窗口（包括外壳启动的独立确认）退出后，后续按键回到桌面。
+        // 复用既有 layer 状态，不保留第二套焦点历史；独占、安全握手和显式图层焦点仍优先。
+        if exclusive.is_none()
+            && !self.secure_pending
+            && self.keyboard_layer.is_none()
+            && self.stack.active().is_none()
+        {
+            self.keyboard_layer = self.desktop_keyboard(&boxes);
+        }
         self.seat.sync_keyboard(
             &mut self.server,
             &self.stack,

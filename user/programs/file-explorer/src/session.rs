@@ -430,30 +430,31 @@ impl Session {
         if self.busy.get() || !self.browser.borrow().location.is_recycle_bin() {
             return;
         }
-        let mut changes = self.directory_changes.borrow_mut();
-        if self
-            .trash_watch
-            .borrow()
-            .as_ref()
-            .is_some_and(|(previous, watched)| {
-                if *watched && changes.is_some() {
-                    previous.len() == stamp.len()
-                        && previous.iter().zip(&stamp).all(|(left, right)| {
-                            left.path == right.path && left.identity == right.identity
-                        })
-                } else {
-                    previous == &stamp
-                }
+        let watched = {
+            let mut changes = self.directory_changes.borrow_mut();
+            if self
+                .trash_watch
+                .borrow()
+                .as_ref()
+                .is_some_and(|(previous, watched)| {
+                    if *watched && changes.is_some() {
+                        previous.len() == stamp.len()
+                            && previous.iter().zip(&stamp).all(|(left, right)| {
+                                left.path == right.path && left.identity == right.identity
+                            })
+                    } else {
+                        previous == &stamp
+                    }
+                })
+            {
+                return;
+            }
+            changes.as_mut().is_some_and(|changes| {
+                changes
+                    .follow(stamp.iter().map(|entry| entry.path.as_path()))
+                    .is_ok()
             })
-        {
-            return;
-        }
-        let watched = changes.as_mut().is_some_and(|changes| {
-            changes
-                .follow(stamp.iter().map(|entry| entry.path.as_path()))
-                .is_ok()
-        });
-        drop(changes);
+        };
         self.trash_watch.replace(Some((stamp, watched)));
         self.busy.set(true);
         let guard = Busy(self.clone());
@@ -538,10 +539,11 @@ impl Session {
                 .background
                 .run(move || network_config::rename_connection(&interface, &name))?
                 .await;
-            self.view.list.finish_label_edit(result.is_ok())?;
             if let Err(error) = result {
                 self.report("重命名连接时出错", error).await;
+                self.view.list.finish_label_edit(false)?;
             } else {
+                self.view.list.finish_label_edit(true)?;
                 self.refresh().await?;
                 self.view.list.select(Some(row))?;
             }
@@ -571,11 +573,15 @@ impl Session {
             }
             Err(error) => {
                 let stale = error.kind() == std::io::ErrorKind::NotFound;
-                self.view.list.finish_label_edit(stale)?;
+                if stale {
+                    self.view.list.finish_label_edit(true)?;
+                }
+                // 错误框获得焦点之前保留 pending；提前恢复草稿会把它引起的失焦当成再次提交。
+                self.report("重命名文件或文件夹时出错", error).await;
                 if !stale {
                     self.rename_draft.replace(Some((row, draft)));
+                    self.view.list.finish_label_edit(false)?;
                 }
-                self.report("重命名文件或文件夹时出错", error).await;
                 Ok(())
             }
         }

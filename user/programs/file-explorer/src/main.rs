@@ -149,14 +149,14 @@ fn run() -> Result<()> {
         }
         Some(verb @ ("--delete" | "--recycle" | "--delete-permanently")) => {
             let mut paths: Vec<_> = args.map(PathBuf::from).collect();
-            if verb == "--recycle" && paths.len() == 1 && paths[0] == Path::new("-") {
+            if paths.len() == 1 && paths[0] == Path::new("-") {
                 // `-` 从标准输入读取同一 URI 列表，避免传输能力受 exec 参数长度限制。
                 let mut bytes = Vec::new();
                 io::stdin()
                     .take((file_uris::MAX_BYTES + 1) as u64)
                     .read_to_end(&mut bytes)?;
                 paths = file_uris::decode(&bytes, file_uris::MAX_PATHS)
-                    .ok_or("invalid recycle URI list")?;
+                    .ok_or("invalid deletion URI list")?;
             }
             if paths.is_empty()
                 || paths.len() > file_uris::MAX_PATHS

@@ -228,6 +228,39 @@ impl Art {
         Ok(None)
     }
 
+    /// 框选与点击共用实际图像、标题几何；格子留白不命中。
+    /// # Errors
+    /// 无法加载当前比例的图标字体时返回错误。
+    pub fn icon_intersects(
+        &mut self,
+        icons: &super::icons::Icons,
+        index: usize,
+        scale: i32,
+        area: Rect,
+        expanded: bool,
+    ) -> io::Result<bool> {
+        let cell = icons.rect(index);
+        if cell.intersect(area).is_empty() && !expanded {
+            return Ok(false);
+        }
+        let icon = &icons.items[index];
+        let (width, height) = self
+            .desktop_icon_bitmap(icon, icons.trash_full)
+            .map_or((32, 32), |image| (image.width(), image.height()));
+        if !classic_ui::large_icon_image_rect(cell, width, height)
+            .intersect(area)
+            .is_empty()
+        {
+            return Ok(true);
+        }
+        self.icon_geometry(scale, |p| {
+            !p.icon_label(cell, height, &icon.label, expanded)
+                .rect
+                .intersect(area)
+                .is_empty()
+        })
+    }
+
     /// 文件拖放只命中回收站图像或标题，格子留白仍属于桌面。
     pub fn recycle_target(
         &mut self,
@@ -440,21 +473,30 @@ pub fn background_frame(
     }
 
     let focused = d.keyboard_focus() == Some(s.background);
-    let recycle_hover = s.drop_hover || s.drag.as_ref().is_some_and(|drag| drag.recycle);
+    let recycle_hover =
+        s.drop_hover || matches!(s.drag, Some(super::Drag::Icons { recycle: true, .. }));
+    let delta = match &s.drag {
+        Some(super::Drag::Icons {
+            index,
+            grab,
+            pos,
+            moved: true,
+            ..
+        }) => {
+            let origin = s.icons.rect(*index);
+            (pos.0 - grab.0 - origin.x, pos.1 - grab.1 - origin.y)
+        }
+        _ => (0, 0),
+    };
     for (i, icon) in s.icons.items.iter().enumerate() {
         // 正在拖动的图标跟随指针，不画在原位。
         let mut r = s.icons.rect(i);
-        if let Some(drag) = s.drag.as_ref().filter(|d| d.index == i && d.moved) {
-            r = Rect::new(
-                drag.pos.0 - drag.grab.0,
-                drag.pos.1 - drag.grab.1,
-                r.width,
-                r.height,
-            );
+        if s.selection.binary_search(&i).is_ok() {
+            r = Rect::new(r.x + delta.0, r.y + delta.1, r.width, r.height);
         }
         // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
         // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
-        let selected = s.selected == Some(i)
+        let selected = s.selection.binary_search(&i).is_ok()
             || (recycle_hover
                 && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
         let bitmap = art.desktop_icon_bitmap(icon, s.icons.trash_full);
@@ -475,7 +517,7 @@ pub fn background_frame(
                 classic_ui::ItemLook {
                     selected,
                     active: true,
-                    focused: focused && s.selected == Some(i),
+                    focused: focused && selected && s.focused == Some(i),
                     text: C::HilightText,
                 },
             );
@@ -490,6 +532,21 @@ pub fn background_frame(
         if !label.is_empty() {
             backdrop.covered.push(label);
         }
+    }
+    if let Some(area) = s
+        .drag
+        .as_ref()
+        .and_then(super::Drag::selection_rect)
+        .filter(|area| !area.is_empty())
+    {
+        p.focus_rect(area);
+        // 只恢复并提交框的四条边，不能让一次框选退化成持续的整屏背景复制。
+        backdrop.covered.extend([
+            Rect::new(area.x, area.y, area.width, 1),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            Rect::new(area.x, area.y, 1, area.height),
+            Rect::new(area.right() - 1, area.y, 1, area.height),
+        ]);
     }
     if !s.message.is_empty() {
         // 状态文字没有固定的绘制矩形（字体可溢出字高），下次重建背景以免残留。

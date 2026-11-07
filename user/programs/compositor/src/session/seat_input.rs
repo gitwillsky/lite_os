@@ -185,15 +185,7 @@ impl Session {
                     && !self.secure_pending
                     && self.seat.desktop_shortcut(code, pressed)
                 {
-                    self.keyboard_layer = self
-                        .layer_boxes()
-                        .iter()
-                        .find(|layer| {
-                            Some(layer.client) != self.logon_client
-                                && layer.layer == Layer::Background
-                                && layer.keyboard == KeyboardInteractivity::OnDemand
-                        })
-                        .map(|layer| (layer.client, layer.surface));
+                    self.keyboard_layer = self.desktop_keyboard(&self.layer_boxes());
                 }
                 self.seat.sync_keyboard(
                     &mut self.server,

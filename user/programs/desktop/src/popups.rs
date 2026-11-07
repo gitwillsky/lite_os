@@ -28,9 +28,8 @@ pub enum Action {
     /// 在资源管理器中打开外壳位置。
     OpenPlace(crate::start::Place),
     RenameIcon(usize),
-    DeleteIcon(usize),
+    DeleteSelection,
     FileSelection {
-        index: usize,
         cut: bool,
     },
     PasteFiles,
@@ -180,13 +179,9 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
                     false,
                 );
             }
-            add("剪切(T)", Action::FileSelection { index, cut: true }, true);
-            add(
-                "复制(C)",
-                Action::FileSelection { index, cut: false },
-                false,
-            );
-            add("删除(D)", Action::DeleteIcon(index), true);
+            add("剪切(T)", Action::FileSelection { cut: true }, true);
+            add("复制(C)", Action::FileSelection { cut: false }, false);
+            add("删除(D)", Action::DeleteSelection, true);
             add("重命名(M)", Action::RenameIcon(index), false);
             add("属性(R)", Action::IconVerb(index, "properties"), true);
         }
@@ -307,7 +302,7 @@ impl ContextMenu {
         let count = self.items.len();
         let mut index = self
             .hover
-            .unwrap_or(if down { count.saturating_sub(1) } else { 0 });
+            .unwrap_or_else(|| if down { count.saturating_sub(1) } else { 0 });
         for _ in 0..count {
             index = if down {
                 (index + 1) % count
@@ -488,19 +483,19 @@ impl Desktop {
         };
         let (_, pointer_x, pointer_y) = self.pointer;
         let (x, y, hit) = if keyboard {
-            let (x, y) = self.selected.map_or((0, 0), |index| {
+            let (x, y) = self.focused.map_or((0, 0), |index| {
                 let cell = self.icons.rect(index);
                 (cell.x + cell.width / 2, cell.bottom())
             });
             (
                 f64::from(x.clamp(0, c.width)),
                 f64::from(y.clamp(0, c.height)),
-                self.selected,
+                self.focused,
             )
         } else if window == self.background {
-            let expanded = self
-                .selected
-                .filter(|_| display.keyboard_focus() == Some(window));
+            let expanded = self.focused.filter(|index| {
+                self.selection.contains(index) && display.keyboard_focus() == Some(window)
+            });
             let hit = art
                 .icon_at(&self.icons, c.scale, (pointer_x, pointer_y), expanded)?
                 .map(|(index, _)| index);
@@ -548,10 +543,19 @@ impl Desktop {
         } else if window == self.background {
             match hit {
                 Some(index) => {
-                    self.selected = Some(index);
+                    if self.selection.contains(&index) {
+                        self.focused = Some(index);
+                    } else {
+                        self.select_icon(index, false, false, false);
+                    }
                     icon_items(index, self.icon_kind(index))
                 }
-                None => desktop_items(self.paste.is_none() && clipboard::can_paste(display)),
+                None => {
+                    self.selection.clear();
+                    self.focused = None;
+                    self.selection_anchor = None;
+                    desktop_items(self.paste.is_none() && clipboard::can_paste(display))
+                }
             }
         } else {
             return Ok(());

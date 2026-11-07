@@ -190,7 +190,9 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 ### 桌面程序入口与系统图像
 
 - 列表名称编辑的提交/取消与应用裁决参照 [Win32 List-View Label Editing](https://learn.microsoft.com/en-us/windows/win32/controls/list-view-controls-overview#list-view-label-editing)；
-  失焦结束编辑的成熟实现参照 [Wine 10.0 comctl32/listview.c](https://github.com/wine-mirror/wine/blob/wine-10.0/dlls/comctl32/listview.c) 的 `EN_KILLFOCUS` 与 `LISTVIEW_CancelEditLabel`。
+  失焦结束编辑与图标 Shift 矩形选择参照 [Wine 10.0 comctl32/listview.c](https://github.com/wine-mirror/wine/blob/wine-10.0/dlls/comctl32/listview.c) 的 `EN_KILLFOCUS`、`LISTVIEW_CancelEditLabel` 和 `LISTVIEW_SetGroupSelection`。
+- 对话框的 owner、禁用范围与关闭生命周期按 [Win32 Dialog Box Owner Window](https://learn.microsoft.com/en-us/windows/win32/dlgbox/about-dialog-boxes#dialog-box-owner-window) 核对；
+  LiteOS 使用标准 xdg_toplevel parent 关系，由合成器窗口栈恢复退出的活动子窗口的存活祖先。
 - 控件几何失效与像素重绘的职责分离参照 [Qt 6.8.3 QWidget 固定实现](https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/kernel/qwidget.cpp)的 `updateGeometry` 与 `update`；只采用成熟的布局/绘制失效语义，不引入 Qt 运行时依赖。
 - [XDG Base Directory Specification `0.8`](https://specifications.freedesktop.org/basedir-spec/0.8/)；
   [Icon Theme Specification `0.13`](https://specifications.freedesktop.org/icon-theme/0.13/)（当前实现 hicolor PNG 子集）。

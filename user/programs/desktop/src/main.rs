@@ -35,16 +35,50 @@ fn installed_programs() -> Vec<desktop_entry::Entry> {
     apps
 }
 
-/// 一次图标拖动：按下时指针在图标内的偏移、当前指针位置，以及是否已移动足够远（区分点击与拖动）。
-struct Drag {
-    index: usize,
-    grab: (i32, i32),
-    pos: (i32, i32),
-    moved: bool,
-    /// 最近一次移动命中回收站；绘制高亮和释放按钮使用同一判定。
-    recycle: bool,
-    /// 按下时该项已选中，释放时点击标签可以请求重命名。
-    was_selected: bool,
+/// 指针抓取只属于图标移动或框选之一，退出抓取前目录刷新不得改变条目索引。
+enum Drag {
+    Icons {
+        index: usize,
+        grab: (i32, i32),
+        pos: (i32, i32),
+        moved: bool,
+        /// 最近一次移动命中回收站；绘制高亮和释放按钮使用同一判定。
+        recycle: bool,
+        /// 按下时该项已选中，释放时点击标签可以请求重命名。
+        was_selected: bool,
+    },
+    Selection {
+        origin: (i32, i32),
+        pos: (i32, i32),
+        /// 抓取前的选择，Ctrl 框选以它为基准切换，Esc 恢复它。
+        before: Vec<usize>,
+        control: bool,
+        /// Shift 保留原集合；Ctrl 也保留，但对框内条目切换选中状态。
+        extend: bool,
+    },
+}
+
+impl Drag {
+    fn selection_rect(&self) -> Option<canvas::Rect> {
+        let Self::Selection { origin, pos, .. } = self else {
+            return None;
+        };
+        Some(canvas::Rect::new(
+            origin.0.min(pos.0),
+            origin.1.min(pos.1),
+            (origin.0 - pos.0).abs(),
+            (origin.1 - pos.1).abs(),
+        ))
+    }
+
+    fn moved(&self) -> bool {
+        match self {
+            Self::Icons { moved, .. } => *moved,
+            Self::Selection { origin, pos, .. } => {
+                (origin.0 - pos.0).abs() > 4 || (origin.1 - pos.1).abs() > 4
+            }
+        }
+    }
 }
 
 /// 编辑绑定到原始路径，目录刷新或重新排序不会改到另一项。
@@ -67,7 +101,11 @@ struct Desktop {
     control: UnixStream,
     pointer: (WindowId, f64, f64),
     armed: Option<(WindowId, usize)>,
-    selected: Option<usize>,
+    focused: Option<usize>,
+    /// 唯一的选中集合，按条目索引排序且不重复；焦点允许独立于选择移动。
+    selection: Vec<usize>,
+    /// Shift 范围选择的固定起点，普通选择时更新。
+    selection_anchor: Option<usize>,
     icons: icons::Icons,
     /// 正在拖动的桌面图标。
     drag: Option<Drag>,
@@ -141,7 +179,9 @@ impl Desktop {
             control,
             pointer: (background, 0., 0.),
             armed: None,
-            selected: None,
+            focused: None,
+            selection: Vec::new(),
+            selection_anchor: None,
             icons: icons::Icons::load(&home, icon_cell),
             drag: None,
             rename: None,
@@ -223,6 +263,53 @@ impl Desktop {
         self.launch(command);
     }
 
+    fn select_icon(&mut self, index: usize, shift: bool, control: bool, toggle: bool) {
+        if shift {
+            let anchor = self.selection_anchor.or(self.focused).unwrap_or(index);
+            if !control {
+                self.selection.clear();
+            }
+            self.selection
+                .extend(self.icons.rectangular_selection(anchor, index));
+            self.selection.sort_unstable();
+            self.selection.dedup();
+            self.selection_anchor = Some(anchor);
+        } else if control {
+            if toggle {
+                match self.selection.binary_search(&index) {
+                    Ok(at) => {
+                        self.selection.remove(at);
+                    }
+                    Err(at) => self.selection.insert(at, index),
+                }
+                self.selection_anchor = Some(index);
+            }
+        } else {
+            self.selection.clear();
+            self.selection.push(index);
+            self.selection_anchor = Some(index);
+        }
+        self.focused = Some(index);
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection
+            .iter()
+            .filter_map(|index| match &self.icons.items[*index].target {
+                icons::Target::Path(path) => Some(path.clone()),
+                icons::Target::Place(_) => None,
+            })
+            .collect()
+    }
+
+    fn cancel_drag(&mut self) {
+        if let Some(Drag::Selection { before, .. }) = self.drag.take() {
+            self.selection = before;
+        }
+        self.armed = None;
+        self.clicked = None;
+    }
+
     fn rename_icon(&mut self, index: usize) {
         let Some(icons::Target::Path(path)) = self.icons.items.get(index).map(|icon| &icon.target)
         else {
@@ -244,7 +331,7 @@ impl Desktop {
         };
         edit.select_position(0, false);
         edit.select_position(name.len(), true);
-        self.selected = Some(index);
+        self.select_icon(index, false, false, false);
         self.clicked = None;
         self.rename = Some(Rename {
             operation,
@@ -255,12 +342,36 @@ impl Desktop {
     }
 
     fn refresh_icons(&mut self) {
+        // 粘贴完成也可能发起刷新；先结束旧索引的抓取，再按目标身份重建选择。
+        self.cancel_drag();
         let selected = self
-            .selected
+            .focused
+            .and_then(|index| self.icons.items.get(index))
+            .map(|icon| icon.target.clone());
+        let selection: Vec<_> = self
+            .selection
+            .iter()
+            .filter_map(|index| self.icons.items.get(*index))
+            .map(|icon| icon.target.clone())
+            .collect();
+        let anchor = self
+            .selection_anchor
             .and_then(|index| self.icons.items.get(index))
             .map(|icon| icon.target.clone());
         self.icons.refresh();
-        self.selected = selected.and_then(|target| {
+        self.focused = selected.and_then(|target| {
+            self.icons
+                .items
+                .iter()
+                .position(|icon| icon.target == target)
+        });
+        self.selection.clear();
+        for (index, icon) in self.icons.items.iter().enumerate() {
+            if selection.contains(&icon.target) {
+                self.selection.push(index);
+            }
+        }
+        self.selection_anchor = anchor.and_then(|target| {
             self.icons
                 .items
                 .iter()
@@ -280,7 +391,9 @@ impl Desktop {
             };
             if let Some(error) = error {
                 self.rename = None;
-                self.selected = None;
+                self.focused = None;
+                self.selection.clear();
+                self.selection_anchor = None;
                 self.message = format!("无法重命名：{error}");
             }
         }
@@ -293,15 +406,19 @@ impl Desktop {
         match self.icons.rename(&rename.operation, rename.edit.text()) {
             Ok(path) => {
                 self.message.clear();
-                self.selected = self.icons.items.iter().position(
+                if let Some(index) = self.icons.items.iter().position(
                     |icon| matches!(&icon.target, icons::Target::Path(current) if *current == path),
-                );
+                ) {
+                    self.select_icon(index, false, false, false);
+                }
                 self.apps_changed = true;
             }
             Err(error) => {
                 self.message = format!("无法重命名：{error}");
                 if error.kind() == io::ErrorKind::NotFound {
-                    self.selected = None;
+                    self.focused = None;
+                    self.selection.clear();
+                    self.selection_anchor = None;
                     self.refresh_icons();
                 } else {
                     self.rename = Some(rename);
@@ -310,15 +427,14 @@ impl Desktop {
         }
     }
 
-    fn delete_icon(&mut self, index: usize, verb: &str) {
-        if let Some(icons::Target::Path(path)) =
-            self.icons.items.get(index).map(|icon| &icon.target)
+    fn delete_selected(&mut self, verb: &str) {
+        let paths = self.selected_paths();
+        if !paths.is_empty()
+            && let Err(error) = self.delete_paths(&paths, verb)
         {
-            let mut command = Command::new("/bin/file-explorer");
-            command.arg(verb).arg(path);
-            self.launch(command);
-            self.clicked = None;
+            self.message = format!("无法删除：{error}");
         }
+        self.clicked = None;
     }
 
     /// 启动控制面板的某个小程序。
@@ -343,13 +459,13 @@ impl Desktop {
         Ok(())
     }
 
-    fn recycle_dropped(&mut self, paths: &[PathBuf]) -> io::Result<()> {
+    fn delete_paths(&mut self, paths: &[PathBuf], verb: &str) -> io::Result<()> {
         let payload = file_uris::encode(paths, file_uris::MAX_PATHS)?;
         // 标准输入携带完整列表。否则接近 URI 字节上限时，argv 的指针与环境会使 exec 返回 E2BIG。
         let input = MemFd::from_bytes("desktop-recycle", payload.as_bytes())?;
         let mut command = Command::new("/bin/file-explorer");
         command
-            .args(["--recycle", "-"])
+            .args([verb, "-"])
             .stdin(Stdio::from(input.as_fd().try_clone_to_owned()?));
         self.launch_with_stdin(command)
     }
@@ -406,12 +522,12 @@ impl Desktop {
         self.launch(command);
     }
 
-    fn offer_icon(&mut self, display: &mut Display, index: usize, cut: bool) {
-        let Some(icons::Target::Path(path)) = self.icons.items.get(index).map(|icon| &icon.target)
-        else {
+    fn offer_selected(&mut self, display: &mut Display, cut: bool) {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
             return;
-        };
-        let result = clipboard::offer(display, std::slice::from_ref(path), cut, None);
+        }
+        let result = clipboard::offer(display, &paths, cut, None);
         match result {
             Ok(true) => self.message.clear(),
             Ok(false) => self.message = "剪贴板不可用".into(),
@@ -481,8 +597,8 @@ impl Desktop {
             }
             Action::OpenIcon(index) => self.open_icon(index),
             Action::RenameIcon(index) => self.rename_icon(index),
-            Action::DeleteIcon(index) => self.delete_icon(index, "--delete"),
-            Action::FileSelection { index, cut } => self.offer_icon(display, index, cut),
+            Action::DeleteSelection => self.delete_selected("--delete"),
+            Action::FileSelection { cut } => self.offer_selected(display, cut),
             Action::PasteFiles => self.begin_paste(display),
             Action::EmptyRecycleBin => {
                 let mut command = Command::new("/bin/file-explorer");
@@ -622,10 +738,17 @@ impl Desktop {
         if window == self.background
             && (matches!(event.kind, EventKind::Focus(false))
                 || matches!(event.kind, EventKind::Key(key) if key.pressed && key.code == 1))
-            && self.drag.take().is_some()
+            && self.drag.is_some()
         {
-            self.armed = None;
-            self.clicked = None;
+            self.cancel_drag();
+            pending.insert(window);
+            return Ok(());
+        }
+        // 抓取中的选择尚未提交；只由上面的 Esc 结束，不能对框选预览执行删除等文件命令。
+        if window == self.background
+            && self.drag.is_some()
+            && matches!(event.kind, EventKind::Key(_))
+        {
             return Ok(());
         }
         match &event.kind {
@@ -650,7 +773,7 @@ impl Desktop {
             }
             EventKind::FilesDropped(paths) => {
                 if window == self.background
-                    && let Err(error) = self.recycle_dropped(paths)
+                    && let Err(error) = self.delete_paths(paths, "--recycle")
                 {
                     self.message = format!("无法移入回收站：{error}");
                     pending.insert(window);
@@ -793,24 +916,80 @@ impl Desktop {
                 self.pointer = (window, x, y);
                 if let Some(drag) = &mut self.drag
                     && window == self.background
-                    && drag.pos != (x as i32, y as i32)
                 {
-                    drag.pos = (x as i32, y as i32);
-                    let start = self.icons.rect(drag.index);
-                    drag.moved |= (drag.pos.0 - drag.grab.0 - start.x).abs() > 4
-                        || (drag.pos.1 - drag.grab.1 - start.y).abs() > 4;
-                    if drag.moved {
-                        if let Some(configuration) = display.configuration(window) {
-                            drag.recycle = matches!(
-                                self.icons.items[drag.index].target,
-                                icons::Target::Path(_)
-                            ) && art.recycle_target(
-                                &self.icons,
-                                configuration.scale,
-                                (x, y),
-                            )?;
+                    match drag {
+                        Drag::Icons { pos, .. } | Drag::Selection { pos, .. } => {
+                            *pos = (x as i32, y as i32)
                         }
-                        pending.insert(window);
+                    }
+                    let area = drag.selection_rect();
+                    let moved = drag.moved();
+                    match drag {
+                        Drag::Icons {
+                            index,
+                            grab,
+                            pos,
+                            moved,
+                            recycle,
+                            ..
+                        } => {
+                            let start = self.icons.rect(*index);
+                            *moved |= (pos.0 - grab.0 - start.x).abs() > 4
+                                || (pos.1 - grab.1 - start.y).abs() > 4;
+                            if *moved && let Some(configuration) = display.configuration(window) {
+                                let files = self.selection.iter().any(|i| {
+                                    matches!(self.icons.items[*i].target, icons::Target::Path(_))
+                                });
+                                let contains_bin = self.selection.iter().any(|i| {
+                                    self.icons.items[*i].target
+                                        == icons::Target::Place(start::Place::RecycleBin)
+                                });
+                                *recycle = files
+                                    && !contains_bin
+                                    && art.recycle_target(
+                                        &self.icons,
+                                        configuration.scale,
+                                        (x, y),
+                                    )?;
+                            }
+                            if *moved {
+                                pending.insert(window);
+                            }
+                        }
+                        Drag::Selection {
+                            before,
+                            control,
+                            extend,
+                            ..
+                        } if moved => {
+                            let Some(configuration) = display.configuration(window) else {
+                                return Ok(());
+                            };
+                            let area = area.expect("selection gesture rectangle");
+                            self.selection.clear();
+                            if *extend {
+                                self.selection.extend(before.iter().copied());
+                            }
+                            for index in 0..self.icons.items.len() {
+                                if art.icon_intersects(
+                                    &self.icons,
+                                    index,
+                                    configuration.scale,
+                                    area,
+                                    self.focused == Some(index) && before.contains(&index),
+                                )? {
+                                    match self.selection.binary_search(&index) {
+                                        Ok(at) if *control => {
+                                            self.selection.remove(at);
+                                        }
+                                        Err(at) => self.selection.insert(at, index),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            pending.insert(window);
+                        }
+                        Drag::Selection { .. } => {}
                     }
                 }
                 if Some(window) == self.menu
@@ -860,9 +1039,9 @@ impl Desktop {
                     return Ok(());
                 }
                 let icon_hit = if window == self.background {
-                    let expanded = self
-                        .selected
-                        .filter(|_| display.keyboard_focus() == Some(window));
+                    let expanded = self.focused.filter(|index| {
+                        self.selection.contains(index) && display.keyboard_focus() == Some(window)
+                    });
                     art.icon_at(
                         &self.icons,
                         c.scale,
@@ -890,33 +1069,70 @@ impl Desktop {
                         if hit.is_none() {
                             self.clicked = None;
                         }
-                        self.drag = hit.map(|index| {
+                        let pos = (self.pointer.1 as i32, self.pointer.2 as i32);
+                        let modifiers = display.keyboard_modifiers();
+                        self.selection
+                            .reserve(self.icons.items.len().saturating_sub(self.selection.len()));
+                        self.drag = Some(if let Some(index) = hit {
                             let rect = self.icons.rect(index);
-                            let pos = (self.pointer.1 as i32, self.pointer.2 as i32);
-                            Drag {
+                            let was_selected = self.selection.contains(&index);
+                            // 1. 普通按下已选中项时保留整组，只有未拖动的释放才收缩为单选。
+                            // 2. Ctrl 移除已选中项也延迟到释放，避免开始拖动时丢掉抓取项。
+                            if modifiers.shift || (!was_selected && !modifiers.control) {
+                                self.select_icon(index, modifiers.shift, modifiers.control, true);
+                            } else {
+                                self.select_icon(index, false, true, !was_selected);
+                            }
+                            Drag::Icons {
                                 index,
                                 grab: (pos.0 - rect.x, pos.1 - rect.y),
                                 pos,
                                 moved: false,
                                 recycle: false,
-                                was_selected: self.selected == Some(index),
+                                was_selected,
+                            }
+                        } else {
+                            let before = self.selection.clone();
+                            let extend = modifiers.control || modifiers.shift;
+                            if !extend {
+                                self.selection.clear();
+                            }
+                            Drag::Selection {
+                                origin: pos,
+                                pos,
+                                before,
+                                control: modifiers.control,
+                                extend,
                             }
                         });
-                        self.selected = hit;
                     }
-                } else if let Some(drag) = drag.as_ref().filter(|d| d.moved) {
+                } else if let Some(Drag::Selection { .. }) = &drag {
+                    self.armed = None;
+                    self.focused = self.selection.last().copied();
+                    self.selection_anchor = self.focused;
+                    self.clicked = None;
+                } else if let Some(Drag::Icons {
+                    index,
+                    grab,
+                    pos,
+                    recycle,
+                    ..
+                }) = drag.as_ref().filter(|drag| drag.moved())
+                {
                     self.armed = None;
                     self.clicked = None;
-                    if window == self.background && drag.recycle {
-                        self.delete_icon(drag.index, "--recycle");
+                    if window == self.background && *recycle {
+                        self.delete_selected("--recycle");
                     } else if window == self.background {
                         let screen = Self::screen(display, self.background);
-                        let rect = self.icons.rect(drag.index);
+                        let rect = self.icons.rect(*index);
                         let center = (
-                            drag.pos.0 - drag.grab.0 + rect.width / 2,
-                            drag.pos.1 - drag.grab.1 + rect.height / 2,
+                            pos.0 - grab.0 + rect.width / 2,
+                            pos.1 - grab.1 + rect.height / 2,
                         );
-                        if let Err(error) = self.icons.drop_at(drag.index, center, screen) {
+                        if let Err(error) =
+                            self.icons.drop_at(&self.selection, *index, center, screen)
+                        {
                             self.message = error.to_string();
                         }
                     }
@@ -984,19 +1200,35 @@ impl Desktop {
                             }
                         }
                     } else if window == self.background {
-                        self.selected = Some(index);
+                        let modifiers = display.keyboard_modifiers();
+                        let was_selected = matches!(
+                            drag,
+                            Some(Drag::Icons {
+                                was_selected: true,
+                                ..
+                            })
+                        );
+                        if modifiers.control && !modifiers.shift {
+                            if was_selected {
+                                self.select_icon(index, false, true, true);
+                            }
+                        } else if !modifiers.shift {
+                            self.select_icon(index, false, false, false);
+                        }
                         let now = Instant::now();
                         if self
                             .clicked
                             .as_ref()
                             .is_some_and(|previous| previous.follows((window, index), point, now))
+                            && !modifiers.control
+                            && !modifiers.shift
                         {
                             self.open_icon(index);
                             self.clicked = None;
                         } else {
                             self.clicked = Some(ItemClick::new((window, index), point, now));
-                            let modifiers = display.keyboard_modifiers();
-                            if drag.is_some_and(|drag| drag.was_selected && drag.index == index)
+                            if was_selected
+                                && self.selection.len() == 1
                                 && icon_hit == Some((index, true))
                                 && !modifiers.shift
                                 && !modifiers.control
@@ -1025,8 +1257,6 @@ impl Desktop {
                         103 | 105 | 106 | 108
                             if window == self.background
                                 && self.drag.is_none()
-                                && !key.modifiers.shift
-                                && !key.modifiers.control
                                 && !key.modifiers.alt
                                 && !key.modifiers.super_key =>
                         {
@@ -1037,11 +1267,46 @@ impl Desktop {
                                 _ => (0, 1),
                             };
                             let (width, height) = Self::screen(display, window);
-                            self.selected = self.icons.step(
-                                self.selected,
+                            if let Some(index) = self.icons.step(
+                                self.focused,
                                 direction,
                                 (width, height - TASKBAR_HEIGHT),
-                            );
+                            ) {
+                                self.select_icon(
+                                    index,
+                                    key.modifiers.shift,
+                                    key.modifiers.control,
+                                    false,
+                                );
+                            }
+                            self.clicked = None;
+                        }
+                        30 if window == self.background
+                            && self.drag.is_none()
+                            && key.modifiers.control
+                            && !key.modifiers.alt
+                            && !key.modifiers.shift
+                            && !key.modifiers.super_key =>
+                        {
+                            self.selection.clear();
+                            self.selection.extend(0..self.icons.items.len());
+                            self.focused = self.focused.or_else(|| self.selection.first().copied());
+                            self.selection_anchor = self.focused;
+                            self.clicked = None;
+                        }
+                        57 if window == self.background
+                            && self.drag.is_none()
+                            && !key.modifiers.alt
+                            && !key.modifiers.super_key =>
+                        {
+                            if let Some(index) = self.focused {
+                                self.select_icon(
+                                    index,
+                                    key.modifiers.shift,
+                                    key.modifiers.control,
+                                    true,
+                                );
+                            }
                             self.clicked = None;
                         }
                         68 | 127 | 139
@@ -1065,15 +1330,15 @@ impl Desktop {
                         {
                             if key.code == 47 {
                                 self.begin_paste(display);
-                            } else if let Some(index) = self.selected {
-                                self.offer_icon(display, index, key.code == 45);
+                            } else {
+                                self.offer_selected(display, key.code == 45);
                             }
                         }
                         60 if window == self.background
                             && !key.modifiers.alt
                             && !key.modifiers.control =>
                         {
-                            if let Some(index) = self.selected {
+                            if let Some(index) = self.focused {
                                 self.rename_icon(index);
                             }
                         }
@@ -1083,17 +1348,15 @@ impl Desktop {
                             && !key.modifiers.super_key
                             && !key.modifiers.control =>
                         {
-                            if let Some(index) = self.selected {
-                                let verb = if key.modifiers.shift {
-                                    "--delete-permanently"
-                                } else {
-                                    "--delete"
-                                };
-                                self.delete_icon(index, verb);
-                            }
+                            let verb = if key.modifiers.shift {
+                                "--delete-permanently"
+                            } else {
+                                "--delete"
+                            };
+                            self.delete_selected(verb);
                         }
                         28 if window == self.background => {
-                            if let Some(index) = self.selected {
+                            if let Some(index) = self.focused {
                                 self.open_icon(index);
                             }
                         }
@@ -1231,7 +1494,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             && deadline <= Instant::now()
         {
             state.rename_click = None;
-            if display.keyboard_focus() == Some(state.background) && state.selected == Some(index) {
+            if display.keyboard_focus() == Some(state.background) && state.focused == Some(index) {
                 state.rename_icon(index);
                 pending.insert(state.background);
             }

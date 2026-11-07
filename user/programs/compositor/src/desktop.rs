@@ -81,11 +81,36 @@ impl Stack {
         scale: i32,
     ) -> bool {
         let before = self.order.clone();
-        self.order.retain(|placed| {
+        let is_mapped = |placed: &Placement| {
             mapped
                 .iter()
                 .any(|(client, surface, ..)| *client == placed.client && *surface == placed.surface)
-        });
+        };
+        // 活动子窗口退出时先沿原父链寻找仍可见的 owner；否则栈顶可能是之前切换过的其他应用。
+        // 只处理确实退出的活动窗口，后台对话框关闭不能抢焦点；同时退出多层时返回最近的存活祖先。
+        let restore = before
+            .iter()
+            .rev()
+            .find(|placed| !placed.minimized)
+            .filter(|placed| !is_mapped(placed))
+            .and_then(|active| {
+                let mut parent = active.parent;
+                for _ in 0..before.len() {
+                    let surface = parent?;
+                    let owner = before
+                        .iter()
+                        .find(|placed| placed.client == active.client && placed.surface == surface)?;
+                    if is_mapped(owner) {
+                        return (!owner.minimized).then_some((owner.client, owner.surface));
+                    }
+                    parent = owner.parent;
+                }
+                None
+            });
+        self.order.retain(is_mapped);
+        if let Some((client, surface)) = restore {
+            self.raise(client, surface);
+        }
         for placed in &mut self.order {
             if let Some((_, _, width, height, initial)) =
                 mapped.iter().find(|(client, surface, ..)| {

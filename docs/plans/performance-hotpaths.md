@@ -31,10 +31,15 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 4. 多线程 futex 竞争（N 线程争同一/不同 mutex）的吞吐。
 5. `MemTotal - MemAvailable`，以及内核堆、页表页、linuxd 堆在 1/8/32 个 Linux 进程下的增长。
 6. 文件密集 workload 下的缺页次数与 pager 请求次数。
+7. 空闲桌面的内存构成（M0 落地后按 Pss/Private/Shared 拆分）：2026-11-07 实测（AArch64/HVF、11 核、2 GiB、
+   3008×1692、开着任务管理器）已用 96.4 MiB，其中 Shmem 25.4 MiB（桌面背景整屏缓冲约 19.4 MiB）、
+   AnonPages 18.0 MiB、KernelStack 5.0 MiB（约 161 线程）、Slab 4.0 MiB、PageTables 2.6 MiB，其余约 40 MiB 无法归属。
+8. 任务管理器、资源管理器在普通尺寸、最大化、还原后三个状态下的 Pss；最大化后稳定状态与还原后的回落。
 
 ## 阶段与验证点
 
-顺序：1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → P2。1 是 2 的前提；5、6 都改 VM 内核结构，分开提交。
+顺序：M0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → P2；M1–M7 与 1–9 无代码依赖的可穿插执行，依赖关系在各项注明。
+1 是 2 的前提；5、6 都改 VM 内核结构，分开提交。
 
 ### 1. 块设备协议：登记 VMO + 批量请求 + 并发队列
 
@@ -135,7 +140,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
   2 KiB 以上（恰好 64 KiB 外）每次 `Vmo::create` + map + 裁剪 unmap，释放时 unmap 并等 TLB fence；`Vec` 超过 4 KiB
   每次扩容都走此路径；小块永不归还。linuxd 每个 Linux 线程对应一个原生线程，全部争这把锁。
 - **参考**：mimalloc（Leijen et al., APLAS 2019）分片空闲链与线程本地堆；snmalloc（ISMM 2019）远端释放消息。
-- **改法**：
+- **改法**（区块按需切分见 M3，两者一起做）：
   1. size class 间距不超过 12.5%；线程本地小对象页，远端释放进所属页的原子链。
   2. 中等对象从启动时预留的 VMAR 区间按 span 分配，backing 用少量大 VMO，按需提交；空 span 用 VMO
      decommit（`OP_DECOMMIT`，没有则补齐原生接口）归还物理页，不 unmap。
@@ -188,10 +193,106 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
    改为每 socket 共享数据环或原生 socket 对象承载字节流（参考 Fuchsia zx socket 数据面）。
 6. **物理页 per-CPU 缓存**：`kernel/src/memory/frame_allocator.rs` 全局 `IrqMutex`；加 per-CPU 单页缓存并按水位批量归还。
 
+### 内存占用（M 系列）
+
+目标：不降低画质、帧率与响应，把空闲桌面的已用内存从约 96 MiB 压到约 55–60 MiB（估算，以 M0 的 Pss 实测为准），
+并消除窗口最大化带来的数十 MiB 增长。不采用 16 位色缓冲、降低输出缩放或匿名内存压缩（CPU 与延迟代价不值得）。
+
+#### M0. 内存统计口径（先做，其余各项以它验证）
+
+- **现状**：linuxd 没有 `/proc/[pid]/maps`、`smaps`、`smaps_rollup`，无法区分 Pss/Private/Shared；
+  task-observer 的 `resident_bytes` 重复计入共享页；`/proc/meminfo` 的 `Cached` 恒为 0，`MemAvailable` 等于 `MemFree`，
+  可淘汰的干净 pager 页未计入；内核 `SystemMemoryStats` 只有堆、内核栈、页表与淘汰计数，约 40 MiB 无法归属。
+- **改法**：
+  1. linuxd 按 Linux 规范实现 `/proc/[pid]/maps`、`smaps`、`smaps_rollup`（Rss/Pss/Shared_*/Private_*/Anonymous），
+     数据来自 linuxd 已有的 VMA 与后备对象。
+  2. `/proc/meminfo` 的 `Cached` 与 `MemAvailable` 计入 pager 支撑的干净页。
+  3. 原生侧：task-observer 记录增加 private/shared 拆分（内核按 VMO 共享计数计算）；`SystemMemoryStats`
+     补充 VMO 已提交页按类别（匿名、pager、连续/DMA）与 bootfs 的统计，使 meminfo 已用量可以完整归属。
+- **契约**：ABI 矩阵（procfs 文件与字段范围）、task-observer 协议版本（改 magic）、native-abi `SystemMemoryStats`。
+- **验证点**：procfs 单元测试；基线 7、8 能完整归属到各类别。
+
+#### M1. 窗口最大化与窗口缓冲（每个窗口 1–3 倍窗口大小；最大化时数十 MiB）
+
+- **现状**：
+  - `classic-ui/src/window_host.rs` 的 `paint` 每次都把整窗画进私有 `pixels: Vec<u32>`，再经 `Display::present`
+    复制进共享缓冲；`wayland/frame.rs` 逐行比较前后两帧来求 damage。
+  - 每窗口最多 3 个共享缓冲（`WINDOW_BUFFER_LIMIT`），前一个缓冲尚未 release 时就新建；同尺寸的空闲缓冲在
+    尺寸稳定后不退休，只在尺寸变化或窗口关闭时释放。首次使用时 `preallocate` 提交全部页。
+  - 3008×1692 下最大化窗口单份约 19 MiB：私有画布 1 份 + 共享缓冲 1–3 份，即约 38–76 MiB；
+    还原后画布会缩回，但同尺寸以外的空闲缓冲要等下一次提交才退休。用户实测任务管理器最大化后增长数十 MiB。
+- **改法**：
+  1. `WindowHost` 改为经已有的 `Display::paint_frame` 直接在已释放的共享缓冲中绘制，删除私有画布与
+     `present` 的整窗复制路径（`present` 只保留给确实持有外部像素的调用者，如视频帧；没有调用者时删除）。
+  2. 控件树已有的失效区作为 damage 与重绘裁剪：缓冲内容保留时只重画失效区；拿到的不是上一帧缓冲时，
+     按 buffer age 语义（参考 `EGL_EXT_buffer_age`）从上一帧复制失效区之外的变化，或整窗重画。删除逐行像素比较。
+  3. 稳定状态只保留 1 个缓冲：合成器 GPU 路径在提交时读取后即 release，第二个缓冲只在上一帧未释放时临时分配，
+     frame callback 到达且没有待绘制失效后退休多余缓冲。
+- **契约**：`docs/architecture/ui-framework.md` 与 UI 框架契约中“每窗口至多三个提交缓冲”“WindowHost 拥有 CPU 绘图存储”的表述。
+- **benchmark 决策**：`cargo bench -p canvas` 诊断局部重绘与整窗重绘的成本；窗口交互按
+  [性能验证范围](../development/performance-coverage.md)分别测应用绘制、缓冲提交、合成与 flip。
+- **验证点**：classic-ui 单元测试（缓冲复用、busy 时临时第二缓冲、退休、buffer age 正确性）；基线 8：
+  最大化后稳定 Pss 约为窗口大小的 1 倍，还原后回落；缩放拖动过程帧率不下降。
+
+#### M2. 桌面背景整屏缓冲（约 19 MiB）
+
+- **现状**：`user/programs/desktop/src/paint.rs` 的 `background_frame` 把纯色、墙纸、图标与标题画进一块按物理分辨率
+  分配的整屏共享缓冲（3008×1692×4 ≈ 19.4 MiB）。
+- **改法**（只用标准 Wayland 协议）：
+  1. 纯色底：使用 classic-ui 已有的 solid viewport（单像素缓冲 + `wp_viewporter`）。
+  2. 墙纸：缓冲按图片原始尺寸；居中用子表面定位；拉伸用 viewport 目标尺寸（合成器最近邻采样，与 GDI 拉伸一致）；
+     平铺让同一 wl_buffer 挂到多个子表面。合成器 CPU 后端同样支持这些几何。
+  3. 图标与标题：一个透明子表面，大小为图标网格包围盒；重命名编辑框、拖动图标沿用同一层。
+- **注意**：2026-11-07 desktop 的 `main.rs`、`paint.rs`、`popups.rs`、`icons.rs` 有进行中的改动，本项在其合入后开始。
+- **验证点**：桌面交互门禁（图标选择、拖动、重命名、墙纸三种方式与纯色）；基线 7 中 Shmem 下降。
+
+#### M3. 服务堆分配器按需切分区块（与第 7 项一起做）
+
+- **现状**：`system/native-runtime/src/heap/allocator.rs` 首次使用某尺寸级别时，把整个 64 KiB 区块切开并逐块写入空闲链指针，
+  整块页被提交；8 个级别使每个原生进程至少约 512 KiB，全系统约 23 个原生进程。
+- **改法**：区块内维护分配游标，只在真正分配时触及对应页（mimalloc 的增量空闲链扩展）；空 span 按第 7 项 decommit。
+- **验证点**：native-runtime 单元测试；M0 中各原生服务的 Private 下降（估算合计 5–8 MiB）。
+
+#### M4. 空闲线程（约 161 个，每个至少 32 KiB 内核栈）
+
+- **现状**：块设备服务端每会话固定 8 个工作线程（`system/device-protocol/src/block.rs` `WORKERS`，virtio-block 宿主 28 线程）；
+  ext4 FUSE 4 个、netstack 4 个；`pager-pool` 工作线程只增不减（上限 64）；每个驱动宿主至少 5 个线程，
+  component-manager 10 个；桌面常驻 `picture-decode` 等线程。
+- **改法**：
+  1. 块协议改为批量异步后块服务只需 1–2 个线程（依赖第 1 项）。
+  2. pager 工作线程空闲超时退出；按服务审查线程，能并入 port reactor 的并入；桌面辅助线程空闲时退出。
+  3. 用栈染色测出内核栈峰值深度，再评估 `KERNEL_STACK_SIZE` 从 32 KiB 降到 16 KiB（保留守护页，留足余量）。
+- **契约**：内核栈尺寸变化更新执行域契约与 `kernel/src/config.rs` 的依据说明。
+- **验证点**：taskmgr 线程数；M0 中 KernelStack 与各服务 Private 下降（估算合计 4–6 MiB）。
+
+#### M5. bootfs 零复制装载
+
+- **现状**：bootfs（约 4.6 MiB）常驻；ELF 段模板装载时复制段内容并全部提交（`system/native-runtime/src/elf.rs`），
+  ext4 映像经 `bootfs_copy` 再复制一份交给 fshost（`system/component-manager/src/main.rs`）。
+- **改法**：bootfs 文件按页对齐（参考 Zircon bootfs 格式）；ELF 段直接作为 bootfs VMO 的写时复制子对象，
+  交给其他服务的文件以 VMO 子对象传递，不复制。
+- **契约**：启动与平台契约中的 bootfs 格式；构建脚本生成格式同步修改。
+- **验证点**：服务启动与重启（含驱动换版）门禁；M0 中模板与 bootfs 不再重复（估算 4–5 MiB）。
+
+#### M6. 内核元数据（第 5、6 项的内存收益）
+
+第 5 项避免 linuxd 共享区页表随 Linux 进程数复制，第 6 项把每页约 64 B 的 AVL 节点降到约 10 B。
+当前规模估算 2–3 MiB，Linux 进程越多收益越大；验证并入第 5、6 项与基线 5。
+
+#### M7. 较小项（M0 实测后决定是否做）
+
+- 字形缓存：Win2000 风格的无抗锯齿字形按 1 bit/像素存储；缓存满时由整体清空改为 LRU（`user/libraries/typeface/src/catalog.rs`）。
+- 主题图标：每进程各自解码，改为预解码的共享图集文件经 mmap 跨进程共享。
+
 ## 已确认不需要改动的部分
 
 硬件光标、SHM 按 damage 上传纹理、字体 mmap 共享、epoll 就绪集合、内核堆 per-CPU 缓存、buddy O(1) 索引、
 RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
+
+## 后续计划的依赖
+
+[路由系统计划](router.md)依赖本计划的阶段 1（DMA 直写服务 VMO）、阶段 3（高精度定时器）与 P2 第 1 项
+（截止时间调度类）；P2 第 5 项（网络数据面）由路由计划的 netstack 重写按终态实现，本计划不单独做。
 
 ## 进度
 
