@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use device_model::DeviceBacking;
-use device_model::{DisplayError, DisplayMode};
+use device_model::{DisplayError, DisplayMode, DisplayUpdate};
 use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{
@@ -54,6 +54,7 @@ pub(super) enum RuntimeOperation {
     RetireBoot {
         boot: ResourceRelease,
         evicted: Option<ResidentResource>,
+        completion: DisplayUpdate,
     },
     Disable(ResourceSnapshot),
 }

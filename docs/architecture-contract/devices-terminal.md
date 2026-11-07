@@ -170,6 +170,9 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   按 64 KiB 暂存预算批量读取完整行，单行超过预算时只暂存一行，不要求末行尾部 padding。
   每个连接一个协议状态机，窗口栈以稳定的连接 id 为键。
 - CPU/GPU 合成只改变服务端内部实现，不改变标准 Wayland commit、buffer、damage 和 frame callback 契约。
+  软件或 VirGL scanout 首次接管后，都在新画面的 FLUSH completion 后退休 boot resource，
+  等 RESOURCE_UNREF 确认才在 control lock 外归还旧 backing。退休操作携带原来的 OperationCompleted/
+  RenderCompleted 结果及 fence，不能丢失或改变完成类型。只有首次交接多一条 UNREF，不增加日常帧的命令或缓存。
   `wl_buffer.release` 只在服务端不再访问客户端缓冲时发送；GPU 直接引用客户端缓冲时须遵守相应标准同步契约。
   全帧重绘可以保守覆盖 damage；局部更新必须正确处理 surface/buffer 坐标、scale 与每块输出缓冲的历史内容。
   GPU 客户端缓冲共享须经标准 linux-dmabuf 与 DRM UAPI 接入，不增加应用私有渲染协议。

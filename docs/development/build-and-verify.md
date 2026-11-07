@@ -56,6 +56,10 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture
   identity，不允许跨目标命中。
+- `pack_bootfs.py` 使用固定 Rust toolchain 的 LLVM objcopy 剥离归档副本中的符号和调试数据；
+  PT_LOAD、PT_NOTE 与入口不变。宿主服务 ELF 保持完整，继续用于调试、构建验收与热更新；debug profile 的归档也不携带调试副本。
+- AArch64 原生 target 的链接段按实际 4 KiB 页对齐，避免默认 64 KiB 文件填充常驻 bootfs。
+  此设置由现有 `.cargo/config.toml` 拥有；raw Image 的物理放置及链接地址仍沿用原启动契约。
 - 原生数据卷（卷标 `liteos-data` 的 32 MiB ext4，保存 netcfg 等原生服务的私有设置）与 Linux 根盘分开：`run` 使用
   `data-<arch>.img`，缺失时创建，reset-rootfs 不清除它；`run-gui` 使用 UTM 产物目录中的 `data.img`；门禁每次启动
   附加一块新的空数据卷，不跨启动保留原生设置。fshost 按卷标识别它且不交给 Linux，它不改变 `vda`/`vdb` 命名。

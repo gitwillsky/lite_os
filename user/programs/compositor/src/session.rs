@@ -64,6 +64,9 @@ struct Animation {
 
 /// 动画时长。
 const ANIMATION: Duration = Duration::from_millis(150);
+// 连续视频/缩放复用暂存；停止上传一秒且 fence 完成后回收峰值，否则空闲桌面会保留整屏副本。
+// 期限只加入已有 poll，缓存为空时不增加唤醒；策略参照 Skia 的 deferred scratch cleanup。
+const UPLOAD_IDLE: Duration = Duration::from_secs(1);
 
 impl Animation {
     fn finished(&self) -> bool {
@@ -433,6 +436,13 @@ impl Session {
                 self.present()?;
                 self.dirty = false;
             }
+            let upload_wait = self
+                .scanout
+                .gpu_context()
+                .map(|gpu| gpu.expire_upload(UPLOAD_IDLE))
+                .transpose()?
+                .flatten();
+            let timeout = timeout.into_iter().chain(upload_wait).min();
             let input_count = self.input.devices().count();
             {
                 let mut descriptors = poll_buffer.prepare();

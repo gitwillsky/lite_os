@@ -238,14 +238,18 @@ pub(super) fn complete(
         }
         RuntimeStage::FlushScanout => finish_scanout(control, pending),
         RuntimeStage::UnrefBoot => {
-            let (boot, evicted) = match control.operation.take() {
-                Some(RuntimeOperation::RetireBoot { boot, evicted }) => (boot, evicted),
+            let (boot, evicted, completion) = match control.operation.take() {
+                Some(RuntimeOperation::RetireBoot {
+                    boot,
+                    evicted,
+                    completion,
+                }) => (boot, evicted, completion),
                 _ => return Err(DisplayError::Device),
             };
-            Ok(SequenceCompletion::operation(
-                fence,
-                SequenceRetirement::Boot { boot, evicted },
-            ))
+            Ok(SequenceAction::Finished(SequenceCompletion {
+                update: Some(completion),
+                retirement: SequenceRetirement::Boot { boot, evicted },
+            }))
         }
         RuntimeStage::FlushDamage => {
             let target = match control.operation.take() {
@@ -288,9 +292,12 @@ pub(super) fn complete(
             CommandPayload::None => {
                 control.resources.deactivate();
                 control.scanout.presented(control.mode);
-                Ok(SequenceCompletion::update(Some(
+                retire_boot(
+                    control,
+                    pending,
+                    None,
                     DisplayUpdate::RenderCompleted(fence),
-                )))
+                )
             }
             _ => Err(DisplayError::Device),
         },
@@ -308,9 +315,25 @@ fn finish_scanout(
     let mode = target.mode(&control.resources);
     let evicted = control.resources.complete(target, true, false);
     control.scanout.presented(mode);
+    let completion = DisplayUpdate::OperationCompleted(pending.operation_fence);
+    retire_boot(control, pending, evicted, completion)
+}
+
+// 1. 只在新 scanout 的 FLUSH completion 后摘下 boot backing，避免退休仍可见的启动画面。
+// 2. 等 RESOURCE_UNREF 确认后再发布原操作结果，并在 control lock 外归还 backing。
+fn retire_boot(
+    control: &mut ControlQueue,
+    pending: PendingCommand,
+    evicted: Option<ResidentResource>,
+    completion: DisplayUpdate,
+) -> Result<SequenceAction, DisplayError> {
     if let Some(boot) = control.resources.release(0)? {
         let resource_id = boot.id();
-        control.operation = Some(RuntimeOperation::RetireBoot { boot, evicted });
+        control.operation = Some(RuntimeOperation::RetireBoot {
+            boot,
+            evicted,
+            completion,
+        });
         command_after(
             pending.stage,
             pending.operation_fence,
@@ -320,10 +343,10 @@ fn finish_scanout(
             },
         )
     } else {
-        Ok(SequenceCompletion::operation(
-            pending.operation_fence,
-            SequenceRetirement::Resident(evicted),
-        ))
+        Ok(SequenceAction::Finished(SequenceCompletion {
+            update: Some(completion),
+            retirement: SequenceRetirement::Resident(evicted),
+        }))
     }
 }
 

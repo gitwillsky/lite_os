@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import tempfile
 from pathlib import Path
 
 from build_target import BuildTarget, target_from_environment
+from toolchain.kernel_image import pinned_rust_objcopy
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -61,12 +64,23 @@ def pack(target: BuildTarget, profile: str) -> Path:
 
     Raises:
         FileNotFoundError: 某个服务尚未构建。
+        subprocess.CalledProcessError: ELF 副本剥离失败。
     """
     archive = bytearray()
     members = [(path, _REGULAR_EXECUTABLE, service_artifact(target, profile, binary)) for path, binary in SERVICES]
     members += [(path, _REGULAR_FILE, source) for path, source in CONFIG_DATA]
-    for inode, (path, mode, source) in enumerate(sorted(members), start=1):
-        archive += _member(path, mode, source.read_bytes(), inode)
+    objcopy = pinned_rust_objcopy()
+    # 只剥离归档副本的符号/调试数据，保留装载段与生命周期 PT_NOTE；宿主 ELF 仍供调试和热更新使用。
+    with tempfile.TemporaryDirectory(prefix="liteos-bootfs-") as temporary:
+        stripped = Path(temporary) / "service"
+        for inode, (path, mode, source) in enumerate(sorted(members), start=1):
+            if mode == _REGULAR_EXECUTABLE:
+                source.stat()
+                subprocess.run([str(objcopy), "--strip-all", str(source), str(stripped)], check=True)
+                data = stripped.read_bytes()
+            else:
+                data = source.read_bytes()
+            archive += _member(path, mode, data, inode)
     archive += _member("TRAILER!!!", 0, b"", 0)
     output = ROOT / target.bootfs(profile)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,7 @@ use std::{
     mem::size_of,
     os::fd::BorrowedFd,
     rc::{Rc, Weak},
+    time::{Duration, Instant},
 };
 
 use crate::raw;
@@ -85,7 +86,8 @@ pub struct VirglContext {
     // OWNER: 同一 context 的上传共用一块暂存，不在每张采样纹理旁保留完整 CPU 副本。
     // 只有最后传输 fence 完成才重写；忙时换新，旧 backing 由内核提交 pin 保活。
     // 缺少 fence 检查会覆盖设备尚未读取的像素；此缓存不引用 context，不形成所有权环。
-    upload: Rc<RefCell<Option<VirglResource>>>,
+    // 最近一次使用时间与同一暂存共同拥有，供 caller 按空闲期限清理；否则会永久保留全屏上传峰值。
+    upload: Rc<RefCell<Option<(VirglResource, Instant)>>>,
 }
 
 impl VirglContext {
@@ -312,14 +314,46 @@ impl VirglContext {
             .ok_or_else(|| invalid_input("staged upload size is invalid"))?;
         let cached = self.upload.borrow_mut().take();
         let staging = match cached {
-            Some(staging) if staging.size() >= bytes as usize && staging.is_ready()? => staging,
+            Some((staging, _)) if staging.size() >= bytes as usize && staging.is_ready()? => {
+                staging
+            }
             _ => self.create_vertex_buffer(bytes)?,
         };
         // 在 fill 期间不持 RefCell 借用；失败时尚未提交，局部暂存随返回释放。
         fill(&staging)?;
         self.staged_transfer(texture, &staging, rect, false)?;
-        *self.upload.borrow_mut() = Some(staging);
+        *self.upload.borrow_mut() = Some((staging, Instant::now()));
         Ok(())
+    }
+
+    /// Releases the upload scratch after `idle` without use and completion of its GPU fence.
+    ///
+    /// Returns the remaining idle interval for the caller's existing wait loop, or None
+    /// when no scratch remains. A still-busy resource is retried after another idle interval;
+    /// cleanup never waits for the GPU or invalidates texture contents.
+    ///
+    /// # Errors
+    ///
+    /// Zero idle interval returns InvalidInput; fence query errors are preserved.
+    pub fn expire_upload(&self, idle: Duration) -> io::Result<Option<Duration>> {
+        if idle.is_zero() {
+            return Err(invalid_input("upload idle interval is zero"));
+        }
+        let mut upload = self.upload.borrow_mut();
+        let Some((resource, used)) = &*upload else {
+            return Ok(None);
+        };
+        let elapsed = used.elapsed();
+        if elapsed < idle {
+            return Ok(Some(idle.saturating_sub(elapsed)));
+        }
+        if !resource.is_ready()? {
+            return Ok(Some(idle));
+        }
+        let retired = upload.take();
+        drop(upload);
+        drop(retired);
+        Ok(None)
     }
 
     /// 将标准 PRIME dma-buf 导入当前 context，作为直接采样纹理，不执行 CPU 拷贝或 transfer 上传。

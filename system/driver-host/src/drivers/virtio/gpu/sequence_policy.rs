@@ -39,6 +39,7 @@ impl RuntimeStage {
             | (Self::TransferScanout, Self::SetScanout)
             | (Self::SetScanout, Self::FlushScanout)
             | (Self::FlushScanout, Self::UnrefBoot)
+            | (Self::VirglFlush, Self::UnrefBoot)
             | (Self::VirglSetScanout, Self::VirglFlush)
             | (Self::DisableScanout, Self::UnrefDisabled(_)) => true,
             (Self::UnrefDisabled(previous), Self::UnrefDisabled(next)) => next > previous,
@@ -131,6 +132,8 @@ mod tests {
     #[test]
     fn virgl_scanout_requires_flush_as_the_visibility_edge() {
         assert!(RuntimeStage::VirglSetScanout.allows(RuntimeStage::VirglFlush));
+        assert!(RuntimeStage::VirglFlush.allows(RuntimeStage::UnrefBoot));
+        assert!(!RuntimeStage::VirglSetScanout.allows(RuntimeStage::UnrefBoot));
         assert!(
             RuntimeStage::VirglSetScanout
                 .validate_successor(RuntimeStage::Virgl)

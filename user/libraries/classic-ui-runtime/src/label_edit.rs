@@ -218,8 +218,11 @@ impl Tree {
                 pressed: false,
                 ..
             }
-            | EventKind::PointerLeave
-            | EventKind::Focus(false) => self.armed = None,
+            | EventKind::PointerLeave => self.armed = None,
+            EventKind::Focus(false) => {
+                self.armed = None;
+                commit = true;
+            }
             _ => return false,
         }
         if commit {
@@ -305,6 +308,9 @@ pub(super) unsafe extern "C" fn edit_label(
                 tree.focus = Some(id);
             }
             host.frame.invalidate();
+            // 开始、接受或恢复草稿都是编辑寿命边界。旧读取不能因同一列表节点仍可编辑，
+            // 就把迟到的粘贴写进另一个文件名；复用 Context 的撤销同时关闭 reader 与 watch。
+            context.cancel_pastes(|paste| paste.window == window && paste.node == id);
             Ok(())
         })
     }

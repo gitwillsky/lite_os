@@ -2,3 +2,8 @@
 # 构建流程经 scripts/classic_assets.py 校验后传入同一路径；编辑器直接调用 cargo 也可解析。
 [env]
 LITEOS_BOOT_SCENE = { value = "assets/classic/boot-scene.lbs", relative = true }
+
+# 原生 MMU 使用 4 KiB 页；AArch64 链接器默认的 64 KiB 最大页会给每个启动 ELF 留下无用填充。
+# 这只约束 ELF 文件段的对齐，Image 的物理放置仍由原启动契约校验。
+[target.aarch64-unknown-none-softfloat]
+rustflags = ["-C", "link-arg=-zmax-page-size=4096"]
