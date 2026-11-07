@@ -312,18 +312,14 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   分段读取复用 per-open 文本，offset 0 刷新，不反复全量扫描。
   当前只完成 Clippy 与代码审查，尚未更新运行实例或运行时验收；完整归属对账与最终端到端仍待完成，M0 不标完成。
   接口派生清单和最终门禁在实现终态统一生成/执行。
-- 1 进行中：request owner 已同时预留 slot/descriptor credits，变长链不再依赖“有 slot 就有 descriptor”的假设；
-  空闲槽释放为 O(1)，保持 FIFO、prepare OOM、terminal failure 和锁外 wake 的所有权。
-  block header/status 从每槽独立 VMO 合并为一张固定表，16 槽理论少分配 31 页；已支持 backing DMA 任意区间及方向。
-  登记 VMO（ATTACH/DETACH/TRANSFER）与区间传输已落地，内联 READ/WRITE 已删除，块内容不再进入 channel 消息。
-  ext4 `read_storage` 按 extent 合并同一 extent 内连续的完整对齐块，经 `read_fs_blocks` 一次区间读；
-  journal staged 覆盖与 cache generation 重试语义不变（单块先查 staged，多块先读 home 再在一次 journal guard 内覆盖）。
-  批量提交已实现：`BlockDevice::transfer_batch`/`read_block_ranges`、协议 `TRANSFER_BATCH`（`LBLOCK03`）、
-  virtio-blk 并发发布整批（自有在途占满 credit 时先收割最老的，避免自锁）、ext4 `read_storage` 把一次读里
-  所有 extent 的运行合成一批；journal 的 ordered 数据 / checkpoint / replay 写 home 时连续块合并为区间写（≤64 块）。
-  槽数已按设备 virtqueue 容量协商。仍缺专用 FIFO/共享环请求与完成数据面：当前 TRANSFER_BATCH 仍经同步 channel RPC；
-  不能把“单批内硬件并发”记作原计划的数据面全部完成。
-  双架构服务 Clippy 与 ext4-unit/kernel-unit 编译检查通过，未运行块 I/O 测试或更新实例。
+- 1 已实现待运行验收：request owner 同时预留 slot/descriptor credits，O(1) 空闲槽释放；header/status 共用一张 metadata VMO。
+  登记 VMO 与区间直接 DMA、按 virtqueue 容量协商槽数、virtio-blk 批内并发发布/收割、ext4 extent 合并和 journal 连续写已接通。
+  块协议升级 LBLOCK04：控制仅处理登记/派生/取得队列；读写与 flush 经共享 SQ/CQ，删除 TRANSFER/TRANSFER_BATCH RPC。
+  环与 credits 表连接时准备，直接写固定原子记录、批量完成；完整 request identity 防止槽复用 ABA，全部完成后才归还借用缓冲。
+  同一弹性池接收控制和 Event，客户端由当前调用者分派完成；无新增常驻转发线程。
+  flush 封闭后续批次并等待此前 active DMA；协议/source 失败先排空在途 handler，最后 SessionDrop 发布 closed。
+  会话结束也退休目录观测句柄，避免死亡服务被观测引用保活、控制 call 永久等回复。
+  双架构静态检查与运行验收分开；尚未运行块 I/O、环绕/断开或性能门禁，不把源码接通记作运行已通过。
 - 2 已实现待运行验收：ext4 `Content` 顺序预读窗口（32 KiB→512 KiB）；pager 工作线程的补页暂存区常驻映射，
   存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around 在主页解析的同一树锁
   事务内只读装入同一 64 KiB 窗口中已驻留的文件页（一个 `TranslationCommit` 一次 fence）。kernel-unit 用例与双架构 Clippy 通过。
@@ -380,10 +376,10 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
   双架构 kernel 与 kernel-unit（含现有用例的编译）Clippy 通过；没有运行测试或更新来宾。
 - 尚未完成：
-  1 的 FIFO/共享环请求与完成数据面、P2.1（截止时间调度类）、
+  P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
   M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
   P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
 
-当前分代索引改动的源码验证：双架构 kernel 与 kernel-unit（含测试的编译）Clippy 通过；
-接口派生清单已由唯一生成器更新，architecture-check 通过。没有运行测试、基准、来宾采样或 `make verify`。
+分代索引的双架构 kernel 与 kernel-unit Clippy 已通过；共享块环的服务/依赖源码验证在本轮收口。
+接口派生清单由唯一生成器更新。没有运行本轮测试、基准、来宾采样或 `make verify`；全部计划实现后统一运行验收。

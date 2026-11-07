@@ -43,6 +43,9 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 - 登记 VMO、FIFO 请求/分组完成及会话寿命参照 Fuchsia 固定 revision `bb06fd0022e58d6c501367cd87f16e178498a1b7` 的
   [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。
   LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；当前完成度由性能计划与设备契约维护。
+- 提交/完成双环的 producer/consumer Release/Acquire 发布顺序参照固定 Linux revision 的
+  [io_uring ring publication](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/io_uring/io_uring.c)。
+  块会话只采用有界双环与通知语义，不声明 io_uring UAPI 或 Zircon FIFO 编码兼容。
 
 ### 原生任务观测
 

@@ -14,7 +14,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status};
-use native_runtime::{Channel, Handle};
+use native_runtime::{Channel, Event, Handle, Port};
 
 /// 回复的最大字节数（channel 单条消息上限）。
 const REPLY_CAPACITY: usize = native_abi::CHANNEL_MAX_BYTES;
@@ -207,6 +207,8 @@ struct Pool {
     handler: Arc<Handler<'static>>,
     name: Vec<u8>,
     max: usize,
+    // OWNER: 可选共享数据面的通知与 port；无活动源的控制服务不分配 port 或新增线程。
+    activity: Option<Activity>,
     // OWNER: 当前存活的工作线程数与其中阻塞在读上的空闲数。二者与“始终保留一个空闲读者”的不变量
     // 一起决定何时增长；缺失空闲计数会在全部线程都忙于阻塞调用时没有任何读者，请求无人接收。
     state: native_runtime::sync::Mutex<PoolState>,
@@ -215,6 +217,57 @@ struct Pool {
 struct PoolState {
     workers: usize,
     idle: usize,
+    // FLAG: source/rearm 失败后不再接受工作；在途 handler 完成后才释放闭包中的设备会话。
+    // 若立即发表会话结束，消费者会在 DMA 仍运行时回收缓冲。
+    stopped: bool,
+}
+
+struct Activity {
+    port: Port,
+    event: Event,
+    handler: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
+}
+enum Work {
+    Message(native_runtime::Message),
+    Activity,
+}
+
+impl Pool {
+    fn next(&self, deadline: i64) -> Result<Work, Status> {
+        loop {
+            if self.state.lock().stopped {
+                return Err(native_abi::ERR_CANCELED);
+            }
+            let Some(activity) = &self.activity else {
+                return self.channel.read_wait(deadline).map(Work::Message);
+            };
+            let packet = activity.port.wait(deadline)?;
+            match packet.key {
+                0 => {
+                    let message = self.channel.read();
+                    self.channel.wait_async(
+                        &activity.port,
+                        0,
+                        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
+                    )?;
+                    match message {
+                        Ok(message) => return Ok(Work::Message(message)),
+                        Err(native_abi::ERR_SHOULD_WAIT) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                1 => {
+                    // 先清除再重新登记；处理期间的新通知仍会留在 port，不能在工作后清除。
+                    activity.event.signal(native_abi::signals::SIGNALED, 0)?;
+                    activity
+                        .event
+                        .wait_async(&activity.port, 1, native_abi::signals::SIGNALED)?;
+                    return Ok(Work::Activity);
+                }
+                _ => return Err(native_abi::ERR_BAD_STATE),
+            }
+        }
+    }
 }
 
 /// 服务 `channel`：按需增长到最多 `workers` 个线程；对端关闭时线程退出。
@@ -236,6 +289,54 @@ pub fn serve(
     name: &[u8],
     handler: Arc<Handler<'static>>,
 ) -> Result<(), Status> {
+    start(channel, workers, name, handler, None)
+}
+
+/// 在同一弹性线程池中消费 channel 控制消息与共享数据面的 Event 通知。
+/// 不增设常驻桥接线程；activity 可以阻塞，其他空闲工作者继续接收两个来源。
+///
+/// # Parameters
+/// - `channel`/`workers`/`name`/`handler`: 与 [`serve`] 相同的控制连接、并发上限、名称和控制处理器。
+/// - `event`: 数据面通知；收到后先清除并重新武装，再调用 `activity`。
+/// - `activity`: 排空当前数据；失败停止接收新工作，所有在途处理结束后才释放会话。
+///
+/// # Errors
+/// port、异步登记、内存或初始线程创建失败；失败不发表服务。
+pub fn serve_events(
+    channel: Channel,
+    workers: usize,
+    name: &[u8],
+    handler: Arc<Handler<'static>>,
+    event: Event,
+    activity: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
+) -> Result<(), Status> {
+    let port = Port::create()?;
+    channel.wait_async(
+        &port,
+        0,
+        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
+    )?;
+    event.wait_async(&port, 1, native_abi::signals::SIGNALED)?;
+    start(
+        channel,
+        workers,
+        name,
+        handler,
+        Some(Activity {
+            port,
+            event,
+            handler: activity,
+        }),
+    )
+}
+
+fn start(
+    channel: Channel,
+    workers: usize,
+    name: &[u8],
+    handler: Arc<Handler<'static>>,
+    activity: Option<Activity>,
+) -> Result<(), Status> {
     let mut owned_name = Vec::new();
     owned_name
         .try_reserve_exact(name.len())
@@ -246,9 +347,11 @@ pub fn serve(
         handler,
         name: owned_name,
         max: workers.max(1),
+        activity,
         state: native_runtime::sync::Mutex::new(PoolState {
             workers: 1,
             idle: 1,
+            stopped: false,
         }),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
@@ -263,8 +366,8 @@ pub fn serve(
 fn serve_loop(pool: &Arc<Pool>) {
     loop {
         let deadline = native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
-        let message = match pool.channel.read_wait(deadline) {
-            Ok(message) => message,
+        let work = match pool.next(deadline) {
+            Ok(work) => work,
             Err(native_abi::ERR_TIMED_OUT) => {
                 let mut state = pool.state.lock();
                 if state.workers > 1 {
@@ -274,7 +377,10 @@ fn serve_loop(pool: &Arc<Pool>) {
                 }
                 continue;
             }
-            Err(_) => return,
+            Err(_) => {
+                pool.state.lock().stopped = true;
+                return;
+            }
         };
         // 取走请求后若再无空闲读者，先补一个，再处理本条（处理可能长时间阻塞）。
         let grow = {
@@ -299,10 +405,18 @@ fn serve_loop(pool: &Arc<Pool>) {
                 }
             }
         }
-        let result = respond(&pool.channel, message, &*pool.handler);
+        let result = match work {
+            Work::Message(message) => respond(&pool.channel, message, &*pool.handler),
+            Work::Activity => (pool
+                .activity
+                .as_ref()
+                .expect("activity source was selected")
+                .handler)(),
+        };
         pool.state.lock().idle += 1;
         if result.is_err() {
             let mut state = pool.state.lock();
+            state.stopped = true;
             state.workers -= 1;
             state.idle -= 1;
             return;

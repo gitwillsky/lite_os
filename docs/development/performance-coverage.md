@@ -197,5 +197,11 @@ proc 每个实际 open 只格式化一次连续读取序列，offset 0 重新观
 块 metadata 从每槽两个 VMO 改为一张固定表，16 槽下分配页数从 32 页减为 1 页（不含 payload）；
 初始化预触及的只是一张 metadata 表，不预读设备输出缓冲。提交使用 cached DMA extent 的现有 static gate，
 completion gate 同时约束 volatile status read 与 decode 都在 used-length 检查之后。
-当前源码已接通登记 VMO、客户端区间直接 DMA 和批量 RPC，尚未完成专用 FIFO/共享环数据面；
-metadata 收益不代替整条 I/O 链路的运行验收，完成度由性能计划维护。
+当前源码已接通登记 VMO、客户端区间直接 DMA 与共享 SQ/CQ；控制 channel 不再传输读写/flush 描述符。
+每会话的环与本地 credits 表连接时准备；请求直接写入固定原子记录，服务描述符使用栈内已初始化前缀，正常路径无批次描述符分配。
+容量 128 的共享区按布局占三页，另有 pending/空闲表；这是并发 I/O 的有界存储，不随历史请求数增长。
+控制与 Event 复用弹性池，客户端借当前调用者分派完成；不增加常驻桥接线程。
+该变更不增加 host wall-clock 阈值：实际成本来自跨进程 cacheline、通知/等待与设备队列，host 模拟不能代表该链路；
+旧逐项 Writer/Reader codec 已删除，固定记录的循环与边界由代码审查覆盖。
+最终以既有 guest 顺序/并发文件 I/O、pager、fsync/fsstress 门禁诊断吞吐、延迟、线程数及回收，
+特别核对 ring 多次环绕、乱序完成、flush 屏障和断开时在途 DMA 的寿命；运行验收前不声称性能收益。

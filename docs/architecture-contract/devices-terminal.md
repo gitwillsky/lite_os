@@ -39,14 +39,35 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 3. 块设备、网卡、显示、输入、PCM、port 是独占类：旧会话的使用者仍持有请求 channel 时 `OPEN` 返回
    `ERR_ALREADY_BOUND`；已离开时等旧会话回收完毕再建立新会话。entropy、USB 连接与启动进度可共享。
 4. 活动 Event 在登记时绑定驱动一次，每个会话得到它的副本；会话结束不解除驱动侧绑定。
-5. 块设备会话（`LBLOCK03`）参照 Fuchsia block FIFO 与 Linux blk-mq：客户端先 `ATTACH` 登记 VMO（得到 vmoid），
-   此后块数据只经 DMA 直达登记 VMO，不进入 channel 消息。`TRANSFER` 提交单个区间，`TRANSFER_BATCH`（每条消息至多 64 项）
-   提交一批，服务端并发发布整批并在全部完成后回复一次；队列深度因此不再受服务线程数限制。
-   批内任一请求无效或失败，其余仍执行完毕（缓冲不能在设备仍可能写入时交还），返回第一个错误。
-   virtio-blk 的批量提交在自己的在途请求占满 slot/描述符 credit 时先收割最老的一个，不能只靠阻塞等待容量——
-   自己持有的 credit 在 `finish` 之前不归还，会自我死锁。请求槽数由 virtqueue 大小协商（`queue_size/3`）。
-   未登记的 CPU 缓冲读写（ext4 元数据、分区探测）经 `BlockBufferPool` 的暂存 VMO 适配，`read_block_ranges`
-   把多个不相邻区间合并为一次登记加一批提交。
+5. 块设备会话（`LBLOCK04`）参照 Fuchsia block FIFO：控制 channel 只执行 INFO、ATTACH、DETACH、CONNECT、QUEUE。
+   QUEUE 一次性交出提交/完成共享 VMO、请求 Event、完成 Event；重复领取返回 ALREADY_BOUND，不能产生两个不协调的 producer。
+   数据与 flush 只走共享环；旧 TRANSFER/TRANSFER_BATCH RPC 已删除，未引入应用 ABI 或新增内核调用。
+   两端必须同时更新协议版本，不保留旧 codec 或在线混用路径。
+6. `block::queue` 只拥有共享记录/索引，`block::server` 拥有登记和 DMA/flush 屏障，`block::client_queue` 拥有调用者 credits、
+   request identity 与完成分派；硬件 slot/descriptor credits 仍只属于驱动的 RequestOwner。
+   VMO 固定大小，容量为 `max(queue_depth, 64)` 向上取 2 的幂（上限 65536）；头部 256 字节，之后是 capacity 个 48 字节请求、
+   capacity 个 16 字节完成，按页取整。头部 SQ head/tail 在 0/64、CQ head/tail 在 128/192（u32），closed/abort 在 8/12。
+   请求为六个小端 u64：request ID、operation（0 读/1 写/2 flush）、vmoid、设备首块、块数、VMO 字节偏移；
+   完成为 request ID 与低 32 位保存的 Status（高位零）。所有字段用对应宽度的原子访问，错误对端也不能制造非原子数据竞争。
+   各端分别用本地短锁串行 producer/consumer，索引按 u32 环绕、差值不超过 capacity；写完记录 Release head，读完记录 Release tail，
+   另一端 Acquire 后读取/复用。观察 has_requests 也持 consumer 锁，避免把跨两个快照的 head/tail 误判为损坏。
+7. 客户端在连接时准备 pending/空闲表，提交直接把固定记录写进环，无描述符 Vec、Writer 或 channel_call 回复缓冲。
+   request ID 的完整序号加槽号由同一短锁分配，序号溢出在发表前拒绝；旧完成不能命中新一代槽。
+   credits 直到所属调用消费全部完成才归还，因此 CQ 容量总能覆盖所有在途请求；每批最多 64 项，多调用者不跨 DMA 持锁。
+   当前调用者之一推进 CQ/port，其他调用者等本地 futex epoch；谓词在分派权交接的同一锁内重查。
+   归还本地 credits 也通知完成 Event，不能让代表其他提交者等空位的分派者睡在没有新 DMA 的 port 上；无常驻转发线程。
+8. 服务复用 `service-rpc::serve_events` 的弹性池，由同一 port 接收控制与请求 Event；先清除/重新武装通知再处理共享环。
+   SQ 领取后剩余记录会再次通知一个空闲工作者，批内经 `BlockDevice::transfer_batch` 并发发布，不依赖同步 RPC 往返。
+   有效请求先克隆登记、在表锁外等 DMA；完成只在同步设备方法确认 DMA 已结束后发表。描述符是有界栈内初始化前缀，
+   不新增批次堆分配。合法请求可批量执行；设备按接口返回首个批错误，所涉有效项均收到该错误，已提交 DMA 全部结束后才返回。
+   flush 在 SQ 领取时封闭后续批次，等待此前所有 active 批次完成，再执行设备 flush；它前面的同批数据也必须先完成。
+   virtio-blk 自己占满 slot/描述符 credit 时先收割最老请求，不能阻塞等待自己的 credit；槽数由 virtqueue 大小协商。
+9. 队列损坏只请求服务停止，不能当作 DMA 取消完成；source/rearm 失败也先停止领取、等待全部 handler 结束。
+   BlockSession 最后析构先释放登记，再发布 closed 和完成通知。等待资源暂时不足只限速重查，不提前归还在途 credits；
+   正常路径按通知阻塞，无定时轮询。设备宿主退出仍由实际 channel PEER_CLOSED 及既有 PMT quarantine 契约处理。
+   目录的观测句柄由 SessionEnd 共享 owner 持有，状态回收后主动摘除，再发布 ended；服务退出不能被观测句柄伪装为在线。
+   若服务在线程启动后、OPEN 安装观测前已退出，finished 禁止重新安装并保活死亡端点。
+   未登记 CPU 缓冲仍经 BlockBufferPool 暂存 VMO 适配，read_block_ranges 合并多个区间；直接供页保持登记 VMO DMA 路径。
 
 ## 运行时换版
 

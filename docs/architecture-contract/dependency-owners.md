@@ -31,6 +31,9 @@
 | `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS、tmpfs 与 Linux FUSE 守护进程的页缓存、设备 UAPI（含 ALSA 状态机）、Linux IPC、授权端点适配 | restricted mode 执行应用；只消费路由给它的设备类与协议 |
 
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。
+`service-rpc::serve_events` 可在同一弹性工作池接收控制 channel 与共享数据面 Event；没有活动源的服务不分配 port。
+具体共享区格式、credits、DMA/flush 与完成属于设备协议，transport 不解释记录。source/rearm 失败停止领取，
+在途 handler 全部退出后才释放会话闭包；没有另一组转发线程或内核工作队列。
 `device-model` 定义设备类词汇与 backing；各 `*-protocol` crate 拥有服务消息和客户端/服务端适配。
 它们是系统服务接口；Linux 应用的内核入口只使用 Linux UAPI。服务不得直接链接另一个服务的 binary 源码。
 `task-observer-protocol` 是授予 adm 组系统工具的只读任务观测消息与端点 owner；仅定义数据，不依赖 native ABI、Linuxd 或 UI。
