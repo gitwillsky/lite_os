@@ -19,14 +19,6 @@ impl DeferredWork {
     /// 远端 Ready mailbox 有待接管；目标 CPU 在安全点计费 current 并裁决抢占，不能等下一 timer tick。
     pub(crate) const RUNQUEUE: Self = Self(1 << 2);
     pub(crate) const TIMER_BACKLOG: Self = Self(1 << 3);
-    /// 与 [`Self::TIMER`] 一同发布，表示该 tick 打断的是用户态；缺失时所有 tick 都按内核态计入，
-    /// 线程运行时间的用户/内核拆分退化为全部计入内核。
-    pub(crate) const TIMER_FROM_USER: Self = Self(1 << 5);
-
-    /// 合并两个 vector，使一次 `raise` 同时发布它们。
-    pub(crate) const fn with(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
 }
 
 /// 首个可注册 vector 的 bit；低位保留给核心向量。

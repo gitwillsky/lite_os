@@ -77,11 +77,12 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
 - deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
-- 内核 futex 表（`syscall::futex`）按 key 哈希分入 256 个桶，每桶一把可睡眠 `TaskMutex` 与一棵 (key, 序号) 有序树；同一 key
+- 内核 futex 表（`syscall::futex`）按 key 哈希分入 `256 × CPU 数`（向上取 2 的幂，首次使用时一次确定）个桶，每桶一把可睡眠 `TaskMutex` 与一棵 (key, 序号) 有序树；同一 key
   恒在同一桶，FIFO 不变。桶锁内比较用户值只用不缺页读取（`AddressSpace::read_resident_word`）：翻译缺失时先放桶锁、
   锁外普通读取缺页（可能等 pager），再重试，缺失这一步会让一次文件缺页的 I/O 串行化同桶 futex。requeue 按桶下标升序加锁、
-  同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：该路径依赖线程与调度，
-  无法在 host 隔离成可靠的阻塞基准，竞争吞吐用计划基线 4 的 guest 诊断；桶数是静态内存与碰撞率的折中。
+  同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：队列逻辑（key 哈希、FIFO 唤醒、requeue）是 `futex/queue.rs` 的纯函数，
+architecture-bench `futex enqueue + wake` 约束无竞争入队/摘除的 CPU 成本，host 单测覆盖 FIFO、唤醒数、
+同桶/跨桶 requeue 与哈希稳定/分布；锁争用吞吐用计划基线 4 的 guest 诊断。
 - 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。
 - fault/trap、OOM、exit 和 kill 只能由对应 owner 退休 context、wait membership 与 observer；同步 fence 未确认时不得回收 backing。
 - native-runtime 的启动闭包和结果引用属于 Descriptor，执行时不把其 Box 搬到线程栈；

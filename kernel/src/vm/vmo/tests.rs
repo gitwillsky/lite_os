@@ -296,17 +296,26 @@ fn fault_around_collects_only_resident_file_pages_read_only_without_requests() {
         )
         .unwrap();
     }
-    // 只有驻留页（0、2）被收集；页 1、3 缺失，既不分配也不请求；主缺页的页 1 被跳过。
-    let collected = file
-        .with_resident_file_pages(0..4, 0, |pages| {
-            pages
-                .iter()
-                .flatten()
-                .map(|(index, page)| (*index, page.writable))
-                .collect::<Vec<_>>()
-        })
+    let around = |vmo: &Arc<Vmo>, index: usize| {
+        let mut collected = Vec::new();
+        vmo.with_resolved_around(
+            index,
+            false,
+            Some(0..4),
+            |_| Ok(()),
+            |(), pages| {
+                collected = pages
+                    .iter()
+                    .flatten()
+                    .map(|(index, page)| (*index, page.writable))
+                    .collect::<Vec<_>>();
+            },
+        )
         .unwrap();
-    assert_eq!(collected, vec![(2, false)]);
+        collected
+    };
+    // 主缺页的页 0 被跳过；只有驻留页 2 被收集且只读；页 1、3 缺失，既不分配也不请求。
+    assert_eq!(around(&file, 0), vec![(2, false)]);
     assert!(file.state.lock().requested.is_empty());
 
     // 私有快照读到祖先的文件页，同样只读；自身写时复制的副本不是文件页，不收集。
@@ -314,33 +323,30 @@ fn fault_around_collects_only_resident_file_pages_read_only_without_requests() {
         .create_child(0, file.size(), ChildKind::AtLeastOnWrite)
         .unwrap();
     snapshot.write(0, &[9]).unwrap();
-    let collected = snapshot
-        .with_resident_file_pages(0..4, 1, |pages| {
-            pages
-                .iter()
-                .flatten()
-                .map(|(index, page)| (*index, page.writable))
-                .collect::<Vec<_>>()
-        })
+    assert_eq!(around(&snapshot, 2), Vec::new(), "页 0 是私有副本，页 2 是主页");
+    assert_eq!(around(&snapshot, 0), vec![(2, false)]);
+
+    // 不设窗口时不收集任何页（写缺页的路径）。
+    let mut called = false;
+    file.with_resolved_around(0, false, None, |_| Ok(()), |(), _| called = true)
         .unwrap();
-    assert_eq!(collected, vec![(2, false)]);
+    assert!(!called);
 
     // 匿名对象的已提交页不属于 pager 补页成本，映射为只读只会多一次写缺页。
-    let anonymous = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
+    let anonymous = Vmo::create((2 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
     anonymous.write(0, &[1]).unwrap();
-    assert_eq!(
-        anonymous.with_resident_file_pages(0..1, 1, |pages| pages.len()),
-        Some(0)
-    );
-    let anonymous_all = anonymous
-        .with_resident_file_pages(0..1, usize::MAX, |pages| pages.len())
+    anonymous.write(PAGE_SIZE as u64, &[1]).unwrap();
+    let mut collected = usize::MAX;
+    anonymous
+        .with_resolved_around(
+            0,
+            false,
+            Some(0..2),
+            |_| Ok(()),
+            |(), pages| collected = pages.iter().flatten().count(),
+        )
         .unwrap();
-    assert_eq!(anonymous_all, 0);
-
-    // 树锁正忙时放弃，不排队。
-    let held = file.tree.lock.lock().unwrap();
-    assert!(file.with_resident_file_pages(0..4, 1, |_| ()).is_none());
-    drop(held);
+    assert_eq!(collected, 0);
 }
 
 #[test]

@@ -39,6 +39,14 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 3. 块设备、网卡、显示、输入、PCM、port 是独占类：旧会话的使用者仍持有请求 channel 时 `OPEN` 返回
    `ERR_ALREADY_BOUND`；已离开时等旧会话回收完毕再建立新会话。entropy、USB 连接与启动进度可共享。
 4. 活动 Event 在登记时绑定驱动一次，每个会话得到它的副本；会话结束不解除驱动侧绑定。
+5. 块设备会话（`LBLOCK03`）参照 Fuchsia block FIFO 与 Linux blk-mq：客户端先 `ATTACH` 登记 VMO（得到 vmoid），
+   此后块数据只经 DMA 直达登记 VMO，不进入 channel 消息。`TRANSFER` 提交单个区间，`TRANSFER_BATCH`（每条消息至多 64 项）
+   提交一批，服务端并发发布整批并在全部完成后回复一次；队列深度因此不再受服务线程数限制。
+   批内任一请求无效或失败，其余仍执行完毕（缓冲不能在设备仍可能写入时交还），返回第一个错误。
+   virtio-blk 的批量提交在自己的在途请求占满 slot/描述符 credit 时先收割最老的一个，不能只靠阻塞等待容量——
+   自己持有的 credit 在 `finish` 之前不归还，会自我死锁。请求槽数由 virtqueue 大小协商（`queue_size/3`）。
+   未登记的 CPU 缓冲读写（ext4 元数据、分区探测）经 `BlockBufferPool` 的暂存 VMO 适配，`read_block_ranges`
+   把多个不相邻区间合并为一次登记加一批提交。
 
 ## 运行时换版
 

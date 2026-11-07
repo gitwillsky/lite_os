@@ -10,8 +10,14 @@ mod aarch64_pte;
 #[allow(dead_code)]
 #[path = "../../../system/linuxd/src/task/model/syscall_restart.rs"]
 mod syscall_restart;
-#[path = "../../../kernel/src/execution/timer/deadline.rs"]
+#[path = "../../../kernel/src/thread/timer_queue/index.rs"]
 mod timer_deadline;
+#[expect(
+    dead_code,
+    reason = "基准只执行入队与唤醒；共享 key 与 requeue 由 kernel-unit 单测覆盖"
+)]
+#[path = "../../../kernel/src/syscall/futex/queue.rs"]
+mod futex_queue;
 #[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;
 
@@ -357,10 +363,56 @@ fn main() {
         bus.write_u64(offset, iteration).expect("aligned register");
         bus.read_u64(offset).expect("aligned register") as usize
     });
-    verify("timer deadline", |iteration| {
-        let previous = 10_000 + iteration % 997;
-        let now = previous + iteration % 31;
-        timer_deadline::next(previous, now, 7).expect("benchmark input must be valid") as usize
+    // 生产 DeadlineIndex 的插入 + 取消 + 到期：每次迭代在 64 个常驻等待者之上完成一轮，
+    // 约束 O(log n) 的真实成本（预分配节点属于阻塞路径之外，计入以免低估）。
+    let mut timers = timer_deadline::DeadlineIndex::<u64>::new();
+    for resident in 0..64u64 {
+        let entry = timer_deadline::DeadlineIndex::prepare((1_000_000 + resident, resident), resident)
+            .expect("benchmark entry");
+        timers.insert(entry);
+    }
+    let mut ticket = 1_000u64;
+    verify("timer deadline index", |iteration| {
+        ticket += 2;
+        let near = 500 + iteration % 997;
+        let entry = timer_deadline::DeadlineIndex::prepare((near, ticket), ticket)
+            .expect("benchmark entry");
+        let becomes_head = timers.insert(entry);
+        let cancelled = timers.cancel(&(near, ticket));
+        let entry = timer_deadline::DeadlineIndex::prepare((near, ticket + 1), ticket + 1)
+            .expect("benchmark entry");
+        timers.insert(entry);
+        let mut batch = [const { None }; 1];
+        let due = timers.take_due(near, &mut batch);
+        drop(batch);
+        usize::from(becomes_head)
+            + usize::from(cancelled.head_changed)
+            + usize::from(cancelled.removed.is_some())
+            + usize::from(due.more_due)
+            + due.taken
+    });
+    // 生产 futex 队列逻辑的无竞争 wait 入队 + wake 摘除：同一桶内另有 32 个其他 key 的等待者。
+    // 锁、用户值读取与睡眠属于上层，不在此计入。
+    let mut futex_table = futex_queue::Table::<u64>::new();
+    for resident in 0..32u64 {
+        let key = futex_queue::FutexKey::Private { space: 1, address: 0x4000 + resident as usize * 4 };
+        let entry = fallible_tree::FallibleMap::try_prepare((key, resident), resident)
+            .expect("benchmark entry");
+        futex_table.commit_vacant(entry);
+    }
+    let mut futex_ticket = 1_000u64;
+    verify("futex enqueue + wake", |iteration| {
+        futex_ticket += 1;
+        let key = futex_queue::FutexKey::Private {
+            space: 2,
+            address: 0x8000 + (iteration as usize % 64) * 4,
+        };
+        let entry = fallible_tree::FallibleMap::try_prepare((key, futex_ticket), iteration)
+            .expect("benchmark entry");
+        futex_table.commit_vacant(entry);
+        let mut woken = 0;
+        futex_queue::wake_locked(&mut futex_table, key, 1, |waiter| woken = waiter);
+        woken as usize + key.bucket(1024)
     });
     verify("AArch64 VA39 indexes", |iteration| {
         let indexes = va39::indexes((iteration as usize).wrapping_mul(0x9e37_79b9));

@@ -21,6 +21,7 @@ pub(crate) mod arch {
 pub(crate) mod execution;
 pub(crate) mod processor {
     pub(crate) fn account_current_cpu_runtime(_: u64) {}
+    pub(crate) fn note_busy_from(_: u64) {}
 }
 #[expect(
     dead_code,
@@ -133,8 +134,8 @@ mod tests {
         policy.checkpoint(20);
         policy.set_restricted(25, false);
         policy.finish(30);
-        assert_eq!(policy.total_runtime_us(), 30);
-        assert_eq!(policy.restricted_runtime_us(), 10);
+        assert_eq!(policy.runtime_at(0).0, 30);
+        assert_eq!(policy.runtime_at(0).1, 10);
         assert_eq!(policy.vruntime, 30 * 1024);
     }
 
@@ -151,7 +152,7 @@ mod tests {
         assert_eq!(policy.runtime_on_cpu_us(), 0);
         policy.rebase(10_000 * 1024, 100_000 * 1024);
         assert_eq!(policy.vruntime, 101_000 * 1024);
-        assert_eq!(policy.total_runtime_us(), 100);
+        assert_eq!(policy.runtime_at(0).0, 100);
 
         policy.vruntime = 99_500 * 1024;
         policy.rebase(100_000 * 1024, 10_000 * 1024);
@@ -164,7 +165,7 @@ mod tests {
         policy.begin(500);
         policy.finish(525);
         assert_eq!(policy.runtime_on_cpu_us(), 25);
-        assert_eq!(policy.total_runtime_us(), 125);
+        assert_eq!(policy.runtime_at(0).0, 125);
     }
     #[test]
     fn waking_credit_is_bounded_and_never_charged_as_cpu_runtime() {
@@ -175,7 +176,7 @@ mod tests {
         policy.place_waking(10_000 * 1024, 1000);
         assert_eq!(policy.vruntime, 9000 * 1024);
         assert_eq!(
-            policy.total_runtime_us(),
+            policy.runtime_at(0).0,
             100,
             "sleep placement is not execution"
         );
@@ -193,7 +194,7 @@ mod tests {
             policy.vruntime, charged,
             "a smaller sampled floor cannot erase charged service"
         );
-        assert_eq!(policy.total_runtime_us(), 110);
-        assert_eq!(policy.restricted_runtime_us(), 5);
+        assert_eq!(policy.runtime_at(0).0, 110);
+        assert_eq!(policy.runtime_at(0).1, 5);
     }
 }

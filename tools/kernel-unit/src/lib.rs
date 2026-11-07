@@ -250,8 +250,12 @@ mod virtio_gpu_scanout_state;
 mod drm_fence_timeline;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/timer/deadline.rs"]
+#[path = "../../../kernel/src/thread/timer_queue/index.rs"]
 mod timer_deadline;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/syscall/futex/queue.rs"]
+mod futex_queue;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/platform/qemu_virt/riscv64/plic_policy.rs"]

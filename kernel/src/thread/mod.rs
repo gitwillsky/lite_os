@@ -319,7 +319,7 @@ impl Thread {
     pub(crate) fn runtime(&self) -> Runtime {
         let (cpu_us, restricted_us) = {
             let policy = self.scheduling.policy.lock();
-            (policy.total_runtime_us(), policy.restricted_runtime_us())
+            policy.runtime_at(get_time_us())
         };
         let state = self.scheduling.state.lock();
         Runtime {
@@ -455,7 +455,7 @@ pub(crate) fn dispatch_deferred() {
         }
         crate::crash::note_deferred_progress();
         timer_queue::expire(get_time_ns());
-        processor::request_tick_reschedule();
+        processor::request_slice_reschedule();
     } else if work.contains(DeferredWork::TIMER_BACKLOG) {
         // 空闲时没有调度 tick：boot CPU 的 housekeeping 与到期唤醒也必须推进看门狗的 deferred 进度，
         // 否则全空闲的系统会被误判为 deferred 停滞。
@@ -484,26 +484,18 @@ pub(crate) fn run() -> ! {
         // Release 发布本地 Processor 初始化；缺失时远端可能向尚未开始 drain 的 CPU 投递。
         crate::execution::cpu::mark_active();
     });
-    // 调度 tick 只在本 CPU 运行线程时存在；空闲时只剩截止时间等待者（boot CPU 另有 housekeeping）。
-    let mut tick_armed = true;
     loop {
         // 1. 关中断覆盖 deferred、mailbox drain 与选择，保证空闲决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
         dispatch_deferred();
         processor::with_current_processor(processor::Processor::drain_inbound);
         if let Some(thread) = processor::with_current_processor(processor::Processor::select) {
-            if !tick_armed {
-                crate::execution::timer::resume_local_idle_tick();
-                tick_armed = true;
-            }
             context_switch::switch_from_idle(thread);
             drop(idle_irq);
             continue;
         }
-        if tick_armed {
-            crate::execution::timer::suspend_local_idle_tick();
-            tick_armed = false;
-        }
+        // 空闲：没有时间片截止，硬件 deadline 只剩本 CPU 的截止时间等待者（boot CPU 另有 housekeeping）。
+        processor::enter_idle();
         // 2. 固定的 WFI/resume PC 使 trap 入口能跳过已消费 edge 对应的 WFI，关闭 enable-to-WFI 窗口。
         crate::arch::interrupt::wait_with_local_irq_masked();
         drop(idle_irq);

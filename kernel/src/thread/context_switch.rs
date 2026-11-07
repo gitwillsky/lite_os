@@ -127,7 +127,13 @@ fn begin_runtime(thread: &Arc<Thread>) -> *const KernelContext {
         RunState::Running { cpu },
         "selected thread must be Running on this CPU"
     );
-    thread.scheduling.policy.lock().begin(get_time_us());
+    let now = get_time_us();
+    thread.scheduling.policy.lock().begin(now);
+    // 新时间片从现在开始：记录起点，并按本 CPU 是否有竞争者决定是否武装截止；
+    // 未提交区间的起点同时发布给运行时间观察者。
+    crate::execution::timer::note_slice_start();
+    processor::note_busy_from(now);
+    with_current_processor(|processor| processor::rearm_slice(processor));
     thread
         .scheduling
         .last_cpu

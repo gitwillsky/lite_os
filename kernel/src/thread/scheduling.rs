@@ -293,20 +293,25 @@ impl Policy {
         self.restricted = restricted;
     }
 
-    /// 已提交的 restricted mode CPU 时间（微秒）。
-    pub(crate) fn restricted_runtime_us(&self) -> u64 {
-        self.restricted_runtime_us
-    }
-
     /// 替换权重等级；下一个 slice 生效。
     pub(crate) fn set_priority(&mut self, priority: u8) {
         assert!(priority < PRIORITY_LEVELS);
         self.priority = priority;
     }
 
-    /// 已提交的 CPU 时间（微秒）。
-    pub(crate) fn total_runtime_us(&self) -> u64 {
-        self.total_runtime_us
+    /// 截至 `now_us` 的 CPU 时间与 restricted 时间：已提交量加当前 active slice 的存量。
+    ///
+    /// 没有周期 tick 提交 checkpoint，长时间连续运行的线程只在切换时提交；观察者必须读取时叠加存量，
+    /// 否则它们看到的运行时间会停在上一次切换。
+    pub(crate) fn runtime_at(&self, now_us: u64) -> (u64, u64) {
+        let active = self
+            .active_start
+            .map_or(0, |start| now_us.saturating_sub(start.get() - 1));
+        let restricted = if self.restricted { active } else { 0 };
+        (
+            self.total_runtime_us.saturating_add(active),
+            self.restricted_runtime_us.saturating_add(restricted),
+        )
     }
 
     /// 本次 CPU 驻留以来已计费的执行时间，用于并列负载的跨核轮转。
@@ -390,6 +395,8 @@ impl Policy {
             - 1;
         let priority = self.active_priority();
         self.commit(now_us.saturating_sub(start), priority);
+        // 区间已提交到 `now_us`：观察者的存量从这里重新起算。
+        super::processor::note_busy_from(now_us);
     }
 
     /// 为新的唤醒裁决计费；尚未开始的切换目标只提供已提交的坐标，不伪造 active slice。

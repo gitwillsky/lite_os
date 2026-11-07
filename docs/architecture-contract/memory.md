@@ -106,9 +106,10 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
   只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
   只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
-- fault-around（`AddressSpace::fault_around`）必须在持有 VMO 树锁时安装：回收的 zap 与安装由树锁串行，释放锁后再装会留下
-  指向已退休页框的悬空翻译。它只装入 pager 支撑且已驻留的页，一律去掉写权限，不覆盖已有翻译；树锁/地址空间锁忙、
-  页表分配失败都放弃，缺失窗口裁剪时翻译会越过映射边界。Benchmark 决策：仅在读/执行缺页成功后多一次 try-lock，
+- fault-around（`Vmo::with_resolved_around` / `AddressSpace::install_around`）与主页在同一树锁事务内安装：
+  回收的 zap 与安装由树锁串行，若释放锁后再装，会留下指向已退休页框的悬空翻译。它只装入 pager 支撑且已驻留的页，
+  一律去掉写权限，不覆盖已有翻译，共用主页的 `TranslationCommit`（一次 fence）；页表分配失败只是放弃，
+  缺失窗口裁剪时翻译会越过映射边界。Benchmark 决策：读/执行缺页多一次 ≤16 页的驻留查询，
   不改变 PTE/TLBI 的 static/disassembly gate；收益用基线 6 诊断。
 - FaultSource 是单次解析结果：是否等待过 pager，不能作为持久 residency cache。只有成功安装翻译并完成 fence
   的 restricted fault 才进入线程统计。normal mode 服务缺页和失败解析不混入该计数。

@@ -25,6 +25,9 @@ use native_runtime::{Pager, Port, Vmo};
 
 /// 工作线程上限。
 const MAX_WORKERS: usize = 64;
+/// 空闲工作线程的存活时间（纳秒）。突发后的多余线程退出，释放其内核栈、用户栈与堆；
+/// 缺少它，每次并发缺页高峰都会让线程数只增不减（上限 64）。
+const IDLE_TIMEOUT_NS: i64 = 5_000_000_000;
 
 /// 补页暂存区容量；单次 supply 不超过它。
 pub const SUPPLY_BYTES: usize = 32 * native_abi::PAGE_SIZE;
@@ -276,7 +279,21 @@ fn work() {
                 None => {
                     queue.idle.push(me.clone());
                     drop(queue);
-                    while me.park(native_abi::DEADLINE_INFINITE) != Park::Unparked {}
+                    let deadline = native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
+                    if me.park(deadline) == Park::TimedOut {
+                        // 超时仍在空闲表里说明期间没有请求分派给本线程：退出。已被摘出空闲表的
+                        // 线程有一次待消费的唤醒（请求已入队），必须继续工作而不能丢失它。
+                        let mut queue = shared.queue.lock();
+                        if let Some(position) =
+                            queue.idle.iter().position(|idle| Arc::ptr_eq(idle, &me))
+                        {
+                            queue.idle.swap_remove(position);
+                            queue.workers -= 1;
+                            return;
+                        }
+                        drop(queue);
+                        while me.park(native_abi::DEADLINE_INFINITE) != Park::Unparked {}
+                    }
                     continue;
                 }
             }

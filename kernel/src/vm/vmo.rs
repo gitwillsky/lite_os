@@ -499,24 +499,16 @@ impl Vmo {
         commit_page(&mut state, index, frame, self.page_content())
     }
 
-    /// 在树锁内收集 `range` 中已驻留的文件页并交给 `with_pages`（fault-around）。
+    /// 收集 `range` 中已驻留的文件页（fault-around）；调用者持树锁。
     ///
     /// 只返回对象自身或祖先链上 pager 支撑的、已驻留的页，且一律按只读解析：不分配、不请求 pager、
-    /// 不复制。树锁正忙时放弃（返回 `None`），因为这只是对主缺页的机会性补充。
-    /// `with_pages` 在持树锁时执行，翻译必须在其中安装，否则回收的 zap 可能先于安装而留下悬空翻译。
-    ///
-    /// # Parameters
-    ///
-    /// - `range`: 页索引区间，长度不超过 [`FAULT_AROUND_PAGES`]。
-    /// - `skip`: 已由主缺页处理的页索引，不再收集。
-    pub(crate) fn with_resident_file_pages<R>(
+    /// 不复制。`skip` 是已由主缺页处理的页索引。返回数组前 `count` 项有效。
+    fn collect_resident_file_pages_locked(
         self: &Arc<Self>,
         range: core::ops::Range<usize>,
         skip: usize,
-        with_pages: impl FnOnce(&[Option<(usize, ResolvedPage)>]) -> R,
-    ) -> Option<R> {
+    ) -> [Option<(usize, ResolvedPage)>; FAULT_AROUND_PAGES] {
         debug_assert!(range.len() <= FAULT_AROUND_PAGES);
-        let _tree = self.tree.lock.try_lock()?;
         let mut pages = [None; FAULT_AROUND_PAGES];
         let mut count = 0;
         for index in range.filter(|&index| index != skip) {
@@ -525,7 +517,7 @@ impl Vmo {
                 count += 1;
             }
         }
-        Some(with_pages(&pages[..count]))
+        pages
     }
 
     /// 只读地查看一页是否已驻留于 pager 支撑的对象；调用者持树锁。
@@ -603,7 +595,32 @@ impl Vmo {
         self: &Arc<Self>,
         index: usize,
         write: bool,
+        with_page: impl FnMut(ResolvedPage) -> Result<R, VmError>,
+    ) -> Result<R, VmError> {
+        self.with_resolved_around(index, write, None, with_page, |_, _| ())
+    }
+
+    /// [`Self::with_resolved`]，并在主页解析成功的同一树锁事务内把 `around` 窗口中相邻的已驻留文件页
+    /// 交给 `with_around`（fault-around，摊销顺序访问的缺页成本）。
+    ///
+    /// 相邻页只来自对象自身或祖先链上 pager 支撑的、已驻留的页：不分配、不请求 pager、不复制，且只读。
+    /// 与主页同事务意味着回收的 zap（需要同一把树锁）不可能夹在“收集”和“安装”之间，
+    /// 否则安装会留下指向已退休页框的悬空翻译。
+    ///
+    /// # Parameters
+    ///
+    /// - `around`: 页索引窗口，长度不超过 [`FAULT_AROUND_PAGES`]；`None` 表示不做 fault-around。
+    /// - `with_around`: 在持树锁时执行，接收主页的结果与相邻页，必须在其中安装翻译。
+    ///
+    /// # Errors
+    /// 越界、分配失败、pager 失败或等待被打断。
+    pub(crate) fn with_resolved_around<R>(
+        self: &Arc<Self>,
+        index: usize,
+        write: bool,
+        around: Option<core::ops::Range<usize>>,
         mut with_page: impl FnMut(ResolvedPage) -> Result<R, VmError>,
+        with_around: impl FnOnce(&mut R, &[Option<(usize, ResolvedPage)>]),
     ) -> Result<R, VmError> {
         let mut source = FaultSource::Memory;
         loop {
@@ -612,7 +629,12 @@ impl Vmo {
                 match self.resolve_locked(index, write) {
                     Ok(mut page) => {
                         page.source = source;
-                        return with_page(page);
+                        let mut result = with_page(page)?;
+                        if let Some(range) = around {
+                            let pages = self.collect_resident_file_pages_locked(range, index);
+                            with_around(&mut result, &pages);
+                        }
+                        return Ok(result);
                     }
                     Err(Resolve::Error(error)) => return Err(error),
                     Err(Resolve::NeedPage { vmo, index }) => {

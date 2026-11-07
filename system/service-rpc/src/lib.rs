@@ -198,11 +198,34 @@ pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) ->
     + Sync
     + 'a;
 
-/// 以 `workers` 个线程服务 `channel`；对端关闭时线程退出。
+/// 空闲工作线程的存活时间（纳秒）；之后收缩到只剩一个读者。
+const IDLE_TIMEOUT_NS: i64 = 5_000_000_000;
+
+/// 一个服务 channel 的弹性工作线程池状态。
+struct Pool {
+    channel: Channel,
+    handler: Arc<Handler<'static>>,
+    name: Vec<u8>,
+    max: usize,
+    // OWNER: 当前存活的工作线程数与其中阻塞在读上的空闲数。二者与“始终保留一个空闲读者”的不变量
+    // 一起决定何时增长；缺失空闲计数会在全部线程都忙于阻塞调用时没有任何读者，请求无人接收。
+    state: native_runtime::sync::Mutex<PoolState>,
+}
+
+struct PoolState {
+    workers: usize,
+    idle: usize,
+}
+
+/// 服务 `channel`：按需增长到最多 `workers` 个线程；对端关闭时线程退出。
 ///
 /// 1. 每个线程阻塞读取一条请求（多个线程读同一 channel，内核保证每条消息只交给一个读者）；
 /// 2. 调用 `handler`，失败时回复只含状态；
 /// 3. 对非零事务号写回回复；零事务号由协议自行交付完成/错误事件。
+///
+/// 线程数是弹性的：从一个读者开始，取走一条请求而再无空闲读者时先补一个新读者（直至 `workers`），
+/// 所以并发能力与固定 `workers` 个线程相同；空闲超过 5 s 的多余线程退出，保留一个读者。
+/// 弹性用来避免每个会话常驻一组几乎总是空闲的线程（各占内核栈与用户栈）。
 ///
 /// # Errors
 ///
@@ -213,24 +236,75 @@ pub fn serve(
     name: &[u8],
     handler: Arc<Handler<'static>>,
 ) -> Result<(), Status> {
-    let channel = Arc::try_new(channel).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    for _ in 0..workers.max(1) {
-        let channel = channel.clone();
-        let handler = handler.clone();
-        let thread = native_runtime::thread::spawn(name, move || serve_loop(&channel, &*handler))?;
-        // 服务线程在对端关闭时自行结束。
-        drop(thread);
-    }
+    let mut owned_name = Vec::new();
+    owned_name
+        .try_reserve_exact(name.len())
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    owned_name.extend_from_slice(name);
+    let pool = Arc::try_new(Pool {
+        channel,
+        handler,
+        name: owned_name,
+        max: workers.max(1),
+        state: native_runtime::sync::Mutex::new(PoolState {
+            workers: 1,
+            idle: 1,
+        }),
+    })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let first = pool.clone();
+    // 服务线程在对端关闭时自行结束。
+    drop(native_runtime::thread::spawn(name, move || {
+        serve_loop(&first)
+    })?);
     Ok(())
 }
 
-fn serve_loop(channel: &Channel, handler: &Handler<'_>) {
+fn serve_loop(pool: &Arc<Pool>) {
     loop {
-        let message = match channel.read_wait(DEADLINE_INFINITE) {
+        let deadline = native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
+        let message = match pool.channel.read_wait(deadline) {
             Ok(message) => message,
+            Err(native_abi::ERR_TIMED_OUT) => {
+                let mut state = pool.state.lock();
+                if state.workers > 1 {
+                    state.workers -= 1;
+                    state.idle -= 1;
+                    return;
+                }
+                continue;
+            }
             Err(_) => return,
         };
-        if respond(channel, message, handler).is_err() {
+        // 取走请求后若再无空闲读者，先补一个，再处理本条（处理可能长时间阻塞）。
+        let grow = {
+            let mut state = pool.state.lock();
+            state.idle -= 1;
+            let grow = state.idle == 0 && state.workers < pool.max;
+            if grow {
+                state.workers += 1;
+                state.idle += 1;
+            }
+            grow
+        };
+        if grow {
+            let next = pool.clone();
+            match native_runtime::thread::spawn(&pool.name, move || serve_loop(&next)) {
+                Ok(thread) => drop(thread),
+                Err(_) => {
+                    // 创建失败：撤销登记，当前线程处理完后仍会回到读上。
+                    let mut state = pool.state.lock();
+                    state.workers -= 1;
+                    state.idle -= 1;
+                }
+            }
+        }
+        let result = respond(&pool.channel, message, &*pool.handler);
+        pool.state.lock().idle += 1;
+        if result.is_err() {
+            let mut state = pool.state.lock();
+            state.workers -= 1;
+            state.idle -= 1;
             return;
         }
     }

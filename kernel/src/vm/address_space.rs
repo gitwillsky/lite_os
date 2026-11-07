@@ -412,73 +412,70 @@ impl AddressSpace {
         }
         let page_address = address & !(PAGE_SIZE - 1);
         let index = mapping.vmo_page + (page_address - mapping.base) / PAGE_SIZE;
-        let (mut commit, source) =
-            mapping
-                .vmo
-                .with_resolved(index, access == FaultAccess::Write, |page| {
-                    self.install(&owner, &mapping, page_address, page)
-                        .map(|commit| (commit, page.source))
-                })?;
+        // 读/执行缺页顺带只读装入同一对齐窗口内相邻的已驻留文件页（见 `Vmo::with_resolved_around`）；
+        // 写入走正常缺页置脏，窗口按映射边界裁剪，缺失裁剪时翻译会越过映射或覆盖其他映射的页。
+        let around = (access != FaultAccess::Write).then(|| {
+            let window = index & !(FAULT_AROUND_PAGES - 1);
+            let first = window.max(mapping.vmo_page);
+            let end =
+                (window + FAULT_AROUND_PAGES).min(mapping.vmo_page + mapping.size / PAGE_SIZE);
+            first..end
+        });
+        let (mut commit, source) = mapping.vmo.with_resolved_around(
+            index,
+            access == FaultAccess::Write,
+            around,
+            |page| {
+                self.install(&owner, &mapping, page_address, page)
+                    .map(|commit| (commit, page.source))
+            },
+            |(commit, _), pages| self.install_around(&owner, &mapping, pages, commit),
+        )?;
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        if access != FaultAccess::Write
-            && let Some(mut around) = self.fault_around(&owner, &mapping, index)
-        {
-            around
-                .synchronize()
-                .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        }
         Ok(source)
     }
 
-    /// 缺页之后顺带只读装入同一对齐窗口内相邻的已驻留文件页，摊销顺序访问的缺页成本。
+    /// 把相邻已驻留文件页只读装入，合并进主缺页的 `commit`（一次 fence）。
     ///
-    /// 1. 只处理 pager 支撑且已驻留的页：不分配、不请求 pager、不复制，也不映射匿名或私有副本。
-    /// 2. 一律去掉写权限：之后的写入走正常缺页并置脏，回写与写时复制语义不变。
-    /// 3. 不覆盖已有翻译；树锁或地址空间锁正忙、页表分配失败都只是放弃，主缺页已经成功。
-    ///
-    /// 缺少窗口对齐与映射裁剪时，翻译会越过映射边界或覆盖其他映射的页。
-    fn fault_around(
+    /// 不覆盖已有翻译；地址空间锁不可得、页表分配失败都只是放弃，主缺页已经成功。
+    /// 调用者持 VMO 树锁。
+    fn install_around(
         self: &Arc<Self>,
         owner: &Arc<Self>,
         mapping: &Arc<Mapping>,
-        index: usize,
-    ) -> Option<TranslationCommit> {
-        let window = index & !(FAULT_AROUND_PAGES - 1);
-        let first = window.max(mapping.vmo_page);
-        let end = (window + FAULT_AROUND_PAGES).min(mapping.vmo_page + mapping.size / PAGE_SIZE);
+        pages: &[Option<(usize, ResolvedPage)>],
+        commit: &mut TranslationCommit,
+    ) {
+        if pages.iter().all(Option::is_none) {
+            return;
+        }
         let mut permissions = mapping.permissions | PagePermissions::USER;
         permissions.remove(PagePermissions::WRITE);
-        mapping
-            .vmo
-            .with_resident_file_pages(first..end, index, |pages| {
-                let owner_guard = if Arc::ptr_eq(owner, self) {
-                    None
-                } else {
-                    Some(owner.lock().ok()?)
-                };
-                let mut inner = self.lock().ok()?;
-                if !mapping.live.load(Ordering::Acquire) {
-                    return None;
-                }
-                let mut commit = TranslationCommit::new();
-                for &(page_index, page) in pages.iter().flatten() {
-                    let address = mapping.base + (page_index - mapping.vmo_page) * PAGE_SIZE;
-                    let vpn = VirtualAddress::from(address).floor();
-                    if inner
-                        .views
-                        .install_if_absent(vpn, page.ppn, permissions, &mut commit)
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                drop(inner);
-                drop(owner_guard);
-                Some(commit)
-            })
-            .flatten()
+        let owner_guard = if Arc::ptr_eq(owner, self) {
+            None
+        } else {
+            let Ok(guard) = owner.lock() else { return };
+            Some(guard)
+        };
+        let Ok(mut inner) = self.lock() else { return };
+        if !mapping.live.load(Ordering::Acquire) {
+            return;
+        }
+        for &(page_index, page) in pages.iter().flatten() {
+            let address = mapping.base + (page_index - mapping.vmo_page) * PAGE_SIZE;
+            let vpn = VirtualAddress::from(address).floor();
+            if inner
+                .views
+                .install_if_absent(vpn, page.ppn, permissions, commit)
+                .is_err()
+            {
+                break;
+            }
+        }
+        drop(inner);
+        drop(owner_guard);
     }
 
     /// 由 VMO 解析回调调用（持树锁）：装入一条翻译。

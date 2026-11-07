@@ -318,29 +318,20 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   登记 VMO（ATTACH/DETACH/TRANSFER）与区间传输已落地，内联 READ/WRITE 已删除，块内容不再进入 channel 消息。
   ext4 `read_storage` 按 extent 合并同一 extent 内连续的完整对齐块，经 `read_fs_blocks` 一次区间读；
   journal staged 覆盖与 cache generation 重试语义不变（单块先查 staged，多块先读 home 再在一次 journal guard 内覆盖）。
-  FIFO 批量完成（异步多请求）、协商槽数、写路径区间合并仍未完成。
-  双架构服务 Clippy 与 ext4-unit 夹具编译检查通过，未执行测试或更新实例。
-  范围缩减（精确记录）：单线程批量异步 FIFO 不做。槽数本就按 virtqueue 大小协商（queue_size/3），服务端多 worker
-  已能并发提交，单请求区间已到协商上限；写路径区间合并并入阶段 9（checkpoint 回写重做）。M4 的块服务线程缩减依赖
-  “异步完成”，改为按并发度评估线程数，不再以 FIFO 为前提。
+  批量提交已实现：`BlockDevice::transfer_batch`/`read_block_ranges`、协议 `TRANSFER_BATCH`（`LBLOCK03`）、
+  virtio-blk 并发发布整批（自有在途占满 credit 时先收割最老的，避免自锁）、ext4 `read_storage` 把一次读里
+  所有 extent 的运行合成一批。写路径区间合并随阶段 9（回写重做）一并完成。
+  双架构服务 Clippy 与 ext4-unit/kernel-unit 编译检查通过，未运行块 I/O 测试或更新实例。
 - 2 已实现待运行验收：ext4 `Content` 顺序预读窗口（32 KiB→512 KiB）；pager 工作线程的补页暂存区常驻映射，
-  存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around（64 KiB 对齐窗口、
-  只读、仅已驻留文件页、紧随主缺页的 try-lock 事务）。与计划原文的差异：fault-around 不并入主缺页的同一树锁事务，
-  避免改动 `with_resolved` 的所有调用方；代价是读缺页多一次 try-lock。已加 kernel-unit 用例；双架构 Clippy 通过，未运行测试。
-- 3 已实现待运行验收：每 CPU 定时队列 + 本地硬件 deadline 合成（tick/队首/boot housekeeping 取最小），到期精确到队首
-  截止时间；所有 CPU（含 boot）空闲停 tick，无来源时关闭 timer source；纯到期中断只发布 `TIMER_BACKLOG`。
-  范围缩减（精确记录）：忙碌 CPU 仍保持 100 Hz 调度 tick（计费与时间片轮转），未改为 slice 截止与 trap/切换边界记账——
-  该改动牵动调度计费与用户/内核时间拆分，单独成项，P2.1 的截止时间调度类依赖的是精确定时器而非 slice 截止。
-  双架构 Clippy 与 kernel-unit 编译通过，未运行测试。
-- 4 已实现待运行验收：futex 全局单锁改为 256 桶哈希（桶内 FIFO 不变）；桶锁内用不缺页读，缺页放锁后重试；
-  requeue 按桶序加锁。与计划原文的差异：桶锁为可睡眠 `TaskMutex` 而非 IRQ 自旋锁（取地址空间锁可能短暂睡眠），
-  私有 key 不另建每空间哈希表而与共享 key 共用同一张全局分桶表（key 含空间 koid / VMO id 参与哈希）；
-  不加 host 基准（见执行域契约）。双架构 Clippy 通过，未运行测试。
-- M1 已实现待运行验收：`WindowHost` 删除私有画布与 `present` 整窗复制，经新增 `Display::render_frame` 直接在已释放的共享缓冲中
-  整幅重绘；损伤由上一次提交画面的分块哈希推导（控件树当前没有区域级失效，计划原文假设的“失效区作 damage/重绘裁剪”不存在，
-  局部重绘需要控件树先提供失效区，另行立项）；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
-- 7 与 M3 已实现待运行验收：`libraries/span-heap`（线程本地分片空闲链、增量切分、远端释放原子栈 + pending 队列、
-  线程退出孤儿化/认领、空 span decommit 不 unmap、12.5% 级别、大对象独立映射）替换原全局单锁分级分配器；
-  host 并发单测 9 项与 `span-heap-bench` 通过，双架构 Clippy 通过。顺带修复 `netstack-unit` 夹具缺少
-  `NetworkDevice::link` 实现导致 architecture-bench 无法编译。
+  存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around 在主页解析的同一树锁
+  事务内只读装入同一 64 KiB 窗口中已驻留的文件页（一个 `TranslationCommit` 一次 fence）。kernel-unit 用例与双架构 Clippy 通过。
+- 3 已实现待运行验收：每 CPU 定时队列（`DeadlineIndex`）+ 本地硬件 deadline 合成（时间片截止/队首/boot housekeeping 取最小），
+  到期精确到队首截止时间；时间片抢占改为 slice 截止驱动（仅有竞争者时武装），忙碌无竞争与空闲 CPU 均无周期中断，
+  无来源时关闭 timer source；运行时间读取时叠加当前 slice 存量，不再依赖周期 checkpoint；
+  清除无消费者的 `TIMER_FROM_USER`/`last_user_return`/tick 相位计算。kernel-unit 4 项 `DeadlineIndex` 单测、
+  architecture-bench `timer deadline index` 基准、双架构 Clippy 通过，未运行调度/计时运行时测试。
+- 4 已实现待运行验收：futex 全局单锁改为 `256 × CPU 数` 桶哈希（桶内 FIFO 不变）；桶锁内用不缺页读，缺页放锁后重试；
+  requeue 按桶序加锁；队列逻辑抽成 `futex/queue.rs` 纯函数，kernel-unit 4 项单测（FIFO、唤醒数、同桶/跨桶 requeue、
+  哈希分布）与 architecture-bench `futex enqueue + wake` 基准。桶锁为可睡眠 `TaskMutex` 而非 IRQ 自旋锁：桶内取地址空间锁
+  可能短暂睡眠，自旋锁下不允许；私有与共享 key 共用同一张全局分桶表（空间 koid / VMO id 参与哈希）。双架构 Clippy 通过。
 - 5、6、8、9、P2 与 M2、M4–M7 尚未开始；不以阶段性基础改动代替整项验收。

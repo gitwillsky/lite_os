@@ -29,21 +29,19 @@ fn handle_software_interrupt() {
     crate::crash::stop_if_requested();
 }
 
-/// timer 中断的 deferred work；`user_trap` 表示在用户态 trap 入口响应。
+/// timer 中断的 deferred work。
 ///
-/// 只有包含调度 tick 的中断才发布 [`DeferredWork::TIMER`]（计费与抢占裁决）；截止时间等待者或
+/// 只有包含时间片截止的中断才发布 [`DeferredWork::TIMER`]（计费与抢占裁决）；截止时间等待者或
 /// housekeeping 到期只发布 backlog 位，由 dispatch 唤醒到期者，不额外触发调度计费。
-fn timer_work(user_trap: bool, event: &timer::TimerEvent) -> DeferredWork {
-    if !event.tick {
-        DeferredWork::TIMER_BACKLOG
-    } else if user_trap && timer::tick_interrupted_user(event.fired) {
-        DeferredWork::TIMER.with(DeferredWork::TIMER_FROM_USER)
-    } else {
+fn timer_work(event: &timer::TimerEvent) -> DeferredWork {
+    if event.slice_expired {
         DeferredWork::TIMER
+    } else {
+        DeferredWork::TIMER_BACKLOG
     }
 }
 
-fn handle_claimed_interrupt(user_trap: bool) {
+fn handle_claimed_interrupt() {
     let claimed = crate::platform::claim_interrupt();
     let software = matches!(&claimed, crate::platform::ClaimedInterrupt::Software(_));
     match &claimed {
@@ -51,7 +49,7 @@ fn handle_claimed_interrupt(user_trap: bool) {
             // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
             let event = timer::acknowledge_timer_interrupt();
             crate::crash::watchdog_tick();
-            deferred::raise(timer_work(user_trap, &event));
+            deferred::raise(timer_work(&event));
         }
         crate::platform::ClaimedInterrupt::Device(_)
         | crate::platform::ClaimedInterrupt::Software(_) => {}
@@ -67,15 +65,15 @@ fn handle_claimed_interrupt(user_trap: bool) {
     }
 }
 
-fn handle_interrupt(event: TrapEvent, user_trap: bool) -> bool {
+fn handle_interrupt(event: TrapEvent) -> bool {
     match event {
         TrapEvent::TimerInterrupt => {
             let event = timer::acknowledge_timer_interrupt();
             crate::crash::watchdog_tick();
-            deferred::raise(timer_work(user_trap, &event));
+            deferred::raise(timer_work(&event));
         }
         TrapEvent::ExternalInterrupt => {
-            handle_claimed_interrupt(user_trap);
+            handle_claimed_interrupt();
             if crate::serial::input_pending() {
                 deferred::raise(DeferredWork::CONSOLE);
             }
@@ -95,7 +93,7 @@ pub(crate) fn init() {
 pub(crate) fn handle_user_trap() -> ! {
     arch::trap::install_kernel_entry();
     let event = arch::trap::event();
-    if !handle_interrupt(event, true) {
+    if !handle_interrupt(event) {
         let current = thread::current().expect("user trap without a current thread");
         let owner = current.owner().clone();
         let disposition = match event {
@@ -207,7 +205,6 @@ pub(crate) fn trap_return() -> ! {
         let context = current.prepare_user_return(crate::execution::cpu::current_id().index());
         // noreturn trampoline 不展开 Rust frame；不显式释放会把线程引用永久留在内核栈上。
         drop(current);
-        timer::note_return_to_user();
         arch::trap::return_to_user(context, token, crate::arch::mmu::TRAMPOLINE_ADDRESS)
     }
 }
@@ -215,7 +212,7 @@ pub(crate) fn trap_return() -> ! {
 /// 内核态 trap：只接受中断；其他异常是内核自身的缺陷，fail-stop。
 pub(crate) fn handle_kernel_trap() {
     let event = arch::trap::event();
-    if !handle_interrupt(event, false) {
+    if !handle_interrupt(event) {
         panic!("kernel trap: {:?}", arch::trap::kernel_exception(event));
     }
 }

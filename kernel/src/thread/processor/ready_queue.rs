@@ -14,6 +14,8 @@ pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) {
     processor.runqueue.push(entry);
     // Membership/floor 与抢占是不同事实；delivery 原因决定能否请求抢占。
     update_floor(processor);
+    // 运行线程出现了第一个竞争者：武装它的时间片截止（此前没有周期 tick）。
+    rearm_slice(processor);
 }
 
 /// 以前进的 current/有效 Ready root 更新本 CPU 的虚拟时间基准；idle 不重置时钟。
@@ -154,6 +156,7 @@ pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
         );
     }
     update_floor(processor);
+    rearm_slice(processor);
     preempt
 }
 

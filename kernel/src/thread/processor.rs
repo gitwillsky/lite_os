@@ -120,6 +120,9 @@ struct PerCpuProcessor {
     placement_vruntime: AtomicU64,
     // OWNER: 本 CPU 已提交的线程运行时间。
     busy_us: AtomicU64,
+    // OWNER: 当前尚未提交的运行区间的起点（微秒，0 = 本 CPU 空闲）。观察者据此把正在运行的线程的存量叠加到
+    // `busy_us`；缺少它，没有周期 tick 时长时间运行的线程在观察中看起来 CPU 空闲。
+    busy_anchor_us: AtomicU64,
     // OWNER: 只有本 CPU 读写，记录自上次放宽亲和偏置以来的抢占次数（见 `placement_policy`）。
     preemptions_since_rotation: AtomicU32,
     // timer softirq 可远端投递；IRQ-safe 锁防止打断本 CPU drain 后再入。
@@ -152,6 +155,7 @@ impl PerCpuProcessor {
             reschedule_requested: AtomicBool::new(false),
             placement_vruntime: AtomicU64::new(0),
             busy_us: AtomicU64::new(0),
+            busy_anchor_us: AtomicU64::new(0),
             preemptions_since_rotation: AtomicU32::new(0),
             inbound: IrqMutex::new(Inbound {
                 entries: VecDeque::new(),
@@ -171,18 +175,48 @@ pub(super) fn account_current_cpu_runtime(runtime_us: u64) {
         .fetch_add(runtime_us, Ordering::Relaxed);
 }
 
+/// 本 CPU 的未提交运行区间从 `now_us` 开始；切换入线程与 checkpoint 之后调用。
+pub(super) fn note_busy_from(now_us: u64) {
+    current_per_cpu()
+        .busy_anchor_us
+        .store(now_us, Ordering::Relaxed);
+}
+
+/// 本 CPU 进入 idle：没有未提交的运行区间，也不再需要时间片截止。
+pub(super) fn enter_idle() {
+    current_per_cpu().busy_anchor_us.store(0, Ordering::Relaxed);
+    crate::execution::timer::disarm_slice();
+}
+
+/// 按本 CPU 当前状态重新武装时间片截止：有运行线程且 runqueue 有竞争者才需要，否则撤销。
+///
+/// 调用者在 IRQ 屏蔽下已更新 floor（过期 root 已丢弃）。
+pub(super) fn rearm_slice(processor: &Processor) {
+    if processor.current.is_some() && processor.runqueue.minimum_vruntime().is_some() {
+        crate::execution::timer::arm_slice();
+    } else {
+        crate::execution::timer::disarm_slice();
+    }
+}
+
 /// 每个 CPU 的累计忙碌时间（微秒），按逻辑 CPU 序。
 ///
 /// # Errors
 /// 分配失败返回 `Err(())`。
 pub(crate) fn cpu_busy_snapshot() -> Result<Vec<u64>, ()> {
     let slots = &PROCESSOR_TOPOLOGY.wait().slots;
+    let now = crate::execution::timer::get_time_us();
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(slots.len()).map_err(|_| ())?;
     snapshot.extend(
         slots
             .iter()
-            .map(|slot| slot.processor.busy_us.load(Ordering::Relaxed)),
+            .map(|slot| {
+                // 先读锚点再读已提交量：commit 在两次读之间发生时最多少算一小段，不会多算。
+                let anchor = slot.processor.busy_anchor_us.load(Ordering::Relaxed);
+                let committed = slot.processor.busy_us.load(Ordering::Relaxed);
+                committed + if anchor == 0 { 0 } else { now.saturating_sub(anchor) }
+            }),
     );
     Ok(snapshot)
 }
@@ -319,8 +353,8 @@ pub(super) fn dispatch_inbound_ready() {
     }
 }
 
-/// tick 到来时，本 CPU 有竞争者才请求重新调度。
-pub(super) fn request_tick_reschedule() {
+/// 时间片到期时，本 CPU 有竞争者才请求重新调度。
+pub(super) fn request_slice_reschedule() {
     let slot = current_per_cpu();
     if slot.running_entries.load(Ordering::Relaxed) != 0
         && slot.ready_entries.load(Ordering::Relaxed) != 0

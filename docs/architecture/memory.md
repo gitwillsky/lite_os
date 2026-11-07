@@ -43,8 +43,8 @@ fork 按对象取快照并在同一子空间复用快照，保持拆分 VMA 的�
 每个工作线程持有常驻映射的补页暂存区（`SupplyBuffer`）：存储读直接写入它再整体移交目标 VMO，不经堆缓冲。
 预读由内容 owner 决定，内核每次仍只请求缺失的一页并容忍请求范围外的补页：ext4 `Content` 为每文件维护顺序访问窗口
 （起步 32 KiB，倍增到 512 KiB，不越过 EOF 页）；linuxd 持久文件按 filesystem 声明的窗口预读。
-内核缺页成功后，读/执行访问紧随一个独立的 try-lock 事务，把同一 64 KiB 对齐窗口内已驻留的文件页只读装入
-（不分配、不请求、不覆盖已有翻译；匿名页与私有副本不装），写入仍走正常缺页置脏。
+内核读/执行缺页在解析主页的同一树锁事务内，把同一 64 KiB 对齐窗口中已驻留的文件页只读装入
+（不分配、不请求、不覆盖已有翻译；匿名页与私有副本不装），一个 `TranslationCommit` 一次 fence；写入仍走正常缺页置脏。
 
 内核先解决按需提交、COW 和 pager 缺页；仍失败才退出 restricted mode。linuxd 根据 VMA 分类
 SIGSEGV/SIGBUS 或扩展 GROWS_DOWN。成功解决的 restricted 缺页及其中的 pager 等待从承载线程 native runtime

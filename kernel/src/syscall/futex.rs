@@ -16,41 +16,25 @@
 //! 4. requeue 需要同时持有源桶与目标桶：按桶下标升序加锁，同一个桶只锁一次；等待者的当前登记位置
 //!    （`slot`）只在持有其所在桶锁时改写，摘除路径据此在锁内复核。
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use native_abi::Status;
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use super::Call;
 use crate::execution::sync::{TaskEvent, TaskMutex, TaskMutexGuard, WaitResult};
 use fallible_tree::FallibleMap;
 
-/// 桶数（2 的幂）。足以让常见规模的并发 key 很少碰撞，静态占用固定。
-const BUCKETS: usize = 256;
-const _: () = assert!(BUCKETS.is_power_of_two());
+mod queue;
+use queue::{FutexKey, Table};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum FutexKey {
-    Private { space: u64, address: usize },
-    Shared { vmo: u64, offset: u64 },
-}
+type Bucket = Table<Arc<Waiter>>;
+type BucketGuard = TaskMutexGuard<'static, Bucket>;
 
-impl FutexKey {
-    /// 桶下标：两个 64 位部分经黄金比例乘法混合；相同 key 恒落在同一个桶。
-    fn bucket(self) -> usize {
-        const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
-        let (tag, high, low) = match self {
-            Self::Private { space, address } => (1u64, space, address as u64),
-            Self::Shared { vmo, offset } => (2u64, vmo, offset),
-        };
-        let hash = (high.wrapping_mul(MIX) ^ low.wrapping_add(tag))
-            .wrapping_mul(MIX)
-            .rotate_left(29)
-            .wrapping_mul(MIX);
-        (hash >> (64 - BUCKETS.trailing_zeros())) as usize
-    }
-}
+/// 每个 CPU 的桶数（2 的幂）；总桶数 = 它乘以 CPU 数再向上取 2 的幂（Linux futex 哈希的经验比例）。
+/// 并发 key 数大致随 CPU 数增长，固定桶数会让多核下的碰撞率随核数上升。
+const BUCKETS_PER_CPU: usize = 256;
 
 struct Waiter {
     event: TaskEvent,
@@ -60,16 +44,31 @@ struct Waiter {
     slot: Mutex<(FutexKey, u64)>,
 }
 
-type Table = FallibleMap<(FutexKey, u64), Arc<Waiter>>;
-
 // OWNER: 全部 futex 等待者的唯一索引，按 key 哈希分桶；桶锁内不缺页（见模块说明），
-// 但取地址空间锁可能短暂睡眠，因此是可睡眠锁。
-static TABLE: [TaskMutex<Table>; BUCKETS] = [const { TaskMutex::new(FallibleMap::new()) }; BUCKETS];
+// 但取地址空间锁可能短暂睡眠，因此是可睡眠锁。桶数在首次使用时按 CPU 数一次确定，之后不变——
+// 变化会让同一 key 落入不同桶而丢失唤醒。
+static TABLE: Once<Box<[TaskMutex<Bucket>]>> = Once::new();
 // OWNER: 登记序号；Relaxed，只提供 FIFO 顺序与唯一性。
 static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
 
-fn lock(key: FutexKey) -> Result<TaskMutexGuard<'static, Table>, Status> {
-    TABLE[key.bucket()]
+fn table() -> &'static [TaskMutex<Bucket>] {
+    TABLE.call_once(|| {
+        let buckets = (BUCKETS_PER_CPU * crate::execution::cpu::count()).next_power_of_two();
+        let mut table = Vec::new();
+        table
+            .try_reserve_exact(buckets)
+            .expect("futex bucket table allocation failed");
+        table.extend((0..buckets).map(|_| TaskMutex::new(FallibleMap::new())));
+        table.into_boxed_slice()
+    })
+}
+
+fn bucket(key: FutexKey) -> usize {
+    key.bucket(table().len())
+}
+
+fn lock(key: FutexKey) -> Result<BucketGuard, Status> {
+    table()[bucket(key)]
         .lock()
         .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
@@ -174,20 +173,28 @@ fn remove(waiter: &Arc<Waiter>) -> Result<(), Status> {
 /// 在桶锁内摘除并唤醒至多 `count` 个等待者，返回实际唤醒数。
 ///
 /// 唤醒只发布 woken 标志并触发等待者的 `TaskEvent`，不等待也不分配。
-fn wake_locked(table: &mut Table, key: FutexKey, count: usize) -> u32 {
-    let mut woken = 0;
-    while (woken as usize) < count {
-        let next = table
-            .ceiling(&(key, 0))
-            .map(|(slot, _)| *slot)
-            .filter(|slot| slot.0 == key);
-        let Some(slot) = next else { break };
-        let waiter = table.remove(&slot).expect("futex waiter vanished");
-        waiter.woken.store(true, Ordering::Release);
-        waiter.event.signal();
-        woken += 1;
+fn wake_locked(table: &mut Bucket, key: FutexKey, count: usize) -> u32 {
+    queue::wake_locked(table, key, count, wake_waiter)
+}
+
+/// requeue 对真实等待者的回调：唤醒、分配序号、改写登记位置。
+struct WaiterHooks;
+
+impl queue::RequeueHooks<Arc<Waiter>> for WaiterHooks {
+    fn wake(&mut self, waiter: Arc<Waiter>) {
+        wake_waiter(waiter);
     }
-    woken
+    fn next_ticket(&mut self) -> u64 {
+        NEXT_TICKET.fetch_add(1, Ordering::Relaxed)
+    }
+    fn moved(&mut self, waiter: &Arc<Waiter>, position: (FutexKey, u64)) {
+        *waiter.slot.lock() = position;
+    }
+}
+
+fn wake_waiter(waiter: Arc<Waiter>) {
+    waiter.woken.store(true, Ordering::Release);
+    waiter.event.signal();
 }
 
 pub(super) fn wake(call: &Call<'_>) -> Result<(), Status> {
@@ -206,12 +213,12 @@ fn lock_pair(
     target: FutexKey,
 ) -> Result<
     (
-        TaskMutexGuard<'static, Table>,
-        Option<TaskMutexGuard<'static, Table>>,
+        BucketGuard,
+        Option<BucketGuard>,
     ),
     Status,
 > {
-    let (source_bucket, target_bucket) = (source.bucket(), target.bucket());
+    let (source_bucket, target_bucket) = (bucket(source), bucket(target));
     if source_bucket == target_bucket {
         return Ok((lock(source)?, None));
     }
@@ -241,26 +248,17 @@ pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
         if value != call.arg_u32(2) {
             return Err(native_abi::ERR_BAD_STATE);
         }
-        wake_locked(&mut source_table, source, call.arg(1));
-        let mut moved = 0;
-        while moved < call.arg(4) {
-            let next = source_table
-                .ceiling(&(source, 0))
-                .map(|(slot, _)| *slot)
-                .filter(|slot| slot.0 == source);
-            let Some(slot) = next else { break };
-            let mut entry = source_table
-                .take_entry(&slot)
-                .expect("futex waiter vanished");
-            let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);
-            *entry.value().slot.lock() = (target, ticket);
-            entry.set_key((target, ticket));
-            target_table
-                .as_mut()
-                .unwrap_or(&mut source_table)
-                .commit_vacant(entry);
-            moved += 1;
-        }
+        queue::requeue_locked(
+            &mut source_table,
+            target_table.as_deref_mut(),
+            &queue::Requeue {
+                source,
+                target,
+                wake: call.arg(1),
+                requeue: call.arg(4),
+            },
+            &mut WaiterHooks,
+        );
         return Ok(());
     }
 }
