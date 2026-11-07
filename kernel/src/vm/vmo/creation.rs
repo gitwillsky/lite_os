@@ -14,7 +14,7 @@ impl Vmo {
             tree,
             state: Mutex::new(State {
                 pages,
-                committed: FallibleMap::new(),
+                committed: PageList::new(),
                 relation,
                 children: Vec::new(),
                 mappings: Vec::new(),

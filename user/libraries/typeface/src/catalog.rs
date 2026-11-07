@@ -169,7 +169,7 @@ impl Face {
             }
         };
         let glyph = Glyph {
-            coverage: raster.coverage,
+            coverage: crate::Coverage::from_gray(raster.coverage, raster.width),
             width: raster.width,
             height: raster.height,
             left: raster.left,
@@ -433,7 +433,7 @@ impl Typeface {
             }
         }
         Glyph {
-            coverage: Vec::new(),
+            coverage: crate::Coverage::Gray(Vec::new()),
             width: 0,
             height: 0,
             left: 0,

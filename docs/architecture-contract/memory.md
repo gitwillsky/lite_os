@@ -106,6 +106,11 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
   只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
   只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
+- VMO 的已提交页是 `PageList`：16 页一块的稀疏数组，块再由有序表索引，稠密区间每页约 28 字节（原先每页一个约 64 字节的
+  有序表节点），区间扫描变成块内数组遍历；最后一页移除时立即释放块。页的插入可能需要新块，所以持锁的提交阶段不能失败的
+  路径必须先 `reserve_range`/`reserve_for_shifted`（可失败，任何改动之前完成）再 `insert_reserved`：`supply_pages` 在校验阶段
+  建好目标区间的块；COW 祖先折叠预留失败就放弃本次折叠（隐藏节点保持原状，只是少回收一次）。预留只为真实存在的页建块，
+  不按窗口长度建块。释放区间页直接在状态锁内丢弃（fence 已在 zap 中完成）。
 - fault-around（`Vmo::with_resolved_around` / `AddressSpace::install_around`）与主页在同一树锁事务内安装：
   回收的 zap 与安装由树锁串行，若释放锁后再装，会留下指向已退休页框的悬空翻译。它只装入 pager 支撑且已驻留的页，
   一律去掉写权限，不覆盖已有翻译，共用主页的 `TranslationCommit`（一次 fence）；页表分配失败只是放弃，

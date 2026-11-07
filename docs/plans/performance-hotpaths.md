@@ -320,7 +320,7 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   journal staged 覆盖与 cache generation 重试语义不变（单块先查 staged，多块先读 home 再在一次 journal guard 内覆盖）。
   批量提交已实现：`BlockDevice::transfer_batch`/`read_block_ranges`、协议 `TRANSFER_BATCH`（`LBLOCK03`）、
   virtio-blk 并发发布整批（自有在途占满 credit 时先收割最老的，避免自锁）、ext4 `read_storage` 把一次读里
-  所有 extent 的运行合成一批。写路径区间合并随阶段 9（回写重做）一并完成。
+  所有 extent 的运行合成一批；journal 的 ordered 数据 / checkpoint / replay 写 home 时连续块合并为区间写（≤64 块）。
   双架构服务 Clippy 与 ext4-unit/kernel-unit 编译检查通过，未运行块 I/O 测试或更新实例。
 - 2 已实现待运行验收：ext4 `Content` 顺序预读窗口（32 KiB→512 KiB）；pager 工作线程的补页暂存区常驻映射，
   存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around 在主页解析的同一树锁
@@ -351,13 +351,17 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   损伤由上一次提交画面的分块哈希推导；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
   尚缺：区域级光栅裁剪（只重画失效区）。控件树的 `nodes` 是公开 map、到处直接 `get_mut`，没有统一的变更入口，
   需要先给控件树引入节点变更版本（封装可变访问）才能安全地由它推导失效区。
-- M7 部分实现：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）。尚缺：1 bit/像素字形存储、
-  预解码共享主题图标图集。
+- M7 部分实现：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）；点阵与不抗锯齿轮廓字形（只含 0/255）
+  改为 1 位/像素存储（`typeface::Coverage::Mono`，BDF 位图直接沿用），canvas 新增 `BitMask`/`draw_bit_mask`，
+  单测证明与 8 位蒙版逐像素一致。尚缺：预解码共享主题图标图集。
 - 门禁：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
   `--write-interface` 重新生成接口清单）；ext4-unit 69 项、kernel-unit 非 DTB 夹具、scheduler-unit、netstack-unit、
   span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
 - 8 部分实现：共享零页（根匿名 VMO 的读缺页映射全局只读零页，写时分配；kernel-unit 用例通过）。
   尚缺：accessed 位分代回收与后台回收线程。
-- 尚未完成：5（页表子树共享）、6（VMO 页列表分块）、8 余项（回收分代/后台线程）、9（ext4 延迟分配写回）、P2.1（截止时间调度类）、
+- 9 部分实现：写 home 的区间合并（上）；延迟分配本身（write 只进内容 VMO、回写时分配并直接从 VMO 写）尚未做。
+- 6 已实现待运行验收：`PageList`（16 页块 + 有序表索引）替换逐页节点；`supply_pages` 与 COW 折叠的“提交不失败”由前置预留保证；
+  kernel-unit 新增两项 PageList 单测，vmo 全部 19 项通过（含 fork/exit 折叠与 supply 用例），双架构 Clippy 与 architecture-check 通过。
+- 尚未完成：5（页表子树共享）、8 余项（回收分代/后台线程）、9 余项（延迟分配）、P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
-  M4 内核栈尺寸评估、M6（随 5、6）、M7 余项；不以阶段性基础改动代替整项验收。
+  M4 内核栈尺寸评估、M6（随 5）、M7 余项；不以阶段性基础改动代替整项验收。

@@ -38,7 +38,7 @@ impl Vmo {
         let _target = self.lock_tree()?;
         let _source = source.lock_tree()?;
         let source_state = source.state.lock();
-        let state = self.state.lock();
+        let mut state = self.state.lock();
         if first.checked_add(count).is_none_or(|end| end > state.pages)
             || source_first
                 .checked_add(count)
@@ -54,6 +54,11 @@ impl Vmo {
         }) {
             return Err(VmError::BadState);
         }
+        // 移交阶段不允许失败：目标区间的页块在任何改动之前一次建好（可失败），之后只做无分配的插入。
+        state
+            .committed
+            .reserve_range(first, count)
+            .map_err(|()| VmError::NoMemory)?;
         // 先撤销源 VMO 的映射并完成 fence，再移交页框：两棵树锁仍由本函数持有，期间没有新的源映射；
         // 反序时重复供页的源页可能在仍被映射时释放，违反页框退休契约。
         drop(state);
@@ -62,9 +67,9 @@ impl Vmo {
         let mut source_state = source.state.lock();
         let mut state = self.state.lock();
         for page in 0..count {
-            let moved = source_state
+            let mut moved = source_state
                 .committed
-                .take_entry(&(source_first + page))
+                .remove(&(source_first + page))
                 .expect("validated source page disappeared");
             let index = first + page;
             if let Some(request) = state.requested.remove(&index) {
@@ -74,10 +79,8 @@ impl Vmo {
                 // 已有页（并发补入或已写入）保持不变；多余的源页随 moved 释放。
                 continue;
             }
-            let mut moved = moved;
-            moved.set_key(index);
-            moved.value_mut().supply_to_pager(self.page_content());
-            state.committed.commit_vacant(moved);
+            moved.supply_to_pager(self.page_content());
+            state.committed.insert_reserved(index, moved);
         }
         drop(state);
         drop(source_state);
@@ -146,7 +149,7 @@ impl Vmo {
         let state = self.state.lock();
         let mut start = None;
         let mut end = first;
-        for (&index, page) in state.committed.iter_from(&first) {
+        for (index, page) in state.committed.iter_from(&first) {
             if index >= first + count {
                 break;
             }
@@ -183,7 +186,7 @@ impl Vmo {
         // 先完成全部别名的 write protection/fence；失败时保留 dirty，不能把未保护的页标 clean。
         // 树锁阻止新的 write fault；保护前完成的硬件写仍包含在随后读出的 writeback 快照中。
         self.zap(first..first + count, ZapMode::RemoveWrite)?;
-        self.state.lock().committed.for_each_mut(|&index, page| {
+        self.state.lock().committed.for_each_mut(|index, page| {
             if (first..first + count).contains(&index) && page.cleanliness == Cleanliness::Dirty {
                 page.set_cleanliness(Cleanliness::AwaitingClean);
             }
@@ -202,7 +205,7 @@ impl Vmo {
         }
         let (first, count) = page_range(offset, length)?;
         let _tree = self.lock_tree()?;
-        self.state.lock().committed.for_each_mut(|&index, page| {
+        self.state.lock().committed.for_each_mut(|index, page| {
             if (first..first + count).contains(&index)
                 && page.cleanliness == Cleanliness::AwaitingClean
             {

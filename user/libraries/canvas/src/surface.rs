@@ -28,6 +28,17 @@ pub struct Mask<'a> {
     pub stride: usize,
 }
 
+/// 1 位/像素覆盖蒙版（最高位在左，置位即完全覆盖），供 [`Surface::draw_bit_mask`] 着色。
+/// 无抗锯齿字形用它存储，比 8 位 [`Mask`] 小 8 倍。
+#[derive(Clone, Copy)]
+pub struct BitMask<'a> {
+    pub bits: &'a [u8],
+    pub width: i32,
+    pub height: i32,
+    /// 每行字节数，至少 `ceil(width / 8)`。
+    pub stride: usize,
+}
+
 fn fits(len: usize, width: i32, height: i32, stride: usize) -> bool {
     width >= 0
         && height >= 0
@@ -321,6 +332,29 @@ impl<'a> Surface<'a> {
                     0 => {}
                     255 if color.alpha() == 255 => *pixel = color.0,
                     _ => *pixel = over(scale_color(color, coverage), *pixel),
+                }
+            }
+        }
+    }
+
+    /// 用 `color`（不透明或预乘）按 1 位蒙版着色，左上角放在 `(x, y)`；源缓冲布局错误时不绘制。
+    pub fn draw_bit_mask(&mut self, mask: BitMask<'_>, x: i32, y: i32, color: Color) {
+        let row_bytes = (mask.width.max(0) as usize).div_ceil(8);
+        if mask.width < 0
+            || mask.height < 0
+            || mask.stride < row_bytes
+            || (mask.height > 0
+                && mask.bits.len() < mask.stride * (mask.height as usize - 1) + row_bytes)
+        {
+            return;
+        }
+        let opaque = color.alpha() == 255;
+        for (left, top, row) in self.visible_rows(Rect::new(x, y, mask.width, mask.height)) {
+            let source = &mask.bits[(top - y) as usize * mask.stride..];
+            for (column, pixel) in row.iter_mut().enumerate() {
+                let sx = (left + column as i32 - x) as usize;
+                if source[sx / 8] & (0x80 >> (sx % 8)) != 0 {
+                    *pixel = if opaque { color.0 } else { over(color.0, *pixel) };
                 }
             }
         }

@@ -448,3 +448,8 @@ writable_mappings 是 MemoryFile 唯一的 AtomicUsize lease count；递增与 s
 最后一个实际 VMA/退休引用退出才归还；不能把单个页的 writable PTE 数量当作潜在可写 VMA 数量。
 MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不保留第二份 seal 状态。
 失败 mmap、范围校验、安装或分配都通过候选 Arc Drop 回滚；新增开销仅在 mmap/最终 unmap，不进入每像素路径。
+
+- ext4 读写块 I/O 以区间为单位：读路径把一次 `read_storage` 里所有 extent 的连续块合成一批（`read_fs_runs`，journal staged
+  覆盖与 cache generation 重试语义不变）；journal 的 ordered 数据、metadata checkpoint 与 replay 写回 home 时，块号连续的映像
+  合并为至多 64 块的区间写（`write_fs_blocks_home`，每块仍计一次 home 写，区间缓冲分配失败按设备写失败处理）。
+  提交点之后不得再因合并而新增分配失败路径：缓冲在写入前一次性预留，失败即提交失败。

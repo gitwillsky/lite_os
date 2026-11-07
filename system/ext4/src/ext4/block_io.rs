@@ -1,5 +1,8 @@
 use super::*;
 
+/// 一次区间写合并的最大块数；限制临时缓冲，也不超过块设备会话的传输窗口量级。
+const HOME_RUN_BLOCKS: usize = 64;
+
 impl Ext4FileSystem {
     /// metadata cache 里已有的 block；不做 I/O。
     pub(super) fn metadata_cached(&self, fs_block_id: u64) -> Option<Arc<Vec<u8>>> {
@@ -231,6 +234,66 @@ impl Ext4FileSystem {
             .lock()
             .update_if_present(fs_block_id, buf);
         Ok(())
+    }
+
+    /// 把一组 (块号, 映像) 写回 home，块号连续的合并成区间写（一次最多 [`HOME_RUN_BLOCKS`] 块）。
+    ///
+    /// 输入应按块号升序（staged 集合就是）；乱序只会少合并，不影响正确性。每块仍计一次 home 写，
+    /// 语义与逐块 [`Self::write_fs_block_home`] 相同；区间缓冲分配失败按设备写失败处理（提交失败）。
+    pub(super) fn write_fs_blocks_home<'a>(
+        &self,
+        blocks: impl Iterator<Item = (u64, &'a [u8])>,
+    ) -> Result<(), FileSystemError> {
+        if self.block_size < self.device.block_size() {
+            // 一个设备块容纳多个 filesystem block：需要读-改-写，逐块处理。
+            for (block, bytes) in blocks {
+                self.write_fs_block_home(block, bytes)?;
+            }
+            return Ok(());
+        }
+        let mut run = Vec::new();
+        run.try_reserve_exact(HOME_RUN_BLOCKS * self.block_size)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut first = 0u64;
+        for (block, bytes) in blocks {
+            if bytes.len() != self.block_size {
+                return Err(FileSystemError::IoError);
+            }
+            let contiguous = !run.is_empty()
+                && block == first + (run.len() / self.block_size) as u64
+                && run.len() < HOME_RUN_BLOCKS * self.block_size;
+            if !contiguous && !run.is_empty() {
+                self.write_fs_run_home(first, &run)?;
+                run.clear();
+            }
+            if run.is_empty() {
+                first = block;
+            }
+            run.extend_from_slice(bytes);
+        }
+        if !run.is_empty() {
+            self.write_fs_run_home(first, &run)?;
+        }
+        Ok(())
+    }
+
+    /// 一段连续块的 home 区间写；边界检查与逐块路径一致。
+    fn write_fs_run_home(&self, first: u64, bytes: &[u8]) -> Result<(), FileSystemError> {
+        let blocks = (bytes.len() / self.block_size) as u64;
+        if first
+            .checked_add(blocks)
+            .is_none_or(|end| end > self.superblock.lock().blocks_count())
+        {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+        for _ in 0..blocks {
+            record_test_home_write();
+        }
+        let ratio = self.block_size / self.device.block_size();
+        self.device
+            .write_blocks(first as usize * ratio, bytes)
+            .map_err(block_error)
+            .map(|_| ())
     }
 
     pub(super) fn write_fs_block_home(

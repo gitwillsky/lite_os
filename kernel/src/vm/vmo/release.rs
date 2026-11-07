@@ -19,41 +19,54 @@ impl Vmo {
             if hidden.children.len() != 1 || !core::ptr::eq(hidden.children[0].as_ptr(), self) {
                 return;
             }
-            let child = hidden.children.pop().expect("sole COW child disappeared");
             let visible = limit
                 .min(state.pages)
                 .min(hidden.pages.saturating_sub(offset));
             // 1. 完整继承时复用较大的索引。幸存对象通常只覆盖少量页，避免持树锁重排全部祖先页。
-            // 两条路径均无分配且保留仍可见页的物理地址。覆盖页的旧翻译已先完成 zap/fence。
-            if offset == 0
+            // 页块的建立（可能分配）全部前移到任何改动之前：预留失败就放弃本次折叠，隐藏节点保持原状，
+            // 只是少回收一次；移交阶段只做无分配的插入并保留仍可见页的物理地址。覆盖页的旧翻译已先完成 zap/fence。
+            let full = offset == 0
                 && visible == hidden.pages
-                && state.committed.len() < hidden.committed.len()
-            {
+                && state.committed.len() < hidden.committed.len();
+            let reserved = if full {
+                // swap 之后较大的列表（现为 hidden 的）成为 state 的，较小列表的页并入它。
+                hidden
+                    .committed
+                    .reserve_for_shifted(&state.committed, 0, usize::MAX)
+            } else {
+                state
+                    .committed
+                    .reserve_for_shifted(&hidden.committed, offset, visible)
+            };
+            if reserved.is_err() {
+                return;
+            }
+            let child = hidden.children.pop().expect("sole COW child disappeared");
+            if full {
                 core::mem::swap(&mut state.committed, &mut hidden.committed);
-                while let Some((&index, _)) = hidden.committed.first_key_value() {
-                    let entry = hidden
+                while let Some((index, _)) = hidden.committed.first_key_value() {
+                    let page = hidden
                         .committed
-                        .take_entry(&index)
+                        .remove(&index)
                         .expect("surviving page disappeared");
                     if let Some(previous) = state.committed.get_mut(&index) {
-                        *previous = entry.into_value();
+                        *previous = page;
                     } else {
-                        state.committed.commit_vacant(entry);
+                        state.committed.insert_reserved(index, page);
                     }
                 }
             } else {
                 // 部分继承必须按窗口求交，并跳过已有私有页。死亡兄弟的映射已退休。
-                while let Some((&index, _)) = hidden.committed.first_key_value() {
-                    let mut entry = hidden
+                while let Some((index, _)) = hidden.committed.first_key_value() {
+                    let page = hidden
                         .committed
-                        .take_entry(&index)
+                        .remove(&index)
                         .expect("hidden page disappeared");
                     if index >= offset
                         && index - offset < visible
                         && !state.committed.contains_key(&(index - offset))
                     {
-                        entry.set_key(index - offset);
-                        state.committed.commit_vacant(entry);
+                        state.committed.insert_reserved(index - offset, page);
                     }
                 }
             }

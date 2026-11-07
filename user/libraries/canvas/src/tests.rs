@@ -3,7 +3,7 @@ extern crate std;
 use std::vec;
 use std::vec::Vec;
 
-use crate::{Color, Image, Mask, Rect, Surface};
+use crate::{BitMask, Color, Image, Mask, Rect, Surface};
 
 const BLACK: Color = Color::rgb(0, 0, 0);
 const WHITE: Color = Color::rgb(255, 255, 255);
@@ -287,6 +287,56 @@ fn mask_blends_coverage_with_color() {
     assert_eq!(pixels[1], WHITE.0);
     assert_eq!(pixels[2], Color::rgb(128, 128, 128).0);
     assert_eq!(pixels[3], Color::rgb(51, 51, 51).0);
+}
+
+#[test]
+fn bit_mask_draws_exactly_what_the_equivalent_eight_bit_mask_draws() {
+    // 10×3 的黑白图案：每行 2 字节，最后一个字节里 width 之外的位被忽略（故意置位）。
+    let bits = [0b1010_0110, 0b1100_0000 | 0b0011_1111, 0b0000_1111, 0b0100_0000, 0xff, 0xff];
+    let (width, height) = (10, 3);
+    let mut gray = Vec::new();
+    for row in 0..height {
+        for column in 0..width {
+            let set = bits[row * 2 + column / 8] & (0x80 >> (column % 8)) != 0;
+            gray.push(if set { 255 } else { 0 });
+        }
+    }
+    for color in [WHITE, Color::rgb(200, 30, 30)] {
+        let mut expected = canvas(12, 5);
+        let mut actual = canvas(12, 5);
+        Surface::new(&mut expected, 12, 5, 12).unwrap().draw_mask(
+            Mask { coverage: &gray, width: width as i32, height: height as i32, stride: width },
+            1,
+            1,
+            color,
+        );
+        Surface::new(&mut actual, 12, 5, 12).unwrap().draw_bit_mask(
+            BitMask { bits: &bits, width: width as i32, height: height as i32, stride: 2 },
+            1,
+            1,
+            color,
+        );
+        assert_eq!(actual, expected);
+    }
+    // 布局错误（缓冲不足）不绘制。
+    let mut untouched = canvas(4, 4);
+    Surface::new(&mut untouched, 4, 4, 4).unwrap().draw_bit_mask(
+        BitMask { bits: &bits[..1], width: 10, height: 3, stride: 2 },
+        0,
+        0,
+        WHITE,
+    );
+    assert!(untouched.iter().all(|&p| p == BLACK.0));
+    // 部分在目标之外：只画可见部分。
+    let mut clipped = canvas(2, 2);
+    Surface::new(&mut clipped, 2, 2, 2).unwrap().draw_bit_mask(
+        BitMask { bits: &[0xff], width: 8, height: 1, stride: 1 },
+        -6,
+        0,
+        WHITE,
+    );
+    assert_eq!(clipped[..2], [WHITE.0, WHITE.0]);
+    assert_eq!(clipped[2..], [BLACK.0, BLACK.0]);
 }
 
 #[test]

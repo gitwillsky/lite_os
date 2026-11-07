@@ -26,6 +26,8 @@
 mod creation;
 mod fault_around;
 pub(crate) use fault_around::FAULT_AROUND_PAGES;
+mod page_list;
+use page_list::PageList;
 mod pager;
 use pager::PageRequestCompletion;
 mod zero_page;
@@ -152,7 +154,7 @@ enum Relation {
 
 struct State {
     pages: usize,
-    committed: FallibleMap<usize, Page>,
+    committed: PageList,
     relation: Option<Relation>,
     // OWNER: 直接 COW 与 slice 子对象；用于翻译撤销与判定隐藏节点是否仅剩一个子对象（隐藏节点没有
     // slice 子对象）。Weak 不延长寿命。缺失 slice 时撤销本对象的页（decommit、补页替换、淘汰）留下 slice
@@ -612,30 +614,21 @@ impl Vmo {
             .lock()
             .committed
             .iter_from(&range.start)
-            .take_while(|(index, _)| **index < range.end)
+            .take_while(|(index, _)| *index < range.end)
             .any(|(_, page)| page.pins != 0)
         {
             return Err(VmError::BadState);
         }
         self.zap(range.clone(), ZapMode::Unmap)?;
         let mut state = self.state.lock();
-        let mut retired = FallibleMap::new();
-        loop {
-            let next = state
-                .committed
-                .ceiling(&range.start)
-                .map(|(&index, _)| index)
-                .filter(|index| *index < range.end);
-            let Some(index) = next else { break };
-            let entry = state
-                .committed
-                .take_entry(&index)
-                .expect("committed page vanished");
-            retired.commit_vacant(entry);
+        // fence 已在 zap 中完成，页框可以直接释放（释放只取 frame allocator 的 IRQ 锁，与淘汰路径一致）。
+        while let Some((index, _)) = state.committed.ceiling(&range.start) {
+            if index >= range.end {
+                break;
+            }
+            drop(state.committed.remove(&index));
         }
         drop(state);
-        // fence 已在 zap 中完成，页框可以释放。
-        drop(retired);
         Ok(())
     }
 

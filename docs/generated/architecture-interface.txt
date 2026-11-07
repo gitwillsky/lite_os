@@ -1858,6 +1858,24 @@ kernel/src/vm/vmo/creation.rs :: pub (super) impl Vmo :: fn new_in (tree : Arc <
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) const FAULT_AROUND_PAGES : usize = 16
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) impl Vmo :: fn with_resolved_around < R > (self : & Arc < Self > , index : usize , write : bool , around : Option < core :: ops :: Range < usize > > , mut with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > , with_around : impl FnOnce (& mut R , & [Option < (usize , ResolvedPage) >]) ,) -> Result < R , VmError >
 kernel/src/vm/vmo/fault_around.rs :: pub (super) impl Vmo :: fn collect_resident_file_pages_locked (self : & Arc < Self > , range : core :: ops :: Range < usize > , skip : usize ,) -> [Option < (usize , ResolvedPage) > ; FAULT_AROUND_PAGES]
+kernel/src/vm/vmo/page_list.rs :: pub (super) const CHUNK_PAGES : usize = 16
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: const fn new () -> Self
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn ceiling (& self , index : & usize) -> Option < (usize , & Page) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn contains_key (& self , index : & usize) -> bool
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn first_key_value (& self) -> Option < (usize , & Page) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn for_each_mut (& mut self , mut visit : impl FnMut (usize , & mut Page))
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn get (& self , index : & usize) -> Option < & Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn get_mut (& mut self , index : & usize) -> Option < & mut Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn insert_reserved (& mut self , index : usize , page : Page) -> Option < Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn is_empty (& self) -> bool
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn iter_from (& self , start : & usize) -> impl Iterator < Item = (usize , & Page) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn len (& self) -> usize
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn remove (& mut self , index : & usize) -> Option < Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn reserve_for_shifted (& mut self , source : & PageList , offset : usize , visible : usize ,) -> Result < () , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn reserve_range (& mut self , first : usize , count : usize) -> Result < () , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn try_insert (& mut self , index : usize , page : Page) -> Result < Option < Page > , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn values (& self) -> impl Iterator < Item = & Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) struct PageList
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn begin_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn detach_pager (& self) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn end_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
@@ -2703,6 +2721,7 @@ system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block_home (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_blocks_home < 'a > (& self , blocks : impl Iterator < Item = (u64 , & 'a [u8]) > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/checksum.rs :: pub (crate) fn crc32c (mut crc : u32 , bytes : & [u8]) -> u32
 system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn add_dir_entry_locked (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , kind : InodeType ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn create_hard_link (& self , name : & [u8] , target : Arc < Ext4Inode > ,) -> Result < () , FileSystemError >

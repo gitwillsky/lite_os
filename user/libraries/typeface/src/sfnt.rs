@@ -4,7 +4,7 @@
 
 use std::{ops::Range, sync::Arc};
 
-use crate::{FontError, Glyph};
+use crate::{Coverage, FontError, Glyph};
 
 /// 带边界检查的大端读取。
 #[derive(Clone, Copy)]
@@ -482,7 +482,7 @@ impl Sfnt {
         match (image_format, metrics) {
             (5, Some((width, height, left, top, advance))) => {
                 decode_bits(image.0, width, height, false).map(|coverage| Glyph {
-                    coverage,
+                    coverage: Coverage::from_gray(coverage, width),
                     width,
                     height,
                     left,
@@ -572,7 +572,7 @@ fn decode_small_metrics(image: Bytes<'_>, format: u16) -> Option<Glyph> {
     );
     let coverage = decode_bits(image.0.get(5..)?, width, height, format == 1)?;
     Some(Glyph {
-        coverage,
+        coverage: Coverage::from_gray(coverage, width),
         width,
         height,
         left: bearing_x,

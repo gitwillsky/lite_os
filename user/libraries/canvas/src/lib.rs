@@ -13,7 +13,7 @@ pub use sampling::ImageSource;
 
 pub use color::Color;
 pub use geometry::Rect;
-pub use surface::{Image, Mask, Surface};
+pub use surface::{BitMask, Image, Mask, Surface};
 
 #[cfg(test)]
 mod tests;

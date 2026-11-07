@@ -69,14 +69,23 @@ fn bdf_decodes_bits_offsets_and_drops_unaddressable_glyphs() {
         (5, 3, 1, 3, 6)
     );
     assert_eq!(
-        glyph.coverage,
+        glyph.coverage.to_gray(glyph.width, glyph.height),
         [
             255, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 0, 255, 0, 255
         ]
     );
+    assert!(
+        matches!(glyph.coverage, crate::Coverage::Mono { .. }),
+        "a bitmap glyph is stored at one bit per pixel"
+    );
     let wide = font.glyph('中').unwrap();
     assert_eq!((wide.width, wide.top, wide.advance), (10, 0, 12));
-    assert!(wide.coverage.iter().all(|&value| value == 255));
+    assert!(
+        wide.coverage
+            .to_gray(wide.width, wide.height)
+            .iter()
+            .all(|&value| value == 255)
+    );
     assert!(font.glyph('b').is_none());
 }
 
@@ -268,10 +277,11 @@ fn simsun_collection_preserves_faces_cjk_and_native_strikes() {
         let glyph = simsun
             .embedded_bitmap(simsun.glyph_id('中').unwrap(), ppem)
             .unwrap();
-        assert!(glyph.coverage.contains(&255));
+        assert!(glyph.coverage.to_gray(glyph.width, glyph.height).contains(&255));
         assert!(
             glyph
                 .coverage
+                .to_gray(glyph.width, glyph.height)
                 .iter()
                 .all(|&value| value == 0 || value == 255)
         );
@@ -312,10 +322,14 @@ fn original_song_9pt_at_1x_uses_embedded_bitmaps() {
     );
     for character in "Hello World 123 LiteOS 中文".chars() {
         assert!(
-            face.glyph(character, false)
-                .coverage
-                .iter()
-                .all(|&v| v == 0 || v == 255),
+            {
+                let glyph = face.glyph(character, false);
+                glyph
+                    .coverage
+                    .to_gray(glyph.width, glyph.height)
+                    .iter()
+                    .all(|&v| v == 0 || v == 255)
+            },
             "{character}"
         );
     }
@@ -330,18 +344,22 @@ fn outline_rendering_follows_the_font_smoothing_setting() {
     assert_eq!(smooth.ppem(), 24);
     let glyph = smooth.glyph('中', false);
     assert!(
-        glyph.coverage.iter().any(|&v| v != 0 && v != 255),
+        matches!(&glyph.coverage, crate::Coverage::Gray(gray) if gray.iter().any(|&v| v != 0 && v != 255)),
         "expected anti-aliased edges"
     );
     let mono = song(9, 2, false).glyph('中', false);
-    assert!(mono.coverage.iter().all(|&v| v == 0 || v == 255));
-    assert!(mono.coverage.contains(&255));
+    assert!(
+        matches!(&mono.coverage, crate::Coverage::Mono { bits, .. } if bits.iter().any(|&b| b != 0)),
+        "a non-smoothed outline glyph is stored at one bit per pixel"
+    );
+    let gray = mono.coverage.to_gray(mono.width, mono.height);
+    assert!(gray.iter().all(|&v| v == 0 || v == 255) && gray.contains(&255));
 }
 
 #[test]
 fn bold_cjk_overprints_one_scaled_pixel() {
     let glyph = Glyph {
-        coverage: vec![255, 0, 128, 0],
+        coverage: crate::Coverage::Gray(vec![255, 0, 128, 0]),
         width: 2,
         height: 2,
         left: 1,
@@ -353,10 +371,13 @@ fn bold_cjk_overprints_one_scaled_pixel() {
         (bold.width, bold.advance, bold.left, bold.top),
         (3, 13, 1, 2)
     );
-    assert_eq!(bold.coverage, [255, 255, 0, 128, 128, 0]);
+    assert_eq!(
+        bold.coverage.to_gray(bold.width, bold.height),
+        [255, 255, 0, 128, 128, 0]
+    );
     let blank = overprint(
         Glyph {
-            coverage: vec![],
+            coverage: crate::Coverage::Gray(vec![]),
             width: 0,
             height: 0,
             left: 0,

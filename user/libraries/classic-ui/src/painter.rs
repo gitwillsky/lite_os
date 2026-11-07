@@ -1,4 +1,4 @@
-use canvas::{Color, Mask, Rect, Surface};
+use canvas::{BitMask, Color, Mask, Rect, Surface};
 use classic_theme::{Edge, Rgb, SystemColor, Theme};
 use typeface::Typeface;
 
@@ -347,14 +347,31 @@ impl<'a> Painter<'a> {
         for character in text.chars() {
             let glyph = self.typeface.glyph(character, bold);
             if glyph.width > 0 {
-                let mask = Mask {
-                    coverage: &glyph.coverage,
-                    width: glyph.width,
-                    height: glyph.height,
-                    stride: glyph.width as usize,
-                };
-                self.surface
-                    .draw_mask(mask, pen + glyph.left, baseline - glyph.top, color);
+                let (x, y) = (pen + glyph.left, baseline - glyph.top);
+                match &glyph.coverage {
+                    typeface::Coverage::Gray(gray) => self.surface.draw_mask(
+                        Mask {
+                            coverage: gray,
+                            width: glyph.width,
+                            height: glyph.height,
+                            stride: glyph.width as usize,
+                        },
+                        x,
+                        y,
+                        color,
+                    ),
+                    typeface::Coverage::Mono { bits, stride } => self.surface.draw_bit_mask(
+                        BitMask {
+                            bits,
+                            width: glyph.width,
+                            height: glyph.height,
+                            stride: *stride,
+                        },
+                        x,
+                        y,
+                        color,
+                    ),
+                }
             }
             pen += glyph.advance;
         }

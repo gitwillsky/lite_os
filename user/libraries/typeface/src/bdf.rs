@@ -1,6 +1,6 @@
 //! BDF 点阵字体：解析一次，按码位二分查找；位图池连续存放，30000 字的字体也只需一次分配。
 
-use crate::{FontError, Glyph};
+use crate::{Coverage, FontError, Glyph};
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {
@@ -211,14 +211,15 @@ impl BdfFont {
         let rows = self
             .bitmaps
             .get(entry.offset as usize..entry.offset as usize + row_bytes * height)?;
-        let mut coverage = vec![0u8; width * height];
-        for row in 0..height {
-            for column in 0..width {
-                if rows[row * row_bytes + column / 8] >> (7 - column % 8) & 1 != 0 {
-                    coverage[row * width + column] = 255;
-                }
+        // BDF 本来就是 1 位/像素、行按字节对齐、最高位在左：直接作为 Mono 存储。
+        let coverage = if width == 0 {
+            Coverage::Gray(Vec::new())
+        } else {
+            Coverage::Mono {
+                bits: rows.to_vec(),
+                stride: row_bytes,
             }
-        }
+        };
         Some(Glyph {
             coverage,
             width: i32::from(entry.width),

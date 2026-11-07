@@ -385,6 +385,86 @@ fn reading_an_uncommitted_root_anonymous_page_maps_the_shared_zero_page_until_it
     assert_ne!(written.ppn.as_usize(), first.ppn.as_usize());
 }
 
+fn page(tag: u8) -> Page {
+    let frame = frame_allocator::alloc().unwrap();
+    // SAFETY: 新页独占，指针指向其首字节。
+    unsafe { *frame.ppn.as_page_mut_ptr() = tag };
+    Page::new(frame, PageContent::Anonymous)
+}
+
+fn tag(page: &Page) -> u8 {
+    // SAFETY: 页由列表独占持有，指针指向其首字节。
+    unsafe { *page.frame.ppn.as_page_mut_ptr() }
+}
+
+#[test]
+fn page_list_keeps_order_counts_and_frees_empty_chunks() {
+    use super::page_list::{CHUNK_PAGES, PageList};
+    let mut list = PageList::new();
+    // 稀疏（跨块）与稠密（同块）混合，乱序插入。
+    let indexes = [0, 3, 15, 16, 17, 100, 7 * CHUNK_PAGES + 2];
+    for &index in indexes.iter().rev() {
+        assert!(list.try_insert(index, page(index as u8)).unwrap().is_none());
+    }
+    assert_eq!(list.len(), indexes.len());
+    assert_eq!(
+        list.iter_from(&0).map(|(index, _)| index).collect::<Vec<_>>(),
+        indexes
+    );
+    assert_eq!(
+        list.iter_from(&16).map(|(index, _)| index).collect::<Vec<_>>(),
+        indexes[3..]
+    );
+    assert_eq!(list.ceiling(&4).map(|(index, _)| index), Some(15));
+    assert_eq!(list.ceiling(&101).map(|(index, _)| index), Some(7 * CHUNK_PAGES + 2));
+    assert!(list.ceiling(&1000).is_none());
+    assert_eq!(list.first_key_value().map(|(index, _)| index), Some(0));
+    assert_eq!(tag(list.get(&17).unwrap()), 17);
+    // 替换返回旧页且不改变计数。
+    let old = list.try_insert(17, page(99)).unwrap().unwrap();
+    assert_eq!((tag(&old), tag(list.get(&17).unwrap()), list.len()), (17, 99, indexes.len()));
+    // 移除最后一页后块被释放：同块再插入需要重新分配（用 insert_reserved 会 panic，故走 try_insert）。
+    assert_eq!(tag(&list.remove(&100).unwrap()), 100);
+    assert!(list.remove(&100).is_none());
+    assert!(!list.contains_key(&100));
+    let mut seen = Vec::new();
+    list.for_each_mut(|index, _| seen.push(index));
+    assert_eq!(seen, [0, 3, 15, 16, 17, 7 * CHUNK_PAGES + 2]);
+    for index in seen {
+        drop(list.remove(&index));
+    }
+    assert!(list.is_empty() && list.first_key_value().is_none());
+}
+
+#[test]
+fn page_list_reservation_makes_the_commit_phase_allocation_free() {
+    use super::page_list::{CHUNK_PAGES, PageList};
+    let mut source = PageList::new();
+    for index in [20, 21, 40, 41] {
+        source.try_insert(index, page(index as u8)).unwrap();
+    }
+    // 目标只为真实存在的页建块（平移 -20 后落在块 0 与块 1），而不是为整个窗口建块。
+    let mut target = PageList::new();
+    target.reserve_for_shifted(&source, 20, 1000).unwrap();
+    while let Some((index, _)) = source.first_key_value() {
+        let moved = source.remove(&index).unwrap();
+        assert!(target.insert_reserved(index - 20, moved).is_none());
+    }
+    assert_eq!(
+        target.iter_from(&0).map(|(index, _)| index).collect::<Vec<_>>(),
+        [0, 1, 20, 21]
+    );
+    assert_eq!(target.get(&(CHUNK_PAGES + 4)).map(tag), Some(40));
+    // 窗口之外的页不建块。
+    let mut narrow = PageList::new();
+    narrow.reserve_for_shifted(&target, 0, 2).unwrap();
+    assert!(narrow.try_insert(0, page(1)).is_ok());
+    assert!(std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+        narrow.insert_reserved(5 * CHUNK_PAGES, page(2))
+    }))
+    .is_err());
+}
+
 #[test]
 fn available_read_does_not_enqueue_behind_a_held_tree_lock() {
     let object = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();

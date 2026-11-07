@@ -87,7 +87,7 @@ impl Vmo {
 
     /// 调用者持有树锁。
     fn unpin(&self, first: usize, count: usize) {
-        self.state.lock().committed.for_each_mut(|&index, page| {
+        self.state.lock().committed.for_each_mut(|index, page| {
             if (first..first + count).contains(&index) && page.pins != 0 {
                 page.set_pins(page.pins - 1);
             }
