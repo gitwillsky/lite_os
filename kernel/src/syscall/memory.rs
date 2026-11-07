@@ -318,7 +318,7 @@ pub(super) fn pager_create(call: &Call<'_>) -> Result<(), Status> {
 pub(super) fn pager_create_vmo(call: &Call<'_>) -> Result<(), Status> {
     let pager = call.pager(call.arg_handle(0), rights::MANAGE)?;
     let options = call.arg_u32(1);
-    if options & !vmo::RESIZABLE != 0 {
+    if options & !(vmo::RESIZABLE | vmo::PAGER_ANONYMOUS) != 0 {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let port = call.port(call.arg_handle(2), rights::WRITE)?;
@@ -327,6 +327,7 @@ pub(super) fn pager_create_vmo(call: &Call<'_>) -> Result<(), Status> {
         call.arg(3) as u64,
         call.arg(4) as u64,
         options & vmo::RESIZABLE != 0,
+        options & vmo::PAGER_ANONYMOUS != 0,
     )?;
     call.publish(Object::Vmo(vmo), call.arg(5)).map(|_| ())
 }

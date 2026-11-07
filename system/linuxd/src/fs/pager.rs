@@ -17,9 +17,10 @@ use crate::memory::MemoryObject;
 /// VMO 创建失败。
 pub(super) fn create_object(
     size: u64,
+    options: u32,
 ) -> Result<(Arc<MemoryObject>, u64), crate::fs::FileSystemError> {
-    let (vmo, key) =
-        pager_pool::create_vmo(size).map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+    let (vmo, key) = pager_pool::create_vmo(size, options)
+        .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     let object = MemoryObject::new(vmo).map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     Ok((object, key))
 }

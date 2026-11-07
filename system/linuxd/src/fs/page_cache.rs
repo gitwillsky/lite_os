@@ -36,18 +36,9 @@ mod writeback_batch;
 use registry::cached_file;
 pub(super) use registry::evict_if_unlinked;
 pub(crate) use registry::{
-    evict_cached, evict_filesystem, invalidate, statistics, sync_all, write_back, writeback_cached,
+    evict_cached, evict_filesystem, invalidate, sync_all, write_back, writeback_cached,
 };
 pub(crate) use regular_file::RegularFile;
-
-/// 页缓存的全局页统计。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PageCacheStatistics {
-    /// 已驻留的页。
-    pub(crate) resident_pages: usize,
-    /// 脏页。
-    pub(crate) dirty_pages: usize,
-}
 
 /// 一个缓存文件。
 pub(crate) struct CachedFile {

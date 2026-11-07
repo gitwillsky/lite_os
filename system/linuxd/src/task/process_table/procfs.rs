@@ -5,7 +5,7 @@ use crate::{
     fs::{
         ProcCpuSnapshot, ProcCredentialSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot,
         ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
-        ProcSnapshotScope, ProcSource, ProcThreadSnapshot, page_cache_statistics,
+        ProcSnapshotScope, ProcSource, ProcThreadSnapshot,
     },
     task::{
         RunState, current_task,
@@ -759,7 +759,6 @@ fn process_snapshot(
     let memory = native_runtime::system::basic();
     let buddy_free_blocks = native_runtime::system::free_blocks()
         .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-    let cache = page_cache_statistics();
     let load_milli = PROCESS_TABLE.load_average.values();
     let cpu_runtime =
         cpu_runtime_snapshot().map_err(|()| crate::fs::FileSystemError::OutOfMemory)?;
@@ -777,8 +776,6 @@ fn process_snapshot(
         total_pages: memory.total_pages as usize,
         free_pages: memory.free_pages as usize,
         buddy_free_blocks,
-        cached_pages: cache.resident_pages,
-        dirty_pages: cache.dirty_pages,
         runnable_tasks,
         total_tasks,
         processes_created,

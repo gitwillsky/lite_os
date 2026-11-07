@@ -31,7 +31,7 @@ pub(crate) use kernel_space::{KERNEL_SPACE, initialize as initialize_kernel_spac
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use vmo::{
     CachePolicy, ChildKind, FaultSource, PagerBinding, PagerRequest, PagerSink, PinnedRange,
-    RangeOp, Vmo, VmoOptions, evicted_pages, relieve_memory_pressure,
+    RangeOp, Vmo, VmoOptions, evicted_pages, physical_page_statistics, relieve_memory_pressure,
 };
 
 use page_table::{PagePermissions, PageTable};

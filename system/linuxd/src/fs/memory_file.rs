@@ -99,7 +99,8 @@ impl MemoryFile {
         budget: Arc<StorageBudget>,
         allow_sealing: bool,
     ) -> Result<Arc<Self>, FileSystemError> {
-        let (object, key) = super::pager::create_object(0)?;
+        let (object, key) =
+            super::pager::create_object(0, native_runtime::native_abi::vmo::PAGER_ANONYMOUS)?;
         let file = Arc::try_new(Self {
             id,
             budget,

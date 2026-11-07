@@ -42,6 +42,8 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 - 原生任务树身份、INSPECT 权限及包含已退出线程的 runtime 语义参照
   [固定 Zircon object_get_info](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/object_get_info.md)。
   LiteOS 的 TASK_STATS 是自身映射驻留观测，不声明 Zircon TASK_STATS/PSS 编码兼容。
+- 内存观测字段遵循同一 Linux revision 的 [`fs/proc/meminfo.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/meminfo.c)：
+  Cached 的文件页范围包含内存文件，Dirty/Writeback 属于存储写回计数，不能混入无落盘目标的保留内容。
 - Linux procfs 的 `Kthread`、`stat` starttime、RSS 与 pidfd 操作沿用上述固定 Linux revision 的 UAPI/实现；
   原生服务不在 Linux PID 表中创建占位身份。
 

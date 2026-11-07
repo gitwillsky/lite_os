@@ -95,28 +95,31 @@ mod memory {
 
     pub(crate) struct FrameTracker {
         pub(crate) ppn: PhysicalPageNumber,
-        layout: std::alloc::Layout,
+        pub(crate) pages: usize,
     }
     impl FrameTracker {
         pub(crate) fn bytes(&self) -> &[u8] {
             // SAFETY: tracker 独占本 layout 的宿主分配，借用不越过 tracker 生命周期。
-            unsafe { core::slice::from_raw_parts(self.ppn.as_page_ptr(), self.layout.size()) }
+            unsafe { core::slice::from_raw_parts(self.ppn.as_page_ptr(), self.pages * PAGE_SIZE) }
         }
     }
     impl Drop for FrameTracker {
         fn drop(&mut self) {
+            let layout = std::alloc::Layout::from_size_align(self.pages * PAGE_SIZE, PAGE_SIZE)
+                .expect("allocated frame layout");
             // SAFETY: 分配与释放使用同一 layout，tracker 是唯一 owner。
-            unsafe { std::alloc::dealloc(self.ppn.as_page_mut_ptr(), self.layout) };
+            unsafe { std::alloc::dealloc(self.ppn.as_page_mut_ptr(), layout) };
         }
     }
     pub(crate) fn alloc_contiguous(pages: usize, _: FrameAllocationClass) -> Option<FrameTracker> {
+        let pages = pages.checked_next_power_of_two()?;
         let layout =
             std::alloc::Layout::from_size_align(pages.checked_mul(PAGE_SIZE)?, PAGE_SIZE).ok()?;
         // SAFETY: 有效非零 layout，由返回的 tracker 唯一拥有。
         let pointer = core::ptr::NonNull::new(unsafe { std::alloc::alloc_zeroed(layout) })?;
         Some(FrameTracker {
             ppn: PhysicalPageNumber(pointer.as_ptr() as usize / PAGE_SIZE),
-            layout,
+            pages,
         })
     }
     pub(crate) mod frame_allocator {

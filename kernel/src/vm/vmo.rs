@@ -23,6 +23,7 @@
 //! 一棵 COW 树（根与全部子孙、隐藏节点）共享一把 [`Tree`] 锁；任何 VMO 状态访问都必须持有它，
 //! 因此父子之间不需要锁序。持树锁时可以再取地址空间锁（见 `vm` 模块文档）。
 
+mod creation;
 mod pager;
 use pager::PageRequestCompletion;
 
@@ -43,6 +44,8 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use fallible_tree::FallibleMap;
 pub(crate) use reclaim::{evicted_pages, relieve_memory_pressure};
+use residency::PageContent;
+pub(crate) use residency::physical_page_statistics;
 use spin::Mutex;
 
 /// 物理 VMO 的缓存属性。
@@ -99,6 +102,7 @@ enum Kind {
     Paged {
         resizable: bool,
         pager: Option<PagerBinding>,
+        content: PageContent,
     },
     Contiguous(FrameTracker),
     Physical {
@@ -113,10 +117,13 @@ struct Page {
     pins: u32,
     // 只对 pager 支撑的 VMO 有意义的回写状态；缺失时回写会遗漏修改，或淘汰掉尚未落盘的内容。
     cleanliness: Cleanliness,
+    // OWNER: 此页框当前的内容归属，随 Page 转移而非随映射/句柄计数；复用原有 padding。
+    content: PageContent,
 }
 
 /// pager 页的回写状态（Zircon page dirty state）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum Cleanliness {
     /// 内容与 pager 的存储一致，可以淘汰。
     Clean,
@@ -187,112 +194,6 @@ pub(crate) struct ResolvedPage {
 }
 
 impl Vmo {
-    fn new_in(
-        tree: Arc<Tree>,
-        kind: Kind,
-        pages: usize,
-        relation: Option<Relation>,
-    ) -> Result<Arc<Self>, VmError> {
-        Arc::try_new(Self {
-            id: crate::id::next_koid(),
-            kind,
-            tree,
-            state: Mutex::new(State {
-                pages,
-                committed: FallibleMap::new(),
-                relation,
-                children: Vec::new(),
-                mappings: Vec::new(),
-                requested: FallibleMap::new(),
-                detached: false,
-            }),
-            supplied: WaitQueue::new(),
-        })
-        .map_err(|_| VmError::NoMemory)
-    }
-
-    fn new_tree() -> Result<Arc<Tree>, VmError> {
-        Arc::try_new(Tree {
-            lock: TaskMutex::new(()),
-        })
-        .map_err(|_| VmError::NoMemory)
-    }
-
-    /// 创建 `size` 字节（向上取整到页）的匿名零内容 VMO。
-    ///
-    /// # Errors
-    /// 大小溢出返回 `InvalidArgs`，分配失败返回 `NoMemory`。
-    pub(crate) fn create(size: u64, options: VmoOptions) -> Result<Arc<Self>, VmError> {
-        Self::new_in(
-            Self::new_tree()?,
-            Kind::Paged {
-                resizable: options.resizable,
-                pager: None,
-            },
-            pages_for(size)?,
-            None,
-        )
-    }
-
-    /// 创建 pager 支撑的 VMO。
-    ///
-    /// # Errors
-    /// 同 [`Self::create`]。
-    pub(crate) fn create_paged(
-        size: u64,
-        options: VmoOptions,
-        pager: PagerBinding,
-    ) -> Result<Arc<Self>, VmError> {
-        let vmo = Self::new_in(
-            Self::new_tree()?,
-            Kind::Paged {
-                resizable: options.resizable,
-                pager: Some(pager),
-            },
-            pages_for(size)?,
-            None,
-        )?;
-        vmo.register_reclaimable()?;
-        Ok(vmo)
-    }
-
-    /// 创建物理连续、常驻的 VMO。
-    ///
-    /// # Errors
-    /// 连续页不足返回 `NoMemory`。
-    pub(crate) fn create_contiguous(size: u64) -> Result<Arc<Self>, VmError> {
-        let pages = pages_for(size)?;
-        if pages == 0 {
-            return Err(VmError::InvalidArgs);
-        }
-        let frames = crate::memory::alloc_contiguous(pages, FrameAllocationClass::Reclaimable)
-            .ok_or(VmError::NoMemory)?;
-        Self::new_in(Self::new_tree()?, Kind::Contiguous(frames), pages, None)
-    }
-
-    /// 创建引用物理区间的 VMO；调用者已验证该区间属于授予的 MMIO resource。
-    ///
-    /// # Errors
-    /// 地址未对齐返回 `InvalidArgs`。
-    pub(crate) fn create_physical(
-        physical: u64,
-        size: u64,
-        cache: CachePolicy,
-    ) -> Result<Arc<Self>, VmError> {
-        if !physical.is_multiple_of(PAGE_SIZE as u64) {
-            return Err(VmError::InvalidArgs);
-        }
-        let base = PhysicalPageNumber::from(
-            usize::try_from(physical / PAGE_SIZE as u64).map_err(|_| VmError::InvalidArgs)?,
-        );
-        Self::new_in(
-            Self::new_tree()?,
-            Kind::Physical { base, cache },
-            pages_for(size)?,
-            None,
-        )
-    }
-
     /// 全局唯一编号。
     pub(crate) fn id(&self) -> u64 {
         self.id
@@ -364,6 +265,7 @@ impl Vmo {
                     Kind::Paged {
                         resizable: false,
                         pager: None,
+                        content: PageContent::Anonymous,
                     },
                     pages,
                     Some(Relation::Cow {
@@ -421,6 +323,7 @@ impl Vmo {
             Kind::Paged {
                 resizable: false,
                 pager: None,
+                content: PageContent::Anonymous,
             },
             pages,
             Some(Relation::Cow {
@@ -519,7 +422,7 @@ impl Vmo {
         }
         if let Some(page) = state.committed.get_mut(&index) {
             if write {
-                page.cleanliness = Cleanliness::Dirty;
+                page.set_cleanliness(Cleanliness::Dirty);
             }
             return Ok(ResolvedPage {
                 source: FaultSource::Memory,
@@ -556,7 +459,7 @@ impl Vmo {
                 let frame = frame_allocator::alloc_copy(page.frame.bytes())
                     .ok_or(Resolve::Error(VmError::NoMemory))?;
                 drop(ancestor_state);
-                let page = commit_page(&mut state, index, frame)?;
+                let page = commit_page(&mut state, index, frame, self.page_content())?;
                 drop(state);
                 // 本对象与子孙的映射可能仍只读指向祖先页框；不撤销时它们在复制后继续读到旧内容
                 // （缺页路径只替换发生缺页的那一条翻译，VMO 写入与调试写入不经缺页）。
@@ -591,7 +494,7 @@ impl Vmo {
             });
         }
         let frame = frame_allocator::alloc().ok_or(Resolve::Error(VmError::NoMemory))?;
-        commit_page(&mut state, index, frame)
+        commit_page(&mut state, index, frame, self.page_content())
     }
 
     /// 解析一页，必要时等待 pager 补页；调用者不持有树锁。
@@ -915,18 +818,12 @@ fn commit_page(
     state: &mut State,
     index: usize,
     frame: FrameTracker,
+    content: PageContent,
 ) -> Result<ResolvedPage, Resolve> {
     let ppn = frame.ppn;
     state
         .committed
-        .try_insert(
-            index,
-            Page {
-                frame,
-                pins: 0,
-                cleanliness: Cleanliness::Dirty,
-            },
-        )
+        .try_insert(index, Page::new(frame, content))
         .map_err(|_| Resolve::Error(VmError::NoMemory))?;
     Ok(ResolvedPage {
         source: FaultSource::Memory,

@@ -938,7 +938,7 @@ kernel/src/object/handle_table.rs :: pub (crate) struct ClosedHandles
 kernel/src/object/handle_table.rs :: pub (crate) struct HandleEntry
 kernel/src/object/handle_table.rs :: pub (crate) struct HandleTable
 kernel/src/object/memory.rs :: pub (crate) fn vm_status (error : VmError) -> Status
-kernel/src/object/memory.rs :: pub (crate) impl Pager :: fn create_vmo (& self , port : & Arc < Port > , key : u64 , size : u64 , resizable : bool ,) -> Result < Arc < Vmo > , Status >
+kernel/src/object/memory.rs :: pub (crate) impl Pager :: fn create_vmo (& self , port : & Arc < Port > , key : u64 , size : u64 , resizable : bool , anonymous : bool ,) -> Result < Arc < Vmo > , Status >
 kernel/src/object/memory.rs :: pub (crate) impl Pager :: fn new () -> Self
 kernel/src/object/memory.rs :: pub (crate) struct Pager
 kernel/src/object/mod.rs :: enum Object :: Bti (Arc < Bti >)
@@ -1697,7 +1697,7 @@ kernel/src/vm/mod.rs :: pub (crate) use execution_views :: ExecutionView
 kernel/src/vm/mod.rs :: pub (crate) use fault :: FaultAccess
 kernel/src/vm/mod.rs :: pub (crate) use kernel_space :: { KERNEL_SPACE , initialize as initialize_kernel_space }
 kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/vm/mod.rs :: pub (crate) use vmo :: { CachePolicy , ChildKind , FaultSource , PagerBinding , PagerRequest , PagerSink , PinnedRange , RangeOp , Vmo , VmoOptions , evicted_pages , relieve_memory_pressure , }
+kernel/src/vm/mod.rs :: pub (crate) use vmo :: { CachePolicy , ChildKind , FaultSource , PagerBinding , PagerRequest , PagerSink , PinnedRange , RangeOp , Vmo , VmoOptions , evicted_pages , physical_page_statistics , relieve_memory_pressure , }
 kernel/src/vm/page_table.rs :: pub (crate) fn table_pages () -> usize
 kernel/src/vm/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
 kernel/src/vm/page_table.rs :: pub (crate) impl PageTable :: fn kernel_trap_token (& self) -> crate :: arch :: mmu :: KernelTrapToken
@@ -1769,11 +1769,7 @@ kernel/src/vm/vmo.rs :: pub (crate) enum CachePolicy
 kernel/src/vm/vmo.rs :: pub (crate) enum ChildKind
 kernel/src/vm/vmo.rs :: pub (crate) enum FaultSource
 kernel/src/vm/vmo.rs :: pub (crate) enum RangeOp
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create (size : u64 , options : VmoOptions) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_child (self : & Arc < Self > , offset : u64 , size : u64 , kind : ChildKind ,) -> Result < Arc < Self > , VmError >
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_paged (size : u64 , options : VmoOptions , pager : PagerBinding ,) -> Result < Arc < Self > , VmError >
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_physical (physical : u64 , size : u64 , cache : CachePolicy ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn id (& self) -> u64
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn op_range (self : & Arc < Self > , op : RangeOp , offset : u64 , length : u64 ,) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn read (self : & Arc < Self > , offset : u64 , output : & mut [u8]) -> Result < () , VmError >
@@ -1791,10 +1787,17 @@ kernel/src/vm/vmo.rs :: pub (crate) struct VmoOptions
 kernel/src/vm/vmo.rs :: pub (crate) trait PagerSink
 kernel/src/vm/vmo.rs :: pub (crate) use pin :: PinnedRange
 kernel/src/vm/vmo.rs :: pub (crate) use reclaim :: { evicted_pages , relieve_memory_pressure }
+kernel/src/vm/vmo.rs :: pub (crate) use residency :: physical_page_statistics
 kernel/src/vm/vmo.rs :: pub (super) enum Resolve
 kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn register_mapping (& self , mapping : & Arc < Mapping >) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn resolve_locked (self : & Arc < Self > , index : usize , write : bool ,) -> Result < ResolvedPage , Resolve >
 kernel/src/vm/vmo.rs :: trait PagerSink :: fn request (& self , request : PagerRequest) -> Result < () , () >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create (size : u64 , options : VmoOptions) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_bootfs (size : u64) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_paged (size : u64 , options : VmoOptions , pager : PagerBinding , anonymous : bool ,) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_physical (physical : u64 , size : u64 , cache : CachePolicy ,) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (super) impl Vmo :: fn new_in (tree : Arc < Tree > , kind : Kind , pages : usize , relation : Option < Relation > ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn begin_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn detach_pager (& self) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn end_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
@@ -1813,8 +1816,30 @@ kernel/src/vm/vmo/reclaim.rs :: pub (crate) fn relieve_memory_pressure () -> boo
 kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn evict_clean (& self , budget : usize) -> usize
 kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn register_reclaimable (self : & Arc < Self >) -> Result < () , VmError >
 kernel/src/vm/vmo/release.rs :: pub (super) impl Vmo :: fn collapse_hidden_parents (& self)
+kernel/src/vm/vmo/residency.rs :: enum PageContent :: Anonymous
+kernel/src/vm/vmo/residency.rs :: enum PageContent :: AnonymousPager
+kernel/src/vm/vmo/residency.rs :: enum PageContent :: Bootfs
+kernel/src/vm/vmo/residency.rs :: enum PageContent :: Pager
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: anonymous_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: bootfs_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: contiguous_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_dirty_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_reclaimable_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) PhysicalPageStatistics :: pager_writeback_pages : usize
+kernel/src/vm/vmo/residency.rs :: pub (crate) fn physical_page_statistics () -> PhysicalPageStatistics
 kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn committed_bytes (& self) -> Result < u64 , VmError >
 kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn resident_pages (self : & Arc < Self > , first : usize , pages : usize ,) -> Result < usize , VmError >
+kernel/src/vm/vmo/residency.rs :: pub (crate) struct PhysicalPageStatistics
+kernel/src/vm/vmo/residency.rs :: pub (super) enum PageContent
+kernel/src/vm/vmo/residency.rs :: pub (super) fn add_contiguous (pages : usize)
+kernel/src/vm/vmo/residency.rs :: pub (super) fn remove_contiguous (pages : usize)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn is_reclaimable (& self) -> bool
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn new (frame : FrameTracker , content : PageContent) -> Self
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_cleanliness (& mut self , cleanliness : Cleanliness)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_pins (& mut self , pins : u32)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn supply_to_pager (& mut self , content : PageContent)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Vmo :: fn page_content (& self) -> PageContent
 system/component-manager/src/drivers.rs :: pub (super) fn connect (connection : Channel) -> Result < () , Status >
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: async fn supervise (mut self , executor : & 'static Executor) -> i64
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: fn start (root : & Job , resource : & Resource , bootfs : & Bootfs , device_tree : Handle , publisher : Channel ,) -> Result < Self , Status >
@@ -2067,7 +2092,7 @@ system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: Damage (ResourceTarget)
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: Disable (ResourceSnapshot)
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: Release (ResourceRelease)
-system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: RetireBoot { boot : ResourceRelease , evicted : Option < ResidentResource > , }
+system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: RetireBoot { boot : ResourceRelease , evicted : Option < ResidentResource > , completion : DisplayUpdate , }
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: enum RuntimeOperation :: Scanout (ResourceTarget)
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) enum CursorTarget
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) enum ResourceTarget
@@ -2502,7 +2527,7 @@ system/driver-host/src/platform.rs :: pub (crate) fn node () -> & 'static Node
 system/driver-host/src/platform.rs :: pub (crate) fn register_device_interrupt (vector : InterruptVector , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
 system/driver-host/src/platform.rs :: pub (crate) fn release_quarantine ()
 system/driver-manager/src/handles.rs :: pub (crate) fn directory () -> & 'static Publisher
-system/driver-manager/src/handles.rs :: pub (crate) fn host_image () -> & 'static [u8]
+system/driver-manager/src/handles.rs :: pub (crate) fn host_image () -> & 'static native_runtime :: elf :: Image
 system/driver-manager/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Vmo
 system/driver-manager/src/handles.rs :: pub (crate) fn job () -> & 'static Job
 system/driver-manager/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
@@ -3571,6 +3596,7 @@ system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl DrmFile :: fn curs
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl DrmFile :: fn progress_retirements (& self)
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl VirglAccess :: fn record (& self , fence : u64)
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl VirglAccess :: fn reserve (& self) -> Result < Vec < crate :: sync :: TaskMutexGuard < '_ , () > > , DrmError >
+system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl VirglBuffer :: fn supports_scanout (& self , width : u32 , height : u32 , pitch : u32) -> bool
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) impl VirglContext :: fn into_cleanup (mut self , buffers : FallibleMap < u32 , Arc < VirglAttachment > > ,) -> VacantEntry < u32 , VirglCleanup >
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) struct VirglAccess
 system/linuxd/src/devices/drm/graphics.rs :: pub (super) struct VirglBuffer
@@ -4919,7 +4945,7 @@ system/linuxd/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 system/linuxd/src/fs/mod.rs :: pub (crate) use memory_file :: { MemoryFile , charged_pages as memory_file_pages }
 system/linuxd/src/fs/mod.rs :: pub (crate) use mount :: { CallerFiles , CreatedFileSystem , CurrentRequester , FileSystemType , MountEnvironment , MountRequest , Requester , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
-system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
+system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , sync_all , sync_inode , truncate , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use storage_open :: { BackingFile , BackingOpen , DirectIo , StorageOpen }
@@ -4985,8 +5011,6 @@ system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWri
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Direct (DirectWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryInodeWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Remote (remote_file :: RemoteWrite < 'a >)
-system/linuxd/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
-system/linuxd/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: resident_pages : usize
 system/linuxd/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > , owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > > , may_write : bool , shared : bool , write : bool ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
@@ -4996,8 +5020,7 @@ system/linuxd/src/fs/page_cache.rs :: pub (crate) struct CachedFile
 system/linuxd/src/fs/page_cache.rs :: pub (crate) struct CachedWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) struct DirectWrite < 'a >
 system/linuxd/src/fs/page_cache.rs :: pub (crate) struct MemoryInodeWrite < 'a >
-system/linuxd/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
-system/linuxd/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , invalidate , statistics , sync_all , write_back , writeback_cached , }
+system/linuxd/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , invalidate , sync_all , write_back , writeback_cached , }
 system/linuxd/src/fs/page_cache.rs :: pub (crate) use regular_file :: RegularFile
 system/linuxd/src/fs/page_cache.rs :: pub (super) use registry :: evict_if_unlinked
 system/linuxd/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
@@ -5005,7 +5028,6 @@ system/linuxd/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite 
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn evict_cached (id : SharedFileId) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn evict_filesystem (filesystem_id : usize) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn invalidate (id : SharedFileId , wait : bool) -> Result < () , FileSystemError >
-system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn statistics () -> PageCacheStatistics
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn write_back (id : SharedFileId) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/registry.rs :: pub (crate) fn writeback_cached (id : SharedFileId) -> Result < () , FileSystemError >
@@ -5050,7 +5072,7 @@ system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_cont
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_with_backoff < T , Error > (entries : & [T] , mut commit : impl FnMut (& [T]) -> Result < () , Error > , mut publish : impl FnMut (& [T]) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < () , Error >
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) struct CommittedPrefix
 system/linuxd/src/fs/pager.rs :: pub (super) fn begin_writeback (object : & MemoryObject , offset : u64 , length : u64)
-system/linuxd/src/fs/pager.rs :: pub (super) fn create_object (size : u64 ,) -> Result < (Arc < MemoryObject > , u64) , crate :: fs :: FileSystemError >
+system/linuxd/src/fs/pager.rs :: pub (super) fn create_object (size : u64 , options : u32 ,) -> Result < (Arc < MemoryObject > , u64) , crate :: fs :: FileSystemError >
 system/linuxd/src/fs/pager.rs :: pub (super) fn end_writeback (object : & MemoryObject , offset : u64 , length : u64)
 system/linuxd/src/fs/pager.rs :: pub (super) fn first_dirty (object : & MemoryObject , offset : u64 , length : u64) -> Option < (u64 , u64) >
 system/linuxd/src/fs/pager.rs :: pub (super) fn handle () -> & 'static Pager
@@ -5344,9 +5366,7 @@ system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: tt
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: buddy_free_blocks : Vec < u64 >
-system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: cached_pages : usize
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: cpus : Vec < ProcCpuSnapshot >
-system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: dirty_pages : usize
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: free_pages : usize
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: last_pid : usize
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: load_milli : [u64 ; 3]

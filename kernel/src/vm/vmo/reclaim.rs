@@ -52,7 +52,7 @@ impl Vmo {
                 let limit = (budget - evicted).min(RUN_LIMIT);
                 let mut run: Option<(usize, usize)> = None;
                 for (&index, page) in state.committed.iter_from(&cursor) {
-                    let evictable = page.pins == 0 && page.cleanliness == Cleanliness::Clean;
+                    let evictable = page.is_reclaimable();
                     match run {
                         Some((start, end)) if evictable && index == end && end - start < limit => {
                             run = Some((start, end + 1));

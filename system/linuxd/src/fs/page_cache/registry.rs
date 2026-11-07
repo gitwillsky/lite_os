@@ -34,7 +34,7 @@ pub(super) fn cached_file(
     }
     let slot = FallibleMap::<SharedFileId, Arc<CachedFile>>::try_reserve_node()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    let (object, key) = pager::create_object(inode.size())?;
+    let (object, key) = pager::create_object(inode.size(), 0)?;
     let file = Arc::try_new(CachedFile {
         id,
         inode,
@@ -205,26 +205,4 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
 /// 写回一个缓存文件（不要求持久化）。
 pub(crate) fn write_back(id: SharedFileId) -> Result<(), FileSystemError> {
     writeback_cached(id)
-}
-
-/// 全局页统计。
-pub(crate) fn statistics() -> PageCacheStatistics {
-    let mut statistics = PageCacheStatistics {
-        resident_pages: 0,
-        dirty_pages: 0,
-    };
-    let mut cursor = None;
-    while let Some((id, file)) = next_cached(cursor) {
-        cursor = Some(id);
-        statistics.resident_pages +=
-            file.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE;
-        let mut offset = 0;
-        while let Some((start, length)) =
-            pager::first_dirty(&file.object, offset, u64::MAX - offset)
-        {
-            statistics.dirty_pages += (length / PAGE_SIZE as u64) as usize;
-            offset = start + length;
-        }
-    }
-    statistics
 }

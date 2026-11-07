@@ -81,6 +81,7 @@ impl Pager {
         key: u64,
         size: u64,
         resizable: bool,
+        anonymous: bool,
     ) -> Result<Arc<Vmo>, Status> {
         let sink = Arc::try_new(PortSink {
             port: Arc::downgrade(port),
@@ -90,6 +91,7 @@ impl Pager {
             size,
             crate::vm::VmoOptions { resizable },
             crate::vm::PagerBinding { sink, key },
+            anonymous,
         )
         .map_err(vm_status)
     }

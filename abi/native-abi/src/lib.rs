@@ -238,6 +238,9 @@ pub mod vmo {
 
     /// `vmo_create`：允许 `vmo_set_size`。
     pub const RESIZABLE: u32 = 1 << 0;
+    /// `pager_create_vmo`：内容仅在内存中保留，没有存储写回目标。
+    /// 仍追踪修改以阻止丢弃有效内容；脏页不进入存储写回统计。缺失时内存文件被误报为待落盘页。
+    pub const PAGER_ANONYMOUS: u32 = 1 << 1;
     /// `vmo_create_child`：写时复制快照，父子都看不到对方之后的写入。
     pub const CHILD_SNAPSHOT: u32 = 1 << 0;
     /// `vmo_create_child`：未写入页读到父对象当前内容，写入时复制。
@@ -471,7 +474,7 @@ pub struct TaskStats {
     pub threads: u64,
 }
 
-/// 内核自身的内存占用（页）与累计淘汰的文件页数；各项是瞬时投影，彼此不构成一致快照。
+/// 内核与 VMO 的物理内存占用（页）；各项是瞬时投影，彼此不构成一致快照。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemMemoryStats {
@@ -483,6 +486,20 @@ pub struct SystemMemoryStats {
     pub page_table_pages: u64,
     /// 内存紧张时从 pager 支撑 VMO 淘汰的干净页累计数。
     pub evicted_pages: u64,
+    /// 匿名 VMO 实际拥有的页，含服务堆/栈、私有 COW 副本，不含下列类别。
+    pub vmo_anonymous_pages: u64,
+    /// pager 实际拥有的页，含匿名供页；跨服务统计，每个页框只计一次。
+    pub vmo_pager_pages: u64,
+    /// 连续 VMO 的全部 buddy 分配，含请求尾部取整的页。
+    pub vmo_contiguous_pages: u64,
+    /// 启动归档实际拥有的页；不含从归档另行复制出来的匿名页。
+    pub bootfs_pages: u64,
+    /// 有存储后备的 pager 页中尚未开始回写的脏页，是 vmo_pager_pages 的子集。
+    pub pager_dirty_pages: u64,
+    /// 有存储后备的 pager 页中等待存储确认的回写页，是 vmo_pager_pages 的子集。
+    pub pager_writeback_pages: u64,
+    /// pager 页中干净且未固定的可淘汰页，是 vmo_pager_pages 的子集。
+    pub pager_reclaimable_pages: u64,
 }
 
 /// BTI 的诊断状态：设备经该 BTI 的 stream 被 IOMMU 中止的访问数，与隔离区中的固定区间数。

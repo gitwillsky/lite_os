@@ -224,7 +224,7 @@ pub fn basic() -> SystemBasic {
     basic
 }
 
-/// 内核自身的内存占用与累计淘汰页数。
+/// 内核与 VMO 按实际页框 owner 分类的物理占用，以及 pager 子计数与累计淘汰页数。
 pub fn memory_stats() -> native_abi::SystemMemoryStats {
     let mut stats = native_abi::SystemMemoryStats::default();
     // 主题固定、缓冲区大小精确，失败只可能是内核不变量破坏。

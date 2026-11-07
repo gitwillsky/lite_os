@@ -31,7 +31,7 @@ NAT 与有状态防火墙、网桥/VLAN、OSPFv2/v3、BGP，以及实时刷新�
 | R13 | 防火墙与 NAT 规则对用户呈现为有序规则链（匹配条件 + 动作，支持跳转链、地址集、连接状态、命中计数）；提交时编译为决策树加哈希集合的分类器，原子替换；已建立连接走流表快路径 | nftables flowtable、DPDK ACL |
 | R14 | 本计划与[性能计划](performance-hotpaths.md)分开；该计划先完成 | — |
 | R15 | 第一个里程碑包含 RSTP（802.1D-2004），不做 MSTP；网桥端口状态（discarding/learning/forwarding）与 BPDU 上送从数据面设计之初就具备 | IEEE 802.1D-2004；RouterOS 网桥默认 RSTP |
-| R16 | 自研报文格式库 `libraries/packet-wire`：批处理友好（整批校验后直接读字段）、前部预留空间原地加头、对接网卡卸载标志、覆盖 TCP-MD5/AO 等选项；netstack、dhcp-client、dhcp-server 统一使用，彻底移除 smoltcp 依赖 | Fuchsia netstack3 `packet`/`packet-formats` |
+| R16 | 报文格式库 `libraries/packet-wire`：批处理（整批校验后直接读字段）、前部预留空间原地加头、对接网卡卸载标志、覆盖 TCP-MD5/AO 等选项；netstack、dhcp-client、dhcp-server 统一使用，彻底移除 smoltcp 依赖 | Fuchsia netstack3 `packet`/`packet-formats` |
 
 交互体验必须项：列表按订阅增量实时刷新（计数器、邻居、路由、连接跟踪，十万级条目流畅）；诊断工具（实时流量分解、
 ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与定时备份。Safe Mode 与撤销历史本期不做，

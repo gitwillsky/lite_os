@@ -76,7 +76,7 @@ impl Vmo {
             }
             let mut moved = moved;
             moved.set_key(index);
-            moved.value_mut().cleanliness = Cleanliness::Clean;
+            moved.value_mut().supply_to_pager(self.page_content());
             state.committed.commit_vacant(moved);
         }
         drop(state);
@@ -185,7 +185,7 @@ impl Vmo {
         self.zap(first..first + count, ZapMode::RemoveWrite)?;
         self.state.lock().committed.for_each_mut(|&index, page| {
             if (first..first + count).contains(&index) && page.cleanliness == Cleanliness::Dirty {
-                page.cleanliness = Cleanliness::AwaitingClean;
+                page.set_cleanliness(Cleanliness::AwaitingClean);
             }
         });
         Ok(())
@@ -206,7 +206,7 @@ impl Vmo {
             if (first..first + count).contains(&index)
                 && page.cleanliness == Cleanliness::AwaitingClean
             {
-                page.cleanliness = Cleanliness::Clean;
+                page.set_cleanliness(Cleanliness::Clean);
             }
         });
         Ok(())

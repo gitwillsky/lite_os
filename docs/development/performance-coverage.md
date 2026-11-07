@@ -40,7 +40,12 @@ steady period 不分配、不查 control registry；新增乘法的真实可持�
 零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间播放或游戏延迟已经达标。
 VMO snapshot/hidden-parent 退休成本由实际生产 owner 的 release host fixture 作诊断：
 `cargo test -p kernel-unit --release --test vmo snapshot_retirement_cpu_cost -- --ignored --nocapture`。
-覆盖多个存活 sibling 与重叠的暂态分支，以及 1024 页驻留、父进程不写入的反复快照和退休。完整索引移交或复用 AVL 节点均不分配，
+覆盖多个存活 sibling 与重叠的暂态分支，以及 1024 页驻留、父进程不写入的反复快照和退休。
+物理页内容分类沿用该 fixture 诊断生命周期成本：只在页框提交、归属/脏页状态变更和最后释放时更新 Relaxed 原子计数，
+不新增锁、分配或每页额外空间；普通已脏页读写不更新计数。分类完整性由同实例静止后的物理页总量核对，
+宿主成本不能代替 SMP 目标上的竞争观测，不单独设时间阈值。
+DMA pin 的 slice owner 投影只在实际 slice 上取得树锁，普通 VMO 不增加一次锁获取；
+这是登记/解除固定路径的正确性修复，随既有 DMA/pager 生命周期诊断，不为这一分支另设吞吐门槛。完整索引移交或复用 AVL 节点均不分配，
 宿主锁/frame adapter 不代表目标 TLB 或调度延迟，不设置时间阈值。
 
 MemoryFile 的稀疏补页复用唯一文件 pager 工作池，每次真实 page request 增加一次 PageSource 调用；

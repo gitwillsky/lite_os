@@ -43,7 +43,7 @@ impl Content {
     ///
     /// VMO 创建或登记失败。
     pub(crate) fn new(inode: Arc<Ext4Inode>) -> Result<Arc<Self>, FileSystemError> {
-        let (vmo, key) = pager_pool::create_vmo(inode.size()).map_err(vmo_error)?;
+        let (vmo, key) = pager_pool::create_vmo(inode.size(), 0).map_err(vmo_error)?;
         let content =
             Arc::try_new(Self { inode, vmo, key }).map_err(|_| FileSystemError::OutOfMemory)?;
         let source: Arc<dyn PageSource> = content.clone();

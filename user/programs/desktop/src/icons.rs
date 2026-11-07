@@ -1,6 +1,9 @@
 //! 桌面图标：系统图标加 `~/Desktop` 里的条目；按网格摆放，可拖动，位置按用户持久化。
 use crate::start::Place;
+use crate::{Drag, Rename, icons, popups, start};
 use canvas::Rect;
+use classic_ui::Edit;
+use std::process::Command;
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
@@ -419,5 +422,216 @@ impl Icons {
     /// 在桌面文件夹里新建"新建文件夹"（重名加序号）。
     pub fn new_folder(&self) -> io::Result<PathBuf> {
         desktop_entry::fileops::new_folder(&self.directory)
+    }
+}
+
+// Desktop 保留唯一交互状态；图标动作只通过该 owner 修改选择、重命名和刷新。
+impl crate::Desktop {
+    pub(super) fn icon_kind(&self, index: usize) -> popups::IconKind {
+        match self.icons.items.get(index).map(|icon| &icon.target) {
+            Some(icons::Target::Path(path)) if path.is_file() => popups::IconKind::File,
+            Some(icons::Target::Path(_)) => popups::IconKind::Path,
+            Some(icons::Target::Place(start::Place::MyComputer)) => popups::IconKind::MyComputer,
+            Some(icons::Target::Place(start::Place::NetworkPlaces)) => {
+                popups::IconKind::NetworkPlaces
+            }
+            Some(icons::Target::Place(start::Place::RecycleBin)) => popups::IconKind::RecycleBin {
+                full: self.icons.trash_full,
+            },
+            _ => popups::IconKind::Other,
+        }
+    }
+
+    /// 让资源管理器对桌面上的文件或文件夹执行动词：打开它所在的文件夹、选中它、立即执行。
+    pub(super) fn icon_verb(&mut self, index: usize, verb: &str) {
+        let Some(icons::Target::Path(path)) =
+            self.icons.items.get(index).map(|icon| icon.target.clone())
+        else {
+            return;
+        };
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        let mut command = Command::new("/bin/file-explorer");
+        command
+            .arg(parent)
+            .args(["--select"])
+            .arg(name)
+            .args(["--verb", verb]);
+        self.launch(command);
+    }
+
+    pub(super) fn select_icon(&mut self, index: usize, shift: bool, control: bool, toggle: bool) {
+        if shift {
+            let anchor = self.selection_anchor.or(self.focused).unwrap_or(index);
+            if !control {
+                self.selection.clear();
+            }
+            self.selection
+                .extend(self.icons.rectangular_selection(anchor, index));
+            self.selection.sort_unstable();
+            self.selection.dedup();
+            self.selection_anchor = Some(anchor);
+        } else if control {
+            if toggle {
+                match self.selection.binary_search(&index) {
+                    Ok(at) => {
+                        self.selection.remove(at);
+                    }
+                    Err(at) => self.selection.insert(at, index),
+                }
+                self.selection_anchor = Some(index);
+            }
+        } else {
+            self.selection.clear();
+            self.selection.push(index);
+            self.selection_anchor = Some(index);
+        }
+        self.focused = Some(index);
+    }
+
+    pub(super) fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection
+            .iter()
+            .filter_map(|index| match &self.icons.items[*index].target {
+                icons::Target::Path(path) => Some(path.clone()),
+                icons::Target::Place(_) => None,
+            })
+            .collect()
+    }
+
+    pub(super) fn cancel_drag(&mut self) {
+        if let Some(Drag::Selection { before, .. }) = self.drag.take() {
+            self.selection = before;
+        }
+        self.armed = None;
+        self.clicked = None;
+    }
+
+    pub(super) fn rename_icon(&mut self, index: usize) {
+        let Some(icons::Target::Path(path)) = self.icons.items.get(index).map(|icon| &icon.target)
+        else {
+            return;
+        };
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            return;
+        };
+        let mut edit = Edit::new(name);
+        if edit.text() != name {
+            return;
+        }
+        let operation = match desktop_entry::fileops::Rename::prepare(path.clone()) {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.message = format!("无法重命名：{error}");
+                return;
+            }
+        };
+        edit.select_position(0, false);
+        edit.select_position(name.len(), true);
+        self.select_icon(index, false, false, false);
+        self.clicked = None;
+        self.rename = Some(Rename {
+            operation,
+            edit,
+            selecting: false,
+        });
+        self.message.clear();
+    }
+
+    pub(super) fn refresh_icons(&mut self) {
+        // 粘贴完成也可能发起刷新；先结束旧索引的抓取，再按目标身份重建选择。
+        self.cancel_drag();
+        let selected = self
+            .focused
+            .and_then(|index| self.icons.items.get(index))
+            .map(|icon| icon.target.clone());
+        let selection: Vec<_> = self
+            .selection
+            .iter()
+            .filter_map(|index| self.icons.items.get(*index))
+            .map(|icon| icon.target.clone())
+            .collect();
+        let anchor = self
+            .selection_anchor
+            .and_then(|index| self.icons.items.get(index))
+            .map(|icon| icon.target.clone());
+        self.icons.refresh();
+        self.focused = selected.and_then(|target| {
+            self.icons
+                .items
+                .iter()
+                .position(|icon| icon.target == target)
+        });
+        self.selection.clear();
+        for (index, icon) in self.icons.items.iter().enumerate() {
+            if selection.contains(&icon.target) {
+                self.selection.push(index);
+            }
+        }
+        self.selection_anchor = anchor.and_then(|target| {
+            self.icons
+                .items
+                .iter()
+                .position(|icon| icon.target == target)
+        });
+        self.clicked = None;
+        self.rename_click = None;
+        self.apps_changed = true;
+        if let Some(rename) = &self.rename {
+            let visible = self.icons.items.iter().any(|icon| {
+                matches!(&icon.target, icons::Target::Path(path) if path == rename.operation.path())
+            });
+            let error = match rename.operation.verify() {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Some(error.to_string()),
+                _ if !visible => Some("正在编辑的项目已不在桌面上，请重新选择。".into()),
+                _ => None,
+            };
+            if let Some(error) = error {
+                self.rename = None;
+                self.focused = None;
+                self.selection.clear();
+                self.selection_anchor = None;
+                self.message = format!("无法重命名：{error}");
+            }
+        }
+    }
+
+    pub(super) fn commit_rename(&mut self) {
+        let Some(rename) = self.rename.take() else {
+            return;
+        };
+        match self.icons.rename(&rename.operation, rename.edit.text()) {
+            Ok(path) => {
+                self.message.clear();
+                if let Some(index) = self.icons.items.iter().position(
+                    |icon| matches!(&icon.target, icons::Target::Path(current) if *current == path),
+                ) {
+                    self.select_icon(index, false, false, false);
+                }
+                self.apps_changed = true;
+            }
+            Err(error) => {
+                self.message = format!("无法重命名：{error}");
+                if error.kind() == io::ErrorKind::NotFound {
+                    self.focused = None;
+                    self.selection.clear();
+                    self.selection_anchor = None;
+                    self.refresh_icons();
+                } else {
+                    self.rename = Some(rename);
+                }
+            }
+        }
+    }
+
+    pub(super) fn delete_selected(&mut self, verb: &str) {
+        let paths = self.selected_paths();
+        if !paths.is_empty()
+            && let Err(error) = self.delete_paths(&paths, verb)
+        {
+            self.message = format!("无法删除：{error}");
+        }
+        self.clicked = None;
     }
 }

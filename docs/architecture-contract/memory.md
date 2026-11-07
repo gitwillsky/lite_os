@@ -26,7 +26,9 @@
 4. 合并按偏移与可见窗口求交；子对象已有页覆盖祖先页。转移页与索引节点不分配，页框身份不变。
    偏移为零且隐藏节点全范围可见时保留较大的页索引，只移交较小索引中的节点；幸存对象的私有页始终优先。
    缩短后的继承窗口不能在重新增长或再次合并时扩大。
-5. 覆盖、decommit、resize 或 pager supply 必须先撤销对应对象及依赖子对象的翻译并完成全部 fence，
+5. slice 的 DMA pin 先把完整窗口逐层投影到实际 backing owner；固定与解除固定都作用于它，
+   `PinnedRange` 保活该 owner。不能只返回 slice 解析出的物理地址而漏记父对象 pin。
+   覆盖、decommit、resize 或 pager supply 必须先撤销对应对象及依赖子对象的翻译并完成全部 fence，
    再释放不再可见的页框。pin 期间不得撤销/替换页；不能冻结仍被 DMA 固定的页。
 6. 分配失败不能发布半个 topology：隐藏节点、子节点及 children 容量在移交已提交页与 Relation 前准备。
    快照写保护失败仍须保留所有内容 owner，不能让已有翻译指向已释放页。
@@ -141,3 +143,29 @@ writeback begin 先写保护全部别名并完成 fence，再清脏；失败保�
 地址空间先复制 Mapping 引用并释放空间锁，再按 VMO 树锁查询 backing，保持 tree → address-space 的锁序；
 统计不会 fault-in、等待 pager 或提交页面。稀疏 VMO 按实际 committed entries 合并可见区间，不扫描整个虚拟范围。
 分配失败向调用者返回错误，不能把未知驻留量报告为零。
+
+
+`vmo::creation` 集中构造 VMO 与树；发布 Arc 前登记连续页，构造失败与正常析构共用同一释放路径。
+
+`SYSTEM_INFO(MEMORY_STATS)` 的物理分类由 `vm::vmo::residency` 从唯一页框 owner 维护：
+匿名、pager、连续分配、bootfs 四类互斥；COW 祖先、slice、句柄与映射不重复计费。供页只在真正移交到目标时
+从原类别转入 pager，多余供页直接释放；快照/隐藏节点折叠只转移 Page，不改变计数。bootfs 由 bootstrap 创建时
+标明，后续复制出的服务 ELF/数据页属于匿名类；连续 VMO 按实际 buddy 分配计数，包含请求尾部取整。
+`Page` 的一字节内容类别复用 padding，64 位目标下仍为 24 字节，不增加每帧元数据、全局对象索引或扫描锁。
+
+`pager_create_vmo` 的 `PAGER_ANONYMOUS` 由实际内存内容提供者指定；linuxd MemoryFile 设置它，
+存储 pager 不设置。两者仍共用同一供页、dirty、防淘汰和退出路径，没有第二套实现。
+内容类别随供页转入页框；不能由进程名、路径、权限或对象引用数猜测。这一事实用于区分“必须保留的内存修改”
+与“等待存储写回的修改”，不改变配额或释放语义。
+
+pager 的 dirty、writeback、reclaimable 是 pager 页总数的子集；前两项仅含有存储后备的 pager，
+匿名供页的修改不进入落盘量。reclaimable 包含两类 pager，但只含 Clean 且 pin=0 的页，
+由 dirty/writeback/pin 状态转换和析构维护，与实际回收谓词共用。Relaxed 计数只作观测，不发布内容或翻译；
+各字段不是跨 CPU 的一致快照，不能用短暂差额推断泄漏。新计数不替代既有 kernel heap/stack/page-table owner。
+查询不分配、不锁树；页首次提交/最终释放各一次原子更新，已脏页再次写入不做原子操作。
+
+linuxd 的 `/proc/meminfo` Cached 投影全系统 pager 驻留页（包含 tmpfs/memfd）；Dirty/Writeback 与
+`/proc/vmstat` nr_dirty 只投影其中的存储写回计数，
+覆盖 ext4 等独立内容服务；MemAvailable 只加干净且未固定的可淘汰子集，并限制在 MemTotal 内。
+删除 linuxd 局部缓存扫描，避免漏计远端文件页和把查询失败当作零。此物理分类不是进程 RSS/PSS：
+TASK_STATS 仍遵循上述 backing 口径，不能由这些分类反推某个进程的实际页表驻留。

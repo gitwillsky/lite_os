@@ -236,6 +236,7 @@ fn available_read_never_requests_pages_and_observes_supplied_cow_content() {
             sink: Arc::new(NoRequests),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let mut output = vec![0xcc; 2 * PAGE_SIZE];
@@ -293,6 +294,7 @@ fn pager_read_cannot_grant_write_before_dirty_transition_and_writeback_rearms_it
             sink: Arc::new(NoRequests),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let source = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
@@ -347,6 +349,7 @@ fn rejected_pager_delivery_does_not_leave_a_request_that_can_never_complete() {
             sink: sink.clone(),
             key: 1,
         },
+        false,
     )
     .unwrap();
     for _ in 0..2 {
@@ -374,6 +377,7 @@ fn supplied_page_invalidated_before_waiter_resumes_is_not_a_pager_failure() {
             sink: Arc::new(Accept),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let request = file.request_page(0).unwrap();
@@ -414,6 +418,7 @@ fn shrinking_a_paged_object_completes_requests_beyond_the_new_end() {
             sink: Arc::new(Accept),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let kept = file.request_page(0).unwrap();
@@ -462,6 +467,7 @@ fn detaching_the_pager_fails_outstanding_and_later_requests() {
             sink: sink.clone(),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let outstanding = file.request_page(0).unwrap();
@@ -475,6 +481,8 @@ fn detaching_the_pager_fails_outstanding_and_later_requests() {
 
 #[test]
 fn resident_observation_keeps_sparse_cow_and_slice_backing_without_faulting() {
+    // 内容标签使用原有 padding，观测不能让每个物理页的元数据增长。
+    assert_eq!(core::mem::size_of::<Page>(), 24);
     let parent = Vmo::create((PAGE_SIZE * 8) as u64, VmoOptions::default()).unwrap();
     parent.write(PAGE_SIZE as u64, &[17]).unwrap();
     parent.write((PAGE_SIZE * 6) as u64, &[23]).unwrap();
@@ -510,6 +518,7 @@ fn eviction_takes_only_clean_pages_and_waits_for_writeback_end() {
             sink: Arc::new(NoRequests),
             key: 1,
         },
+        false,
     )
     .unwrap();
     let source = Vmo::create(3 * page, VmoOptions::default()).unwrap();
@@ -523,7 +532,17 @@ fn eviction_takes_only_clean_pages_and_waits_for_writeback_end() {
     assert_eq!(file.evict_clean(8), 1, "only the clean page 0 is evictable");
     assert_eq!(file.committed_bytes().unwrap(), 2 * page);
 
+    // slice 的 DMA 固定必须落到 backing owner；完成回写也不能把仍固定的页算作可淘汰。
+    let slice = file.create_child(2 * page, page, ChildKind::Slice).unwrap();
+    let pinned = slice.pin(0, page).unwrap();
+    file.begin_writeback(2 * page, page).unwrap();
     file.end_writeback(2 * page, page).unwrap();
+    assert_eq!(file.evict_clean(8), 0);
+    assert_eq!(
+        file.op_range(RangeOp::Decommit, 2 * page, page),
+        Err(VmError::BadState)
+    );
+    drop(pinned);
     assert_eq!(
         file.evict_clean(8),
         1,

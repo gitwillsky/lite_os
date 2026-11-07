@@ -296,4 +296,11 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 
 ## 进度
 
-- 未开始。
+- M0 进行中：物理页 owner 的匿名/pager/连续/bootfs 分类与 pager dirty/writeback/reclaimable 子计数已实现；
+  linuxd Cached/MemAvailable 改为全系统 pager 来源，删除局部缓存扫描。内存供页由实际内容 owner 标明，避免混入存储脏页。
+  修正 slice pin 的 backing owner 登记。
+  当前 AArch64/HVF 开发实例三次对账均为 0 页差额（内核堆/栈/页表 + VMO 匿名/pager/bootfs/连续）；
+  创建 4 MiB 内存文件后 Cached/Shmem 增长，Dirty/Writeback 保持 0，清理已完成。
+  该对账只代表当前设备配置，不替代 RISC-V 及真实 IOMMU 场景的完整归属验收。
+  进程 maps/smaps/Pss、task-observer private/shared、基线完整归属尚未完成，M0 不标完成。
+- 其余阶段尚未开始；不以阶段性基础改动代替整项验收。

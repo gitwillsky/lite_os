@@ -72,10 +72,16 @@ fn shared() -> &'static Shared {
 
 /// 创建可增长的 pager VMO（大小按页取整），返回对象与唯一请求 key。
 ///
+/// # Parameters
+///
+/// - `size`: 内容长度。
+/// - `options`: native VMO 选项；内存内容 owner 指定 `PAGER_ANONYMOUS`，存储内容 owner 传 0。
+///   该事实必须来自实际内容提供者，不能按进程名或路径推断。
+///
 /// # Errors
 ///
 /// VMO 创建失败。
-pub fn create_vmo(size: u64) -> Result<(Vmo, u64), Status> {
+pub fn create_vmo(size: u64, options: u32) -> Result<(Vmo, u64), Status> {
     let shared = shared();
     let key = {
         let mut next = shared.next_key.lock();
@@ -84,7 +90,7 @@ pub fn create_vmo(size: u64) -> Result<(Vmo, u64), Status> {
         key
     };
     let vmo = shared.pager.create_vmo(
-        native_abi::vmo::RESIZABLE,
+        native_abi::vmo::RESIZABLE | options,
         &shared.port,
         key,
         size.next_multiple_of(native_abi::PAGE_SIZE as u64),

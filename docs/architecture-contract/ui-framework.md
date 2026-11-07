@@ -292,6 +292,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   原生执行需执行位与 ELF/shebang 文件头同时成立，不能把 SMB 投影的执行位当成文件格式。
   用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
   Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
+- 桌面的选择、刷新与重命名动作集中在 `desktop::icons`，交互状态仍由唯一 `Desktop` 持有，事件分派不复制状态。
 - 桌面与资源管理器通过 `desktop-entry` 共用文件剪贴板编解码与文件事务。界面线程按选择身份核对数据，后台执行磁盘操作。已完成部分才从仍有效的剪切选择移除。
 - `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
   文件类型图标沿用同一加载器的 `NxN/mimetypes` 上下文；原版资源由 ISO 导入器发布，生成素材由 `file_type_icons.py` 转换并登记摘要。

@@ -26,13 +26,11 @@ use crate::vm::{MapOptions, Placement, Vmo, VmoOptions};
 const ROOT_SERVER: &[u8] = b"bin/component-manager";
 const STACK_SIZE: usize = 256 * 1024;
 
-/// 把一段物理内存复制进新 VMO。
-fn copy_physical(range: core::ops::Range<usize>) -> Arc<Vmo> {
+/// 把一段启动期保留的物理内存复制进给定 VMO。
+fn copy_physical(range: core::ops::Range<usize>, vmo: Arc<Vmo>) -> Arc<Vmo> {
     let virtual_start = crate::arch::mmu::physical_to_virtual(range.start);
     // SAFETY: 区间是固件交付、启动期保留且在 direct map 内的 RAM；复制完成前没有其他所有者。
     let bytes = unsafe { core::slice::from_raw_parts(virtual_start as *const u8, range.len()) };
-    let vmo =
-        Vmo::create(range.len() as u64, VmoOptions::default()).expect("boot VMO allocation failed");
     vmo.write(0, bytes).expect("boot VMO copy failed");
     vmo
 }
@@ -49,8 +47,16 @@ fn entry(object: Object, rights: u32) -> HandleEntry {
 pub(crate) fn start_component_manager(command_line: &[u8]) {
     let initrd =
         crate::platform::initrd_range().expect("boot requires an initrd carrying the bootfs");
-    let bootfs = copy_physical(initrd.clone());
-    let device_tree = copy_physical(crate::platform::dtb_range());
+    let bootfs = copy_physical(
+        initrd.clone(),
+        Vmo::create_bootfs(initrd.len() as u64).expect("bootfs VMO allocation failed"),
+    );
+    let dtb = crate::platform::dtb_range();
+    let device_tree = copy_physical(
+        dtb.clone(),
+        Vmo::create(dtb.len() as u64, VmoOptions::default())
+            .expect("device tree VMO allocation failed"),
+    );
     crate::memory::frame_allocator::release_boot_reserved();
 
     let mut image = Vec::new();

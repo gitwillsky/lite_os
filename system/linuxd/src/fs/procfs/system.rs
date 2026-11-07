@@ -55,17 +55,19 @@ pub(super) fn format_meminfo(
 ) -> Result<Vec<u8>, FileSystemError> {
     let kernel = native_runtime::system::memory_stats();
     // 1. 没有交换设备，交换项为 0；内核在内存紧张时淘汰干净的文件页，MemAvailable 计入可淘汰的干净缓存。
-    // 2. AnonPages/Mapped 来自 linuxd 的 VMA 后备对象（跨进程去重），Shmem 另加 tmpfs/memfd 的已计费页；
+    // 2. 缓存与 dirty/writeback 取内核 pager 页所有权，包含独立文件服务，不再扫描 linuxd 局部缓存。
+    // 3. AnonPages/Mapped 来自 linuxd 的 VMA 后备对象（跨进程去重），Shmem 另加 tmpfs/memfd 的已计费页；
     //    Slab/KernelStack/PageTables 来自内核的内存统计（统计范围记录在 docs/syscall-support/memory.md）。
-    let clean_cache = snapshot.cached_pages.saturating_sub(snapshot.dirty_pages);
+    let clean_cache = kernel.pager_reclaimable_pages as usize;
     let shmem = mapped.shmem_pages + crate::fs::memory_file_pages();
     proc_text(format_args!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      {} kB\nMapped:         {} kB\nShmem:          {} kB\nSlab:           {} kB\nKernelStack:    {} kB\nPageTables:     {} kB\n",
+        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      {} kB\nAnonPages:      {} kB\nMapped:         {} kB\nShmem:          {} kB\nSlab:           {} kB\nKernelStack:    {} kB\nPageTables:     {} kB\n",
         snapshot.total_pages * 4,
         snapshot.free_pages * 4,
-        (snapshot.free_pages + clean_cache).min(snapshot.total_pages) * 4,
-        snapshot.cached_pages * 4,
-        snapshot.dirty_pages * 4,
+        (snapshot.free_pages.saturating_add(clean_cache)).min(snapshot.total_pages) * 4,
+        kernel.vmo_pager_pages * 4,
+        kernel.pager_dirty_pages * 4,
+        kernel.pager_writeback_pages * 4,
         mapped.anonymous_pages * 4,
         mapped.mapped_pages * 4,
         shmem * 4,
@@ -96,7 +98,7 @@ pub(super) fn format_vmstat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSyst
     // 淘汰只在缺页入口同步进行（direct reclaim），没有后台 kswapd；不单独计扫描数，scan 与 steal 相同。
     proc_text(format_args!(
         "nr_free_pages {}\nnr_dirty {}\nallocstall 0\npgscan_direct {}\npgsteal_direct {}\npgscan_kswapd 0\npgsteal_kswapd 0\n",
-        snapshot.free_pages, snapshot.dirty_pages, kernel.evicted_pages, kernel.evicted_pages,
+        snapshot.free_pages, kernel.pager_dirty_pages, kernel.evicted_pages, kernel.evicted_pages,
     ))
 }
 

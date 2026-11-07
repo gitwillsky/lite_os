@@ -103,8 +103,6 @@ pub(crate) struct ProcSnapshot {
     pub(crate) free_pages: usize,
     /// 物理页分配器每个 order 的空闲块数（内核 `FREE_BLOCKS`）。
     pub(crate) buddy_free_blocks: Vec<u64>,
-    pub(crate) cached_pages: usize,
-    pub(crate) dirty_pages: usize,
     pub(crate) runnable_tasks: usize,
     pub(crate) total_tasks: usize,
     pub(crate) processes_created: u64,

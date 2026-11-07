@@ -110,6 +110,9 @@ impl Drop for Vmo {
     /// 2. 这里先取走父引用；本对象是父对象的最后一个强引用时，把父对象移出 `Arc`、同样取走它的父引用后再析构它
     ///    （它的 `drop` 不再有父引用可递归），循环直到某个祖先仍被其他对象引用。析构深度因此恒定。
     fn drop(&mut self) {
+        if let Kind::Contiguous(frames) = &self.kind {
+            residency::remove_contiguous(frames.pages);
+        }
         let mut parent = Self::take_parent(self.state.get_mut());
         while let Some(vmo) = parent {
             parent = match Arc::try_unwrap(vmo) {

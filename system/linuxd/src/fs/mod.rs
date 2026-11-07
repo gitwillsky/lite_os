@@ -97,8 +97,7 @@ pub(crate) use mount::{
     unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
-    RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
-    sync_all, sync_inode, truncate,
+    RegularFile, RegularFileWrite, allocate, mapping, sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{
     AccessIdentity, CreateMetadata, MAY_ACCESS, MAY_CHDIR, OwnerModeChange,

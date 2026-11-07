@@ -271,11 +271,19 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             call.write_array(buffer, &values)
         }
         native_abi::system::MEMORY_STATS => {
+            let vmo = crate::vm::physical_page_statistics();
             let stats = native_abi::SystemMemoryStats {
                 heap_pages: crate::memory::heap_pages() as u64,
                 kernel_stack_pages: crate::vm::kernel_stack::mapped_pages() as u64,
                 page_table_pages: crate::vm::page_table::table_pages() as u64,
                 evicted_pages: crate::vm::evicted_pages() as u64,
+                vmo_anonymous_pages: vmo.anonymous_pages as u64,
+                vmo_pager_pages: vmo.pager_pages as u64,
+                vmo_contiguous_pages: vmo.contiguous_pages as u64,
+                bootfs_pages: vmo.bootfs_pages as u64,
+                pager_dirty_pages: vmo.pager_dirty_pages as u64,
+                pager_writeback_pages: vmo.pager_writeback_pages as u64,
+                pager_reclaimable_pages: vmo.pager_reclaimable_pages as u64,
             };
             let bytes = super::bytes_of(&stats);
             call.write_optional(actual, &bytes.len())?;
