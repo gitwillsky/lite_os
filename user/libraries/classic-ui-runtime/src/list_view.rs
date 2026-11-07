@@ -24,6 +24,7 @@ pub(super) unsafe extern "C" fn style(
                 .filter(|node| node.kind == widget::LIST)
                 .ok_or_else(|| invalid("not a list"))?;
             let table = node.table.as_mut().expect("list model");
+            let layout_changed = table.mode != mode;
             if table.mode != mode {
                 table.mode = mode;
                 node.position.position = 0;
@@ -37,6 +38,7 @@ pub(super) unsafe extern "C" fn style(
                 table.selection.extend(node.selected);
                 table.anchor = node.selected;
             }
+            host.controls_mut()?.layout_dirty |= layout_changed;
             host.frame.invalidate();
             Ok(())
         })

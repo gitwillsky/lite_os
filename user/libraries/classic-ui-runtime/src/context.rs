@@ -31,20 +31,12 @@ impl WindowRecord {
             WindowBody::Dialog(dialog) => Ok(&dialog.tree),
         }
     }
+    /// 只借用控件树；改变尺寸规则的修改入口负责作废布局，纯绘制状态不触发重排。
     pub fn controls_mut(&mut self) -> io::Result<&mut Tree> {
         match &mut self.body {
-            WindowBody::Widgets(tree) => {
-                tree.layout_dirty = true;
-                Ok(tree)
-            }
-            WindowBody::Sheet(sheet) => {
-                sheet.tree.layout_dirty = true;
-                Ok(&mut sheet.tree)
-            }
-            WindowBody::Dialog(dialog) => {
-                dialog.tree.layout_dirty = true;
-                Ok(&mut dialog.tree)
-            }
+            WindowBody::Widgets(tree) => Ok(tree),
+            WindowBody::Sheet(sheet) => Ok(&mut sheet.tree),
+            WindowBody::Dialog(dialog) => Ok(&mut dialog.tree),
         }
     }
 }
@@ -351,18 +343,12 @@ impl Context {
                 .ok()
                 .and_then(Tree::animation_deadline)
                 .is_some_and(|deadline| deadline <= now);
-            // 动画只改变像素，不经 controls_mut（它会使布局失效、迫使整窗重新排版）。
-            let tree = match &mut host.body {
-                WindowBody::Widgets(tree) => tree,
-                WindowBody::Sheet(sheet) => &mut sheet.tree,
-                WindowBody::Dialog(dialog) => &mut dialog.tree,
-            };
-            if due && tree.animate(now) {
-                host.frame.invalidate();
-            }
+            let tree = host.controls_mut()?;
+            let mut repaint = due && tree.animate(now);
             // 微调钮按住时的自动重复会产生应用事件，与其他定时状态共用同一截止时刻。
             let mut repeated = Vec::new();
-            if due && tree.repeat_updowns(*window, now, &mut repeated) {
+            repaint |= due && tree.repeat_updowns(*window, now, &mut repeated);
+            if repaint {
                 host.frame.invalidate();
             }
             self.events.extend(repeated);
@@ -658,7 +644,7 @@ impl Context {
             .filter(|command| command.kind == 7 && !command.text.is_empty())
             .map(|command| std::path::PathBuf::from(&command.text));
         if self.pictures.update(referenced)? {
-            // 完成只改变 Canvas 像素；不经 controls_mut 使布局失效，也不向应用发虚假 Configure。
+            // 完成只改变 Canvas 像素，不作废布局，也不向应用发虚假 Configure。
             for host in self.windows.values_mut() {
                 if host.controls().is_ok_and(|tree| {
                     tree.nodes
@@ -775,6 +761,7 @@ impl Context {
         } else {
             return Err(invalid("not an edit control"));
         };
+        tree.layout_dirty |= changed;
         host.frame.invalidate();
         if changed {
             self.publish(Some(abi::Event {

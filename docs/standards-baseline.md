@@ -189,6 +189,7 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 
 ### 桌面程序入口与系统图像
 
+- 控件几何失效与像素重绘的职责分离参照 [Qt 6.8.3 QWidget 固定实现](https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/kernel/qwidget.cpp)的 `updateGeometry` 与 `update`；只采用成熟的布局/绘制失效语义，不引入 Qt 运行时依赖。
 - [XDG Base Directory Specification `0.8`](https://specifications.freedesktop.org/basedir-spec/0.8/)；
   [Icon Theme Specification `0.13`](https://specifications.freedesktop.org/icon-theme/0.13/)（当前实现 hicolor PNG 子集）。
 - PNG 解码库 `png=0.18.0`、JPEG 解码库 `zune-jpeg=0.5.15`（`zune-core=0.5.1`），精确依赖与摘要由 `user/Cargo.lock` 固定。

@@ -106,6 +106,7 @@ pub(super) unsafe extern "C" fn set_text(
             } else {
                 node.text = value;
             }
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -161,11 +162,19 @@ pub(super) unsafe extern "C" fn state(
             if old.state == value {
                 return Ok(());
             }
+            // 布局还会修复不可用的焦点，因此 DISABLED 变化也必须重新布局。
+            let geometry = abi::state::HIDDEN
+                | abi::state::DISABLED
+                | abi::state::WRAP
+                | abi::state::CLIENT_EDGE
+                | abi::state::BORDERLESS;
+            let layout_changed = (old.state ^ value) & geometry != 0;
             host.controls_mut()?
                 .nodes
                 .get_mut(&id)
                 .expect("validated widget")
                 .state = value;
+            host.controls_mut()?.layout_dirty |= layout_changed;
             host.frame.invalidate();
             Ok(())
         })
@@ -196,6 +205,7 @@ pub(super) unsafe extern "C" fn set_layout(
                 .get_mut(&id)
                 .expect("validated widget")
                 .layout = value;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -259,6 +269,7 @@ pub(super) unsafe extern "C" fn rows(
                 node.edit = None;
             }
             node.rows = rows;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -318,6 +329,7 @@ pub(super) unsafe extern "C" fn row_checks(
                 return Ok(());
             }
             table.checks = checks;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -517,6 +529,7 @@ pub(super) unsafe extern "C" fn menus(
             }
             menu.state.close();
             menu.entries = entries;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -560,6 +573,9 @@ pub(super) unsafe extern "C" fn columns(
                 .get_mut(&id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown list"))?;
             let table = node.table.as_mut().ok_or_else(|| invalid("not a list"))?;
+            if table.columns == copied {
+                return Ok(());
+            }
             let widths: Vec<_> = copied
                 .iter()
                 .map(|(id, _, width)| {
@@ -574,6 +590,7 @@ pub(super) unsafe extern "C" fn columns(
             table.header = classic_ui::ColumnHeader::new(widths);
             table.gesture = None;
             node.clamp_list();
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -680,6 +697,7 @@ pub(super) unsafe extern "C" fn select(
             if let Some(outline) = node.outline.as_mut() {
                 outline.reveal(value);
             }
+            tree.layout_dirty |= matches!(node.kind, abi::widget::TABS | abi::widget::TREE);
             host.frame.invalidate();
             Ok(())
         })
@@ -797,6 +815,7 @@ pub(super) unsafe extern "C" fn row_icons(
                 .get_mut(&id)
                 .expect("validated node")
                 .row_icons = icons;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -860,7 +879,12 @@ pub(super) unsafe extern "C" fn set_font(
                 .get_mut(&id)
                 .filter(|node| matches!(node.kind, abi::widget::LABEL | abi::widget::LINK))
                 .ok_or_else(|| invalid("not a label or link"))?;
-            node.font = Some((role, points as u16, weight as u16));
+            let value = Some((role, points as u16, weight as u16));
+            if node.font == value {
+                return Ok(());
+            }
+            node.font = value;
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -1013,6 +1037,7 @@ pub(super) unsafe extern "C" fn toolbar_items(
             node.toolbar
                 .get_or_insert_with(Toolbar::default)
                 .set_buttons(buttons);
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })

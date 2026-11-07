@@ -431,6 +431,7 @@ pub(super) unsafe extern "C" fn tree_rows(
             if node.table.is_some() {
                 node.clamp_list();
             }
+            host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
