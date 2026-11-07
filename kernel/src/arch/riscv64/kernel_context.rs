@@ -41,19 +41,19 @@ impl KernelContext {
         }
     }
 
-    /// 构造首次 restore 后进入 trap-return continuation 的 context。
+    /// 构造首次 restore 后进入 typed continuation 的 context。
     ///
     /// # Parameters
     ///
     /// - `kernel_sp`: 当前 task 独占 kernel stack top。
-    /// - `trap_return`: 不返回的 typed Rust continuation。
+    /// - `resume`: 不返回的 typed Rust continuation。
     ///
     /// # Returns
     ///
     /// 满足 switch.S layout 的 context。
-    pub(crate) fn goto_trap_return(kernel_sp: usize, trap_return: KernelResume) -> Self {
+    pub(crate) fn with_resume(kernel_sp: usize, resume: KernelResume) -> Self {
         Self {
-            ra: trap_return as usize,
+            ra: resume as usize,
             kernel_sp,
             s: [0; 12],
             fs: [0; 12],

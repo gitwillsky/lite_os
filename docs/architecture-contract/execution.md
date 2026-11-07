@@ -61,6 +61,11 @@ AArch64 lower-EL entry 必须在进入 Rust 前以 TTBR1 kernel root 替换 TTBR
 RISC-V 先固化用户 sstatus/Dirty FP，再启用 kernel FP；kernel trap label 4-byte aligned。
 AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零 vector copy；扩展状态不在 ABI 中就不得向用户公布。
 
+`ThreadBody` 互斥拥有用户上下文或内核工作函数。内核线程不伪造用户空间/ThreadOwner，首次 continuation 完成 handoff 后启用 IRQ，
+函数返回走统一 exit/reap。`KernelContext::with_resume` 只编码初始续体，两架构保持同一机制；内核工作函数必须有预算并主动让出，
+不会借用户返回路径请求抢占。VM 等下层经 `TaskWaitTarget::yield_now` 复用 scheduler seam，不直接依赖 Thread。
+后台回收仅多一条最低公平权重线程和既有规格的栈，不增加常驻用户服务或新的应用 ABI。
+
 ## 等待、IRQ 与清理
 
 - Ready publication/retirement token 必须在同一 SchedulingState transaction 中交给唯一 per-CPU committer；旧 generation 不可 dispatch，遗失 token fail-stop。
@@ -80,8 +85,8 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
 - futex 等待索引归 `execution::sync::futex`，`syscall::futex` 只解码 native 参数、解析地址与比较用户值。
   私有 context 由实际 AddressSpace 按需拥有（每 logical CPU 16 桶，向上取 2 的幂）；成员的服务区使用共享空间的私有 context。
-  共享 VMO key 使用唯一全局 context（每 logical CPU 256 桶）；不同空间的私有 key 不进入全局桶。
-  context 发表前准备全部桶，每桶一把 `IrqMutex` 和 (key, 序号) 有序树；等待节点在锁外预分配，requeue 移交原节点。
+  共享 VMO key 沿 slice 链累计偏移，COW 子对象保留独立逻辑身份，不按物理页归并；使用唯一全局 context（每 logical CPU 256 桶）；不同空间的私有 key 不进入全局桶。
+  context 发表前准备全部桶，Once 只移动准备好的 Arc，热路径 get 不取 VM 锁；每桶一把 `IrqMutex` 和 (key, 序号) 有序树；等待节点在锁外预分配，requeue 移交原节点。
 - 桶内 `AddressSpace::read_resident_word` 只 try-lock 实际页表 owner，不排队、不分配、不缺页；
   空间锁忙或翻译缺失先退出整个桶事务，再普通读取等待/缺页后重新比较。比较与入队同锁，唤醒不会丢失。
   双桶按 (存活 context 地址, 桶下标) 全序加锁，相同桶只取一次；外层 IRQ guard 在两桶都解锁后最后恢复中断，

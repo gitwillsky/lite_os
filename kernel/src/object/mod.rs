@@ -18,7 +18,7 @@ use alloc::sync::Arc;
 use native_abi::{ObjectType, rights};
 
 pub(crate) use channel::{Channel, Message, ReadError};
-pub(crate) use event::Event;
+pub(crate) use event::{Event, memory_pressure_event, notify_memory_pressure};
 pub(crate) use exception::{Exception, ExceptionResolution};
 pub(crate) use handle_table::{HandleEntry, HandleTable};
 pub(crate) use memory::{Pager, vm_status};

@@ -56,7 +56,7 @@ impl ThreadOwner for crate::object::Thread {
         // 缺页先由地址空间解析；未解决时保留原始硬件异常，交给进程异常处理者。
         if matches!(exception, UserException::PageFault { .. }) {
             // 缺页入口不持任何内核锁：内存紧张时在这里淘汰干净的文件页，不在分配失败的现场回收。
-            super::system::relieve_memory_pressure();
+            crate::vm::relieve_memory_pressure();
         }
         let fault = match exception {
             UserException::PageFault {

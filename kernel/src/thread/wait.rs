@@ -62,6 +62,10 @@ pub(super) fn sleep_until(deadline_ns: u64) -> WaitResult {
 }
 
 impl TaskWaitTarget for Thread {
+    fn yield_now(self: Arc<Self>) {
+        drop(self);
+        context_switch::yield_current();
+    }
     fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult {
         if !completion.begin_arming() {
             return WaitResult::Woken;

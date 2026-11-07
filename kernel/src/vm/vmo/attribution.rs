@@ -1,4 +1,4 @@
-//! 按实际物理页映射次数分摊驻留；查询期间的临时索引，不增加页热路径或持久 mapcount 状态。
+//! 逻辑后备身份与物理页驻留归属；查询期间临时索引，不增加页热路径或持久 mapcount 状态。
 use super::*;
 
 struct ResidentContent {
@@ -8,6 +8,35 @@ struct ResidentContent {
 }
 
 impl Vmo {
+    /// 解析共享内存的逻辑后备身份与字节偏移；slice 是别名，COW 子对象是独立身份。
+    ///
+    /// # Errors
+    /// 偏移溢出为 `OutOfRange`；不补页、不按物理页合并 COW 身份。
+    pub(in crate::vm) fn backing_identity(
+        self: &Arc<Self>,
+        mut offset: u64,
+    ) -> Result<(u64, u64), VmError> {
+        // Slice 的 parent/offset 从创建到析构不变，Arc 保活每一层；只读短 state 锁即可。
+        // 不沿可变的 COW 祖先链，不需要获取树锁或为了查询触发隐藏节点折叠。
+        let mut object = self.clone();
+        loop {
+            let next = match &object.state.lock().relation {
+                Some(Relation::Slice { parent, offset }) => Some((parent.clone(), *offset)),
+                _ => None,
+            };
+            let Some((parent, pages)) = next else {
+                return Ok((object.id, offset));
+            };
+            let displacement = (pages as u64)
+                .checked_mul(PAGE_SIZE as u64)
+                .ok_or(VmError::OutOfRange)?;
+            offset = offset
+                .checked_add(displacement)
+                .ok_or(VmError::OutOfRange)?;
+            object = parent;
+        }
+    }
+
     /// 便宜的 RSS/content 观测；不构造同树共享计数，也不把物理设备映射当成 RAM。
     pub(in crate::vm) fn resident_ranges(
         self: &Arc<Self>,

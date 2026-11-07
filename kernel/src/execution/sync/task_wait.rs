@@ -54,6 +54,9 @@ impl TaskWaitKey {
 
 /// scheduler 为 task mutex 与 task event waiter 提供的 opaque target。
 pub(crate) trait TaskWaitTarget: Send + Sync {
+    /// 当前 task 在锁外主动让出处理器；不得复制调度 membership 或持有 IRQ guard。
+    fn yield_now(self: Arc<Self>);
+
     /// 原子发布 membership，并在 completion 尚未发布时阻塞当前 task。
     fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult;
 
@@ -88,6 +91,13 @@ pub(crate) fn install_wait_target_factory(factory: WaitTargetFactory) {
     WAIT_TARGET_FACTORY.call_once(|| factory);
 }
 
+/// 当前 task 在预算边界让出处理器；复用等待目标的 scheduler seam，不依赖上层 Thread 类型。
+pub(crate) fn yield_current_task() {
+    current_wait_target()
+        .expect("task yield requires current task context")
+        .yield_now();
+}
+
 pub(super) fn current_wait_target() -> Option<Arc<dyn TaskWaitTarget>> {
     if let Some(target) = WAIT_TARGET_FACTORY.get().and_then(|factory| factory()) {
         return Some(target);
@@ -105,6 +115,9 @@ struct TestThreadTarget(std::thread::Thread);
 
 #[cfg(test)]
 impl TaskWaitTarget for TestThreadTarget {
+    fn yield_now(self: Arc<Self>) {
+        std::thread::yield_now();
+    }
     fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult {
         if !completion.begin_arming() || completion.finish_arming() {
             return WaitResult::Woken;

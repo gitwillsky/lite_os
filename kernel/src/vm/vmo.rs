@@ -28,6 +28,7 @@ mod fault_around;
 pub(crate) use fault_around::FAULT_AROUND_PAGES;
 mod page_list;
 use page_list::PageList;
+mod mapping;
 mod pager;
 use pager::PageRequestCompletion;
 mod zero_page;
@@ -49,9 +50,12 @@ use crate::memory::{
 };
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+pub(super) use reclaim::AccessSample;
+#[cfg(not(test))]
+pub(crate) use reclaim::background_reclaim;
 pub(crate) use reclaim::{evicted_pages, relieve_memory_pressure};
-use residency::PageContent;
 pub(crate) use residency::physical_page_statistics;
+use residency::{Cleanliness, Page, PageContent};
 use spin::Mutex;
 
 /// 物理 VMO 的缓存属性。
@@ -118,25 +122,6 @@ enum Kind {
     Slice,
 }
 
-/// 单页唯一 owner；非零标记同时为 `Option<Page>` 提供空槽 niche。
-/// 位布局由 Page 的方法封装，树锁串行化 pins/回写/内容归属的变更。
-#[repr(transparent)]
-struct Page(core::num::NonZeroU64);
-
-const _: () = assert!(size_of::<Option<Page>>() == 8);
-
-/// pager 页的回写状态（Zircon page dirty state）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum Cleanliness {
-    /// 内容与 pager 的存储一致，可以淘汰。
-    Clean,
-    /// 补入后被写过；映射可写。
-    Dirty,
-    /// 回写已开始（映射已写保护）但存储尚未确认；之后的写入回到 `Dirty`，不能淘汰。
-    AwaitingClean,
-}
-
 enum Relation {
     /// 写入时复制的父对象。limit 是本对象中可继承的页数；合并祖先或调整大小不能扩大此窗口，
     /// 否则缩短的中间快照会在折叠后暴露祖父对象原本不可见的页。
@@ -167,6 +152,8 @@ struct State {
     // FLAG: 本对象有读缺页被解析到共享零页（只读翻译指向全局零页）。之后首次提交真实页必须撤销该下标的翻译，
     // 否则读者继续读到零页而看不到后来的写入。只在根匿名对象上置位（见 `shared_zero_page`）。
     zero_mapped: bool,
+    // OWNER: 回收扫描下次起点；树锁串行化，限制一次扫描的实际页数，避免缺页兜底遍历整个大文件。
+    reclaim_cursor: usize,
 }
 
 /// 内存对象。
@@ -423,6 +410,7 @@ impl Vmo {
             return Err(Resolve::Error(VmError::OutOfRange));
         }
         if let Some(page) = state.committed.get_mut(&index) {
+            page.note_access();
             if write {
                 page.set_cleanliness(Cleanliness::Dirty);
             }
@@ -445,11 +433,12 @@ impl Vmo {
             _ => None,
         };
         while let Some((vmo, ancestor_index)) = ancestor {
-            let ancestor_state = vmo.state.lock();
+            let mut ancestor_state = vmo.state.lock();
             if ancestor_index >= ancestor_state.pages {
                 break;
             }
-            if let Some(page) = ancestor_state.committed.get(&ancestor_index) {
+            if let Some(page) = ancestor_state.committed.get_mut(&ancestor_index) {
+                page.note_access();
                 if !write {
                     return Ok(ResolvedPage {
                         source: FaultSource::Memory,
@@ -652,56 +641,6 @@ impl Vmo {
         self.state.lock().pages = pages;
         if pages < old {
             self.invalidate_read_requests_locked(pages..old);
-        }
-        Ok(())
-    }
-
-    /// 登记一个映射本对象的映射。
-    ///
-    /// # Errors
-    /// 分配失败返回 `NoMemory`。
-    pub(super) fn register_mapping(&self, mapping: &Arc<Mapping>) -> Result<(), VmError> {
-        let _tree = self.lock_tree()?;
-        let mut state = self.state.lock();
-        state.mappings.retain(|mapping| mapping.strong_count() != 0);
-        state
-            .mappings
-            .try_reserve(1)
-            .map_err(|_| VmError::NoMemory)?;
-        state.mappings.push(Arc::downgrade(mapping));
-        Ok(())
-    }
-
-    /// 调用者持有树锁：撤销映射本对象 `pages` 区间（以及 at-least-on-write 子孙对应区间）的翻译，
-    /// 并在返回前完成 fence。
-    fn zap(&self, pages: core::ops::Range<usize>, mode: ZapMode) -> Result<(), VmError> {
-        let (mappings, children) = {
-            let state = self.state.lock();
-            let mut mappings = Vec::new();
-            mappings
-                .try_reserve_exact(state.mappings.len())
-                .map_err(|_| VmError::NoMemory)?;
-            mappings.extend(state.mappings.iter().filter_map(Weak::upgrade));
-            let mut children = Vec::new();
-            children
-                .try_reserve_exact(state.children.len())
-                .map_err(|_| VmError::NoMemory)?;
-            children.extend(state.children.iter().filter_map(Weak::upgrade));
-            (mappings, children)
-        };
-        for mapping in &mappings {
-            mapping.zap_vmo_pages(pages.clone(), mode)?;
-        }
-        for child in &children {
-            let offset = match &child.state.lock().relation {
-                Some(Relation::Cow { offset, .. } | Relation::Slice { offset, .. }) => *offset,
-                None => continue,
-            };
-            let start = pages.start.saturating_sub(offset);
-            let end = pages.end.saturating_sub(offset);
-            if start < end {
-                child.zap(start..end, ZapMode::Unmap)?;
-            }
         }
         Ok(())
     }

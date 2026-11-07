@@ -121,6 +121,52 @@ static CPU_FRAMES: Once<alloc::boxed::Box<[CpuFrames]>> = Once::new();
 // 只在 allocator 锁内写，读者（用户缺页入口的回收）只把它当提示。缺失时 pager 支撑页的干净页
 // 在分配失败之前不会被淘汰，缺页直接以 NoMemory 结束进程。
 static UNDER_PRESSURE: AtomicBool = AtomicBool::new(false);
+// OWNER: 唯一后台回收者的压力事件。通知只是低水位边沿，不复制 UNDER_PRESSURE 的水位状态。
+static PRESSURE_EVENT: crate::execution::sync::TaskEvent = crate::execution::sync::TaskEvent::new();
+// OWNER: 压力边沿的 deferred 通道；allocator 锁内只发布位图，安全点才 signal，避免 allocator → 调度锁逆序。
+static PRESSURE_WORK: Once<(crate::execution::deferred::DeferredWork, fn())> = Once::new();
+
+/// 在调度与中断控制器就绪后装配通知。`observe` 只在 boot CPU 的安全点运行，不持 allocator 锁。
+/// 发布到唯一 CPU 防止不同 CPU 的迟到观测覆盖更新的系统事件状态；VM 与原生事件仍各自拥有职责。
+pub(crate) fn initialize_pressure_notifications(observe: fn()) {
+    PRESSURE_WORK.call_once(|| {
+        let work = crate::execution::deferred::register(|_| {
+            PRESSURE_EVENT.signal();
+            PRESSURE_WORK
+                .get()
+                .expect("unpublished pressure work dispatched")
+                .1();
+            false
+        })
+        .expect("memory pressure deferred registration exhausted");
+        (work, observe)
+    });
+}
+
+/// 请求一次实际水位投影；只合并到 boot CPU，不在 allocator 锁内调用观察者或唤醒线程。
+pub(crate) fn request_pressure_notification() {
+    if let Some((work, _)) = PRESSURE_WORK.get() {
+        crate::execution::deferred::raise_on(crate::execution::cpu::boot_id(), *work);
+    }
+}
+
+fn publish_pressure(pressure: bool) {
+    // 调用者持唯一 allocator 锁；无变化时不写共享 cache line，也不发布重复边沿。
+    if UNDER_PRESSURE.load(Ordering::Relaxed) != pressure {
+        UNDER_PRESSURE.store(pressure, Ordering::Relaxed);
+        request_pressure_notification();
+    }
+}
+
+/// 后台 owner 等待压力边沿；可给出无进展时的重试截止时间，正常空闲不保留周期 timer。
+///
+/// 返回事件、打断或截止时间结果；事件先于 wait 到达时也不会丢失。
+pub(crate) fn wait_for_pressure(deadline: Option<u64>) -> crate::execution::sync::WaitResult {
+    match deadline {
+        Some(deadline) => PRESSURE_EVENT.wait_interruptible_until(deadline),
+        None => PRESSURE_EVENT.wait_interruptible(),
+    }
+}
 
 #[derive(Debug)]
 enum FrameAllocError {
@@ -451,9 +497,9 @@ impl FrameAllocator {
     fn update_pressure(&self) {
         let low = (self.capacity() / 64).max(256);
         if self.free_pages < low {
-            UNDER_PRESSURE.store(true, Ordering::Relaxed);
+            publish_pressure(true);
         } else if self.free_pages >= low + low / 2 {
-            UNDER_PRESSURE.store(false, Ordering::Relaxed);
+            publish_pressure(false);
         }
     }
 

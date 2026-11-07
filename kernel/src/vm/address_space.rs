@@ -156,8 +156,6 @@ struct SpaceInner {
     views: ExecutionViews,
     nodes: FallibleMap<u64, VmarNode>,
     next_id: u64,
-    // OWNER: 本逻辑空间的私有 futex 表，首次调用时锁外准备；不进入全局共享桶，也不复制到成员。
-    futexes: Option<Arc<crate::execution::sync::futex::Context>>,
     // OWNER: RISC-V 线程 trap context 页（supervisor-only）；AArch64 不使用。
     contexts: FallibleMap<VirtualPageNumber, FrameTracker>,
 }
@@ -170,6 +168,9 @@ pub(crate) struct AddressSpace {
     // OWNER: private 根的不变身份；最终 IRQ-masked transfer 不取可睡眠的地址空间锁。
     // 两 token 仅保活各根的 ASID context，映射与页表生命周期仍由 inner 唯一管理。
     private_token: Option<AddressSpaceToken>,
+    // OWNER: 私有 futex context 的唯一发表点；完整准备后只移动 Arc 到 Once，初始化期间不等待/分配。
+    // 热路径只 get，不获取地址空间锁，否则分桶操作仍被同一把锁串行化。
+    futexes: spin::Once<Arc<crate::execution::sync::futex::Context>>,
     // OWNER: 页表与 VMAR 树同锁；拆开会让缺页装入已解除映射的翻译。
     inner: TaskMutex<SpaceInner>,
     // OWNER: 在成员根析构后才释放共享 owner；它唯一拥有 normal 借用的服务区子树。
@@ -239,13 +240,13 @@ impl AddressSpace {
             koid: crate::id::next_koid(),
             token: views.normal.token(),
             private_token: views.private_token(),
+            futexes: spin::Once::new(),
             range: range.clone(),
             shared,
             inner: TaskMutex::new(SpaceInner {
                 views,
                 nodes,
                 next_id: ROOT + 1,
-                futexes: None,
                 contexts: FallibleMap::new(),
             }),
         })
@@ -316,22 +317,21 @@ impl AddressSpace {
     /// 地址所属逻辑空间的私有 futex context；共享服务区沿真实 owner 取得同一张表。
     ///
     /// # Errors
-    /// 地址超出本空间/共享区时 `NotMapped`；准备表或锁等待者失败时 `NoMemory`。
+    /// 地址超出本空间/共享区时 `NotMapped`；准备表失败时 `NoMemory`。
     pub(crate) fn futex_context(
         self: &Arc<Self>,
         address: usize,
     ) -> Result<Arc<crate::execution::sync::futex::Context>, VmError> {
         let owner = self.owner_of(address)?;
-        if let Some(context) = &owner.lock()?.futexes {
+        if let Some(context) = owner.futexes.get() {
             return Ok(context.clone());
         }
         // 每 logical CPU 16 个私有桶，隔离其他空间的碰撞；仅实际使用时分配，空闲空间不占桶内存。
-        // 准备在锁外，竞争者只保留先发表的一份；没有可被抢占的 Once 初始化自旋窗口。
+        // 准备在 Once 之外；闭包只移动已完成的 Arc，不等待/分配，竞争者丢弃未发表的候选。
         let buckets = (16 * crate::execution::cpu::count()).next_power_of_two();
         let candidate = crate::execution::sync::futex::Context::try_new(buckets)
             .map_err(|_| VmError::NoMemory)?;
-        let mut inner = owner.lock()?;
-        Ok(inner.futexes.get_or_insert(candidate).clone())
+        Ok(owner.futexes.call_once(|| candidate).clone())
     }
 
     /// 解析地址所在映射的 VMO 与字节偏移（futex 共享 key）。
@@ -341,7 +341,7 @@ impl AddressSpace {
     pub(crate) fn resolve_object(self: &Arc<Self>, address: usize) -> Result<(u64, u64), VmError> {
         let (_, mapping) = self.lookup(address)?;
         let offset = (mapping.vmo_page * PAGE_SIZE + (address - mapping.base)) as u64;
-        Ok((mapping.vmo.id(), offset))
+        mapping.vmo.backing_identity(offset)
     }
 
     fn lock(&self) -> Result<TaskMutexGuard<'_, SpaceInner>, VmError> {
@@ -429,142 +429,6 @@ impl AddressSpace {
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        Ok(())
-    }
-
-    /// 从当前地址空间复制用户内存；缺页按普通缺页处理。
-    ///
-    /// # Errors
-    /// 任一字节不可读返回 `NotMapped`/`AccessDenied`。
-    pub(crate) fn copy_from_user(
-        self: &Arc<Self>,
-        address: usize,
-        output: &mut [u8],
-    ) -> Result<(), VmError> {
-        self.for_each_user_chunk(
-            address,
-            output.len(),
-            FaultAccess::Read,
-            |page, offset, range| {
-                // SAFETY: `page` 是持地址空间锁期间已验证可读的用户页在 direct map 中的地址。
-                let source = unsafe { core::slice::from_raw_parts(page.add(offset), range.len()) };
-                output[range].copy_from_slice(source);
-            },
-        )
-    }
-
-    /// 向当前地址空间复制用户内存。
-    ///
-    /// # Errors
-    /// 任一字节不可写返回 `NotMapped`/`AccessDenied`。
-    pub(crate) fn copy_to_user(
-        self: &Arc<Self>,
-        address: usize,
-        input: &[u8],
-    ) -> Result<(), VmError> {
-        self.for_each_user_chunk(
-            address,
-            input.len(),
-            FaultAccess::Write,
-            |page, offset, range| {
-                // SAFETY: 同 `copy_from_user`；页已验证可写且写解析保证属于本映射的 VMO。
-                let target =
-                    unsafe { core::slice::from_raw_parts_mut(page.add(offset), range.len()) };
-                target.copy_from_slice(&input[range]);
-            },
-        )
-    }
-
-    /// 读取一个 4 字节对齐的用户字，翻译缺失时不缺页（futex 在桶锁内比较值使用）。
-    ///
-    /// # Returns
-    /// `Some(value)`；空间锁忙、翻译未安装或不可读时为 `None`。不等待、不分配：
-    /// 调用者应释放桶锁、用普通读取等待/缺页后重试，否则 IRQ-safe 锁下会阻塞或等待 pager I/O。
-    ///
-    /// # Errors
-    /// 地址未对齐或超出用户区间返回 `NotMapped`。
-    pub(crate) fn read_resident_word(&self, address: usize) -> Result<Option<u32>, VmError> {
-        if !address.is_multiple_of(4)
-            || address < USER_START
-            || address.checked_add(4).is_none_or(|end| end > USER_END)
-        {
-            return Err(VmError::NotMapped);
-        }
-        let owner = self
-            .shared
-            .as_deref()
-            .filter(|owner| owner.range.contains(&address))
-            .unwrap_or(self);
-        let Some(inner) = owner.inner.try_lock() else {
-            return Ok(None);
-        };
-        let Some(entry) = inner
-            .views
-            .normal
-            .translate(VirtualAddress::from(address).floor())
-            .filter(|entry| {
-                entry
-                    .permissions()
-                    .contains(PagePermissions::READ | PagePermissions::USER)
-            })
-        else {
-            return Ok(None);
-        };
-        let word = entry
-            .ppn()
-            .as_page_mut_ptr()
-            .wrapping_add(address % PAGE_SIZE)
-            .cast::<u32>();
-        // SAFETY: 翻译在持有地址空间锁期间有效（撤销需要同一把锁），页框经 direct map 可读；
-        // 地址 4 字节对齐且不跨页。用户态可并发写该字，故按原子读取。
-        Ok(Some(
-            unsafe { core::sync::atomic::AtomicU32::from_ptr(word) }
-                .load(core::sync::atomic::Ordering::Acquire),
-        ))
-    }
-
-    fn for_each_user_chunk(
-        self: &Arc<Self>,
-        address: usize,
-        length: usize,
-        access: FaultAccess,
-        mut operation: impl FnMut(*mut u8, usize, Range<usize>),
-    ) -> Result<(), VmError> {
-        let end = address.checked_add(length).ok_or(VmError::NotMapped)?;
-        if length != 0 && (address < USER_START || end > USER_END) {
-            return Err(VmError::NotMapped);
-        }
-        let required = access.required() | PagePermissions::USER;
-        let mut cursor = address;
-        while cursor < end {
-            let offset = cursor % PAGE_SIZE;
-            let chunk = (PAGE_SIZE - offset).min(end - cursor);
-            let start = cursor - address;
-            let copied = {
-                let owner = self
-                    .shared
-                    .as_deref()
-                    .filter(|owner| owner.range.contains(&cursor))
-                    .unwrap_or(self);
-                let inner = owner.lock()?;
-                match inner
-                    .views
-                    .normal
-                    .translate(VirtualAddress::from(cursor).floor())
-                {
-                    Some(entry) if entry.permissions().contains(required) => {
-                        operation(entry.ppn().as_page_mut_ptr(), offset, start..start + chunk);
-                        true
-                    }
-                    _ => false,
-                }
-            };
-            if copied {
-                cursor += chunk;
-            } else {
-                self.fault(cursor, access)?;
-            }
-        }
         Ok(())
     }
 

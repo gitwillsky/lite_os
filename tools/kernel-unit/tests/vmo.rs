@@ -27,7 +27,7 @@ mod execution {
         }
 
         impl<T> TaskMutex<T> {
-            pub(crate) fn new(value: T) -> Self {
+            pub(crate) const fn new(value: T) -> Self {
                 Self(std::sync::Mutex::new(value))
             }
             pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
@@ -178,6 +178,14 @@ mod vm {
                 &self,
             ) -> Result<alloc::vec::Vec<(usize, usize)>, VmError> {
                 panic!("hardware residency belongs to guest MMU fixtures")
+            }
+            pub(in crate::vm) fn harvest_accessed(
+                &self,
+                _: &mut [super::vmo::AccessSample],
+                _: usize,
+                _: core::ops::Range<usize>,
+            ) -> Result<(), VmError> {
+                panic!("hardware accessed harvesting belongs to guest MMU fixtures")
             }
             pub(crate) fn zap_vmo_pages(
                 &self,

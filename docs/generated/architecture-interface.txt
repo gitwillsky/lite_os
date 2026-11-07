@@ -175,8 +175,8 @@ kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn enable_timer_sourc
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
 kernel/src/arch/aarch64/iommu.rs :: pub (crate) impl Backend < F > :: fn create (kind : u32 , virtual_base : usize , size : usize) -> Result < Self , Status >
 kernel/src/arch/aarch64/iommu.rs :: pub (crate) struct Backend < F >
-kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) impl KernelContext :: fn goto_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) impl KernelContext :: fn set_resume_target (& mut self , target : KernelResume)
+kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) impl KernelContext :: fn with_resume (kernel_sp : usize , resume : KernelResume) -> Self
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) impl KernelContext :: fn zero_init () -> Self
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) struct KernelContext
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) type KernelResume  = fn () -> !
@@ -244,12 +244,15 @@ kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: 
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn next_mapped (& self , start : usize , end : usize) -> Option < (usize , PageTableEntry) >
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn release_address_space_id_after_global_fence (& mut self)
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn root_physical_page (& self) -> usize
+kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn set_accessed (& mut self , virtual_page : usize , accessed : bool ,) -> Result < bool , PageTableError >
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn set_flags (& mut self , virtual_page : usize , permissions : PagePermissions ,) -> Result < () , PageTableError >
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn table_page_count (& self) -> usize
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn token (& self) -> AddressSpaceToken
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn translate (& self , virtual_page : usize) -> Option < PageTableEntry >
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn try_new (kind : AddressSpaceKind) -> Result < Self , PageTableError >
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn unmap (& mut self , virtual_page : usize) -> Result < Unmapped < Page > , PageTableError >
+kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTable < Page > :: unsafe fn share_root_range (& mut self , target : & mut Self , pages : core :: ops :: Range < usize > ,) -> Result < () , PageTableError >
+kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTableEntry :: fn accessed (self) -> bool
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTableEntry :: fn permissions (self) -> PagePermissions
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl PageTableEntry :: fn physical_page (self) -> usize
 kernel/src/arch/aarch64/page_table.rs :: pub (crate) impl RetiredTablePages < Page > :: fn len (& self) -> usize
@@ -430,8 +433,8 @@ kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn enable_timer_sourc
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
 kernel/src/arch/riscv64/iommu.rs :: pub (crate) impl Backend < F > :: fn create (kind : u32 , virtual_base : usize , size : usize) -> Result < Self , Status >
 kernel/src/arch/riscv64/iommu.rs :: pub (crate) struct Backend < F >
-kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn goto_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
 kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn set_resume_target (& mut self , target : KernelResume)
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn with_resume (kernel_sp : usize , resume : KernelResume) -> Self
 kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn zero_init () -> Self
 kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) struct KernelContext
 kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) type KernelResume  = fn () -> !
@@ -493,12 +496,15 @@ kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: 
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn next_mapped (& self , start : usize , end : usize) -> Option < (usize , PageTableEntry) >
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn release_address_space_id_after_global_fence (& mut self)
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn root_physical_page (& self) -> usize
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn set_accessed (& mut self , virtual_page : usize , accessed : bool ,) -> Result < bool , PageTableError >
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn set_flags (& mut self , virtual_page : usize , permissions : PagePermissions ,) -> Result < () , PageTableError >
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn table_page_count (& self) -> usize
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn token (& self) -> AddressSpaceToken
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn translate (& self , virtual_page : usize) -> Option < PageTableEntry >
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn try_new (kind : AddressSpaceKind) -> Result < Self , PageTableError >
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn unmap (& mut self , virtual_page : usize) -> Result < Unmapped < Page > , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: unsafe fn share_root_range (& mut self , target : & mut Self , pages : core :: ops :: Range < usize > ,) -> Result < () , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTableEntry :: fn accessed (self) -> bool
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTableEntry :: fn permissions (self) -> PagePermissions
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTableEntry :: fn physical_page (self) -> usize
 kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl RetiredTablePages < Page > :: fn len (& self) -> usize
@@ -690,11 +696,49 @@ kernel/src/execution/mod.rs :: pub (crate) mod interrupt
 kernel/src/execution/mod.rs :: pub (crate) mod sync
 kernel/src/execution/mod.rs :: pub (crate) mod timer
 kernel/src/execution/mod.rs :: pub (crate) mod trap
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Context :: fn lock (& self , key : FutexKey) -> BucketGuard < '_ >
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Context :: fn lock_order (& self , key : FutexKey) -> (usize , usize)
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Context :: fn try_new (buckets : usize) -> Result < Arc < Self > , () >
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn is_woken (& self) -> bool
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn moved (& self , context : & Arc < Context > , slot : Slot)
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn new (context : & Arc < Context > , slot : Slot) -> Self
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn registered_at (& self , context : & Arc < Context > , slot : Slot) -> bool
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn registration (& self) -> Option < (Arc < Context > , Slot) >
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn wait (& self , deadline : Option < u64 >) -> WaitResult
+kernel/src/execution/sync/futex.rs :: pub (crate) impl Waiter :: fn wake (& self)
+kernel/src/execution/sync/futex.rs :: pub (crate) mod queue
+kernel/src/execution/sync/futex.rs :: pub (crate) struct Context
+kernel/src/execution/sync/futex.rs :: pub (crate) struct Waiter
+kernel/src/execution/sync/futex.rs :: pub (crate) type Bucket  = queue :: Bucket < Arc < Waiter > >
+kernel/src/execution/sync/futex.rs :: pub (crate) type BucketGuard < 'a > = IrqMutexGuard < 'a , Bucket >
+kernel/src/execution/sync/futex/queue.rs :: enum FutexKey :: Private { space : u64 , address : usize }
+kernel/src/execution/sync/futex/queue.rs :: enum FutexKey :: Shared { vmo : u64 , offset : u64 }
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) Requeue :: requeue : usize
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) Requeue :: source : FutexKey
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) Requeue :: target : FutexKey
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) Requeue :: wake : usize
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) enum FutexKey
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) fn requeue_locked < W > (source_table : & mut Bucket < W > , mut target_table : Option < & mut Bucket < W > > , plan : & Requeue , hooks : & mut impl RequeueHooks < W > ,) -> usize
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) fn wake_locked < W > (table : & mut Bucket < W > , key : FutexKey , count : usize , mut wake : impl FnMut (W) ,) -> u32
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl Bucket < W > :: const fn new () -> Self
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn enqueue (& mut self , entry : VacantEntry < Slot , W >)
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn len (& self) -> usize
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn prepare (slot : Slot , waiter : W) -> Result < VacantEntry < Slot , W > , () >
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn remove (& mut self , slot : & Slot) -> Option < W >
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) impl FutexKey :: fn bucket (self , buckets : usize) -> usize
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) struct Bucket < W >
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) struct Requeue
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) trait RequeueHooks < W >
+kernel/src/execution/sync/futex/queue.rs :: pub (crate) type Slot  = (FutexKey , u64)
+kernel/src/execution/sync/futex/queue.rs :: trait RequeueHooks :: fn moved (& mut self , waiter : & W , position : (FutexKey , u64))
+kernel/src/execution/sync/futex/queue.rs :: trait RequeueHooks :: fn next_ticket (& mut self) -> u64
+kernel/src/execution/sync/futex/queue.rs :: trait RequeueHooks :: fn wake (& mut self , waiter : W)
 kernel/src/execution/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: const fn new (value : T) -> Self
 kernel/src/execution/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn lock (& self) -> IrqMutexGuard < '_ , T >
 kernel/src/execution/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn try_lock (& self) -> Option < IrqMutexGuard < '_ , T > >
 kernel/src/execution/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn disable () -> Self
 kernel/src/execution/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn into_transfer (mut self) -> LocalIrqTransfer
+kernel/src/execution/sync/mod.rs :: pub (crate) mod futex
 kernel/src/execution/sync/mod.rs :: pub (crate) struct IrqMutex < T : ? Sized >
 kernel/src/execution/sync/mod.rs :: pub (crate) struct IrqMutexGuard < 'a , T : ? Sized >
 kernel/src/execution/sync/mod.rs :: pub (crate) struct LocalIrqGuard
@@ -702,7 +746,7 @@ kernel/src/execution/sync/mod.rs :: pub (crate) struct LocalIrqTransfer
 kernel/src/execution/sync/mod.rs :: pub (crate) use spare :: { SpareStorage , lock_with_spare }
 kernel/src/execution/sync/mod.rs :: pub (crate) use task_event :: TaskEvent
 kernel/src/execution/sync/mod.rs :: pub (crate) use task_mutex :: { TaskMutex , TaskMutexGuard , TaskMutexWaitPreparation }
-kernel/src/execution/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , WaitResult , install_wait_target_factory }
+kernel/src/execution/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , WaitResult , install_wait_target_factory , yield_current_task , }
 kernel/src/execution/sync/mod.rs :: pub (crate) use wait_completion :: WaitCompletion
 kernel/src/execution/sync/mod.rs :: pub (crate) use wait_queue :: WaitQueue
 kernel/src/execution/sync/spare.rs :: pub (crate) fn lock_with_spare < 'a , S , T : SpareStorage > (mutex : & 'a Mutex < S > , required : impl Fn (& S) -> usize , storage : impl Fn (& mut S) -> & mut T ,) -> Result < MutexGuard < 'a , S > , () >
@@ -745,6 +789,7 @@ kernel/src/execution/sync/task_wait.rs :: enum WaitResult :: # [doc = " 等待�
 kernel/src/execution/sync/task_wait.rs :: enum WaitResult :: # [doc = " 等待被打断（线程终止等）。"] Interrupted
 kernel/src/execution/sync/task_wait.rs :: pub (crate) enum WaitResult
 kernel/src/execution/sync/task_wait.rs :: pub (crate) fn install_wait_target_factory (factory : WaitTargetFactory)
+kernel/src/execution/sync/task_wait.rs :: pub (crate) fn yield_current_task ()
 kernel/src/execution/sync/task_wait.rs :: pub (crate) impl TaskWaitKey :: fn deadline (self) -> Option < u64 >
 kernel/src/execution/sync/task_wait.rs :: pub (crate) impl TaskWaitKey :: fn interruptible (self) -> bool
 kernel/src/execution/sync/task_wait.rs :: pub (crate) impl TaskWaitKey :: fn signal_pending (self , target : & dyn TaskWaitTarget) -> bool
@@ -760,6 +805,7 @@ kernel/src/execution/sync/task_wait.rs :: trait TaskWaitTarget :: fn interrupted
 kernel/src/execution/sync/task_wait.rs :: trait TaskWaitTarget :: fn sleep (self : Arc < Self > , completion : & WaitCompletion , key : TaskWaitKey) -> WaitResult
 kernel/src/execution/sync/task_wait.rs :: trait TaskWaitTarget :: fn wake (self : Arc < Self > , key : TaskWaitKey)
 kernel/src/execution/sync/task_wait.rs :: trait TaskWaitTarget :: fn wake_on_current_cpu (self : Arc < Self > , key : TaskWaitKey)
+kernel/src/execution/sync/task_wait.rs :: trait TaskWaitTarget :: fn yield_now (self : Arc < Self >)
 kernel/src/execution/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: const fn new () -> Self
 kernel/src/execution/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn begin_arming (& self) -> bool
 kernel/src/execution/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn complete (& self) -> bool
@@ -863,15 +909,17 @@ kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc_contiguous (pages :
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc_copy (source : & [u8]) -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn enable_cpu_caches (cpus : usize)
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn init (start_addr : PhysicalAddress , end_addr : PhysicalAddress , reserved : [Option < core :: ops :: Range < PhysicalAddress > > ; BOOT_RESERVED_CAPACITY] ,)
+kernel/src/memory/frame_allocator.rs :: pub (crate) fn initialize_pressure_notifications (observe : fn ())
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn release_boot_reserved ()
+kernel/src/memory/frame_allocator.rs :: pub (crate) fn request_pressure_notification ()
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn statistics () -> FrameStatistics
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn under_pressure () -> bool
-kernel/src/memory/frame_allocator.rs :: pub (crate) impl FrameTracker :: fn bytes (& self) -> & [u8]
+kernel/src/memory/frame_allocator.rs :: pub (crate) fn wait_for_pressure (deadline : Option < u64 >) -> crate :: execution :: sync :: WaitResult
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl FrameTracker :: fn bytes_mut (& mut self) -> & mut [u8]
+kernel/src/memory/frame_allocator.rs :: pub (crate) impl FrameTracker :: unsafe fn from_raw (ppn : PhysicalPageNumber , pages : usize) -> Self
 kernel/src/memory/frame_allocator.rs :: pub (crate) struct FrameStatistics
 kernel/src/memory/frame_allocator.rs :: pub (crate) struct FrameTracker
 kernel/src/memory/frame_allocator.rs :: pub (in crate :: memory) fn alloc_heap_extent (pages : usize) -> Option < FrameTracker >
-kernel/src/memory/frame_allocator.rs :: pub (in crate :: memory) impl FrameTracker :: unsafe fn from_raw (ppn : PhysicalPageNumber , pages : usize) -> Self
 kernel/src/memory/frame_metadata_layout.rs :: pub (crate) FrameMetadataLayout :: allocatable_pages : usize
 kernel/src/memory/frame_metadata_layout.rs :: pub (crate) FrameMetadataLayout :: metadata_pages : usize
 kernel/src/memory/frame_metadata_layout.rs :: pub (crate) fn frame_metadata_layout (total_pages : usize , page_size : usize ,) -> Option < FrameMetadataLayout >
@@ -915,6 +963,8 @@ kernel/src/object/channel.rs :: pub (crate) impl Channel :: fn write (& self , m
 kernel/src/object/channel.rs :: pub (crate) struct Channel
 kernel/src/object/channel.rs :: pub (crate) struct Message
 kernel/src/object/channel.rs :: pub (crate) struct ReadError
+kernel/src/object/event.rs :: pub (crate) fn memory_pressure_event () -> Result < alloc :: sync :: Arc < Event > , () >
+kernel/src/object/event.rs :: pub (crate) fn notify_memory_pressure ()
 kernel/src/object/event.rs :: pub (crate) impl Event :: fn new () -> Self
 kernel/src/object/event.rs :: pub (crate) struct Event
 kernel/src/object/exception.rs :: enum ExceptionResolution :: # [doc = " 交给下一级处理者。"] TryNext
@@ -965,7 +1015,7 @@ kernel/src/object/mod.rs :: pub (crate) impl Object :: fn kernel_object (& self)
 kernel/src/object/mod.rs :: pub (crate) trait KernelObject
 kernel/src/object/mod.rs :: pub (crate) use channel :: { Channel , Message , ReadError }
 kernel/src/object/mod.rs :: pub (crate) use crate :: id :: next_koid
-kernel/src/object/mod.rs :: pub (crate) use event :: Event
+kernel/src/object/mod.rs :: pub (crate) use event :: { Event , memory_pressure_event , notify_memory_pressure }
 kernel/src/object/mod.rs :: pub (crate) use exception :: { Exception , ExceptionResolution }
 kernel/src/object/mod.rs :: pub (crate) use handle_table :: { HandleEntry , HandleTable }
 kernel/src/object/mod.rs :: pub (crate) use memory :: { Pager , vm_status }
@@ -1279,28 +1329,6 @@ kernel/src/serial.rs :: pub (crate) fn read (output : & mut [u8] , deadline_ns :
 kernel/src/syscall/futex.rs :: pub (super) fn requeue (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/futex.rs :: pub (super) fn wait (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/futex.rs :: pub (super) fn wake (call : & Call < '_ >) -> Result < () , Status >
-kernel/src/syscall/futex/queue.rs :: enum FutexKey :: Private { space : u64 , address : usize }
-kernel/src/syscall/futex/queue.rs :: enum FutexKey :: Shared { vmo : u64 , offset : u64 }
-kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: requeue : usize
-kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: source : FutexKey
-kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: target : FutexKey
-kernel/src/syscall/futex/queue.rs :: pub (crate) Requeue :: wake : usize
-kernel/src/syscall/futex/queue.rs :: pub (crate) enum FutexKey
-kernel/src/syscall/futex/queue.rs :: pub (crate) fn requeue_locked < W > (source_table : & mut Bucket < W > , mut target_table : Option < & mut Bucket < W > > , plan : & Requeue , hooks : & mut impl RequeueHooks < W > ,) -> usize
-kernel/src/syscall/futex/queue.rs :: pub (crate) fn wake_locked < W > (table : & mut Bucket < W > , key : FutexKey , count : usize , mut wake : impl FnMut (W) ,) -> u32
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: const fn new () -> Self
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn enqueue (& mut self , entry : VacantEntry < Slot , W >)
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn len (& self) -> usize
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn prepare (slot : Slot , waiter : W) -> Result < VacantEntry < Slot , W > , () >
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl Bucket < W > :: fn remove (& mut self , slot : & Slot) -> Option < W >
-kernel/src/syscall/futex/queue.rs :: pub (crate) impl FutexKey :: fn bucket (self , buckets : usize) -> usize
-kernel/src/syscall/futex/queue.rs :: pub (crate) struct Bucket < W >
-kernel/src/syscall/futex/queue.rs :: pub (crate) struct Requeue
-kernel/src/syscall/futex/queue.rs :: pub (crate) trait RequeueHooks < W >
-kernel/src/syscall/futex/queue.rs :: pub (crate) type Slot  = (FutexKey , u64)
-kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn moved (& mut self , waiter : & W , position : (FutexKey , u64))
-kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn next_ticket (& mut self) -> u64
-kernel/src/syscall/futex/queue.rs :: trait RequeueHooks :: fn wake (& mut self , waiter : W)
 kernel/src/syscall/handles.rs :: pub (super) fn close (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn duplicate (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn get_child (call : & Call < '_ >) -> Result < () , Status >
@@ -1391,7 +1419,6 @@ kernel/src/syscall/system.rs :: pub (super) fn get_event (call : & Call < '_ >) 
 kernel/src/syscall/system.rs :: pub (super) fn get_info (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/system.rs :: pub (super) fn nanosleep (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/system.rs :: pub (super) fn power (call : & Call < '_ >) -> Result < () , Status >
-kernel/src/syscall/system.rs :: pub (super) fn relieve_memory_pressure ()
 kernel/src/syscall/system.rs :: pub (super) fn serial_read (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/system.rs :: pub (super) fn serial_write (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn cpu_current (call : & Call < '_ >) -> Result < () , Status >
@@ -1408,6 +1435,7 @@ kernel/src/syscall/task.rs :: pub (super) fn thread_set_affinity (call : & Call 
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_priority (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_start (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/thread/context_switch.rs :: pub (crate) fn yield_current ()
+kernel/src/thread/context_switch.rs :: pub (crate) impl Thread :: fn create_kernel (entry : fn ()) -> Result < Arc < Self > , () >
 kernel/src/thread/context_switch.rs :: pub (super) fn complete_pending_handoff ()
 kernel/src/thread/context_switch.rs :: pub (super) fn prepare_block (thread : & Arc < Thread > , membership : WaitMembership) -> PreparedBlock
 kernel/src/thread/context_switch.rs :: pub (super) fn switch_from_idle (thread : Arc < Thread >)
@@ -1646,18 +1674,16 @@ kernel/src/vm/address_space.rs :: pub (crate) MapOptions :: permissions : PagePe
 kernel/src/vm/address_space.rs :: pub (crate) MapOptions :: placement : Placement
 kernel/src/vm/address_space.rs :: pub (crate) VmarInfo :: base : usize
 kernel/src/vm/address_space.rs :: pub (crate) VmarInfo :: size : usize
-kernel/src/vm/address_space.rs :: pub (crate) const SHARED_START : usize = (USER_END / 2) & ! ((1 << 30) - 1)
+kernel/src/vm/address_space.rs :: pub (crate) const SHARED_START : usize = (USER_END / 2) & ! (super :: page_table :: PageTable :: SUBTREE_SIZE - 1)
 kernel/src/vm/address_space.rs :: pub (crate) enum Placement
 kernel/src/vm/address_space.rs :: pub (crate) enum ZapMode
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn access_debug (self : & Arc < Self > , address : usize , buffer : & mut [u8] , write : bool ,) -> usize
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn allocate_context (& self) -> Result < (usize , * mut u8) , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (self : & Arc < Self > , address : usize , output : & mut [u8] ,) -> Result < () , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (self : & Arc < Self > , address : usize , input : & [u8] ,) -> Result < () , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create () -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_member (shared : & Arc < Self >) -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_shared () -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
+kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn futex_context (self : & Arc < Self > , address : usize ,) -> Result < Arc < crate :: execution :: sync :: futex :: Context > , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn futex_owner (& self , address : usize) -> u64
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn read_resident_word (& self , address : usize) -> Result < Option < u32 > , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn release_context (& self , address : usize)
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn resolve_object (self : & Arc < Self > , address : usize) -> Result < (u64 , u64) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn allocate (& self , placement : Placement , size : usize , permissions : PagePermissions ,) -> Result < Arc < Vmar > , VmError >
@@ -1678,14 +1704,19 @@ kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn info (
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn mapping_statistics (& self) -> Result < Vec < native_abi :: VmarMappingStats > , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn memory_stats (& self) -> Result < native_abi :: TaskStats , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn resident_ranges (& self) -> Result < Vec < native_abi :: VmarResidentRange > , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn harvest_accessed (& self , samples : & mut [crate :: vm :: vmo :: AccessSample] , origin : usize , visible : core :: ops :: Range < usize > ,) -> Result < () , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn object_page (& self , page : usize) -> usize
 kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn resident_pages (& self) -> Result < Vec < (usize , usize) > , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (in crate :: vm) impl Mapping :: fn vmo (& self) -> & Arc < Vmo >
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (self : & Arc < Self > , address : usize , output : & mut [u8] ,) -> Result < () , VmError >
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (self : & Arc < Self > , address : usize , input : & [u8] ,) -> Result < () , VmError >
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn fault_private (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn has_private_view (& self) -> bool
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn is_private_address (& self , address : usize) -> bool
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn is_shared_address (& self , address : usize) -> bool
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn read_resident_word (& self , address : usize) -> Result < Option < u32 > , VmError >
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn token (& self , view : ExecutionView) -> AddressSpaceToken
+kernel/src/vm/address_space/view.rs :: pub (super) impl SpaceInner :: fn mark_accessed (& mut self , vpn : VirtualPageNumber , entry : crate :: vm :: page_table :: PageTableEntry ,) -> Result < () , VmError >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn create () -> Result < Self , () >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn map (& mut self , first : usize , pages : & [PhysicalPageNumber] , writable : bool ,) -> Result < () , Retired >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn root (& self) -> PhysicalPageNumber
@@ -1753,6 +1784,7 @@ kernel/src/vm/mod.rs :: pub (crate) use fault :: FaultAccess
 kernel/src/vm/mod.rs :: pub (crate) use kernel_space :: { KERNEL_SPACE , initialize as initialize_kernel_space }
 kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: KernelStack
 kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: enable_probe as enable_kernel_stack_probe
+kernel/src/vm/mod.rs :: pub (crate) use vmo :: background_reclaim
 kernel/src/vm/mod.rs :: pub (crate) use vmo :: initialize_zero_page
 kernel/src/vm/mod.rs :: pub (crate) use vmo :: { CachePolicy , ChildKind , FaultSource , PagerBinding , PagerRequest , PagerSink , PinnedRange , RangeOp , Vmo , VmoOptions , evicted_pages , physical_page_statistics , relieve_memory_pressure , }
 kernel/src/vm/page_table.rs :: pub (crate) fn table_pages () -> usize
@@ -1768,12 +1800,16 @@ kernel/src/vm/page_table.rs :: pub (crate) impl PageTableEntry :: fn ppn (self) 
 kernel/src/vm/page_table.rs :: pub (crate) struct PageTable
 kernel/src/vm/page_table.rs :: pub (crate) struct PageTableEntry
 kernel/src/vm/page_table.rs :: pub (crate) use crate :: arch :: mmu :: { PagePermissions , PageTableError }
+kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn harvest_accessed (& mut self , vpn : VirtualPageNumber , expected : PhysicalPageNumber , commit : & mut TranslationCommit ,) -> Result < bool , PageTableError >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn map (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , permissions : PagePermissions , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn map_contiguous_range (& mut self , virtual_start : VirtualPageNumber , physical_start : PhysicalPageNumber , page_count : usize , permissions : PagePermissions , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
+kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn mark_accessed (& mut self , vpn : VirtualPageNumber , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn next_mapped (& self , first : usize , end : usize ,) -> Option < (usize , PageTableEntry) >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , permissions : PagePermissions , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) impl PageTable :: fn unmap (& mut self , vpn : VirtualPageNumber , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/vm/page_table.rs :: pub (in crate :: vm) struct TableFrame
+kernel/src/vm/page_table.rs :: pub (super) impl PageTable :: unsafe fn share_root_range (& mut self , target : & mut Self , range : core :: ops :: Range < usize > ,) -> Result < () , PageTableError >
+kernel/src/vm/page_table.rs :: pub (super) impl PageTableEntry :: fn accessed (self) -> bool
 kernel/src/vm/translation.rs :: enum FenceScope :: All
 kernel/src/vm/translation.rs :: enum FenceScope :: None
 kernel/src/vm/translation.rs :: enum FenceScope :: Range { start : usize , size : usize }
@@ -1842,13 +1878,15 @@ kernel/src/vm/vmo.rs :: pub (crate) struct VmoOptions
 kernel/src/vm/vmo.rs :: pub (crate) trait PagerSink
 kernel/src/vm/vmo.rs :: pub (crate) use fault_around :: FAULT_AROUND_PAGES
 kernel/src/vm/vmo.rs :: pub (crate) use pin :: PinnedRange
+kernel/src/vm/vmo.rs :: pub (crate) use reclaim :: background_reclaim
 kernel/src/vm/vmo.rs :: pub (crate) use reclaim :: { evicted_pages , relieve_memory_pressure }
 kernel/src/vm/vmo.rs :: pub (crate) use residency :: physical_page_statistics
 kernel/src/vm/vmo.rs :: pub (crate) use zero_page :: initialize as initialize_zero_page
 kernel/src/vm/vmo.rs :: pub (super) enum Resolve
-kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn register_mapping (& self , mapping : & Arc < Mapping >) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (super) impl Vmo :: fn resolve_locked (self : & Arc < Self > , index : usize , write : bool ,) -> Result < ResolvedPage , Resolve >
+kernel/src/vm/vmo.rs :: pub (super) use reclaim :: AccessSample
 kernel/src/vm/vmo.rs :: trait PagerSink :: fn request (& self , request : PagerRequest) -> Result < () , () >
+kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn backing_identity (self : & Arc < Self > , mut offset : u64 ,) -> Result < (u64 , u64) , VmError >
 kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn mapping_statistics (self : & Arc < Self > , targets : & [Arc < Mapping >] , output : & mut Vec < native_abi :: VmarMappingStats > ,) -> Result < () , VmError >
 kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn resident_ranges (self : & Arc < Self > , mapping : & Mapping , output : & mut Vec < native_abi :: VmarResidentRange > ,) -> Result < () , VmError >
 kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn tree_identity (& self) -> usize
@@ -1861,24 +1899,28 @@ kernel/src/vm/vmo/creation.rs :: pub (super) impl Vmo :: fn new_in (tree : Arc <
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) const FAULT_AROUND_PAGES : usize = 16
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) impl Vmo :: fn with_resolved_around < R > (self : & Arc < Self > , index : usize , write : bool , around : Option < core :: ops :: Range < usize > > , mut with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > , with_around : impl FnOnce (& mut R , & [Option < (usize , ResolvedPage) >]) ,) -> Result < R , VmError >
 kernel/src/vm/vmo/fault_around.rs :: pub (super) impl Vmo :: fn collect_resident_file_pages_locked (self : & Arc < Self > , range : core :: ops :: Range < usize > , skip : usize ,) -> [Option < (usize , ResolvedPage) > ; FAULT_AROUND_PAGES]
+kernel/src/vm/vmo/mapping.rs :: pub (in crate :: vm) impl Vmo :: fn register_mapping (& self , mapping : & Arc < Mapping >) -> Result < () , VmError >
+kernel/src/vm/vmo/mapping.rs :: pub (super) impl Vmo :: fn harvest_accessed (& self , samples : & mut [AccessSample]) -> Result < () , VmError >
+kernel/src/vm/vmo/mapping.rs :: pub (super) impl Vmo :: fn zap (& self , pages : Range < usize > , mode : ZapMode) -> Result < () , VmError >
 kernel/src/vm/vmo/page_list.rs :: pub (super) const CHUNK_PAGES : usize = 16
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: const fn new () -> Self
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn ceiling (& self , index : & usize) -> Option < (usize , & Page) >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn contains_key (& self , index : & usize) -> bool
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn first_key_value (& self) -> Option < (usize , & Page) >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn for_each_mut (& mut self , mut visit : impl FnMut (usize , & mut Page))
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn get (& self , index : & usize) -> Option < & Page >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn get_mut (& mut self , index : & usize) -> Option < & mut Page >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn insert_reserved (& mut self , index : usize , page : Page) -> Option < Page >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn is_empty (& self) -> bool
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn iter_from (& self , start : & usize) -> impl Iterator < Item = (usize , & Page) >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn len (& self) -> usize
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn remove (& mut self , index : & usize) -> Option < Page >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn reserve_for_shifted (& mut self , source : & PageList , offset : usize , visible : usize ,) -> Result < () , () >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn reserve_range (& mut self , first : usize , count : usize) -> Result < () , () >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn try_insert (& mut self , index : usize , page : Page) -> Result < Option < Page > , () >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList :: fn values (& self) -> impl Iterator < Item = & Page >
-kernel/src/vm/vmo/page_list.rs :: pub (super) struct PageList
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: const fn new () -> Self
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn ceiling (& self , index : & usize) -> Option < (usize , & T) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn contains_key (& self , index : & usize) -> bool
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn discard_empty_chunks (& mut self)
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn first_key_value (& self) -> Option < (usize , & T) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn for_each_mut (& mut self , mut visit : impl FnMut (usize , & mut T))
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn get (& self , index : & usize) -> Option < & T >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn get_mut (& mut self , index : & usize) -> Option < & mut T >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn insert_reserved (& mut self , index : usize , page : T) -> Option < T >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn is_empty (& self) -> bool
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn iter_from (& self , start : & usize) -> impl Iterator < Item = (usize , & T) >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn len (& self) -> usize
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn remove (& mut self , index : & usize) -> Option < T >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn reserve_for_shifted (& mut self , source : & PageList < T > , offset : usize , visible : usize ,) -> Result < () , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn reserve_range (& mut self , first : usize , count : usize) -> Result < () , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn try_insert (& mut self , index : usize , page : T) -> Result < Option < T > , () >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn values (& self) -> impl Iterator < Item = & T >
+kernel/src/vm/vmo/page_list.rs :: pub (super) struct PageList < T = Page >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn begin_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn detach_pager (& self) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn end_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
@@ -1893,11 +1935,20 @@ kernel/src/vm/vmo/pager.rs :: pub (super) struct PageRequestCompletion
 kernel/src/vm/vmo/pin.rs :: pub (crate) impl PinnedRange :: fn pages (& self) -> & [PhysicalPageNumber]
 kernel/src/vm/vmo/pin.rs :: pub (crate) impl Vmo :: fn pin (self : & Arc < Self > , offset : u64 , length : u64) -> Result < PinnedRange , VmError >
 kernel/src/vm/vmo/pin.rs :: pub (crate) struct PinnedRange
+kernel/src/vm/vmo/reclaim.rs :: pub (crate) fn background_reclaim ()
 kernel/src/vm/vmo/reclaim.rs :: pub (crate) fn evicted_pages () -> usize
 kernel/src/vm/vmo/reclaim.rs :: pub (crate) fn relieve_memory_pressure () -> bool
+kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: index : usize
+kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: physical_page : usize
+kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: referenced : bool
+kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) struct AccessSample
+kernel/src/vm/vmo/reclaim.rs :: pub (super) fn current_generation () -> u8
 kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn evict_clean (& self , budget : usize) -> usize
 kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn register_reclaimable (self : & Arc < Self >) -> Result < () , VmError >
 kernel/src/vm/vmo/release.rs :: pub (super) impl Vmo :: fn collapse_hidden_parents (& self)
+kernel/src/vm/vmo/residency.rs :: enum Cleanliness :: # [doc = " 内容与 pager 的存储一致，可以淘汰。"] Clean
+kernel/src/vm/vmo/residency.rs :: enum Cleanliness :: # [doc = " 回写已开始（映射已写保护）但存储尚未确认；之后的写入回到 `Dirty`，不能淘汰。"] AwaitingClean
+kernel/src/vm/vmo/residency.rs :: enum Cleanliness :: # [doc = " 补入后被写过；映射可写。"] Dirty
 kernel/src/vm/vmo/residency.rs :: enum PageContent :: Anonymous
 kernel/src/vm/vmo/residency.rs :: enum PageContent :: AnonymousPager
 kernel/src/vm/vmo/residency.rs :: enum PageContent :: Bootfs
@@ -1913,15 +1964,24 @@ kernel/src/vm/vmo/residency.rs :: pub (crate) fn physical_page_statistics () -> 
 kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn committed_bytes (& self) -> Result < u64 , VmError >
 kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn size (& self) -> u64
 kernel/src/vm/vmo/residency.rs :: pub (crate) struct PhysicalPageStatistics
+kernel/src/vm/vmo/residency.rs :: pub (super) enum Cleanliness
 kernel/src/vm/vmo/residency.rs :: pub (super) enum PageContent
 kernel/src/vm/vmo/residency.rs :: pub (super) fn add_contiguous (pages : usize)
 kernel/src/vm/vmo/residency.rs :: pub (super) fn remove_contiguous (pages : usize)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn bytes (& self) -> & [u8]
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn cleanliness (& self) -> Cleanliness
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn content (& self) -> PageContent
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn is_reclaimable (& self) -> bool
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn new (frame : FrameTracker , content : PageContent) -> Self
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn note_access (& mut self)
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn pins (& self) -> u32
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn ppn (& self) -> PhysicalPageNumber
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn sampled_age (& mut self , generation : u8 , referenced : bool) -> u8
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_cleanliness (& mut self , cleanliness : Cleanliness)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_pins (& mut self , pins : u32)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn supply_to_pager (& mut self , content : PageContent)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Vmo :: fn page_content (& self) -> PageContent
+kernel/src/vm/vmo/residency.rs :: pub (super) struct Page
 kernel/src/vm/vmo/zero_page.rs :: pub (crate) fn initialize ()
 kernel/src/vm/vmo/zero_page.rs :: pub (super) impl Vmo :: fn retire_zero_translation (self : & Arc < Self > , state : spin :: MutexGuard < '_ , State > , index : usize ,) -> Result < () , Resolve >
 kernel/src/vm/vmo/zero_page.rs :: pub (super) impl Vmo :: fn shared_zero_locked (& self , state : & mut State , write : bool ,) -> Option < ResolvedPage >

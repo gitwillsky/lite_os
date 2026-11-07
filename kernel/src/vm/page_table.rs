@@ -42,6 +42,10 @@ impl TablePage for TableFrame {
 pub(crate) struct PageTableEntry(ArchitecturePageTableEntry);
 
 impl PageTableEntry {
+    pub(super) fn accessed(self) -> bool {
+        self.0.accessed()
+    }
+
     pub(crate) fn permissions(self) -> PagePermissions {
         self.0.permissions()
     }
@@ -188,6 +192,39 @@ impl PageTable {
             }
         }
         Ok(())
+    }
+
+    /// 软件 access fault 恢复访问位；权限与物理身份保持不变。
+    pub(in crate::vm) fn mark_accessed(
+        &mut self,
+        vpn: VirtualPageNumber,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), PageTableError> {
+        if !self.0.set_accessed(vpn.as_usize(), true)? {
+            commit.record(vpn.as_usize(), TranslationTransition::Publish);
+        }
+        Ok(())
+    }
+
+    /// 采集并清除期望物理页的访问位；不把 COW 遮盖页或未映射页算作该页的访问。
+    ///
+    /// 返回是否观察到访问。clear 后的全 CPU/ASID fence 使各别名的下一次访问重新可观察。
+    pub(in crate::vm) fn harvest_accessed(
+        &mut self,
+        vpn: VirtualPageNumber,
+        expected: PhysicalPageNumber,
+        commit: &mut TranslationCommit,
+    ) -> Result<bool, PageTableError> {
+        if self.translate(vpn).is_none_or(|entry| {
+            entry.ppn() != expected || !entry.permissions().contains(PagePermissions::USER)
+        }) {
+            return Ok(false);
+        }
+        let accessed = self.0.set_accessed(vpn.as_usize(), false)?;
+        if accessed {
+            commit.record(vpn.as_usize(), TranslationTransition::Revoke);
+        }
+        Ok(accessed)
     }
 
     /// 查找范围中首个已安装的页，空页表分支整体跳过；不分配或复制页表状态。

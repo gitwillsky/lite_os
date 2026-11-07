@@ -110,17 +110,30 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
 - dirty/writeback 与写保护遵循同一树/映射契约，回写开始后的新写入重新置脏。页的回写状态为 Clean → Dirty（写入）
   → AwaitingClean（`OP_WRITEBACK_BEGIN`）→ Clean（`OP_WRITEBACK_END`，存储确认之后）；直写后同步进缓存的区间一次
   完成两步。只有 Clean 且未固定的页可被淘汰；缺失 AwaitingClean 时回写读取前被淘汰的页会从存储补回旧内容，修改丢失。
-- 淘汰（`vm::vmo::reclaim`）只在用户缺页的异常入口执行：此处不持任何内核锁，树锁只 `try_lock`，被占用的树跳过。
-  先 `zap` 本对象、COW 子孙与 slice 子对象的翻译并完成 fence，再释放页框；slice 因此登记在父对象的 `children` 中。
-  每个 PageSource 必须为任何缺页请求补页或 `OP_FAIL`，不能以“内容已存在”跳过：tmpfs/memfd 对已计费的页重新补零页
-  （内存文件从不回写，可淘汰的只有从未写过的零页）。
-  在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
-  只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
-  只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
+- 淘汰（`vm::vmo::reclaim`）由后台内核线程推进，用户缺页入口保留兜底；只能从无内核锁的 task context 进入。
+  仅 try-lock VMO 树；先采集本对象、COW 子孙及 slice 别名的访问位，匹配物理身份，不能把 COW 遮盖页误计到祖先。
+  `vmo::mapping` 的登记、撤销和采集共用继承窗口投影；撤销与采集均用显式工作栈，别名深度不消耗内核调用栈。
+  truncate 的根撤销范围不能按更新后的 size 裁剪；子孙按各自 COW/slice 窗口求交。任何采集失败保留页框，已清除的位仍须 fence。
+  映射 Vec 在树锁保活的事务内移出、准备容量后归还，不持 state spin guard 分配；回收登记用可睡眠锁，放锁后才取树锁。
+  AArch64/RISC-V 用原子 PTE RMW 保留其他硬件状态；clear 后全 CPU/ASID fence，软件 access fault 恢复访问位。
+  `address_space::view` 的内核用户地址复制/不缺页 futex 读取也标记 AF，避免 direct-map 访问绕过观测；
+  已置位时不做原子写，恢复才本地刷新，无远端等待或分配，统计路径不标记。
+  内核直接读取也标记页槽的当前代，fault-around 的相邻预装不算访问；批量候选按代龄优先，观察到访问的页获第二次机会。
+  当前为有界批量采样和代龄候选筛选，完整 oldest-first 分代索引尚未落地，阶段 8 不因此标为完成。
+- 后台线程与用户线程使用同一调度/阻塞/退休机制，以最低公平权重运行，通过 execution task seam 在预算后 yield。
+  不在 VM 引入 Thread 依赖或私有 syscall。分配器低/高水位变化只发布 boot CPU deferred 边沿，不持 allocator 锁唤醒或回收。
+  正常时等待压力事件，无周期唤醒；压力下分批推进，暂时没有进展时等待 10 ms 重试，让写回和持锁者运行。
+  单个 VMO 每次检查至多给定页预算（含脏/固定页），未完成处保留扫描游标，避免文件变大导致单次兜底无限扫描。
+- 先 zap 本对象、COW 子孙与 slice 的翻译并完成 fence，再释放页框；Dirty/AwaitingClean/pin 页从不淘汰，匿名内存不换出。
+  每个 PageSource 必须为缺页补页或 OP_FAIL，不能以“内容已存在”跳过：内存文件只允许重新补入未写过的零页。
+  `SYSTEM_GET_EVENT`（system MEMORY 授权）只可等待；原生事件由 `object::event` 拥有，水位只由 frame allocator 拥有。
+  首次事件带水位快照，发表后请求一次校准；后续只在 boot CPU deferred observer 投影 MEMORY_PRESSURE/MEMORY_NORMAL，
+  不再维护 syscall 层水位镜像，也不依赖“下一次用户缺页”纠正后台回收后的状态。
+  Benchmark 决策：复用工作集大于内存的回收质量诊断，比较重复缺页、pager 请求和前台延迟；统一验收前不声称性能收益。
 - VMO 的已提交页和在途补页请求分别使用 `PageList<T>`：16 槽一块的稀疏数组，块由有序表索引。
   每个 `Option<Page>` 与请求 `Option<Arc<PageRequestCompletion>>` 槽都是 8 字节，不再每页分配 AVL 节点；
   稠密索引成本为 8 字节槽加每 16 槽一份块头/树节点（约 11–12 字节/页），稀疏开销限于实际触及的块。
-  `Page` 非零 u64 唯一保有单页：44 位页号、12 位 pin 计数、2 位回写状态、2 位内容归属，3 位保留代号和 1 位 owner 标记。
+  `Page` 非零 u64 唯一保有单页：44 位页号、12 位 pin 计数、2 位回写状态、2 位内容归属，3 位环形访问代号和 1 位 owner 标记。
   不复制该 owner；创建消费单页 FrameTracker，最终 Drop 恢复一次 FrameTracker 归还物理页，移动/COW 折叠不重复计费。
   `FrameTracker::from_raw` 除原有 heap extent 退休外，仅供此最终析构恢复；纯观测不重建 frame owner。
   同页最多同时固定 4095 次，溢出沿既有 pin 不变量 fail-stop，不允许溢出覆盖相邻状态位。页号容量覆盖两个后端支持的物理范围。

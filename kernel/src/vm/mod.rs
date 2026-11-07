@@ -23,14 +23,17 @@ pub(crate) mod page_table;
 pub(crate) mod translation;
 mod vmo;
 
+#[cfg(not(test))]
+pub(crate) use vmo::background_reclaim;
+
 pub(crate) use address_space::{AddressSpace, MapOptions, Placement, Vmar};
 pub(crate) use device_space::DeviceAddressSpace;
 pub(crate) use execution_views::ExecutionView;
 pub(crate) use fault::FaultAccess;
 pub(crate) use kernel_space::{KERNEL_SPACE, initialize as initialize_kernel_space};
+pub(crate) use kernel_stack::KernelStack;
 pub(crate) use kernel_stack::enable_probe as enable_kernel_stack_probe;
 pub(crate) use vmo::initialize_zero_page;
-pub(crate) use kernel_stack::KernelStack;
 pub(crate) use vmo::{
     CachePolicy, ChildKind, FaultSource, PagerBinding, PagerRequest, PagerSink, PinnedRange,
     RangeOp, Vmo, VmoOptions, evicted_pages, physical_page_statistics, relieve_memory_pressure,

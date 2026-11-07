@@ -1,7 +1,53 @@
-//! 原生映射观测：区分已有 backing 与实际用户翻译，不触发 fault 或 pager。
+//! 原生映射观测与访问位采集：区分 backing 和用户翻译，不在观测期间触发 fault 或 pager。
 use super::*;
 
 impl Mapping {
+    /// 持 VMO 树锁采集这一逻辑映射的访问位；origin 将对象页号投影到样本 owner。
+    pub(in crate::vm) fn harvest_accessed(
+        &self,
+        samples: &mut [crate::vm::vmo::AccessSample],
+        origin: usize,
+        visible: core::ops::Range<usize>,
+    ) -> Result<(), VmError> {
+        let Some(owner) = self.space.upgrade() else {
+            return Ok(());
+        };
+        let mut commit = super::TranslationCommit::new();
+        let result = (|| {
+            let mut inner = owner.lock()?;
+            if !self.live.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            for sample in samples {
+                if !visible.contains(&sample.index) {
+                    continue;
+                }
+                let Some(index) = sample.index.checked_sub(origin) else {
+                    continue;
+                };
+                if index < self.vmo_page || index - self.vmo_page >= self.size / PAGE_SIZE {
+                    continue;
+                }
+                let address = self.base + (index - self.vmo_page) * PAGE_SIZE;
+                sample.referenced |= inner
+                    .views
+                    .normal
+                    .harvest_accessed(
+                        VirtualAddress::from(address).floor(),
+                        crate::memory::PhysicalPageNumber::from(sample.physical_page),
+                        &mut commit,
+                    )
+                    .map_err(|_| VmError::BadState)?;
+            }
+            Ok(())
+        })();
+        // 即使后续遍历失败，已清除的 AF 仍须完成 fence；否则 CPU 会继续使用不可采样的缓存翻译。
+        commit
+            .synchronize()
+            .unwrap_or_else(|error| panic!("accessed harvest fence failed: {error}"));
+        result
+    }
+
     pub(in crate::vm) fn vmo(&self) -> &Arc<Vmo> {
         &self.vmo
     }

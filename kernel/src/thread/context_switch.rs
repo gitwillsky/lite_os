@@ -151,3 +151,47 @@ pub(super) fn complete_pending_handoff() {
     drop(thread);
     drop(irq);
 }
+
+impl Thread {
+    /// 创建尚未发表的内核工作线程；函数返回后走统一 exit/退休路径。
+    ///
+    /// # Parameters
+    /// `entry` 是无捕获、可阻塞的工作函数；须按预算主动让出处理器，不借用启动栈数据。
+    /// # Errors
+    /// 栈、调度容量或 Arc 分配失败返回 `Err(())`，不留下已发表执行体。
+    pub(crate) fn create_kernel(entry: fn()) -> Result<Arc<Self>, ()> {
+        let kernel_stack = crate::vm::KernelStack::try_new()?;
+        let top = kernel_stack.get_top();
+        let scheduler_slot = processor::ThreadSlot::try_new()?;
+        Arc::try_new(Self {
+            id: crate::id::next_koid(),
+            body: super::ThreadBody::Kernel(entry),
+            _kernel_stack: kernel_stack,
+            _scheduler_slot: scheduler_slot,
+            kernel_context: spin::Mutex::new(KernelContext::with_resume(top, run_kernel_thread)),
+            scheduling: super::scheduling::SchedulingEntity::new(
+                super::PRIORITY_LEVELS - 1,
+                0,
+                cpu::current_id().index(),
+            ),
+            flags: core::sync::atomic::AtomicU32::new(0),
+        })
+        .map_err(|_| ())
+    }
+}
+
+fn run_kernel_thread() -> ! {
+    complete_pending_handoff();
+    // SAFETY: 能被调度的 CPU 已安装 trap vector/controller；新 continuation 从 IRQ-masked
+    // switch 恢复，handoff 已完成且不再持有调度锁。内核工作函数必须允许设备中断推进。
+    unsafe { crate::arch::interrupt::enable_scheduler_interrupts() };
+    let entry = {
+        let thread = super::current().expect("kernel continuation lost current owner");
+        match &thread.body {
+            super::ThreadBody::Kernel(entry) => *entry,
+            super::ThreadBody::User(_) => panic!("user body entered kernel continuation"),
+        }
+    };
+    entry();
+    super::exit_current()
+}

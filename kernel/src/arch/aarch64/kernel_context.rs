@@ -34,10 +34,10 @@ impl KernelContext {
         }
     }
 
-    /// Construct a context whose first restore returns to `trap_return` through x30.
-    pub(crate) fn goto_trap_return(kernel_sp: usize, trap_return: KernelResume) -> Self {
+    /// Construct a context whose first restore returns to `resume` through x30.
+    pub(crate) fn with_resume(kernel_sp: usize, resume: KernelResume) -> Self {
         let mut context = Self::zero_init();
-        context.x19_x30[11] = trap_return as usize;
+        context.x19_x30[11] = resume as usize;
         context.kernel_sp = kernel_sp;
         context
     }
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn first_restore_initializes_only_the_integer_continuation() {
-        let context = KernelContext::goto_trap_return(0x1234_0000, resume);
+        let context = KernelContext::with_resume(0x1234_0000, resume);
         assert_eq!(context.x19_x30[..11], [0; 11]);
         assert_eq!(context.x19_x30[11], resume as *const () as usize);
         assert_eq!(context.kernel_sp, 0x1234_0000);

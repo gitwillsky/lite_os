@@ -119,6 +119,11 @@ impl PageTableEntry {
         Self(0)
     }
 
+    /// 叶项的 accessed 快照；只读观察不改变硬件状态。
+    pub(crate) fn accessed(self) -> bool {
+        self.0 as u64 & pte::ACCESS_FLAG != 0
+    }
+
     pub(crate) fn permissions(self) -> PagePermissions {
         pte::decode(self.0 as u64)
     }
@@ -474,33 +479,64 @@ impl<Page: TablePage> PageTable<Page> {
         Err(PageTableError::InvalidPageTable)
     }
 
-    pub(crate) fn set_flags(
-        &mut self,
-        virtual_page: usize,
-        permissions: PagePermissions,
-    ) -> Result<(), PageTableError> {
+    /// 返回本 owner 的 4 KiB 叶项槽；借用根不能修改下级表。
+    fn owned_leaf(&self, virtual_page: usize) -> Result<(usize, usize), PageTableError> {
         self.require_owned_branch(virtual_page)?;
-        let flags = pte::encode(permissions).ok_or(PageTableError::InvalidFlags)?;
         let indexes = va39::indexes(virtual_page);
         let mut table = self.root_page;
         for (level, index) in indexes[..2].iter().enumerate() {
             let entry = Self::read_entry(table, *index);
-            if !entry.is_next_table_at(level) {
+            if !(entry.is_next_table_at(level)) {
                 return Err(PageTableError::NotMapped);
             }
             table = entry.physical_page();
         }
         let index = indexes[2];
         let old = Self::read_entry(table, index);
-        if !old.is_leaf_at(2) {
+        if !(old.is_leaf_at(2)) {
             return Err(PageTableError::NotMapped);
         }
+        Ok((table, index))
+    }
+
+    pub(crate) fn set_flags(
+        &mut self,
+        virtual_page: usize,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableError> {
+        let flags = pte::encode(permissions).ok_or(PageTableError::InvalidFlags)?;
+        let (table, index) = self.owned_leaf(virtual_page)?;
+        let old = Self::read_entry(table, index);
         Self::write_entry(
             table,
             index,
             PageTableEntry::new(old.physical_page(), flags, 2),
         );
         Ok(())
+    }
+
+    /// 修改 4 KiB 页的 accessed 位并返回旧值；不改变地址、权限或其他状态。
+    ///
+    /// `accessed=false` 供老化采样，随后必须全 ASID fence；true 供软件 access fault 恢复。
+    /// # Errors
+    /// 叶项不存在或子树不属于本 owner 时返回页表错误。
+    pub(crate) fn set_accessed(
+        &mut self,
+        virtual_page: usize,
+        accessed: bool,
+    ) -> Result<bool, PageTableError> {
+        let (table, index) = self.owned_leaf(virtual_page)?;
+        let pointer = (mmu::physical_to_virtual(table << PAGE_SHIFT)) as *mut usize;
+        // SAFETY: table 是本 owner 保活的页表页，index 在 512 项内，usize 对齐；
+        // 软件变更由 owner 锁串行化，原子 RMW 不丢失硬件并发置位的其他 PTE 状态。
+        let entry = unsafe { core::sync::atomic::AtomicUsize::from_ptr(pointer.add(index)) };
+        let flag = pte::ACCESS_FLAG as usize;
+        let old = if accessed {
+            entry.fetch_or(flag, core::sync::atomic::Ordering::AcqRel)
+        } else {
+            entry.fetch_and(!flag, core::sync::atomic::Ordering::AcqRel)
+        };
+        Ok(old & flag != 0)
     }
 
     pub(crate) fn translate(&self, virtual_page: usize) -> Option<PageTableEntry> {

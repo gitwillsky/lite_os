@@ -148,10 +148,16 @@ struct UserState {
     owner: Arc<dyn ThreadOwner>,
 }
 
+/// 用户执行体与内核工作函数互斥；内核线程不伪造用户空间或 ThreadOwner。
+enum ThreadBody {
+    User(UserState),
+    Kernel(fn()),
+}
+
 /// 线程。
 pub(crate) struct Thread {
     id: u64,
-    user: Option<UserState>,
+    body: ThreadBody,
     // OWNER: 只为保活内核栈映射；上下文切换经 `kernel_context` 中保存的栈指针使用它。
     _kernel_stack: KernelStack,
     // OWNER: 从创建到最后一个队列 token 归还期间保有可调度容量。
@@ -217,7 +223,7 @@ impl Thread {
         unsafe { pointer.as_ptr().write(user_context) };
         let thread = Arc::try_new(Self {
             id: crate::id::next_koid(),
-            user: Some(UserState {
+            body: ThreadBody::User(UserState {
                 context,
                 space: Mutex::new(Some(space.clone())),
                 context_page,
@@ -225,7 +231,7 @@ impl Thread {
             }),
             _kernel_stack: kernel_stack,
             _scheduler_slot: scheduler_slot,
-            kernel_context: Mutex::new(KernelContext::goto_trap_return(top, run_user_thread)),
+            kernel_context: Mutex::new(KernelContext::with_resume(top, run_user_thread)),
             scheduling: SchedulingEntity::new(
                 DEFAULT_PRIORITY,
                 0,
@@ -253,7 +259,10 @@ impl Thread {
     }
 
     fn user(&self) -> &UserState {
-        self.user.as_ref().expect("kernel thread has no user state")
+        match &self.body {
+            ThreadBody::User(user) => user,
+            ThreadBody::Kernel(_) => panic!("kernel thread has no user state"),
+        }
     }
 
     /// 用户线程的 owner。
@@ -263,7 +272,10 @@ impl Thread {
 
     /// 用户线程运行所在的地址空间；线程退出后为 `None`。
     pub(crate) fn address_space(&self) -> Option<Arc<AddressSpace>> {
-        self.user.as_ref()?.space.lock().clone()
+        match &self.body {
+            ThreadBody::User(user) => user.space.lock().clone(),
+            ThreadBody::Kernel(_) => None,
+        }
     }
 
     /// 在唯一 transaction 内访问用户寄存器上下文。
@@ -365,7 +377,7 @@ impl Thread {
 impl Drop for Thread {
     fn drop(&mut self) {
         // 从未启动的用户线程也必须先退休上下文，再释放内核栈或上下文页。
-        if let Some(user) = &self.user
+        if let ThreadBody::User(user) = &self.body
             && user.context.is_live()
         {
             user.context.retire();
@@ -395,7 +407,7 @@ fn run_user_thread() -> ! {
 /// 2. 关中断后撤销 current，把最后 owner 交给 deferred reap，切到 idle。
 pub(crate) fn exit_current() -> ! {
     let thread = current().expect("exiting thread lost current ownership");
-    if let Some(user) = &thread.user {
+    if let ThreadBody::User(user) = &thread.body {
         user.context.retire();
         let space = user.space.lock().take();
         if let (Some(address), Some(space)) = (user.context_page, &space) {

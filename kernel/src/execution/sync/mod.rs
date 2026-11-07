@@ -20,7 +20,9 @@ mod wait_queue;
 pub(crate) use spare::{SpareStorage, lock_with_spare};
 pub(crate) use task_event::TaskEvent;
 pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
-pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
+pub(crate) use task_wait::{
+    TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory, yield_current_task,
+};
 pub(crate) use wait_completion::WaitCompletion;
 pub(crate) use wait_queue::WaitQueue;
 

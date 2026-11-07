@@ -3,6 +3,7 @@
 Status: Active
 
 执行期间存在；完成后把持久事实迁入架构/契约/性能文档并删除本文件。
+各项“实施前状态”是立项基线，当前源码与验收状态以末尾进度为准；源码已实现和运行已验收分别记录。
 
 ## 目标
 
@@ -43,7 +44,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 1. 块设备协议：登记 VMO + 批量请求 + 并发队列
 
-- **现状**：`RemoteBlock::read_block`（`system/device-protocol/src/block.rs` 的 `impl BlockDevice for RemoteBlock`）
+- **实施前状态**：`RemoteBlock::read_block`（`system/device-protocol/src/block.rs` 的 `impl BlockDevice for RemoteBlock`）
   每 4 KiB 一次同步 `channel_call`；服务端（同文件 `serve_device` 的 `READ`）每次分配 `Vec`、从 DMA 弹跳缓冲复制，
   经 channel 消息再复制两次。ext4 `read_storage`（`system/ext4/src/ext4/inode/vfs.rs`）逐块循环，
   `read_fs_block_from`（`system/ext4/src/ext4/block_io.rs`）逐块调用。queue depth 实际为 1；
@@ -63,7 +64,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 2. 文件缺页预读与 fault-around
 
-- **现状**：内核 pager 请求长度固定一页（`kernel/src/vm/vmo/pager.rs` 构造 `PagerRequest` 处 `length: PAGE_SIZE`）；
+- **实施前状态**：内核 pager 请求长度固定一页（`kernel/src/vm/vmo/pager.rs` 构造 `PagerRequest` 处 `length: PAGE_SIZE`）；
   ext4 `Content::page_request`（`system/ext4/src/content.rs`）只补请求区间，且经 `Vec` → aux VMO 两次复制。
   linuxd 自有页缓存已有预读（`system/linuxd/src/fs/page_cache/fill.rs`），ext4 主路径没有。
   `AddressSpace::fault`（`kernel/src/vm/address_space.rs`）每次只装一页。
@@ -79,7 +80,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 3. 高精度单次定时器与空闲停 tick
 
-- **现状**：`TICKS_PER_SEC = 100`（`kernel/src/execution/timer/mod.rs`）；截止时间等待只在 tick 的 deferred work 中到期
+- **实施前状态**：`TICKS_PER_SEC = 100`（`kernel/src/execution/timer/mod.rs`）；截止时间等待只在 tick 的 deferred work 中到期
   （`kernel/src/thread/mod.rs` `dispatch_deferred` → `timer_queue::expire`），平均晚 5 ms、最坏 10 ms；
   boot CPU 空闲时保持 100 Hz（`suspend_local_idle_tick` 断言非 boot CPU）。
 - **参考**：Linux hrtimers 与 NO_HZ_IDLE（Gleixner & Niehaus, OLS 2006）；Zircon 每 CPU timer queue 按最早截止编程。
@@ -95,7 +96,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 4. futex 分片与不在锁内缺页
 
-- **现状**：`static TABLE: TaskMutex<FallibleMap<...>>`（`kernel/src/syscall/futex.rs`）全系统一把可睡眠锁；
+- **实施前状态**：`static TABLE: TaskMutex<FallibleMap<...>>`（`kernel/src/syscall/futex.rs`）全系统一把可睡眠锁；
   wait/requeue 在持锁后 `call.read(address)`，可能缺页并等待 pager I/O，期间全系统 futex 串行。
 - **参考**：Linux futex hash bucket 与 6.16 进程私有 futex hash；Zircon per-process FutexContext。
 - **改法**：
@@ -108,7 +109,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 5. 共享进程的页表子树共享（unified aspace）
 
-- **现状**：每个 Linux 进程有 normal/private 两个根，私有区叶项装两遍（`kernel/src/vm/execution_views.rs`）；
+- **实施前状态**：每个 Linux 进程有 normal/private 两个根，私有区叶项装两遍（`kernel/src/vm/execution_views.rs`）；
   linuxd 共享区在每个成员的 normal 根各装一份，`zap_range` 遍历全部成员（`kernel/src/vm/address_space.rs`）。
   N 个进程就有 N 份 linuxd 页表，且各自缺一次页。
 - **参考**：Zircon 为 Starnix restricted mode 实现的 unified aspace（顶层项引用共享/受限 aspace 的下级表）。
@@ -123,7 +124,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 6. VMO 页列表改为分块节点
 
-- **现状**：`committed: FallibleMap<usize, Page>`（`kernel/src/vm/vmo.rs`），每页一个 AVL 堆节点
+- **实施前状态**：`committed: FallibleMap<usize, Page>`（`kernel/src/vm/vmo.rs`），每页一个 AVL 堆节点
   （`libraries/fallible-tree/src/lib.rs` `Node`，约 64 B/页），缺页路径分配节点并旋转；区间操作逐节点走指针。
 - **参考**：Zircon VmPageList（每节点 16 页数组，WAVL 索引）；Linux XArray。
 - **改法**：节点覆盖对齐的 16 或 64 页，每槽压缩为 u64（ppn + pins/cleanliness/状态位，pins 溢出时 fail-stop
@@ -136,7 +137,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 7. 服务运行时堆分配器
 
-- **现状**（`system/native-runtime/src/heap/allocator.rs`）：全局单锁；≤2 KiB 为 2 的幂分级（平均约 25% 内部碎片）；
+- **实施前状态**（`system/native-runtime/src/heap/allocator.rs`）：全局单锁；≤2 KiB 为 2 的幂分级（平均约 25% 内部碎片）；
   2 KiB 以上（恰好 64 KiB 外）每次 `Vmo::create` + map + 裁剪 unmap，释放时 unmap 并等 TLB fence；`Vec` 超过 4 KiB
   每次扩容都走此路径；小块永不归还。linuxd 每个 Linux 线程对应一个原生线程，全部争这把锁。
 - **参考**：mimalloc（Leijen et al., APLAS 2019）分片空闲链与线程本地堆；snmalloc（ISMM 2019）远端释放消息。
@@ -151,7 +152,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 8. 页回收分代与共享零页
 
-- **现状**：`kernel/src/vm/vmo/reclaim.rs` 按 VMO 轮转、按页号顺序淘汰干净页，不看访问；只在用户缺页入口触发；
+- **实施前状态**：`kernel/src/vm/vmo/reclaim.rs` 按 VMO 轮转、按页号顺序淘汰干净页，不看访问；只在用户缺页入口触发；
   匿名读缺页分配新零页（没有共享零页）。
 - **参考**：Linux MGLRU（6.1）；Zircon page queues（accessed 位老化、后台 evictor）。
 - **改法**：
@@ -164,7 +165,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 ### 9. ext4 写回：单份数据与延迟分配
 
-- **现状**：`write_data_locked`（`system/ext4/src/ext4/storage_mutation.rs`）非整块写从存储读出整块再改；数据块以
+- **实施前状态**：`write_data_locked`（`system/ext4/src/ext4/storage_mutation.rs`）非整块写从存储读出整块再改；数据块以
   `BlockKind::Data` 复制进 `StagedBlocks`（`block_io.rs` `write_data_block`），与内容 VMO 页重复；
   `Content::write`（`content.rs`）先直写存储再写 VMO。
 - **参考**：Linux ext4 `data=ordered` + delalloc，数据从页缓存直接回写，不进 journal。
@@ -200,7 +201,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 #### M0. 内存统计口径（先做，其余各项以它验证）
 
-- **现状**：linuxd 没有 `/proc/[pid]/maps`、`smaps`、`smaps_rollup`，无法区分 Pss/Private/Shared；
+- **实施前状态**：linuxd 没有 `/proc/[pid]/maps`、`smaps`、`smaps_rollup`，无法区分 Pss/Private/Shared；
   task-observer 的 `resident_bytes` 重复计入共享页；`/proc/meminfo` 的 `Cached` 恒为 0，`MemAvailable` 等于 `MemFree`，
   可淘汰的干净 pager 页未计入；内核 `SystemMemoryStats` 只有堆、内核栈、页表与淘汰计数，约 40 MiB 无法归属。
 - **改法**：
@@ -214,7 +215,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 #### M1. 窗口最大化与窗口缓冲（每个窗口 1–3 倍窗口大小；最大化时数十 MiB）
 
-- **现状**：
+- **实施前状态**：
   - `classic-ui/src/window_host.rs` 的 `paint` 每次都把整窗画进私有 `pixels: Vec<u32>`，再经 `Display::present`
     复制进共享缓冲；`wayland/frame.rs` 逐行比较前后两帧来求 damage。
   - 每窗口最多 3 个共享缓冲（`WINDOW_BUFFER_LIMIT`），前一个缓冲尚未 release 时就新建；同尺寸的空闲缓冲在
@@ -236,26 +237,25 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 #### M2. 桌面背景整屏缓冲（约 19 MiB）
 
-- **现状**：`user/programs/desktop/src/paint.rs` 的 `background_frame` 把纯色、墙纸、图标与标题画进一块按物理分辨率
+- **实施前状态**：`user/programs/desktop/src/paint.rs` 的 `background_frame` 把纯色、墙纸、图标与标题画进一块按物理分辨率
   分配的整屏共享缓冲（3008×1692×4 ≈ 19.4 MiB）。
 - **改法**（只用标准 Wayland 协议）：
   1. 纯色底：使用 classic-ui 已有的 solid viewport（单像素缓冲 + `wp_viewporter`）。
   2. 墙纸：缓冲按图片原始尺寸；居中用子表面定位；拉伸用 viewport 目标尺寸（合成器最近邻采样，与 GDI 拉伸一致）；
      平铺让同一 wl_buffer 挂到多个子表面。合成器 CPU 后端同样支持这些几何。
   3. 图标与标题：一个透明子表面，大小为图标网格包围盒；重命名编辑框、拖动图标沿用同一层。
-- **注意**：2026-11-07 desktop 的 `main.rs`、`paint.rs`、`popups.rs`、`icons.rs` 有进行中的改动，本项在其合入后开始。
 - **验证点**：桌面交互门禁（图标选择、拖动、重命名、墙纸三种方式与纯色）；基线 7 中 Shmem 下降。
 
 #### M3. 服务堆分配器按需切分区块（与第 7 项一起做）
 
-- **现状**：`system/native-runtime/src/heap/allocator.rs` 首次使用某尺寸级别时，把整个 64 KiB 区块切开并逐块写入空闲链指针，
+- **实施前状态**：`system/native-runtime/src/heap/allocator.rs` 首次使用某尺寸级别时，把整个 64 KiB 区块切开并逐块写入空闲链指针，
   整块页被提交；8 个级别使每个原生进程至少约 512 KiB，全系统约 23 个原生进程。
 - **改法**：区块内维护分配游标，只在真正分配时触及对应页（mimalloc 的增量空闲链扩展）；空 span 按第 7 项 decommit。
 - **验证点**：native-runtime 单元测试；M0 中各原生服务的 Private 下降（估算合计 5–8 MiB）。
 
 #### M4. 空闲线程（约 161 个，每个至少 32 KiB 内核栈）
 
-- **现状**：块设备服务端每会话固定 8 个工作线程（`system/device-protocol/src/block.rs` `WORKERS`，virtio-block 宿主 28 线程）；
+- **实施前状态**：块设备服务端每会话固定 8 个工作线程（`system/device-protocol/src/block.rs` `WORKERS`，virtio-block 宿主 28 线程）；
   ext4 FUSE 4 个、netstack 4 个；`pager-pool` 工作线程只增不减（上限 64）；每个驱动宿主至少 5 个线程，
   component-manager 10 个；桌面常驻 `picture-decode` 等线程。
 - **改法**：
@@ -267,7 +267,7 @@ Linux）已验证的结构：降低应用启动与文件 I/O 延迟、定时与�
 
 #### M5. bootfs 零复制装载
 
-- **现状**：bootfs（约 4.6 MiB）常驻；ELF 段模板装载时复制段内容并全部提交（`system/native-runtime/src/elf.rs`），
+- **实施前状态**：bootfs（约 4.6 MiB）常驻；ELF 段模板装载时复制段内容并全部提交（`system/native-runtime/src/elf.rs`），
   ext4 映像经 `bootfs_copy` 再复制一份交给 fshost（`system/component-manager/src/main.rs`）。
 - **改法**：bootfs 文件按页对齐（参考 Zircon bootfs 格式）；ELF 段直接作为 bootfs VMO 的写时复制子对象，
   交给其他服务的文件以 VMO 子对象传递，不复制。
@@ -331,12 +331,12 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   清除无消费者的 `TIMER_FROM_USER`/`last_user_return`/tick 相位计算。kernel-unit 4 项 `DeadlineIndex` 单测、
   architecture-bench `timer deadline index` 基准、双架构 Clippy 通过，未运行调度/计时运行时测试。
 - 4 已实现待运行验收：私有 context 按地址空间延迟建立，共享 VMO 使用全局 context；等待索引迁入 `execution::sync::futex`，
-  syscall 保留参数/地址/状态码职责。桶改为 IRQ 安全锁，桶内空间锁只 try-lock；锁忙/缺页先退出整个事务再等待。
+  syscall 保留参数/地址/状态码职责；共享 key 解析 slice 别名，不混同 COW 身份。桶改为 IRQ 安全锁，桶内空间锁只 try-lock；锁忙/缺页先退出整个事务再等待。
   节点锁外准备，跨 context requeue 按身份/桶序加锁，外层 IRQ guard 最后释放；取消复核弱引用登记位置。
   同 key requeue 不反复搬动队尾，保留 FIFO。复用原队列用例与基准，运行验收待最终统一执行。
 - 6 与 M6 元数据部分已实现待运行验收：已提交页压缩为非零 8 字节槽（页号/pin/回写/内容归属，预留回收代位）；
   补页请求复用 `PageList<T>` 的分块索引，不再逐页建 AVL 节点。空块预留失败回滚、`ceiling` 跨空块、稀疏失败请求扫描均补齐。
-  扩展既有隔离/页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
+  扩展既有页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
 - M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
   并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
   内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；
@@ -358,11 +358,16 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 - M7 部分实现：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）；点阵与不抗锯齿轮廓字形（只含 0/255）
   改为 1 位/像素存储（`typeface::Coverage::Mono`，BDF 位图直接沿用），canvas 新增 `BitMask`/`draw_bit_mask`，
   单测证明与 8 位蒙版逐像素一致。尚缺：预解码共享主题图标图集。
-- 门禁：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
+- 移交前验证记录（不代表当前树已验收）：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
   `--write-interface` 重新生成接口清单）；ext4-unit 69 项、kernel-unit 非 DTB 夹具、scheduler-unit、netstack-unit、
   span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
-- 8 部分实现：共享零页（根匿名 VMO 的读缺页映射全局只读零页，写时分配；kernel-unit 用例通过）。
-  尚缺：accessed 位分代回收与后台回收线程。
+- 8 部分实现：共享零页已落地；双架构 accessed 采集/清除、全 ASID fence、软件 access fault 恢复已接通；
+  COW/slice 访问观测按物理身份与继承窗口归并，页槽使用既有 3 位记录访问代，批量候选按代龄优先并给实际访问第二次机会。
+  后台内核线程按低/高水位推进，allocator 锁内只发布 boot CPU deferred 边沿，空闲无周期唤醒；无进展时限速重试。
+  原生压力事件移出 syscall 水位镜像，由同一实际 owner 的边沿更新；扩展现有视图用例覆盖 AF 清除/软件恢复，无新增测试实体。
+  访问采集与映射撤销已共用显式别名工作栈，根 truncate 旧窗口和 COW/slice 继承边界保持正确；登记扩容不在 spin guard 内执行。
+  尚缺：完整 oldest-first 分代索引（当前只在批量候选内排序）、全局扫描预算与多代完整遍历推进边界。
+  这些性能与深栈要求尚未被证明，不能以后台线程接通代替阶段 8 完成。
 - 9 已实现待运行验收：`Content::write` 改为延迟分配（预留 + 大小/时间提交 + 只写内容 VMO），回写时才分配并只映射 block，
   脏页限流（单文件 8 MiB）；journal 写 home 的连续块区间合并；ext4-unit 70 项（含 e2fsck 校验的预留/回写用例）通过。
   数据不再同时存在于 journal staged 副本与内容 VMO。非整块写不再读盘（页由 pager 补入内容 VMO）。
@@ -372,7 +377,10 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
   双架构 kernel 与 kernel-unit（含现有用例的编译）Clippy 通过；没有运行测试或更新来宾。
 - 尚未完成：
-  8 余项（回收分代/后台线程）、P2.1（截止时间调度类）、
+  8 余项（完整分代索引/全局扫描边界）、P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
   M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
   P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
+
+本轮源码验证：双架构 kernel、kernel-unit（含测试的编译）与 architecture-bench Clippy 通过；
+接口派生清单已由唯一生成器更新，architecture-check 通过。没有运行测试、基准、来宾采样或 `make verify`。

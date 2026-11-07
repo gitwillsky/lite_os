@@ -21,6 +21,7 @@ impl Vmo {
                 requested: PageList::new(),
                 detached: false,
                 zero_mapped: false,
+                reclaim_cursor: 0,
             }),
             supplied: WaitQueue::new(),
         };

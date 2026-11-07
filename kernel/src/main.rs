@@ -94,7 +94,11 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
     });
     platform::initialize_devices();
     log::initialize_readers();
+    memory::frame_allocator::initialize_pressure_notifications(object::notify_memory_pressure);
     bootstrap::start_component_manager(platform::kernel_command_line());
+    thread::Thread::create_kernel(vm::background_reclaim)
+        .expect("background memory reclaimer creation failed")
+        .start();
 
     // Release 发布页表、设备与根服务；次级 CPU 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);

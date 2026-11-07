@@ -1,6 +1,25 @@
 //! 物理页的所有权记账与映射 backing 观测；不触发 fault 或 pager。
 use super::*;
 
+/// 单页唯一 owner；非零标记同时为 `Option<Page>` 提供空槽 niche。
+/// 位布局由 Page 的方法封装，树锁串行化 pins/回写/内容归属的变更。
+#[repr(transparent)]
+pub(super) struct Page(core::num::NonZeroU64);
+
+const _: () = assert!(size_of::<Option<Page>>() == 8);
+
+/// pager 页的回写状态（Zircon page dirty state）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum Cleanliness {
+    /// 内容与 pager 的存储一致，可以淘汰。
+    Clean,
+    /// 补入后被写过；映射可写。
+    Dirty,
+    /// 回写已开始（映射已写保护）但存储尚未确认；之后的写入回到 `Dirty`，不能淘汰。
+    AwaitingClean,
+}
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 页框当前保存的内容类别，与对象引用数及映射权限无关。
@@ -61,12 +80,13 @@ pub(super) fn remove_contiguous(pages: usize) {
 
 impl Page {
     // 44 位页号覆盖受支持后端的完整物理页号；12 位 pin 计数、2 位回写、2 位内容，
-    // 最高位为唯一 owner 标记。余下 3 位预留回收代号，不另增每页字段。
+    // 最高位为唯一 owner 标记；余下 3 位是环形回收代号，不另增每页字段。
     const PHYSICAL_MASK: u64 = (1 << 44) - 1;
     const PINS_SHIFT: u32 = 44;
     const PINS_MASK: u64 = (1 << 12) - 1;
     const CLEAN_SHIFT: u32 = 56;
     const CONTENT_SHIFT: u32 = 58;
+    const GENERATION_SHIFT: u32 = 60;
     const PRESENT: u64 = 1 << 63;
 
     pub(super) fn ppn(&self) -> PhysicalPageNumber {
@@ -107,6 +127,36 @@ impl Page {
             .expect("page owner marker must survive state changes");
     }
 
+    /// 实际 CPU/内核访问进入当前代；fault-around 的相邻预装页不调用此方法。
+    pub(super) fn note_access(&mut self) {
+        // 匿名/COW 私有页与 bootfs 不参与页回收，不为它们读取全局代号或写 recency metadata。
+        if !matches!(
+            self.content(),
+            PageContent::Pager | PageContent::AnonymousPager
+        ) {
+            return;
+        }
+        self.set_field(
+            Self::GENERATION_SHIFT,
+            7,
+            u64::from(super::reclaim::current_generation()),
+        );
+    }
+
+    /// 采样后返回相对代龄（0 最新、3 最老）；旧代压到 oldest，避免环形计数失去顺序。
+    pub(super) fn sampled_age(&mut self, generation: u8, referenced: bool) -> u8 {
+        let previous = ((self.0.get() >> Self::GENERATION_SHIFT) & 7) as u8;
+        let age = if referenced {
+            0
+        } else {
+            generation.wrapping_sub(previous) & 7
+        }
+        .min(3);
+        let epoch = generation.wrapping_sub(age) & 7;
+        self.set_field(Self::GENERATION_SHIFT, 7, u64::from(epoch));
+        age
+    }
+
     pub(super) fn new(frame: FrameTracker, content: PageContent) -> Self {
         assert_eq!(frame.pages, 1, "VMO page must own one complete frame");
         let physical = frame.ppn.as_usize() as u64;
@@ -119,7 +169,7 @@ impl Page {
         // OWNER: 唯一 frame 所有权移入槽位，直到 Page::drop 才恢复 RAII tracker；
         // 不复制 Page，不提前归还 allocator，也不为纯观测重建第二个 tracker。
         let _frame = core::mem::ManuallyDrop::new(frame);
-        let page = Self(
+        let mut page = Self(
             core::num::NonZeroU64::new(
                 Self::PRESENT
                     | physical
@@ -128,6 +178,7 @@ impl Page {
             )
             .expect("page owner marker must be nonzero"),
         );
+        page.note_access();
         if content == PageContent::Pager {
             page.pager_state_counter()
                 .expect("new page is dirty")
@@ -150,6 +201,7 @@ impl Page {
         self.set_field(Self::CONTENT_SHIFT, 3, content as u64);
         CONTENT_PAGES[self.content() as usize].fetch_add(1, Ordering::Relaxed);
         self.set_field(Self::CLEAN_SHIFT, 3, Cleanliness::Clean as u64);
+        self.note_access();
         if self.is_reclaimable() {
             RECLAIMABLE_PAGES.fetch_add(1, Ordering::Relaxed);
         }
@@ -164,6 +216,9 @@ impl Page {
             counter.fetch_sub(1, Ordering::Relaxed);
         }
         self.set_field(Self::CLEAN_SHIFT, 3, cleanliness as u64);
+        if cleanliness == Cleanliness::Clean {
+            self.note_access();
+        }
         if let Some(counter) = self.pager_state_counter() {
             counter.fetch_add(1, Ordering::Relaxed);
         }

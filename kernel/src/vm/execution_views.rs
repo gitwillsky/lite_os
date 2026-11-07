@@ -75,7 +75,15 @@ impl ExecutionViews {
             commit: &mut TranslationCommit,
         ) -> Result<(), VmError> {
             match table.translate(vpn) {
-                Some(entry) if entry.ppn() == ppn && entry.permissions() == permissions => Ok(()),
+                Some(entry) if entry.ppn() == ppn && entry.permissions() == permissions => {
+                    if entry.accessed() {
+                        Ok(())
+                    } else {
+                        table
+                            .mark_accessed(vpn, commit)
+                            .map_err(|_| VmError::BadState)
+                    }
+                }
                 Some(_) => {
                     table.unmap(vpn, commit).map_err(|_| VmError::NoMemory)?;
                     table
@@ -254,6 +262,34 @@ mod tests {
             private.translate(service).is_none(),
             "service image/heap must never enter restricted hardware view"
         );
+        // 老化不得改权限/物理身份；重复采样为空，软件 access fault 必须重新置位，否则会无限缺页。
+        let mut sampled = TranslationCommit::new();
+        assert!(
+            views
+                .normal
+                .harvest_accessed(vpn, page, &mut sampled)
+                .unwrap()
+        );
+        assert!(
+            !views
+                .normal
+                .harvest_accessed(vpn, page, &mut sampled)
+                .unwrap()
+        );
+        sampled.synchronize().unwrap();
+        views
+            .install(vpn, page, permissions)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        let mut sampled = TranslationCommit::new();
+        assert!(
+            views
+                .normal
+                .harvest_accessed(vpn, page, &mut sampled)
+                .unwrap()
+        );
+        sampled.synchronize().unwrap();
         views
             .zap(PAGE_SIZE..4 * PAGE_SIZE, ZapMode::RemoveWrite)
             .unwrap()
