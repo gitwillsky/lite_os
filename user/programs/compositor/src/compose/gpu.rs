@@ -214,7 +214,7 @@ impl Gpu {
             }) {
                 self.overlay = Some(Overlay {
                     pixels: vec![0; width as usize * height as usize],
-                    texture: Rc::new(self.context.create_texture(width, height)?),
+                    texture: Rc::new(self.context.create_sampled_texture(width, height)?),
                 });
             }
             let layer = self.overlay.as_mut().expect("overlay prepared");

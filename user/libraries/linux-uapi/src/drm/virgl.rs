@@ -82,6 +82,10 @@ pub struct VirglContext {
     capabilities: VirglCapabilities,
     // OWNER: 同 context 的 PRIME 导入共享一个 handle owner；Weak 不保活已释放客户端缓冲。
     imports: Rc<RefCell<BTreeMap<u32, Weak<GemOwner>>>>,
+    // OWNER: 同一 context 的上传共用一块暂存，不在每张采样纹理旁保留完整 CPU 副本。
+    // 只有最后传输 fence 完成才重写；忙时换新，旧 backing 由内核提交 pin 保活。
+    // 缺少 fence 检查会覆盖设备尚未读取的像素；此缓存不引用 context，不形成所有权环。
+    upload: Rc<RefCell<Option<VirglResource>>>,
 }
 
 impl VirglContext {
@@ -145,6 +149,24 @@ impl VirglContext {
             BIND_SAMPLER_VIEW | BIND_RENDER_TARGET,
             0,
         )?)
+    }
+
+    /// Creates a sampled ARGB texture whose CPU uploads use context-owned staging.
+    ///
+    /// Dimensions and texture format match `create_texture`; only a minimum GEM page is
+    /// retained. Direct CPU pixel access requires a full backing or a staged readback.
+    /// Invalid dimensions or failed DRM allocation return an error.
+    pub fn create_sampled_texture(&self, width: u32, height: u32) -> io::Result<VirglResource> {
+        self.create_resource(ResourceSpec {
+            size: 0,
+            ..ResourceSpec::texture(
+                width,
+                height,
+                FORMAT_B8G8R8A8_UNORM,
+                BIND_SAMPLER_VIEW | BIND_RENDER_TARGET,
+                0,
+            )?
+        })
     }
 
     /// Creates one immutable R8 coverage texture for a compositor glyph atlas.
@@ -228,7 +250,7 @@ impl VirglContext {
         })
     }
 
-    /// Transfers a packed XRGB rectangle between a host texture and another GEM's backing.
+    /// Transfers a packed ARGB/XRGB rectangle between a host texture and another GEM's backing.
     ///
     /// `rect` is [x, y, width, height] in texture pixels. `readback` selects texture to
     /// backing. The staging resource must cover the complete packed rectangle from offset
@@ -247,8 +269,10 @@ impl VirglContext {
         let stride = width
             .checked_mul(4)
             .ok_or_else(|| invalid_input("staged transfer stride overflow"))?;
-        if texture.format != FORMAT_B8G8R8X8_UNORM
-            || width == 0
+        if !matches!(
+            texture.format,
+            FORMAT_B8G8R8X8_UNORM | FORMAT_B8G8R8A8_UNORM
+        ) || width == 0
             || height == 0
             || x.checked_add(width).is_none_or(|end| end > texture.width)
             || y.checked_add(height).is_none_or(|end| end > texture.height)
@@ -268,6 +292,34 @@ impl VirglContext {
             readback,
         );
         self.exec(commands.words(), &[texture, staging])
+    }
+
+    /// Uploads a packed rectangle using the context's reusable staging backing.
+    ///
+    /// `rect` is [x, y, width, height]. `fill` writes the packed texels from byte offset
+    /// zero before publication. It may fail without modifying the destination texture.
+    /// The callback's error is preserved; allocation and submission errors convert to E.
+    pub fn stage_texture<E: From<io::Error>>(
+        &self,
+        texture: &VirglResource,
+        rect: [u32; 4],
+        fill: impl FnOnce(&VirglResource) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let bytes = rect[2]
+            .checked_mul(rect[3])
+            .and_then(|count| count.checked_mul(4))
+            .filter(|count| *count != 0)
+            .ok_or_else(|| invalid_input("staged upload size is invalid"))?;
+        let cached = self.upload.borrow_mut().take();
+        let staging = match cached {
+            Some(staging) if staging.size() >= bytes as usize && staging.is_ready()? => staging,
+            _ => self.create_vertex_buffer(bytes)?,
+        };
+        // 在 fill 期间不持 RefCell 借用；失败时尚未提交，局部暂存随返回释放。
+        fill(&staging)?;
+        self.staged_transfer(texture, &staging, rect, false)?;
+        *self.upload.borrow_mut() = Some(staging);
+        Ok(())
     }
 
     /// 将标准 PRIME dma-buf 导入当前 context，作为直接采样纹理，不执行 CPU 拷贝或 transfer 上传。
@@ -322,12 +374,13 @@ impl VirglContext {
 
     /// Writes a texel rectangle into a sampled texture without waiting on its fences.
     ///
-    /// 1. An idle texture (its last fence completed) takes the pixels through guest backing and
+    /// 1. An idle texture with complete CPU backing takes the pixels through guest backing and
     ///    `TRANSFER_TO_HOST`, which suits large regions.
     /// 2. A texture still referenced by a pending command may have a transfer reading its backing,
     ///    so the pixels go inline through the command stream (`RESOURCE_INLINE_WRITE`), split into
     ///    submissions within both the 16-bit packet length and kernel command-stream limit.
-    ///    The host applies them in order: earlier draws keep the
+    ///    Textures with minimum backing use the context staging for regions larger than a
+    ///    single inline submission. The host applies them in order: earlier draws keep the
     ///    old texels, later draws see the new ones. This mirrors Mesa virgl's busy-resource upload.
     ///
     /// # Parameters
@@ -358,7 +411,8 @@ impl VirglContext {
             return Ok(());
         }
         let row = width as usize;
-        if texture.is_ready()? {
+        let full_backing = texture.size() >= texture.stride as usize * texture.height as usize;
+        if full_backing && texture.is_ready()? {
             for (index, line) in pixels.chunks_exact(row).enumerate() {
                 texture.write_row(y as usize + index, x as usize, line);
             }
@@ -367,6 +421,13 @@ impl VirglContext {
         let rows = CommandEncoder::inline_write_rows(row, EXEC_COMMAND_MAX / 4);
         if rows == 0 {
             return Err(invalid_input("texture row exceeds one command submission"));
+        }
+        // 一个内联包放不下的大区域使用共用暂存；小区域保留有序内联路径，避免增加暂存准入。
+        if !full_backing && height as usize > rows {
+            return self.stage_texture(texture, [x, y, width, height], |staging| {
+                staging.write_words(0, pixels);
+                Ok(())
+            });
         }
         for (index, band) in pixels.chunks(rows * row).enumerate() {
             let mut commands = CommandEncoder::new();
@@ -497,6 +558,27 @@ impl Drop for GemOwner {
 }
 
 impl VirglResource {
+    /// Copies aligned words into guest backing without borrowing the DMA-visible storage.
+    ///
+    /// `offset` counts 32-bit words. Callers must wait for earlier transfers before reuse.
+    /// Panics if the word range exceeds the live mapping.
+    pub fn write_words(&self, offset: usize, words: &[u32]) {
+        assert!(
+            offset
+                .checked_add(words.len())
+                .is_some_and(|end| end <= self.mapping.size / 4)
+        );
+        // SAFETY: the aligned mapping owns the complete checked range. No shared-reference
+        // API lends out its storage, and this resource is neither Send nor Sync.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                words.as_ptr(),
+                self.mapping.pointer.as_ptr().cast::<u32>().add(offset),
+                words.len(),
+            );
+        }
+    }
+
     /// Returns the file-private GEM handle.
     pub fn handle(&self) -> GemHandle {
         self.handle
@@ -815,6 +897,7 @@ impl DrmDevice {
                 bytes: capabilities.into(),
             },
             imports: Rc::new(RefCell::new(BTreeMap::new())),
+            upload: Rc::new(RefCell::new(None)),
         })
     }
 

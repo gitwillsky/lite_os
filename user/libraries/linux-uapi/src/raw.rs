@@ -488,6 +488,8 @@ unsafe extern "C" {
     pub(crate) fn munmap(address: *mut c_void, length: usize) -> c_int;
     pub(crate) fn ftruncate(fd: c_int, length: i64) -> c_int;
     #[cfg(target_os = "linux")]
+    pub(crate) fn fallocate(fd: c_int, mode: c_int, offset: i64, length: i64) -> c_int;
+    #[cfg(target_os = "linux")]
     pub(crate) fn fcntl(fd: c_int, command: c_int, argument: c_int) -> c_int;
     #[cfg(target_os = "linux")]
     pub(crate) fn memfd_create(name: *const c_char, flags: std::ffi::c_uint) -> c_int;

@@ -94,6 +94,33 @@ impl MemFd {
         self.len == 0
     }
 
+    /// Reserves storage for the complete sealed extent before direct mapped writes.
+    ///
+    /// Existing contents are preserved. Allocation and quota failures return an I/O error
+    /// before the caller paints through the mapping.
+    pub fn preallocate(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: the owned fd and the entire checked off_t extent remain valid.
+            if unsafe { raw::fallocate(self.file.as_raw_fd(), 0, 0, self.len as i64) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            use std::os::unix::fs::FileExt;
+            // Host fixtures use an unlinked ordinary file. Realize holes without changing bytes.
+            let mut bytes = [0; 65536];
+            for offset in (0..self.len).step_by(bytes.len()) {
+                let count = bytes.len().min(self.len - offset);
+                self.file
+                    .read_exact_at(&mut bytes[..count], offset as u64)?;
+                self.file.write_all_at(&bytes[..count], offset as u64)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Writes native-endian 32-bit word segments into the sealed file extent.
     ///
     /// # Parameters

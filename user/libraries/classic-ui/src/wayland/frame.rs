@@ -1,6 +1,6 @@
 //! wl_shm 缓冲池：Display 独占内存与 busy 状态，release 之前绝不重写。
 
-use super::{Display, WindowId};
+use super::{Configuration, Display, WindowId};
 use canvas::Rect;
 use linux_uapi::shared_memory::{MemFd, SharedMapping};
 use std::{collections::VecDeque, io, os::fd::AsFd};
@@ -31,6 +31,13 @@ impl Buffer {
         // SAFETY: mmap 按页对齐，memfd 封印尺寸。客户端是唯一写入者，
         // 比较阶段不写缓冲且不跨提交保留借用；合成器只读取 wl_shm。
         unsafe { std::slice::from_raw_parts(self.mapping.as_non_null().cast().as_ptr(), count) }
+    }
+
+    fn pixels_mut(&mut self, count: usize) -> &mut [u32] {
+        assert!(!self.busy && count <= self.mapping.len() / size_of::<u32>());
+        // SAFETY: 只有本 Display 写入已封印尺寸、完成预分配的文件。缓冲已经 release，
+        // 独占借用期间暂时移出缓冲表，不能同时被损伤比较或提交路径引用。
+        unsafe { std::slice::from_raw_parts_mut(self.mapping.as_non_null().cast().as_ptr(), count) }
     }
 }
 
@@ -102,7 +109,25 @@ impl Display {
     /// 在途 callback/缓冲池满返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
     /// 连接错误后调用方应销毁 Display，不能继续使用部分发送的请求。
     pub fn present(&mut self, window: WindowId, pixels: &[u32]) -> io::Result<()> {
-        self.present_frame(window, pixels, false)
+        self.present_frame(window, Some(pixels), false, |_, _, _, _| Ok(Vec::new()))
+    }
+
+    /// 在已经释放的 Wayland 缓冲中绘制画面，然后提交实际损伤。
+    ///
+    /// # 参数
+    ///
+    /// `paint` 接收可写像素、当前配置、内容是否为上一帧，以及只读 Display。
+    /// 内容不保留时必须绘制完整画面；否则可局部更新，返回物理像素坐标的损伤矩形。
+    ///
+    /// # 错误
+    ///
+    /// 分配、绘制和协议错误原样返回。绘制失败会作废缓冲内容，之后不能把半幅画面用作损伤比较基线。
+    pub fn paint_frame(
+        &mut self,
+        window: WindowId,
+        paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
+    ) -> io::Result<()> {
+        self.present_frame(window, None, false, paint)
     }
 
     /// 用一个预乘 ARGB `pixel` 覆盖 `window` 的当前逻辑尺寸。
@@ -110,10 +135,16 @@ impl Display {
     /// # Errors
     /// 需要标准 wp_viewporter；其余配置、在途缓冲和提交错误同 [`Self::present`]。
     pub fn present_solid(&mut self, window: WindowId, pixel: u32) -> io::Result<()> {
-        self.present_frame(window, &[pixel], true)
+        self.present_frame(window, Some(&[pixel]), true, |_, _, _, _| Ok(Vec::new()))
     }
 
-    fn present_frame(&mut self, window: WindowId, pixels: &[u32], solid: bool) -> io::Result<()> {
+    fn present_frame(
+        &mut self,
+        window: WindowId,
+        pixels: Option<&[u32]>,
+        solid: bool,
+        paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
+    ) -> io::Result<()> {
         let state = self
             .windows
             .get(&window)
@@ -135,7 +166,7 @@ impl Display {
         let bytes = stride
             .checked_mul(height)
             .ok_or_else(|| io::Error::other("shm extent overflow"))?;
-        if pixels.len() != bytes as usize / 4 {
+        if pixels.is_some_and(|pixels| pixels.len() != bytes as usize / 4) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "pixel count does not match window configuration",
@@ -145,8 +176,8 @@ impl Display {
         let bounds = Rect::new(0, 0, width, height);
         let mapped = state.mapped && state.history.key == Some(key);
         let previous = state.history.latest.and_then(|id| self.buffers.get(&id));
-        let damage = match previous {
-            Some(buffer)
+        let mut damage = match (previous, pixels) {
+            (Some(buffer), Some(pixels))
                 if mapped
                     && buffer.window == window
                     && buffer.size == (width, height)
@@ -182,16 +213,7 @@ impl Display {
         // 2. 画面没变且已按同一规格映射：只请求 frame 并 commit。configure 的 ack 要随 commit 生效，
         //    不能因为像素相同就省掉 commit；也不 attach，免得占用缓冲和触发合成器读取。
         if damage.is_empty() && mapped {
-            let writer = &mut self.transport.writer;
-            wl_surface::Request::Frame { callback }
-                .encode(window.0, writer)
-                .map_err(io::Error::other)?;
-            wl_surface::Request::Commit
-                .encode(window.0, writer)
-                .map_err(io::Error::other)?;
-            let state = self.windows.get_mut(&window).expect("validated window");
-            state.frame = Some(callback);
-            return self.transport.flush();
+            return self.commit_callback(window, callback);
         }
         // 3. 只在 release 后重新绑定原来的池；新几何不继承旧画面的损伤历史。
         let reusable = self
@@ -227,34 +249,69 @@ impl Display {
                 self.allocate_buffer(window, (width, height), stride, capacity)?
             }
         };
+        if pixels.is_none() {
+            let mut buffer = self.buffers.remove(&id).expect("allocated drawing buffer");
+            let held = buffer.commit;
+            let preserved = mapped && held == self.windows[&window].history.commits;
+            let result = (|| {
+                if buffer.commit == 0 {
+                    buffer.memory.preallocate()?;
+                }
+                buffer.commit = 0;
+                paint(
+                    buffer.pixels_mut(bytes as usize / 4),
+                    configuration,
+                    preserved,
+                    self,
+                )
+            })();
+            self.buffers.insert(id, buffer);
+            damage = result?;
+            if !preserved {
+                damage = vec![bounds];
+            }
+            for rect in &mut damage {
+                *rect = rect.intersect(bounds);
+            }
+            damage.retain(|rect| !rect.is_empty());
+            if damage.is_empty() && mapped {
+                self.buffers
+                    .get_mut(&id)
+                    .expect("drawing buffer returned")
+                    .commit = held;
+                return self.commit_callback(window, callback);
+            }
+        }
         // 4. 复用的缓冲停在它上次提交的画面：补写之后各帧与本帧的损伤，新缓冲整幅写。
-        let history = &self.windows[&window].history;
-        let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
-        let lagging = history.since(buffer.commit, key);
-        // 写入或请求编码中途失败时，这块缓冲不再能作为上一帧或损伤补写的基线。
-        buffer.commit = 0;
-        let current: &[Rect] = if lagging.is_some() {
-            &damage
-        } else {
-            std::slice::from_ref(&bounds)
-        };
-        let row = width as usize;
-        let segments = lagging
-            .into_iter()
-            .flatten()
-            .chain(current)
-            .flat_map(|rect| {
-                let (x, y) = (rect.x as usize, rect.y as usize);
-                let (columns, rows) = (rect.width as usize, rect.height as usize);
-                // 宽矩形连同行间像素一次写入（写的是当前画面，多写也正确）；窄矩形逐行写，避免整段搬运。
-                let lines_per_write = if columns * 2 >= row { rows } else { 1 };
-                (y..y + rows).step_by(lines_per_write).map(move |line| {
-                    let start = line * row + x;
-                    let end = start + (lines_per_write - 1) * row + columns;
-                    (start, &pixels[start..end])
-                })
-            });
-        buffer.memory.write_segments(segments)?;
+        if let Some(pixels) = pixels {
+            let history = &self.windows[&window].history;
+            let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
+            let lagging = history.since(buffer.commit, key);
+            // 写入或请求编码中途失败时，这块缓冲不再能作为上一帧或损伤补写的基线。
+            buffer.commit = 0;
+            let current: &[Rect] = if lagging.is_some() {
+                &damage
+            } else {
+                std::slice::from_ref(&bounds)
+            };
+            let row = width as usize;
+            let segments = lagging
+                .into_iter()
+                .flatten()
+                .chain(current)
+                .flat_map(|rect| {
+                    let (x, y) = (rect.x as usize, rect.y as usize);
+                    let (columns, rows) = (rect.width as usize, rect.height as usize);
+                    // 宽矩形连同行间像素一次写入（写的是当前画面，多写也正确）；窄矩形逐行写，避免整段搬运。
+                    let lines_per_write = if columns * 2 >= row { rows } else { 1 };
+                    (y..y + rows).step_by(lines_per_write).map(move |line| {
+                        let start = line * row + x;
+                        let end = start + (lines_per_write - 1) * row + columns;
+                        (start, &pixels[start..end])
+                    })
+                });
+            buffer.memory.write_segments(segments)?;
+        }
         let writer = &mut self.transport.writer;
         wl_surface::Request::SetBufferScale { scale }
             .encode(window.0, writer)
@@ -303,6 +360,21 @@ impl Display {
             self.set_parent(child, window)?;
         }
         Ok(())
+    }
+
+    fn commit_callback(&mut self, window: WindowId, callback: ObjectId) -> io::Result<()> {
+        let writer = &mut self.transport.writer;
+        wl_surface::Request::Frame { callback }
+            .encode(window.0, writer)
+            .map_err(io::Error::other)?;
+        wl_surface::Request::Commit
+            .encode(window.0, writer)
+            .map_err(io::Error::other)?;
+        self.windows
+            .get_mut(&window)
+            .expect("validated window")
+            .frame = Some(callback);
+        self.transport.flush()
     }
 
     fn set_solid_viewport(

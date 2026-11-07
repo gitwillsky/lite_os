@@ -14,6 +14,7 @@ enum Pixels {
     /// `readback` 是 CPU 消费者（硬件光标）的按需拷贝；原地更新后必须清空，否则读到旧像素。
     Texture {
         texture: Rc<linux_uapi::drm::VirglResource>,
+        context: linux_uapi::drm::VirglContext,
         readback: OnceCell<Vec<u32>>,
     },
     Dma {
@@ -107,14 +108,14 @@ impl Content {
             }
             Some(gpu) => {
                 let texture = gpu
-                    .create_texture(width as u32, height as u32)
+                    .create_sampled_texture(width as u32, height as u32)
                     .map_err(Upload)?;
-                spec.read_rect(spec.bounds(), |y, row| texture.write_row(y, 0, row))?;
-                texture
-                    .transfer_to_host(0, 0, width as u32, height as u32)
-                    .map_err(Upload)?;
+                gpu.stage_texture(&texture, [0, 0, width as u32, height as u32], |staging| {
+                    spec.read_rect(spec.bounds(), |y, row| staging.write_words(y * width, row))
+                })?;
                 Pixels::Texture {
                     texture: Rc::new(texture),
+                    context: gpu.clone(),
                     readback: OnceCell::new(),
                 }
             }
@@ -145,7 +146,12 @@ impl Content {
                     })?;
                 }
             }
-            (Pixels::Texture { texture, readback }, Some(gpu)) => {
+            (
+                Pixels::Texture {
+                    texture, readback, ..
+                },
+                Some(gpu),
+            ) => {
                 *readback = OnceCell::new();
                 // 纹理可能仍被在途帧引用；write_texture 按资源状态选择 transfer 或命令流内联写入，不等待 fence。
                 let mut rows = Vec::new();
@@ -185,25 +191,47 @@ impl Content {
     }
     /// CPU 消费者按需读回（例如硬件光标）；GPU 场景只借用 texture，不进入此路径。
     pub(crate) fn pixels(&self) -> std::io::Result<&[u32]> {
-        let (texture, readback) = match self.pixels.as_ref() {
+        let (texture, readback, context) = match self.pixels.as_ref() {
             Pixels::Memory(pixels) => return Ok(pixels),
-            Pixels::Texture { texture, readback }
-            | Pixels::Dma {
+            Pixels::Texture {
+                texture,
+                readback,
+                context,
+            } => (texture, readback, Some(context)),
+            Pixels::Dma {
                 texture, readback, ..
-            } => (texture, readback),
+            } => (texture, readback, None),
         };
         if readback.get().is_none() {
-            // 内联写入只到达主机纹理，guest backing 可能落后；与 dma-buf 一样先从主机读回。
-            texture.wait()?;
-            texture.transfer_from_host(0, 0, texture.width(), texture.height())?;
-            texture.wait()?;
             let mut pixels = Vec::new();
             pixels
                 .try_reserve_exact(self.width * self.height)
                 .map_err(std::io::Error::other)?;
             pixels.resize(self.width * self.height, 0);
-            for (row, line) in pixels.chunks_exact_mut(self.width).enumerate() {
-                texture.read_row(row, 0, line);
+            if let Some(context) = context {
+                // CPU 消费者有需要时才建立读回暂存，采样纹理不为此保留全屏来宾副本。
+                let mut staging = context.create_vertex_buffer((pixels.len() * 4) as u32)?;
+                context.staged_transfer(
+                    texture,
+                    &staging,
+                    [0, 0, self.width as u32, self.height as u32],
+                    true,
+                )?;
+                staging.wait()?;
+                for (pixel, bytes) in pixels
+                    .iter_mut()
+                    .zip(staging.bytes_mut().as_chunks::<4>().0)
+                {
+                    *pixel = u32::from_le_bytes(*bytes);
+                }
+            } else {
+                // dma-buf 内容由生产者拥有，按其真实 backing 与 fence 读回。
+                texture.wait()?;
+                texture.transfer_from_host(0, 0, texture.width(), texture.height())?;
+                texture.wait()?;
+                for (row, line) in pixels.chunks_exact_mut(self.width).enumerate() {
+                    texture.read_row(row, 0, line);
+                }
             }
             let _ = readback.set(pixels);
         }

@@ -8,6 +8,9 @@
 - classic-ui-abi 是无运行期状态的 no_std 布局声明；classic-ui-runtime 依赖该声明与 classic-ui，实现共享控件。
 - liteos-ui 只依赖 ABI 声明，提供安全 Rust 生命周期、事件、Future 与回调适配，不静态复制控件实现。
 - Display 唯一拥有协议对象、configure、callback、缓冲与释放；WindowHost 不复制这些状态。
+  `paint_frame` 只借出已释放缓冲的像素。回调获知内容是否为上一帧，内容不保留时完整重绘；
+  局部绘制返回物理像素损伤，初始映射强制声明全幅损伤。失败使该缓冲的比较基线失效。
+  首次直接绘制前预分配完整 memfd 存储，使限额和内存不足在绘制前返回；借用期间缓冲移出 Display 表。
 - Context 唯一拥有窗口表、控件树、资源与 FD interest；对象标识单调递增不复用，迟到事件不能命中新对象。
 
 ## ABI 与内存安全
@@ -126,6 +129,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   关闭不 join，旧结果丢弃，Context 释放 channel 后 worker 退出；共享通用控件处理输入与布局。
 - WindowHost 只因装饰、configure 和 focus 的视觉变化失效；Tree input 单独返回 repaint，普通未捕获 motion 不重绘。
   多行选择拖动、菜单、范围和表头抓取仍申请帧；WindowHost 保留尚未成功提交的失效。
+  交互缩放期间复用绘制画布容量。尺寸稳定后，画布按当前窗口大小收缩，历史最大尺寸不再占用常驻内存。
 - calendar 的 OnceLock<RwLock<TimeZone>> 唯一持有已解析 TZif，文件 I/O 和解析均在锁外。
   reload 失败保留旧模型，固定偏移写入使用同目录 create_new 临时文件、sync 与 rename；没有进程环境写入。
 
@@ -341,6 +345,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。
   presentation 显式登记可见树和实际呈现的客户端硬件光标，隐藏 surface 不提前获得下一帧许可。
 - GPU.overlay 缓存合成器叠加层最近一次绘制边界大小的画布与纹理。移动时复用同尺寸存储，每帧清空局部画布后直接上传连续像素。
+  SHM 内容与叠加层的采样纹理只保留最小 GEM 后备，大块上传共用 VirGL context 的一块暂存。
+  暂存由 context 克隆共同持有，容量随最大上传区域增长；重用前检查其最后 fence，忙时换新并由内核提交 pin 保活旧存储。
+  小区域沿用有序内联写入；CPU 光标等消费者按需建立独立读回暂存与像素快照。
+  Benchmark 决策为在现有来宾比较窗口首次绘制、交互缩放和持续局部更新的延迟及内存，确认共用暂存的分配和内联写入成本。
   四边形仍在输出坐标中定位；CPU 后端直接画进扫描缓冲。成本由实际输出下的菜单驻留和交互帧诊断，沿用 flip 与像素门禁。
 - GPU.views 以真实资源编号与采样格式为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
   上一帧 flip 完成后才能淘汰视图/覆盖顶点，exec 成功后才发布新缓存。没有逐四边形重复资源表或每帧重复创建采样视图。

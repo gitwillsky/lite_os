@@ -11,7 +11,7 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-/// 上次绘制的桌面画面。图标覆盖区下次先恢复背景，避免保留一份纯背景或克隆整屏。
+/// 已绘制背景的配置与覆盖区；像素只由 Display 的已释放缓冲持有。
 struct Backdrop {
     key: (
         i32,
@@ -20,7 +20,6 @@ struct Backdrop {
         classic_theme::Rgb,
         desktop_settings::WallpaperStyle,
     ),
-    pixels: Vec<u32>,
     covered: Vec<Rect>,
 }
 pub struct Art {
@@ -34,7 +33,7 @@ pub struct Art {
     pictures: PictureLoader,
     // OWNER: 记录合成背景所用的路径；路径变化或新图片就绪都必须清除 backdrop，避免显示旧墙纸。
     wallpaper: Option<PathBuf>,
-    // OWNER: 背景层画布及其上次覆盖区；没有它每帧都要重新缩放/平铺整张墙纸。
+    // OWNER: 背景配置及上次覆盖区；没有它每帧都要重新缩放/平铺整张墙纸。
     backdrop: Option<Backdrop>,
 }
 impl Art {
@@ -385,16 +384,18 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
 fn text(p: &mut Painter<'_>, x: i32, y: i32, text: &str) {
     p.text(x, y, text, Ink::Color(C::ButtonText), false);
 }
-/// 绘制背景层并借出其完整画面供 Wayland 比较损伤；不借用协议缓冲的写权限。
+/// 在已释放的共享缓冲中绘制背景层，返回物理像素损伤。
 ///
 /// 配置或墙纸变化时重建背景。平时只恢复上一帧图标、标题和编辑框占用过的区域。
 /// 缺失的墙纸显示背景色；无效尺寸或字体加载失败时返回错误。
-pub fn background_frame<'a>(
+pub fn background_frame(
     s: &Desktop,
     d: &Display,
     c: Configuration,
-    art: &'a mut Art,
-) -> Result<&'a [u32], Box<dyn std::error::Error>> {
+    art: &mut Art,
+    pixels: &mut [u32],
+    preserved: bool,
+) -> io::Result<Vec<Rect>> {
     let theme = art.resources.theme().clone();
     let color = s.settings.background.map_or_else(
         || theme.color(C::Background),
@@ -404,17 +405,16 @@ pub fn background_frame<'a>(
     let key = (w, h, c.scale, color, s.settings.wallpaper_style);
     let screen = Rect::new(0, 0, c.width, c.height);
     let fonts = art.resources.fonts(c.scale)?;
-    // 暂时取出画布，绘制期间还需借用 Art 的图标与墙纸。
+    // 暂时取出覆盖区，绘制期间还需借用 Art 的图标与墙纸。
     let mut backdrop = match art.backdrop.take() {
-        Some(backdrop) if backdrop.key == key => backdrop,
+        Some(backdrop) if preserved && backdrop.key == key => backdrop,
         _ => Backdrop {
             key,
-            pixels: vec![0; w as usize * h as usize],
             covered: vec![screen],
         },
     };
-    let surface =
-        Surface::new(&mut backdrop.pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
+    let surface = Surface::new(pixels, w, h, w as usize)
+        .ok_or_else(|| io::Error::other("invalid desktop pixels"))?;
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     let image = art
         .wallpaper
@@ -425,6 +425,7 @@ pub fn background_frame<'a>(
         desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,
         desktop_settings::WallpaperStyle::Stretch => classic_ui::WallpaperStyle::Stretch,
     };
+    let mut damage = Vec::new();
     for rect in backdrop.covered.drain(..) {
         let rect = rect.intersect(screen);
         if !rect.is_empty() {
@@ -434,6 +435,7 @@ pub fn background_frame<'a>(
                     image.paint_wallpaper(p, screen, style, (c.width, c.width));
                 }
             });
+            damage.push(rect);
         }
     }
 
@@ -501,7 +503,21 @@ pub fn background_frame<'a>(
             false,
         );
     }
-    Ok(&art.backdrop.insert(backdrop).pixels)
+    damage.extend(backdrop.covered.iter().copied());
+    art.backdrop = Some(backdrop);
+    Ok(damage
+        .into_iter()
+        .map(|rect| rect.intersect(screen))
+        .filter(|rect| !rect.is_empty())
+        .map(|rect| {
+            Rect::new(
+                rect.x * c.scale,
+                rect.y * c.scale,
+                rect.width * c.scale,
+                rect.height * c.scale,
+            )
+        })
+        .collect())
 }
 
 pub fn frame(

@@ -18,6 +18,9 @@ use crate::sync::{TaskMutex, TaskMutexGuard};
 mod seals;
 use seals::{SealError, Seals};
 
+/// 限制辅助 VMO 的工作集；批量供页减少大块预分配逐页跨越 native ABI 的开销。
+const ZERO_SUPPLY_PAGES: usize = 32;
+
 struct State {
     seals: Seals,
     // OWNER: 稀疏文件页的配额 lease；只有 supply 成功才发表，VMO 只拥有物理页机制。
@@ -250,23 +253,32 @@ impl MemoryFile {
         &self,
         pager: &Pager,
         index: u64,
+        pages: usize,
         aux: &mut Option<Vmo>,
     ) -> Result<(), FileSystemError> {
-        if aux.is_none() {
-            *aux =
-                Some(Vmo::create(PAGE_SIZE as u64, 0).map_err(|_| FileSystemError::OutOfMemory)?);
+        let length = (pages * PAGE_SIZE) as u64;
+        if aux
+            .as_ref()
+            .is_none_or(|vmo| vmo.size().unwrap_or(0) < length)
+        {
+            *aux = Some(
+                Vmo::create((ZERO_SUPPLY_PAGES * PAGE_SIZE) as u64, 0)
+                    .map_err(|_| FileSystemError::OutOfMemory)?,
+            );
         }
         let aux = aux.as_ref().expect("auxiliary VMO created above");
-        aux.write(&[0; PAGE_SIZE], 0)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
+        // 工作池也供持久文件读取使用；清除旧内容后提交零页。成功 supply 会移走源页，
+        // 失败留下的源页也会在下次使用前清零，不能把另一文件的内容交给内存文件。
+        if pages == 1 {
+            // 普通单页缺页保留一次写入的路径，批量优化不增加它的 native 调用次数。
+            aux.write(&[0; PAGE_SIZE], 0)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+        } else {
+            aux.op_range(vmo::OP_ZERO, 0, length)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+        }
         pager
-            .supply_pages(
-                self.object.vmo(),
-                index * PAGE_SIZE as u64,
-                PAGE_SIZE as u64,
-                aux,
-                0,
-            )
+            .supply_pages(self.object.vmo(), index * PAGE_SIZE as u64, length, aux, 0)
             .map_err(|_| FileSystemError::OutOfMemory)
     }
 
@@ -281,7 +293,7 @@ impl MemoryFile {
             return Ok(());
         }
         let entry = self.prepare_page(index)?;
-        self.supply_zero(pager, index, aux)?;
+        self.supply_zero(pager, index, 1, aux)?;
         state.pages.commit_vacant(entry);
         Ok(())
     }
@@ -398,8 +410,18 @@ impl MemoryFile {
             self.object.set_size(size).map_err(object_error)?;
         }
         let mut aux = None;
-        for (&index, _) in pending.iter() {
-            if let Err(error) = self.supply_zero(super::pager::handle(), index, &mut aux) {
+        let mut indices = pending.iter().map(|(&index, _)| index).peekable();
+        while let Some(index) = indices.next() {
+            let mut pages = 1;
+            while pages < ZERO_SUPPLY_PAGES
+                && indices
+                    .peek()
+                    .is_some_and(|next| *next == index + pages as u64)
+            {
+                indices.next();
+                pages += 1;
+            }
+            if let Err(error) = self.supply_zero(super::pager::handle(), index, pages, &mut aux) {
                 // 所有 pending key 原来都是洞；保留 lease 到撤销/fence 完成，不碰既有内容。
                 for (&index, _) in pending.iter() {
                     self.object
@@ -476,7 +498,7 @@ impl super::pager::PageSource for MemoryFile {
                 // 已计费的页再次缺页：内核在内存紧张时淘汰了它。内存文件从不回写，能被淘汰的只有补入后
                 // 从未写过的零页，因此重新补零页；缺失时请求永远得不到 supply，访问者永久睡眠。
                 if state.pages.contains_key(&index) {
-                    self.supply_zero(pager, index, aux)?;
+                    self.supply_zero(pager, index, 1, aux)?;
                 } else {
                     self.commit_page(&mut state, pager, index, aux)?;
                 }

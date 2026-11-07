@@ -1297,8 +1297,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .configuration(id)
                 .ok_or("missing desktop configure")?;
             if id == state.background {
-                let pixels = paint::background_frame(&state, &display, c, &mut art)?;
-                display.present(id, pixels)?;
+                display.paint_frame(id, |pixels, configuration, preserved, display| {
+                    paint::background_frame(
+                        &state,
+                        display,
+                        configuration,
+                        &mut art,
+                        pixels,
+                        preserved,
+                    )
+                })?;
             } else {
                 let pixels = paint::frame(&state, &display, id, c, &mut art, minute)?;
                 display.present(id, &pixels)?;

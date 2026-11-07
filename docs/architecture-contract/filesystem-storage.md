@@ -345,6 +345,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   quota lease、准备索引节点，native supply 成功后才发表该节点。失败自动归还尚未发表的 lease。
   连续已分配区间的读写保留批量 native copy，配额耗尽的 write 返回已准入前缀，不把请求尾部发表成 EOF。
   fallocate 在改变 backing 前准入全部新页；补页中途失败先撤销新页并完成 fence，再归还 lease，保留既有内容。
+  连续新页按有界区间补零和供页，既有页不进入该区间；辅助 VMO 复用前清零，保留普通单页缺页的调用成本。
   truncate 先清零实际末页尾部，再由 native VMO 缩小并撤销越界页，成功后释放对应 lease/发表长度。
   内容由唯一 pager VMO 持有，文件 read/write 与 mmap 使用同一 backing；quota 索引只拥有存储准入，
   不复制物理页或 dirty 状态。st_blocks 读取 native VMO 实际 committed bytes；没有 swap/reclaimer。

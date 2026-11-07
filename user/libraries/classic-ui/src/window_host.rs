@@ -125,7 +125,13 @@ impl WindowHost {
         };
         let (width, height) = configuration.pixel_size()?;
         let font = resources.fonts(configuration.scale)?;
-        self.pixels.resize(width as usize * height as usize, 0);
+        let pixel_count = width as usize * height as usize;
+        // 拖动时保留容量供下一次 configure 复用。尺寸稳定后丢掉超出的画布，
+        // 否则从最大化恢复或缩小窗口后，绘制内存仍会停留在历史峰值。
+        if !configuration.resizing && self.pixels.capacity() > pixel_count {
+            self.pixels = Vec::new();
+        }
+        self.pixels.resize(pixel_count, 0);
         let surface = Surface::new(&mut self.pixels, width, height, width as usize)
             .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;
         let mut painter = Painter::new(surface, resources.theme(), &font, configuration.scale);

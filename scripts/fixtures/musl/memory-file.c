@@ -102,6 +102,26 @@ static void memfd_semantics(void)
 	fd = memfd_create("sealed", 0);
 	CHECK(22, fd >= 0 && fcntl(fd, F_ADD_SEALS, F_SEAL_GROW) == -1 && errno == EPERM);
 	CHECK(23, close(fd) == 0);
+
+	/* 跨多个供页批次，中间已有内容的页必须保留；其余页都补零并按实际页数计费。 */
+	fd = memfd_create("preallocated", MFD_ALLOW_SEALING);
+	CHECK(80, fd >= 0 && pwrite(fd, "kept", 4, 33 * PAGE) == 4);
+	CHECK(81, syscall(SYS_fallocate, fd, 0, 0, 65 * PAGE) == 0);
+	struct stat allocated;
+	CHECK(82, fstat(fd, &allocated) == 0 && allocated.st_size == 65 * PAGE && allocated.st_blocks == 65 * 8);
+	char *reserved = mmap(0, 65 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	CHECK(83, reserved != MAP_FAILED);
+	for (int byte = 0; byte < 65 * PAGE; byte++) {
+		char expected = 0;
+		if (byte >= 33 * PAGE && byte < 33 * PAGE + 4)
+			expected = "kept"[byte - 33 * PAGE];
+		CHECK(84, reserved[byte] == expected);
+	}
+	CHECK(85, fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK) == 0);
+	CHECK(86, syscall(SYS_fallocate, fd, 0, 0, 65 * PAGE) == 0 && memcmp(reserved + 33 * PAGE, "kept", 4) == 0);
+	reserved[64 * PAGE] = 'Z';
+	CHECK(87, pread(fd, buffer, 1, 64 * PAGE) == 1 && buffer[0] == 'Z');
+	CHECK(88, munmap(reserved, 65 * PAGE) == 0 && close(fd) == 0);
 }
 
 /* Linux memfd write seals: real mmap capabilities, split/fork leases and private COW. */

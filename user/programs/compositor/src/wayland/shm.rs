@@ -53,6 +53,12 @@ pub enum ReadError {
 }
 use ReadError::{NoMemory, Truncated};
 
+impl From<std::io::Error> for ReadError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Upload(error)
+    }
+}
+
 /// 单次 `pread` 的字节预算；大 stride 退化为单行，不分配整个客户端 pool。
 const BATCH: usize = 64 * 1024;
 
