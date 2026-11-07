@@ -60,14 +60,74 @@ pub(super) fn remove_contiguous(pages: usize) {
 }
 
 impl Page {
+    // 44 位页号覆盖受支持后端的完整物理页号；12 位 pin 计数、2 位回写、2 位内容，
+    // 最高位为唯一 owner 标记。余下 3 位预留回收代号，不另增每页字段。
+    const PHYSICAL_MASK: u64 = (1 << 44) - 1;
+    const PINS_SHIFT: u32 = 44;
+    const PINS_MASK: u64 = (1 << 12) - 1;
+    const CLEAN_SHIFT: u32 = 56;
+    const CONTENT_SHIFT: u32 = 58;
+    const PRESENT: u64 = 1 << 63;
+
+    pub(super) fn ppn(&self) -> PhysicalPageNumber {
+        PhysicalPageNumber::from((self.0.get() & Self::PHYSICAL_MASK) as usize)
+    }
+
+    pub(super) fn bytes(&self) -> &[u8] {
+        // SAFETY: 本槽位保有完整单页的唯一 frame owner；借用不越过 Page，调用者持树锁，
+        // 与旧 FrameTracker::bytes 相同，返回只读 direct-map 视图，不创建第二个 frame owner。
+        unsafe { core::slice::from_raw_parts(self.ppn().as_page_ptr(), PAGE_SIZE) }
+    }
+
+    pub(super) fn pins(&self) -> u32 {
+        ((self.0.get() >> Self::PINS_SHIFT) & Self::PINS_MASK) as u32
+    }
+
+    pub(super) fn content(&self) -> PageContent {
+        match (self.0.get() >> Self::CONTENT_SHIFT) & 3 {
+            0 => PageContent::Anonymous,
+            1 => PageContent::Pager,
+            2 => PageContent::Bootfs,
+            _ => PageContent::AnonymousPager,
+        }
+    }
+
+    pub(super) fn cleanliness(&self) -> Cleanliness {
+        match (self.0.get() >> Self::CLEAN_SHIFT) & 3 {
+            0 => Cleanliness::Clean,
+            1 => Cleanliness::Dirty,
+            2 => Cleanliness::AwaitingClean,
+            _ => unreachable!("invalid VMO page dirty state"),
+        }
+    }
+
+    fn set_field(&mut self, shift: u32, mask: u64, value: u64) {
+        debug_assert_eq!(value & !mask, 0);
+        self.0 = core::num::NonZeroU64::new((self.0.get() & !(mask << shift)) | (value << shift))
+            .expect("page owner marker must survive state changes");
+    }
+
     pub(super) fn new(frame: FrameTracker, content: PageContent) -> Self {
+        assert_eq!(frame.pages, 1, "VMO page must own one complete frame");
+        let physical = frame.ppn.as_usize() as u64;
+        assert_eq!(
+            physical & !Self::PHYSICAL_MASK,
+            0,
+            "physical page exceeds VMO slot capacity"
+        );
         CONTENT_PAGES[content as usize].fetch_add(1, Ordering::Relaxed);
-        let page = Self {
-            frame,
-            pins: 0,
-            cleanliness: Cleanliness::Dirty,
-            content,
-        };
+        // OWNER: 唯一 frame 所有权移入槽位，直到 Page::drop 才恢复 RAII tracker；
+        // 不复制 Page，不提前归还 allocator，也不为纯观测重建第二个 tracker。
+        let _frame = core::mem::ManuallyDrop::new(frame);
+        let page = Self(
+            core::num::NonZeroU64::new(
+                Self::PRESENT
+                    | physical
+                    | ((Cleanliness::Dirty as u64) << Self::CLEAN_SHIFT)
+                    | ((content as u64) << Self::CONTENT_SHIFT),
+            )
+            .expect("page owner marker must be nonzero"),
+        );
         if content == PageContent::Pager {
             page.pager_state_counter()
                 .expect("new page is dirty")
@@ -78,32 +138,32 @@ impl Page {
 
     pub(super) fn is_reclaimable(&self) -> bool {
         matches!(
-            self.content,
+            self.content(),
             PageContent::Pager | PageContent::AnonymousPager
-        ) && self.cleanliness == Cleanliness::Clean
-            && self.pins == 0
+        ) && self.cleanliness() == Cleanliness::Clean
+            && self.pins() == 0
     }
 
     /// 调用者持目标与源树锁；只有真正提交到目标的页才改变归属，多余供页直接析构。
     pub(super) fn supply_to_pager(&mut self, content: PageContent) {
-        CONTENT_PAGES[self.content as usize].fetch_sub(1, Ordering::Relaxed);
-        self.content = content;
-        CONTENT_PAGES[self.content as usize].fetch_add(1, Ordering::Relaxed);
-        self.cleanliness = Cleanliness::Clean;
+        CONTENT_PAGES[self.content() as usize].fetch_sub(1, Ordering::Relaxed);
+        self.set_field(Self::CONTENT_SHIFT, 3, content as u64);
+        CONTENT_PAGES[self.content() as usize].fetch_add(1, Ordering::Relaxed);
+        self.set_field(Self::CLEAN_SHIFT, 3, Cleanliness::Clean as u64);
         if self.is_reclaimable() {
             RECLAIMABLE_PAGES.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub(super) fn set_cleanliness(&mut self, cleanliness: Cleanliness) {
-        if self.cleanliness == cleanliness {
+        if self.cleanliness() == cleanliness {
             return;
         }
         let was_reclaimable = self.is_reclaimable();
         if let Some(counter) = self.pager_state_counter() {
             counter.fetch_sub(1, Ordering::Relaxed);
         }
-        self.cleanliness = cleanliness;
+        self.set_field(Self::CLEAN_SHIFT, 3, cleanliness as u64);
         if let Some(counter) = self.pager_state_counter() {
             counter.fetch_add(1, Ordering::Relaxed);
         }
@@ -111,16 +171,17 @@ impl Page {
     }
 
     pub(super) fn set_pins(&mut self, pins: u32) {
+        assert!(u64::from(pins) <= Self::PINS_MASK, "VMO pin count overflow");
         let was_reclaimable = self.is_reclaimable();
-        self.pins = pins;
+        self.set_field(Self::PINS_SHIFT, Self::PINS_MASK, u64::from(pins));
         self.update_reclaimable(was_reclaimable);
     }
 
     fn pager_state_counter(&self) -> Option<&'static AtomicUsize> {
-        if self.content != PageContent::Pager {
+        if self.content() != PageContent::Pager {
             return None;
         }
-        match self.cleanliness {
+        match self.cleanliness() {
             Cleanliness::Clean => None,
             Cleanliness::Dirty => Some(&PAGER_STATES[0]),
             Cleanliness::AwaitingClean => Some(&PAGER_STATES[1]),
@@ -142,13 +203,16 @@ impl Page {
 
 impl Drop for Page {
     fn drop(&mut self) {
-        CONTENT_PAGES[self.content as usize].fetch_sub(1, Ordering::Relaxed);
+        CONTENT_PAGES[self.content() as usize].fetch_sub(1, Ordering::Relaxed);
         if let Some(counter) = self.pager_state_counter() {
             counter.fetch_sub(1, Ordering::Relaxed);
         }
         if self.is_reclaimable() {
             RECLAIMABLE_PAGES.fetch_sub(1, Ordering::Relaxed);
         }
+        // SAFETY: new 消费的单页 tracker 只由本不可复制的槽位保有；全部映射已按树的
+        // zap/fence 契约退休，pin 期间对象不会释放。只在最终析构恢复一次 RAII owner。
+        drop(unsafe { FrameTracker::from_raw(self.ppn(), 1) });
     }
 }
 

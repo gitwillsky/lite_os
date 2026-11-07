@@ -299,9 +299,9 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 - M0 进行中：物理页 owner 的匿名/pager/连续/bootfs 分类与 pager dirty/writeback/reclaimable 子计数已实现；
   linuxd Cached/MemAvailable 改为全系统 pager 来源，删除局部缓存扫描。内存供页由实际内容 owner 标明，避免混入存储脏页。
   修正 slice pin 的 backing owner 登记。
-  当前 AArch64/HVF 开发实例三次对账均为 0 页差额（内核堆/栈/页表 + VMO 匿名/pager/bootfs/连续）；
+  此前 AArch64/HVF 基线三次对账均为 0 页差额（内核堆/栈/页表 + VMO 匿名/pager/bootfs/连续）；
   创建 4 MiB 内存文件后 Cached/Shmem 增长，Dirty/Writeback 保持 0，清理已完成。
-  该对账只代表当前设备配置，不替代 RISC-V 及真实 IOMMU 场景的完整归属验收。
+  该历史对账只代表当时的设备与代码配置，不替代 RISC-V 及真实 IOMMU 场景的完整归属验收。
   maps 的普通文件/设备/匿名映射描述已实现，保留实际文件身份、偏移、exec 授权与 Weak MM 寿命；
   观察不克隆 VMA membership，避免改变 SysV nattch/时间。设备的文件/缓冲租约不再用 Vec 混存。
   SysV 与共享匿名 mmap 已补真实内部 tmpfs 文件，内容仍是原匿名 VMO，未引入 pager 或内容副本。
@@ -330,10 +330,13 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   无来源时关闭 timer source；运行时间读取时叠加当前 slice 存量，不再依赖周期 checkpoint；
   清除无消费者的 `TIMER_FROM_USER`/`last_user_return`/tick 相位计算。kernel-unit 4 项 `DeadlineIndex` 单测、
   architecture-bench `timer deadline index` 基准、双架构 Clippy 通过，未运行调度/计时运行时测试。
-- 4 已实现待运行验收：futex 全局单锁改为 `256 × CPU 数` 桶哈希（桶内 FIFO 不变）；桶锁内用不缺页读，缺页放锁后重试；
-  requeue 按桶序加锁；队列逻辑抽成 `futex/queue.rs` 纯函数，kernel-unit 4 项单测（FIFO、唤醒数、同桶/跨桶 requeue、
-  哈希分布）与 architecture-bench `futex enqueue + wake` 基准。桶锁为可睡眠 `TaskMutex` 而非 IRQ 自旋锁：桶内取地址空间锁
-  可能短暂睡眠，自旋锁下不允许；私有与共享 key 共用同一张全局分桶表（空间 koid / VMO id 参与哈希）。双架构 Clippy 通过。
+- 4 已实现待运行验收：私有 context 按地址空间延迟建立，共享 VMO 使用全局 context；等待索引迁入 `execution::sync::futex`，
+  syscall 保留参数/地址/状态码职责。桶改为 IRQ 安全锁，桶内空间锁只 try-lock；锁忙/缺页先退出整个事务再等待。
+  节点锁外准备，跨 context requeue 按身份/桶序加锁，外层 IRQ guard 最后释放；取消复核弱引用登记位置。
+  同 key requeue 不反复搬动队尾，保留 FIFO。复用原队列用例与基准，运行验收待最终统一执行。
+- 6 与 M6 元数据部分已实现待运行验收：已提交页压缩为非零 8 字节槽（页号/pin/回写/内容归属，预留回收代位）；
+  补页请求复用 `PageList<T>` 的分块索引，不再逐页建 AVL 节点。空块预留失败回滚、`ceiling` 跨空块、稀疏失败请求扫描均补齐。
+  扩展既有隔离/页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
 - M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
   并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
   内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；
@@ -367,6 +370,9 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   成员 normal/private 共用私有区下级表；取消成员登记与 O(N) 叶项撤销。沿现有 Arc/ExecutionViews 寿命保活，
   被借用的顶层子表不再空表剪枝，较低层表仍按全 CPU/ASID fence 退休；新根分支按需接入，不预分配空子树。
   共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
-- 尚未完成：8 余项（回收分代/后台线程）、P2.1（截止时间调度类）、
+  双架构 kernel 与 kernel-unit（含现有用例的编译）Clippy 通过；没有运行测试或更新来宾。
+- 尚未完成：
+  8 余项（回收分代/后台线程）、P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
-  M4 内核栈尺寸评估、M7 余项；不以阶段性基础改动代替整项验收。
+  M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
+  P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。

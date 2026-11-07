@@ -18,7 +18,7 @@ impl Vmo {
                 relation,
                 children: Vec::new(),
                 mappings: Vec::new(),
-                requested: FallibleMap::new(),
+                requested: PageList::new(),
                 detached: false,
                 zero_mapped: false,
             }),

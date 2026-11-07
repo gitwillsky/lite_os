@@ -1,13 +1,13 @@
 //! VMO 的已提交页列表：按 16 页一块的稀疏数组，块再用有序表索引（Zircon `VmPageList` 的结构）。
 //!
 //! 每页一个有序表节点（约 64 字节）对稠密的文件/堆区是纯开销，区间扫描还要逐节点追指针。
-//! 分块后稠密区间每页约 28 字节，区间操作变成块内数组遍历。
+//! 已提交页和补页请求分别使用同一分块索引；压缩页 owner 与 Arc 请求槽均为 8 字节，区间操作变成块内数组遍历。
 //!
 //! # 可失败与不可失败
 //!
 //! 页的插入可能需要新块（分配）。持锁的提交阶段不允许失败，所以需要“准备可失败、提交不失败”的调用者先用
 //! [`PageList::reserve_range`] 把区间内的块建好（可失败，改动前完成），再用 [`PageList::insert_reserved`]
-//! 无分配地放入。块在最后一页移除时立即释放，列表不保留空块。
+//! 无分配地放入。块在最后一槽移除时立即释放；仅准备与提交之间允许临时空块，放弃准备时清理。
 
 use fallible_tree::FallibleMap;
 
@@ -16,15 +16,15 @@ use super::Page;
 /// 一块覆盖的页数。16 页（64 KiB）既让稠密区间的元数据摊薄，也不会在稀疏访问时浪费过多。
 pub(super) const CHUNK_PAGES: usize = 16;
 
-struct Chunk {
-    slots: [Option<Page>; CHUNK_PAGES],
+struct Chunk<T> {
+    slots: [Option<T>; CHUNK_PAGES],
     // 已占用槽数；为零的块立即从索引中移除。
     used: u8,
 }
 
-impl Chunk {
+impl<T> Chunk<T> {
     /// 槽号不小于 `from` 的第一页，连同它的页号（块号为 `key`）。
-    fn first_from(&self, key: usize, from: usize) -> Option<(usize, &Page)> {
+    fn first_from(&self, key: usize, from: usize) -> Option<(usize, &T)> {
         self.slots[from..]
             .iter()
             .enumerate()
@@ -42,19 +42,19 @@ impl Chunk {
     }
 }
 
-/// 已提交页列表。
-pub(super) struct PageList {
-    chunks: FallibleMap<usize, Chunk>,
+/// VMO 已提交页或在途请求的分块列表；两者使用相同的准备/提交契约。
+pub(super) struct PageList<T = Page> {
+    chunks: FallibleMap<usize, Chunk<T>>,
     pages: usize,
 }
 
-impl Default for PageList {
+impl<T> Default for PageList<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PageList {
+impl<T> PageList<T> {
     pub(super) const fn new() -> Self {
         Self {
             chunks: FallibleMap::new(),
@@ -72,7 +72,7 @@ impl PageList {
         self.pages == 0
     }
 
-    pub(super) fn get(&self, index: &usize) -> Option<&Page> {
+    pub(super) fn get(&self, index: &usize) -> Option<&T> {
         self.chunks
             .get(&(index / CHUNK_PAGES))?
             .slots
@@ -80,7 +80,7 @@ impl PageList {
             .as_ref()
     }
 
-    pub(super) fn get_mut(&mut self, index: &usize) -> Option<&mut Page> {
+    pub(super) fn get_mut(&mut self, index: &usize) -> Option<&mut T> {
         self.chunks
             .get_mut(&(index / CHUNK_PAGES))?
             .slots
@@ -93,12 +93,12 @@ impl PageList {
     }
 
     /// 按页号升序遍历全部已提交页。
-    pub(super) fn values(&self) -> impl Iterator<Item = &Page> {
+    pub(super) fn values(&self) -> impl Iterator<Item = &T> {
         self.iter_from(&0).map(|(_, page)| page)
     }
 
     /// 从页号 `start`（含）起按升序遍历 `(页号, 页)`。
-    pub(super) fn iter_from(&self, start: &usize) -> impl Iterator<Item = (usize, &Page)> {
+    pub(super) fn iter_from(&self, start: &usize) -> impl Iterator<Item = (usize, &T)> {
         let start = *start;
         self.chunks
             .iter_from(&(start / CHUNK_PAGES))
@@ -115,25 +115,28 @@ impl PageList {
     }
 
     /// 页号不小于 `index` 的最小已提交页。
-    pub(super) fn ceiling(&self, index: &usize) -> Option<(usize, &Page)> {
-        let chunk = index / CHUNK_PAGES;
-        if let Some(content) = self.chunks.get(&chunk)
-            && let Some(found) = content.first_from(chunk, index % CHUNK_PAGES)
-        {
-            return Some(found);
+    pub(super) fn ceiling(&self, index: &usize) -> Option<(usize, &T)> {
+        let first = index / CHUNK_PAGES;
+        for (&chunk, content) in self.chunks.iter_from(&first) {
+            let from = if chunk == first {
+                index % CHUNK_PAGES
+            } else {
+                0
+            };
+            if let Some(found) = content.first_from(chunk, from) {
+                return Some(found);
+            }
         }
-        // 块里没有不小于它的页：下一个非空块的第一页（空块不保留，所以必在槽里）。
-        let (&next, content) = self.chunks.ceiling(&(chunk + 1))?;
-        content.first_from(next, 0)
+        None
     }
 
     /// 页号最小的已提交页。
-    pub(super) fn first_key_value(&self) -> Option<(usize, &Page)> {
+    pub(super) fn first_key_value(&self) -> Option<(usize, &T)> {
         self.ceiling(&0)
     }
 
     /// 对全部已提交页调用 `visit(页号, 页)`。
-    pub(super) fn for_each_mut(&mut self, mut visit: impl FnMut(usize, &mut Page)) {
+    pub(super) fn for_each_mut(&mut self, mut visit: impl FnMut(usize, &mut T)) {
         self.chunks.for_each_mut(|&chunk, content| {
             for (slot, page) in content.slots.iter_mut().enumerate() {
                 if let Some(page) = page {
@@ -146,13 +149,17 @@ impl PageList {
     /// 为 `[first, first + count)` 建好块，使其中任意页之后都能被 [`Self::insert_reserved`] 无分配地放入。
     ///
     /// # Errors
-    /// 分配失败；已建的块保留（它们不占页，不影响一致性），列表内容不变。
+    /// 区间溢出或分配失败；清理空的预留块，既有槽位不变。
     pub(super) fn reserve_range(&mut self, first: usize, count: usize) -> Result<(), ()> {
         if count == 0 {
             return Ok(());
         }
-        for chunk in first / CHUNK_PAGES..=(first + count - 1) / CHUNK_PAGES {
-            self.reserve_chunk(chunk)?;
+        let last = first.checked_add(count - 1).ok_or(())?;
+        for chunk in first / CHUNK_PAGES..=last / CHUNK_PAGES {
+            if self.reserve_chunk(chunk).is_err() {
+                self.discard_empty_chunks();
+                return Err(());
+            }
         }
         Ok(())
     }
@@ -163,10 +170,10 @@ impl PageList {
     /// （稀疏的大对象不会因此分配海量空块）。
     ///
     /// # Errors
-    /// 分配失败；已建的块保留，列表内容不变。
+    /// 分配失败；清理空的预留块，既有槽位不变。
     pub(super) fn reserve_for_shifted(
         &mut self,
-        source: &PageList,
+        source: &PageList<T>,
         offset: usize,
         visible: usize,
     ) -> Result<(), ()> {
@@ -178,11 +185,29 @@ impl PageList {
             }
             let chunk = (index - offset) / CHUNK_PAGES;
             if chunk != last {
-                self.reserve_chunk(chunk)?;
+                if self.reserve_chunk(chunk).is_err() {
+                    self.discard_empty_chunks();
+                    return Err(());
+                }
                 last = chunk;
             }
         }
         Ok(())
+    }
+
+    /// 预留失败或上层提交放弃时归还空块，不改变任何已发表槽位；不分配。
+    pub(super) fn discard_empty_chunks(&mut self) {
+        let mut cursor = 0;
+        while let Some((&key, chunk)) = self.chunks.ceiling(&cursor) {
+            let empty = chunk.used == 0;
+            if empty {
+                drop(self.chunks.remove(&key));
+            }
+            let Some(next) = key.checked_add(1) else {
+                break;
+            };
+            cursor = next;
+        }
     }
 
     fn reserve_chunk(&mut self, chunk: usize) -> Result<(), ()> {
@@ -198,7 +223,7 @@ impl PageList {
     ///
     /// # Errors
     /// 分配失败；`page` 随错误丢弃。
-    pub(super) fn try_insert(&mut self, index: usize, page: Page) -> Result<Option<Page>, ()> {
+    pub(super) fn try_insert(&mut self, index: usize, page: T) -> Result<Option<T>, ()> {
         self.reserve_chunk(index / CHUNK_PAGES)?;
         Ok(self.insert_reserved(index, page))
     }
@@ -207,7 +232,7 @@ impl PageList {
     ///
     /// # Panics
     /// 块不存在——调用者违反了“先预留再提交”的契约。
-    pub(super) fn insert_reserved(&mut self, index: usize, page: Page) -> Option<Page> {
+    pub(super) fn insert_reserved(&mut self, index: usize, page: T) -> Option<T> {
         let chunk = self
             .chunks
             .get_mut(&(index / CHUNK_PAGES))
@@ -221,7 +246,7 @@ impl PageList {
     }
 
     /// 移除一页；块空了就释放块。
-    pub(super) fn remove(&mut self, index: &usize) -> Option<Page> {
+    pub(super) fn remove(&mut self, index: &usize) -> Option<T> {
         let key = index / CHUNK_PAGES;
         let chunk = self.chunks.get_mut(&key)?;
         let page = chunk.slots[index % CHUNK_PAGES].take()?;

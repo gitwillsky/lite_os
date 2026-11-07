@@ -10,6 +10,7 @@ use core::{
     sync::atomic::{Ordering, compiler_fence},
 };
 
+pub(crate) mod futex;
 mod spare;
 mod task_event;
 mod task_mutex;

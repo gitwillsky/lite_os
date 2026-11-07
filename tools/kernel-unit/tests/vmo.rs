@@ -98,9 +98,9 @@ mod memory {
         pub(crate) pages: usize,
     }
     impl FrameTracker {
-        pub(crate) fn bytes(&self) -> &[u8] {
-            // SAFETY: tracker 独占本 layout 的宿主分配，借用不越过 tracker 生命周期。
-            unsafe { core::slice::from_raw_parts(self.ppn.as_page_ptr(), self.pages * PAGE_SIZE) }
+        // SAFETY: fixture 同样只恢复由压缩 Page 唯一持有的完整宿主页。
+        pub(crate) unsafe fn from_raw(ppn: PhysicalPageNumber, pages: usize) -> Self {
+            Self { ppn, pages }
         }
     }
     impl Drop for FrameTracker {

@@ -156,6 +156,8 @@ struct SpaceInner {
     views: ExecutionViews,
     nodes: FallibleMap<u64, VmarNode>,
     next_id: u64,
+    // OWNER: 本逻辑空间的私有 futex 表，首次调用时锁外准备；不进入全局共享桶，也不复制到成员。
+    futexes: Option<Arc<crate::execution::sync::futex::Context>>,
     // OWNER: RISC-V 线程 trap context 页（supervisor-only）；AArch64 不使用。
     contexts: FallibleMap<VirtualPageNumber, FrameTracker>,
 }
@@ -243,6 +245,7 @@ impl AddressSpace {
                 views,
                 nodes,
                 next_id: ROOT + 1,
+                futexes: None,
                 contexts: FallibleMap::new(),
             }),
         })
@@ -308,6 +311,27 @@ impl AddressSpace {
             Some(shared) if shared.range.contains(&address) => shared.koid,
             _ => self.koid,
         }
+    }
+
+    /// 地址所属逻辑空间的私有 futex context；共享服务区沿真实 owner 取得同一张表。
+    ///
+    /// # Errors
+    /// 地址超出本空间/共享区时 `NotMapped`；准备表或锁等待者失败时 `NoMemory`。
+    pub(crate) fn futex_context(
+        self: &Arc<Self>,
+        address: usize,
+    ) -> Result<Arc<crate::execution::sync::futex::Context>, VmError> {
+        let owner = self.owner_of(address)?;
+        if let Some(context) = &owner.lock()?.futexes {
+            return Ok(context.clone());
+        }
+        // 每 logical CPU 16 个私有桶，隔离其他空间的碰撞；仅实际使用时分配，空闲空间不占桶内存。
+        // 准备在锁外，竞争者只保留先发表的一份；没有可被抢占的 Once 初始化自旋窗口。
+        let buckets = (16 * crate::execution::cpu::count()).next_power_of_two();
+        let candidate = crate::execution::sync::futex::Context::try_new(buckets)
+            .map_err(|_| VmError::NoMemory)?;
+        let mut inner = owner.lock()?;
+        Ok(inner.futexes.get_or_insert(candidate).clone())
     }
 
     /// 解析地址所在映射的 VMO 与字节偏移（futex 共享 key）。
@@ -454,8 +478,8 @@ impl AddressSpace {
     /// 读取一个 4 字节对齐的用户字，翻译缺失时不缺页（futex 在桶锁内比较值使用）。
     ///
     /// # Returns
-    /// `Some(value)`；用户翻译尚未安装或不可读时为 `None`——调用者应释放自己的锁、用普通读取缺页后重试，
-    /// 缺少这一步就会在持有全局可见的锁时等待 pager I/O。
+    /// `Some(value)`；空间锁忙、翻译未安装或不可读时为 `None`。不等待、不分配：
+    /// 调用者应释放桶锁、用普通读取等待/缺页后重试，否则 IRQ-safe 锁下会阻塞或等待 pager I/O。
     ///
     /// # Errors
     /// 地址未对齐或超出用户区间返回 `NotMapped`。
@@ -471,7 +495,9 @@ impl AddressSpace {
             .as_deref()
             .filter(|owner| owner.range.contains(&address))
             .unwrap_or(self);
-        let inner = owner.lock()?;
+        let Some(inner) = owner.inner.try_lock() else {
+            return Ok(None);
+        };
         let Some(entry) = inner
             .views
             .normal

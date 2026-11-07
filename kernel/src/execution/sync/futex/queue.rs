@@ -128,6 +128,10 @@ pub(crate) fn requeue_locked<W>(
     wake_locked(source_table, plan.source, plan.wake, |waiter| {
         hooks.wake(waiter)
     });
+    // 相同身份无需转移；否则会把刚放到尾部的节点反复取出，放大到调用者提供的 requeue 上限。
+    if plan.source == plan.target {
+        return 0;
+    }
     let mut count = 0;
     while count < plan.requeue {
         let Some(slot) = source_table.first(plan.source) else {

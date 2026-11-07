@@ -254,7 +254,7 @@ mod drm_fence_timeline;
 mod timer_deadline;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/futex/queue.rs"]
+#[path = "../../../kernel/src/execution/sync/futex/queue.rs"]
 mod futex_queue;
 
 #[cfg(test)]

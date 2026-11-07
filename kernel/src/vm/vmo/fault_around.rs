@@ -66,7 +66,7 @@ impl Vmo {
         if let Some(page) = state.committed.get(&index) {
             // 自身已提交的页若不是文件页（私有写时复制副本、匿名页），映射为只读会让之后的写
             // 多一次缺页，且它不是 fault-around 要摊销的 pager 补页成本。
-            return file_backed(self).then(|| resident(page.frame.ppn));
+            return file_backed(self).then(|| resident(page.ppn()));
         }
         let mut ancestor = match &state.relation {
             Some(Relation::Cow {
@@ -82,7 +82,7 @@ impl Vmo {
                 return None;
             }
             if let Some(page) = ancestor_state.committed.get(&ancestor_index) {
-                return file_backed(&vmo).then(|| resident(page.frame.ppn));
+                return file_backed(&vmo).then(|| resident(page.ppn()));
             }
             let next = match &ancestor_state.relation {
                 Some(Relation::Cow {

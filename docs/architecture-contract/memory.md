@@ -93,7 +93,7 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
 
 ## Pager 与故障信息
 
-- requested map 是未完成请求的唯一 owner；投递失败在同一树事务中撤销登记，不能留下永不完成的请求。
+- requested 分块列表是未完成请求的唯一 owner；投递失败在同一树事务中撤销登记，不能留下永不完成的请求。
   每次登记拥有一个 Arc 完成记录，树锁内的 supply/FAIL 在摘除登记时以 Release 发布结果；等待者以 Acquire
   观察自己保活的记录，等待时释放树锁。成功供页后合法 decommit、重新请求或下一次 FAIL 不得改变旧请求的结果。
   供页完成不保证页持续驻留；解析循环必须重新校验并在作废后再次请求，不能伪造 EIO/SIGBUS。
@@ -117,11 +117,19 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
   在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
   只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
   只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
-- VMO 的已提交页是 `PageList`：16 页一块的稀疏数组，块再由有序表索引，稠密区间每页约 28 字节（原先每页一个约 64 字节的
-  有序表节点），区间扫描变成块内数组遍历；最后一页移除时立即释放块。页的插入可能需要新块，所以持锁的提交阶段不能失败的
-  路径必须先 `reserve_range`/`reserve_for_shifted`（可失败，任何改动之前完成）再 `insert_reserved`：`supply_pages` 在校验阶段
-  建好目标区间的块；COW 祖先折叠预留失败就放弃本次折叠（隐藏节点保持原状，只是少回收一次）。预留只为真实存在的页建块，
-  不按窗口长度建块。释放区间页直接在状态锁内丢弃（fence 已在 zap 中完成）。
+- VMO 的已提交页和在途补页请求分别使用 `PageList<T>`：16 槽一块的稀疏数组，块由有序表索引。
+  每个 `Option<Page>` 与请求 `Option<Arc<PageRequestCompletion>>` 槽都是 8 字节，不再每页分配 AVL 节点；
+  稠密索引成本为 8 字节槽加每 16 槽一份块头/树节点（约 11–12 字节/页），稀疏开销限于实际触及的块。
+  `Page` 非零 u64 唯一保有单页：44 位页号、12 位 pin 计数、2 位回写状态、2 位内容归属，3 位保留代号和 1 位 owner 标记。
+  不复制该 owner；创建消费单页 FrameTracker，最终 Drop 恢复一次 FrameTracker 归还物理页，移动/COW 折叠不重复计费。
+  `FrameTracker::from_raw` 除原有 heap extent 退休外，仅供此最终析构恢复；纯观测不重建 frame owner。
+  同页最多同时固定 4095 次，溢出沿既有 pin 不变量 fail-stop，不允许溢出覆盖相邻状态位。页号容量覆盖两个后端支持的物理范围。
+- 区间扫描按块遍历，最后一槽移除立即释放块。不可失败提交须先 `reserve_range`/`reserve_for_shifted`：
+  `supply_pages` 在移交前预留目标，COW 折叠只为真实可见页预留；预留失败清理空块，既有槽位不变。
+  源映射撤销失败也清理未提交空块；`ceiling` 必须跨过准备阶段的空块，不能漏掉后续驻留页/请求。
+  补页失败/失效按实际请求的 successor 推进，不扫描稀疏虚拟窗口的每一页；页仍在 zap/fence 完成后才释放。
+  Benchmark 决策：扩展既有 snapshot/retirement 诊断到 1024/65536 页的提交与整段撤销，不新增运行入口或时间阈值；
+  最终统一运行，页元数据物理占用并入 M0 基线。
 - fault-around（`Vmo::with_resolved_around` / `AddressSpace::install_around`）与主页在同一树锁事务内安装：
   回收的 zap 与安装由树锁串行，若释放锁后再装，会留下指向已退休页框的悬空翻译。它只装入 pager 支撑且已驻留的页，
   一律去掉写权限，不覆盖已有翻译，共用主页的 `TranslationCommit`（一次 fence）；页表分配失败只是放弃，

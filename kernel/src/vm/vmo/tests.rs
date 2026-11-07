@@ -57,6 +57,22 @@ fn snapshot_retirement_cpu_cost() {
             started.elapsed().as_secs_f64() * 1_000_000.0 / 256.0
         );
     }
+    // 同一生产路径补充页列表规模诊断：覆盖分块提交/区间撤销，不另设测试入口或宿主时间阈值。
+    for pages in [1024, 65_536] {
+        let object = Vmo::create((pages * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
+        let started = std::time::Instant::now();
+        object.op_range(RangeOp::Commit, 0, object.size()).unwrap();
+        let commit_us = started.elapsed().as_micros();
+        let started = std::time::Instant::now();
+        object
+            .op_range(RangeOp::Decommit, 0, object.size())
+            .unwrap();
+        println!(
+            "{pages} pages, {} bytes/slot: commit {commit_us} us, decommit {} us",
+            size_of::<Option<Page>>(),
+            started.elapsed().as_micros()
+        );
+    }
 }
 
 #[test]
@@ -323,7 +339,11 @@ fn fault_around_collects_only_resident_file_pages_read_only_without_requests() {
         .create_child(0, file.size(), ChildKind::AtLeastOnWrite)
         .unwrap();
     snapshot.write(0, &[9]).unwrap();
-    assert_eq!(around(&snapshot, 2), Vec::new(), "页 0 是私有副本，页 2 是主页");
+    assert_eq!(
+        around(&snapshot, 2),
+        Vec::new(),
+        "页 0 是私有副本，页 2 是主页"
+    );
     assert_eq!(around(&snapshot, 0), vec![(2, false)]);
 
     // 不设窗口时不收集任何页（写缺页的路径）。
@@ -360,8 +380,16 @@ fn reading_an_uncommitted_root_anonymous_page_maps_the_shared_zero_page_until_it
     let first = read(&object, 0);
     let second = read(&object, 1);
     assert!(!first.writable, "the zero page is never mapped writable");
-    assert_eq!(first.ppn.as_usize(), second.ppn.as_usize(), "one global zero page");
-    assert_eq!(object.committed_bytes().unwrap(), 0, "a read commits nothing");
+    assert_eq!(
+        first.ppn.as_usize(),
+        second.ppn.as_usize(),
+        "one global zero page"
+    );
+    assert_eq!(
+        object.committed_bytes().unwrap(),
+        0,
+        "a read commits nothing"
+    );
 
     // 写入提交真实页；读到的不再是零页，其余下标仍共享零页。
     object.write(0, &[5]).unwrap();
@@ -394,7 +422,7 @@ fn page(tag: u8) -> Page {
 
 fn tag(page: &Page) -> u8 {
     // SAFETY: 页由列表独占持有，指针指向其首字节。
-    unsafe { *page.frame.ppn.as_page_mut_ptr() }
+    unsafe { *page.ppn().as_page_mut_ptr() }
 }
 
 #[test]
@@ -408,21 +436,34 @@ fn page_list_keeps_order_counts_and_frees_empty_chunks() {
     }
     assert_eq!(list.len(), indexes.len());
     assert_eq!(
-        list.iter_from(&0).map(|(index, _)| index).collect::<Vec<_>>(),
+        list.iter_from(&0)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>(),
         indexes
     );
     assert_eq!(
-        list.iter_from(&16).map(|(index, _)| index).collect::<Vec<_>>(),
+        list.iter_from(&16)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>(),
         indexes[3..]
     );
+    // 预留与提交之间会有空块；不能让 ceiling 在空块处停止，漏掉后续驻留页/请求。
+    list.reserve_range(32, CHUNK_PAGES).unwrap();
+    assert_eq!(list.ceiling(&18).map(|(index, _)| index), Some(100));
     assert_eq!(list.ceiling(&4).map(|(index, _)| index), Some(15));
-    assert_eq!(list.ceiling(&101).map(|(index, _)| index), Some(7 * CHUNK_PAGES + 2));
+    assert_eq!(
+        list.ceiling(&101).map(|(index, _)| index),
+        Some(7 * CHUNK_PAGES + 2)
+    );
     assert!(list.ceiling(&1000).is_none());
     assert_eq!(list.first_key_value().map(|(index, _)| index), Some(0));
     assert_eq!(tag(list.get(&17).unwrap()), 17);
     // 替换返回旧页且不改变计数。
     let old = list.try_insert(17, page(99)).unwrap().unwrap();
-    assert_eq!((tag(&old), tag(list.get(&17).unwrap()), list.len()), (17, 99, indexes.len()));
+    assert_eq!(
+        (tag(&old), tag(list.get(&17).unwrap()), list.len()),
+        (17, 99, indexes.len())
+    );
     // 移除最后一页后块被释放：同块再插入需要重新分配（用 insert_reserved 会 panic，故走 try_insert）。
     assert_eq!(tag(&list.remove(&100).unwrap()), 100);
     assert!(list.remove(&100).is_none());
@@ -451,7 +492,10 @@ fn page_list_reservation_makes_the_commit_phase_allocation_free() {
         assert!(target.insert_reserved(index - 20, moved).is_none());
     }
     assert_eq!(
-        target.iter_from(&0).map(|(index, _)| index).collect::<Vec<_>>(),
+        target
+            .iter_from(&0)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>(),
         [0, 1, 20, 21]
     );
     assert_eq!(target.get(&(CHUNK_PAGES + 4)).map(tag), Some(40));
@@ -459,10 +503,12 @@ fn page_list_reservation_makes_the_commit_phase_allocation_free() {
     let mut narrow = PageList::new();
     narrow.reserve_for_shifted(&target, 0, 2).unwrap();
     assert!(narrow.try_insert(0, page(1)).is_ok());
-    assert!(std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-        narrow.insert_reserved(5 * CHUNK_PAGES, page(2))
-    }))
-    .is_err());
+    assert!(
+        std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            narrow.insert_reserved(5 * CHUNK_PAGES, page(2))
+        }))
+        .is_err()
+    );
 }
 
 #[test]

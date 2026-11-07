@@ -49,7 +49,6 @@ use crate::memory::{
 };
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use fallible_tree::FallibleMap;
 pub(crate) use reclaim::{evicted_pages, relieve_memory_pressure};
 use residency::PageContent;
 pub(crate) use residency::physical_page_statistics;
@@ -119,14 +118,12 @@ enum Kind {
     Slice,
 }
 
-struct Page {
-    frame: FrameTracker,
-    pins: u32,
-    // 只对 pager 支撑的 VMO 有意义的回写状态；缺失时回写会遗漏修改，或淘汰掉尚未落盘的内容。
-    cleanliness: Cleanliness,
-    // OWNER: 此页框当前的内容归属，随 Page 转移而非随映射/句柄计数；复用原有 padding。
-    content: PageContent,
-}
+/// 单页唯一 owner；非零标记同时为 `Option<Page>` 提供空槽 niche。
+/// 位布局由 Page 的方法封装，树锁串行化 pins/回写/内容归属的变更。
+#[repr(transparent)]
+struct Page(core::num::NonZeroU64);
+
+const _: () = assert!(size_of::<Option<Page>>() == 8);
 
 /// pager 页的回写状态（Zircon page dirty state）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +160,7 @@ struct State {
     // OWNER: 映射本对象的地址空间映射；Weak 在映射销毁后失效并被惰性清理。
     mappings: Vec<Weak<Mapping>>,
     // OWNER: 未完成补页的唯一登记；等待者保活本次结果，不从页是否仍驻留推断成功/失败。
-    requested: FallibleMap<usize, Arc<PageRequestCompletion>>,
+    requested: PageList<Arc<PageRequestCompletion>>,
     // FLAG: pager 已 detach（Zircon `pager_detach_vmo`）：之后的缺页不再请求而以 I/O 错误失败。
     // 缺失时内容 owner 退休后仍存活的 VMO（导出副本、COW 子对象）会把请求投给已不处理它的服务，等待者永久睡眠。
     detached: bool,
@@ -339,7 +336,7 @@ impl Vmo {
         )?;
         {
             let mut state = self.state.lock();
-            if state.committed.values().any(|page| page.pins != 0) {
+            if state.committed.values().any(|page| page.pins() != 0) {
                 // 固定页正被 DMA 使用，移交给隐藏节点后写保护会破坏设备写入的可见性。
                 return Err(VmError::BadState);
             }
@@ -431,9 +428,9 @@ impl Vmo {
             }
             return Ok(ResolvedPage {
                 source: FaultSource::Memory,
-                ppn: page.frame.ppn,
+                ppn: page.ppn(),
                 // pager 的非脏页只能安装只读翻译；否则 read fault 后的硬件写入绕过置脏，回写丢数据。
-                writable: page.cleanliness == Cleanliness::Dirty
+                writable: page.cleanliness() == Cleanliness::Dirty
                     || !matches!(self.kind, Kind::Paged { pager: Some(_), .. }),
                 cache: CachePolicy::Cached,
             });
@@ -456,12 +453,12 @@ impl Vmo {
                 if !write {
                     return Ok(ResolvedPage {
                         source: FaultSource::Memory,
-                        ppn: page.frame.ppn,
+                        ppn: page.ppn(),
                         writable: false,
                         cache: CachePolicy::Cached,
                     });
                 }
-                let frame = frame_allocator::alloc_copy(page.frame.bytes())
+                let frame = frame_allocator::alloc_copy(page.bytes())
                     .ok_or(Resolve::Error(VmError::NoMemory))?;
                 drop(ancestor_state);
                 let page = commit_page(&mut state, index, frame, self.page_content())?;
@@ -615,7 +612,7 @@ impl Vmo {
             .committed
             .iter_from(&range.start)
             .take_while(|(index, _)| *index < range.end)
-            .any(|(_, page)| page.pins != 0)
+            .any(|(_, page)| page.pins() != 0)
         {
             return Err(VmError::BadState);
         }

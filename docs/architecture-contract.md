@@ -63,15 +63,14 @@
 | `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/syscall/futex/queue.rs :: Bucket.waiters` | `FallibleMap < Slot , W >` |
+| `kernel/src/execution/sync/futex/queue.rs :: Bucket.waiters` | `FallibleMap < Slot , W >` |
 | `kernel/src/thread/timer_queue/index.rs :: DeadlineIndex.map` | `FallibleMap < Key , V >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.contexts` | `FallibleMap < VirtualPageNumber , FrameTracker >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.nodes` | `FallibleMap < u64 , VmarNode >` |
 | `kernel/src/vm/address_space.rs :: VmarNode.children` | `FallibleMap < usize , Child >` |
 | `kernel/src/vm/kernel_space.rs :: KernelSpace.framed` | `FallibleMap < VirtualPageNumber , FramedRegion >` |
 | `kernel/src/vm/translation.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , TableFrame >` |
-| `kernel/src/vm/vmo/page_list.rs :: PageList.chunks` | `FallibleMap < usize , Chunk >` |
-| `kernel/src/vm/vmo.rs :: State.requested` | `FallibleMap < usize , Arc < PageRequestCompletion > >` |
+| `kernel/src/vm/vmo/page_list.rs :: PageList.chunks` | `FallibleMap < usize , Chunk < T > >` |
 
 ## 4. Source size contract
 

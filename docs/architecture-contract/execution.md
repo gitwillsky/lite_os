@@ -78,12 +78,17 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
 - deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
-- 内核 futex 表（`syscall::futex`）按 key 哈希分入 `256 × CPU 数`（向上取 2 的幂，首次使用时一次确定）个桶，每桶一把可睡眠 `TaskMutex` 与一棵 (key, 序号) 有序树；同一 key
-  恒在同一桶，FIFO 不变。桶锁内比较用户值只用不缺页读取（`AddressSpace::read_resident_word`）：翻译缺失时先放桶锁、
-  锁外普通读取缺页（可能等 pager），再重试，缺失这一步会让一次文件缺页的 I/O 串行化同桶 futex。requeue 按桶下标升序加锁、
-  同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：队列逻辑（key 哈希、FIFO 唤醒、requeue）是 `futex/queue.rs` 的纯函数，
-architecture-bench `futex enqueue + wake` 约束无竞争入队/摘除的 CPU 成本，host 单测覆盖 FIFO、唤醒数、
-同桶/跨桶 requeue 与哈希稳定/分布；锁争用吞吐用计划基线 4 的 guest 诊断。
+- futex 等待索引归 `execution::sync::futex`，`syscall::futex` 只解码 native 参数、解析地址与比较用户值。
+  私有 context 由实际 AddressSpace 按需拥有（每 logical CPU 16 桶，向上取 2 的幂）；成员的服务区使用共享空间的私有 context。
+  共享 VMO key 使用唯一全局 context（每 logical CPU 256 桶）；不同空间的私有 key 不进入全局桶。
+  context 发表前准备全部桶，每桶一把 `IrqMutex` 和 (key, 序号) 有序树；等待节点在锁外预分配，requeue 移交原节点。
+- 桶内 `AddressSpace::read_resident_word` 只 try-lock 实际页表 owner，不排队、不分配、不缺页；
+  空间锁忙或翻译缺失先退出整个桶事务，再普通读取等待/缺页后重新比较。比较与入队同锁，唤醒不会丢失。
+  双桶按 (存活 context 地址, 桶下标) 全序加锁，相同桶只取一次；外层 IRQ guard 在两桶都解锁后最后恢复中断，
+  不能依赖 source/target 的变量析构顺序。等待者只弱引用 context，取消在快照桶内复核位置，封闭跨 context requeue 的交错与引用环。
+  相同 key 的 requeue 只完成 wake，不把同一批等待者反复移动至调用者提供的上限。
+  Benchmark 决策：复用 `futex/queue.rs` 的现有 FIFO/requeue 用例及 architecture-bench `futex enqueue + wake`；
+  争用吞吐留到统一运行验收的基线 4，不增加单独的测试实体。
 - 内核栈高水位探针：启动参数 `stack_probe` 默认关闭，在创建线程前确定。开启时新栈的可用区涂写非零标记，
   退出时扫描首个改变的字，创新高记录 `kernel stack high-water mark: X of Y usable bytes (written lower bound)`；
   guard 与 AArch64 context reserve 均排除。开销限于创建的一次写和退出的一次读，不进入 trap/调度路径。

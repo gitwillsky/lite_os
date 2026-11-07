@@ -50,7 +50,7 @@ impl Vmo {
             source_state
                 .committed
                 .get(&(source_first + page))
-                .is_none_or(|page| page.pins != 0)
+                .is_none_or(|page| page.pins() != 0)
         }) {
             return Err(VmError::BadState);
         }
@@ -63,7 +63,10 @@ impl Vmo {
         // 反序时重复供页的源页可能在仍被映射时释放，违反页框退休契约。
         drop(state);
         drop(source_state);
-        source.zap(source_first..source_first + count, ZapMode::Unmap)?;
+        if let Err(error) = source.zap(source_first..source_first + count, ZapMode::Unmap) {
+            self.state.lock().committed.discard_empty_chunks();
+            return Err(error);
+        }
         let mut source_state = source.state.lock();
         let mut state = self.state.lock();
         for page in 0..count {
@@ -100,10 +103,16 @@ impl Vmo {
         let (first, count) = page_range(offset, length)?;
         let _tree = self.lock_tree()?;
         let mut state = self.state.lock();
-        for index in first..first + count {
-            if let Some(request) = state.requested.remove(&index) {
-                request.status.store(FAILED, Ordering::Release);
-            }
+        while let Some((index, _)) = state
+            .requested
+            .ceiling(&first)
+            .filter(|(index, _)| *index < first + count)
+        {
+            let request = state
+                .requested
+                .remove(&index)
+                .expect("pending request disappeared under tree lock");
+            request.status.store(FAILED, Ordering::Release);
         }
         drop(state);
         self.supplied.wake_all();
@@ -122,7 +131,7 @@ impl Vmo {
         let _tree = self.lock_tree()?;
         let mut state = self.state.lock();
         state.detached = true;
-        while let Some((&index, _)) = state.requested.first_key_value() {
+        while let Some((index, _)) = state.requested.first_key_value() {
             if let Some(request) = state.requested.remove(&index) {
                 request.status.store(FAILED, Ordering::Release);
             }
@@ -154,11 +163,11 @@ impl Vmo {
                 break;
             }
             match start {
-                None if page.cleanliness == Cleanliness::Dirty => {
+                None if page.cleanliness() == Cleanliness::Dirty => {
                     start = Some(index);
                     end = index + 1;
                 }
-                Some(_) if page.cleanliness == Cleanliness::Dirty && index == end => {
+                Some(_) if page.cleanliness() == Cleanliness::Dirty && index == end => {
                     end = index + 1
                 }
                 Some(_) => break,
@@ -187,7 +196,7 @@ impl Vmo {
         // 树锁阻止新的 write fault；保护前完成的硬件写仍包含在随后读出的 writeback 快照中。
         self.zap(first..first + count, ZapMode::RemoveWrite)?;
         self.state.lock().committed.for_each_mut(|index, page| {
-            if (first..first + count).contains(&index) && page.cleanliness == Cleanliness::Dirty {
+            if (first..first + count).contains(&index) && page.cleanliness() == Cleanliness::Dirty {
                 page.set_cleanliness(Cleanliness::AwaitingClean);
             }
         });
@@ -207,7 +216,7 @@ impl Vmo {
         let _tree = self.lock_tree()?;
         self.state.lock().committed.for_each_mut(|index, page| {
             if (first..first + count).contains(&index)
-                && page.cleanliness == Cleanliness::AwaitingClean
+                && page.cleanliness() == Cleanliness::AwaitingClean
             {
                 page.set_cleanliness(Cleanliness::Clean);
             }
@@ -270,7 +279,7 @@ impl Vmo {
         while let Some(index) = state
             .requested
             .ceiling(&range.start)
-            .map(|(&index, _)| index)
+            .map(|(index, _)| index)
             .filter(|&index| index < range.end)
         {
             let request = state

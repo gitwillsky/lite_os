@@ -170,11 +170,11 @@ impl Vmo {
                 _ => {}
             }
             if let Some(page) = state.committed.get(&index) {
-                return (page.frame.ppn.as_usize() == frame).then_some(ResidentContent {
-                    anonymous: page.content == PageContent::Anonymous,
-                    dirty: page.content != PageContent::Bootfs
-                        && page.cleanliness == Cleanliness::Dirty,
-                    volatile_pager: page.content == PageContent::AnonymousPager,
+                return (page.ppn().as_usize() == frame).then_some(ResidentContent {
+                    anonymous: page.content() == PageContent::Anonymous,
+                    dirty: page.content() != PageContent::Bootfs
+                        && page.cleanliness() == Cleanliness::Dirty,
+                    volatile_pager: page.content() == PageContent::AnonymousPager,
                 });
             }
             let (parent, offset) = match &state.relation {

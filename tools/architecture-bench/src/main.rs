@@ -16,7 +16,7 @@ mod timer_deadline;
     dead_code,
     reason = "基准只执行入队与唤醒；共享 key 与 requeue 由 kernel-unit 单测覆盖"
 )]
-#[path = "../../../kernel/src/syscall/futex/queue.rs"]
+#[path = "../../../kernel/src/execution/sync/futex/queue.rs"]
 mod futex_queue;
 #[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;

@@ -178,7 +178,7 @@ impl FrameTracker {
     ///
     /// caller 必须证明完整 extent 当前没有其他 owner、引用或 allocator membership。
     // SAFETY: caller must transfer one complete still-allocated frame extent with no aliases.
-    pub(in crate::memory) unsafe fn from_raw(ppn: PhysicalPageNumber, pages: usize) -> Self {
+    pub(crate) unsafe fn from_raw(ppn: PhysicalPageNumber, pages: usize) -> Self {
         Self { ppn, pages }
     }
 
@@ -195,20 +195,6 @@ impl FrameTracker {
         // SAFETY: &mut FrameTracker 保证本 tracker 的 Rust 访问独占；tracker 在借用期间
         // 持有完整连续页范围，物理内存由 kernel direct map 覆盖且满足页对齐。
         unsafe { core::slice::from_raw_parts_mut(self.ppn.as_page_mut_ptr(), len) }
-    }
-
-    /// 只读借用 tracker 拥有的连续物理页内容。
-    ///
-    /// # Returns
-    ///
-    /// 生命周期绑定到 tracker 的只读字节切片。
-    pub(crate) fn bytes(&self) -> &[u8] {
-        let len = self
-            .pages
-            .checked_mul(super::config::PAGE_SIZE)
-            .expect("frame byte length overflow");
-        // SAFETY: FrameTracker 在借用期间持有完整物理页范围；只返回共享只读切片。
-        unsafe { core::slice::from_raw_parts(self.ppn.as_page_ptr(), len) }
     }
 }
 
