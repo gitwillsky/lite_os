@@ -59,7 +59,12 @@ def sounds() -> tuple[tuple[str, Path], ...]:
     return tuple((path.name, path) for path in _files("sounds"))
 
 
-def shell_resources() -> tuple[Path, ...]:
+def shell_bitmaps() -> tuple[Path, ...]:
+    """返回已校验的原生 BMP 输入，供图集生成与原版画面比对；产品安装只用 shell_atlas。"""
+    return _files("ui")
+
+
+def shell_atlas() -> Path:
     """从唯一已校验的 BMP 输入生成并缓存只读图集；产品只安装图集，不保留逐图解码路径。
 
     Returns:
@@ -72,7 +77,7 @@ def shell_resources() -> tuple[Path, ...]:
     import shutil
     from build_cache import cache_lock, fingerprint, manifest_matches, publish_directory, temporary_directory, write_manifest
     from pack_shell_assets import atlas
-    inputs = _files("ui")
+    inputs = shell_bitmaps()
     recipe = {"inputs": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs},
               "converter": hashlib.sha256((ROOT / "scripts/pack_shell_assets.py").read_bytes()).hexdigest()}
     root = ROOT / "target/classic-ui"
@@ -86,7 +91,7 @@ def shell_resources() -> tuple[Path, ...]:
                 publish_directory(temporary, output)
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
-    return (output / "bitmaps.atlas",)
+    return output / "bitmaps.atlas"
 
 
 def wallpapers() -> tuple[Path, ...]:

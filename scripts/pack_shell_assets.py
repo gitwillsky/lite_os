@@ -98,14 +98,15 @@ def atlas(paths: tuple[Path, ...], destination: Path) -> None:
         images[path.name] = (width, height, bytes(pixels), indices)
 
     # 1. 在构建时完成 load_icon 的同尺寸/较大/较小选择和最近邻缩放；运行时不再为缺尺寸分配私有像素。
-    stems = {match[1] for name in images if (match := re.fullmatch(r"(.+)-(16|32|64)\.bmp", name))}
+    native = images.copy()
+    stems = {match[1] for name in native if (match := re.fullmatch(r"(.+)-(16|32|64)\.bmp", name))}
     for stem in sorted(stems):
         for size, candidates in ((16, (16, 32, 64)), (32, (32, 64, 16)), (64, (64, 32, 16))):
             name = f"{stem}-{size}.bmp"
             if name in images:
                 continue
-            width, height, pixels, indices = next(images[f"{stem}-{candidate}.bmp"]
-                                                  for candidate in candidates if f"{stem}-{candidate}.bmp" in images)
+            width, height, pixels, indices = next(native[f"{stem}-{candidate}.bmp"]
+                                                  for candidate in candidates if f"{stem}-{candidate}.bmp" in native)
             positions = [(y * height // size) * width + x * width // size
                          for y in range(size) for x in range(size)]
             images[name] = (size, size, b"".join(pixels[position * 4:position * 4 + 4] for position in positions),
@@ -113,6 +114,8 @@ def atlas(paths: tuple[Path, ...], destination: Path) -> None:
 
     # 2. 固定头与按名排序的固定记录可直接二分查找；像素按 u32 对齐，下标原样保留供重新着色。
     count = len(images)
+    if count == 0:
+        raise ValueError("empty bitmap atlas")
     data = bytearray((32 + count * 128 + 4095) // 4096 * 4096)
     for index, (name, (width, height, pixels, indices)) in enumerate(sorted(images.items())):
         encoded = name.encode("ascii")

@@ -4,8 +4,8 @@
 Windows 2000 Professional SP4 简中 ISO。ISO、原始 PE、全部导出资源与中间 PNG 留在被 Git 忽略的
 `.local/inputs/windows2000/`；它们不参与普通构建，clone 后无需重新准备 ISO。
 
-`scripts/extract_windows2000_assets.py` 拥有提取、转换和发布；`scripts/classic_assets.py` 只校验并返回
-受版本管理的产品清单。不存在本地覆盖、原创默认素材或替代字体的选择分支。任何必需文件缺失、损坏或
+`scripts/extract_windows2000_assets.py` 拥有提取、转换和发布；`scripts/classic_assets.py` 校验并返回
+受版本管理的产品清单，并由这些唯一输入生成安装图集。不存在本地覆盖、原创默认素材或替代字体的选择分支。任何必需文件缺失、损坏或
 未登记冗余文件都会使构建失败。
 
 `manifest.json` 记录 ISO 名称、字节数、SHA256、语言、工具版本，以及逐产物字节数、SHA256、来源资源号和转换方式。
@@ -30,6 +30,19 @@ ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pa
 只转换并发布产品依赖到 `assets/classic/`，同步删除旧素材。提取配方改变时使用新的 `--output` 目录。
 提交生成的产品文件与 manifest；不提交 ISO、DLL、中间 PNG 或无引用的资源。
 `--check` 无需 ISO、Pillow 和外部提取工具。普通构建与开发镜像同步使用同一份清单，资源内容计入构建及同步指纹。
+
+## 安装图集
+
+LUIA0001 是只读产品数据格式，不是应用 ABI。所有整数为小端，应用仍通过标准 UI 资源接口取图。
+32 字节头依次为 magic[8]、记录数 u32、记录长 u32（128）、文件长 u64、保留零 u64。
+每记录按 ASCII 文件名排序：96 字节 NUL 补齐名称，width/height 各 u32，像素/下标偏移各 u64，保留零 u64。
+索引后的数据区向上对齐到 4096；像素为 top-down 预乘 ARGB u32，下标为原始 u8（无下标时偏移零），各段向上对齐到 4 字节。
+
+classic-ui 的 Bitmap 保活只读 MAP_PRIVATE 视图；每进程 Weak 目录只合并活视图，不强行保留已经无消费者的映射。
+尺寸、排序、偏移、整像素对齐和文件内范围验证成功后才借出 u32 切片；绘制不持锁、不解码、不复制像素。
+不同进程读同一文件的页缓存，只有触及页驻留；调色板重着色保留共享下标，只有新颜色像素私有。
+图集更新必须用 rename 发布新 inode，不能原地写入/截断映射中的文件。当前安装/删除由离线 userland 同步完成，
+全量迁移需同步库/原生程序及图集；现有 SSH 单文件部署不会自动删除旧进程仍需的资源。
 
 ## ISO 身份与资源映射
 
@@ -107,7 +120,12 @@ ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pa
 
 - `ui/`：标准 top-down BMP V4；图标保留原生尺寸和 alpha，同尺寸多色深变体取最高色深。
   普通图像为 32-bit BI_BITFIELDS；时区地图保留 8-bit BI_RGB 调色板下标，供标准 Image 控件更换调色板。
-  工具栏条的洋红透明键在导入时转成 alpha 0。Resources/AppIcons 在加载时按请求尺寸选择原图；缺失尺寸仅做最近邻缩放。
+  工具栏条的洋红透明键在导入时转成 alpha 0。这些受版本管理的 BMP 是构建及原版画面比对的输入。
+  `classic_assets::shell_atlas` 经现有 `pack_shell_assets` 转换器产生 `target/classic-ui/<fingerprint>/bitmaps.atlas`，
+  普通构建只需 Python 标准库，不依赖 ISO/Pillow；指纹覆盖全部输入内容及转换器，复用既有锁和原子发布。
+  产品安装只发布 `/usr/share/liteos/ui/bitmaps.atlas`，旧逐图 BMP 由离线同步清单退休。
+  图标的同尺寸/较大/较小选择与缺尺寸最近邻缩放也在构建时完成；派生 64px 不作为 ISO 原生素材登记。
+  运行库将旧资源路径解释为图集内的逻辑名，图集错误不回退运行时解码。用户/应用 PNG、BMP、JPEG 仍由通用解码器负责。
 - `boot-scene.lbs`：`ntoskrnl.exe:1` 完整 640×480 启动画面，无损调色板 RLE，kernel 与 compositor 消费同一份文件。
 - `cursors.lcs`：安装介质的 `*_r.cur` 默认方案；热点取 CUR 目录，2x 为整数最近邻放大。
   手形来自 `user32.dll:114`，保留其 CUR 热点 (10,10)，不混用原创光标。

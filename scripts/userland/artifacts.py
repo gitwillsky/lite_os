@@ -6,7 +6,7 @@ from classic_assets import (
     boot_scene,
     cursors,
     fonts as classic_fonts,
-    shell_resources,
+    shell_atlas,
     sounds,
     wallpapers as classic_wallpapers,
 )
@@ -59,8 +59,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     libraries.append((ui, "libliteos_ui.so.1"))
     fonts = tuple(UserlandArtifact(path, f"/usr/share/liteos/fonts/{path.name}")
                   for path in classic_fonts())
-    ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
-               for path in shell_resources())
+    ui = UserlandArtifact(shell_atlas(), "/usr/share/liteos/ui/bitmaps.atlas")
     # 系统墙纸目录由 Git 持有的原创壁纸组成，显示属性按文件名列出。
     wallpapers = tuple(UserlandArtifact(path, f"/usr/share/liteos/wallpapers/{path.name}")
                        for path in classic_wallpapers())
@@ -81,7 +80,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/fonts.conf", "/etc/fonts/fonts.conf"),
         UserlandArtifact(ROOT / "user/base/mime/packages/liteos.xml", "/usr/share/mime/packages/liteos.xml"),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(), *file_type_icons(),
+        *programs, *fonts, ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(), *file_type_icons(),
         *_openssh_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),

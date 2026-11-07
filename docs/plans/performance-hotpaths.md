@@ -365,9 +365,13 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   损伤由上一次提交画面的分块哈希推导；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
   尚缺：区域级光栅裁剪（只重画失效区）。控件树的 `nodes` 是公开 map、到处直接 `get_mut`，没有统一的变更入口，
   需要先给控件树引入节点变更版本（封装可变访问）才能安全地由它推导失效区。
-- M7 部分实现：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）；点阵与不抗锯齿轮廓字形（只含 0/255）
+- M7 已实现待运行验收：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）；点阵与不抗锯齿轮廓字形（只含 0/255）
   改为 1 位/像素存储（`typeface::Coverage::Mono`，BDF 位图直接沿用），canvas 新增 `BitMask`/`draw_bit_mask`，
-  单测证明与 8 位蒙版逐像素一致。尚缺：预解码共享主题图标图集。
+  先前单测覆盖与 8 位蒙版逐像素一致。
+  系统 UI 位图已由唯一 BMP 输入在构建时预乘/派生尺寸，生成 LUIA0001 图集，经原安装清单发布。
+  Bitmap 直接借用只读 mmap 的像素及下标；Weak 目录只合并活引用，最后引用释放映射，无逐图解码或缺尺寸私有缩放。
+  palette 重着色共享下标，只有新颜色像素私有；原逐图产品 BMP 由离线同步退休，无错误回退路径。
+  扩展现有位图边界用例编译覆盖非法索引，未运行生成/图形/内存验收；不以源码实现代替内存目标达成。
 - 移交前验证记录（不代表当前树已验收）：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
   `--write-interface` 重新生成接口清单）；ext4-unit 69 项、kernel-unit 非 DTB 夹具、scheduler-unit、netstack-unit、
   span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
@@ -390,7 +394,7 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 - 尚未完成：
   P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
-  M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
+  M4 线程整合与内核栈尺寸评估、P2.3 缓冲复用；
   P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
 
 分代索引的双架构 kernel 与 kernel-unit Clippy 已通过；共享块环及其 driver-host/ext4/fshost/linuxd 依赖的双架构 Clippy 已通过。

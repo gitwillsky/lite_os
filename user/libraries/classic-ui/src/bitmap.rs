@@ -43,7 +43,8 @@ impl Bitmap {
 
     /// 读取界面图像（图标、系统位图、应用 PNG）：单边不超过 2048、编码数据不超过 32 MiB。
     ///
-    /// 格式按文件签名识别为 PNG、Windows BMP 或 JPEG；损坏、截断或超限返回 InvalidData。
+    /// 系统 UI 资源路径是图集内的逻辑 BMP 名，直接借用构建时预解码的只读像素；图集缺失/损坏立即失败。
+    /// 其他路径按签名识别 PNG、Windows BMP 或 JPEG；损坏、截断或超限返回 InvalidData。
     pub fn load(path: &Path) -> io::Result<Self> {
         match atlas::load(path)? {
             Some(image) => Ok(image.bitmap()),
@@ -83,7 +84,8 @@ impl Bitmap {
 
     /// 加载指定逻辑尺寸的系统图标：先用同尺寸原图，再选较大原图，最后选较小原图。
     /// `directory/stem` 指定系统素材目录与安全逻辑名，`size` 只接受 16/32/64。
-    /// 缺少同尺寸时仅在加载阶段最近邻缩放，保留像素画边缘；不生成伪造的原始素材文件。
+    /// 系统图集在构建时完成缺尺寸的最近邻缩放；其他目录在加载阶段缩放，保留像素画边缘。
+    /// 派生尺寸只存在构建产物中，不生成伪造的原始素材文件。
     /// 非法名字/尺寸返回 InvalidInput，全部缺失返回 NotFound，原图损坏与读取失败原样返回。
     pub fn load_icon(directory: &Path, stem: &str, size: i32) -> io::Result<Self> {
         if !matches!(size, 16 | 32 | 64)

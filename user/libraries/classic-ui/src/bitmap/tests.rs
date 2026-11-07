@@ -28,6 +28,25 @@ fn v4_bitmap_is_bounded_and_premultiplies_alpha() {
     }
     bytes[22..26].copy_from_slice(&i32::MIN.to_le_bytes());
     assert!(Bitmap::decode(&bytes, Limits::UI).is_err());
+
+    // 同一像素格式的只读图集必须在构造 u32 视图前拒绝越界、未对齐和尺寸溢出。
+    let mut packed = vec![0u8; 4100];
+    packed[..8].copy_from_slice(b"LUIA0001");
+    for (at, value) in [(8, 1u32), (12, 128), (128, 1), (132, 1)] {
+        packed[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    packed[16..24].copy_from_slice(&4100u64.to_le_bytes());
+    packed[32..41].copy_from_slice(b"pixel.bmp");
+    packed[136..144].copy_from_slice(&4096u64.to_le_bytes());
+    packed[4096..].copy_from_slice(&0x8080_0000u32.to_le_bytes());
+    assert_eq!(atlas::validate(&packed).unwrap(), 1);
+    for at in [8, 128, 132, 136, 144] {
+        let mut broken = packed.clone();
+        broken[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(atlas::validate(&broken).is_err());
+    }
+    packed[136..144].copy_from_slice(&4097u64.to_le_bytes());
+    assert!(atlas::validate(&packed).is_err());
 }
 
 /// 写一个 40 字节 BITMAPINFOHEADER 的 BMP；`extra` 是调色板或位域，`data` 是像素数据。

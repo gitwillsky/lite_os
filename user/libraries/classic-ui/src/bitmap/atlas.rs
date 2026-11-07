@@ -125,7 +125,7 @@ fn name(record: &[u8]) -> &[u8] {
     &record[..end]
 }
 /// 验证固定索引与每个视图范围；只有验证成功的不可变映射能构造 SharedImage。
-fn validate(bytes: &[u8]) -> io::Result<usize> {
+pub(super) fn validate(bytes: &[u8]) -> io::Result<usize> {
     if !cfg!(target_endian = "little")
         || bytes.len() < HEADER
         || &bytes[..8] != b"LUIA0001"
@@ -145,7 +145,7 @@ fn validate(bytes: &[u8]) -> io::Result<usize> {
     }
     let payload = index_end.checked_add(4095).ok_or_else(invalid)? / 4096 * 4096;
     let mut previous = &[][..];
-    for record in bytes[HEADER..index_end].chunks_exact(RECORD) {
+    for record in bytes[HEADER..index_end].as_chunks::<RECORD>().0 {
         let current = name(record);
         let stem = current.strip_suffix(b".bmp").ok_or_else(invalid)?;
         if stem.is_empty()

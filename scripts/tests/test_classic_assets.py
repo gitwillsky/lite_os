@@ -23,7 +23,7 @@ class ProductAssetTests(unittest.TestCase):
             self.assertTrue(all(path.is_relative_to(classic_assets.DIRECTORY) for path in paths))
         self.assertEqual({path.name for path in classic_assets.fonts()},
                          {'simsun.ttc', 'tahoma.ttf', 'tahomabd.ttf', 'marlett.ttf', 'fontmap.ini'})
-        self.assertIn('network-places-32.bmp', {path.name for path in classic_assets._files("ui")})
+        self.assertIn('network-places-32.bmp', {path.name for path in classic_assets.shell_bitmaps()})
         self.assertIn('recycle.wav', dict(classic_assets.sounds()))
 
     def test_ui_assets_have_consumers_and_fixed_requests_are_installed(self) -> None:
@@ -59,12 +59,12 @@ class ProductAssetTests(unittest.TestCase):
             (root / 'manifest.json').write_text(json.dumps({'files': {'ui/my-documents-32.bmp': info}}))
             with mock.patch.object(classic_assets, 'DIRECTORY', root):
                 with self.assertRaises(FileNotFoundError):
-                    classic_assets._files("ui")
+                    classic_assets.shell_bitmaps()
                 (root / 'ui').mkdir()
                 path = root / 'ui/my-documents-32.bmp'
                 path.write_bytes(b'X' * info['bytes'])
                 with self.assertRaisesRegex(ValueError, 'integrity mismatch'):
-                    classic_assets._files("ui")
+                    classic_assets.shell_bitmaps()
                 path.write_bytes((classic_assets.ROOT / 'assets/classic/ui/my-documents-32.bmp').read_bytes())
                 (root / 'theme').mkdir()
                 (root / 'theme/classic.theme').write_text('')

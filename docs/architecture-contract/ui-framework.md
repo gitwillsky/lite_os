@@ -217,6 +217,13 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   未压缩调色板图保留下标供重新着色；越界调色板下标按 GDI 显示为黑色。JPEG 固定 zune-jpeg 0.5.15，输出 RGB。
   `load` 用于界面图像（单边 2048、输入 32 MiB）；`load_picture` 用于用户图片（单边 16384、2^24 像素、输入 64 MiB），
   上限在分配像素前检查。
+- Bitmap 的系统 UI 像素来自构建期 LUIA0001 图集；`bitmap::atlas` 独占只读映射、验证及逻辑名称解析，
+  `Pixels`/`Indices` 分别保活解码存储或同一映射。进程内 Weak 目录合并活引用，最后一个位图释放后 unmap；绘制不取目录锁。
+  原始 BMP 输入及实际来源仍由 classic_assets 清单拥有，唯一转换器 `pack_shell_assets` 预乘、派生尺寸并打包；
+  userland 唯一清单只安装图集，离线同步退休逐图 BMP，图集错误不回退逐图解码。
+  文件只读且以 rename 更新，完整索引/范围/对齐先验证再构造 u32 视图；两个目标均为小端。
+  重着色只分配新颜色像素，原始下标继续共享；替换媒体帧在分配成功后才放弃映射，不修改共享源。
+  格式与迁移边界见[资源规格](../design/classic-desktop/assets.md#安装图集)，不新增应用接口或私有 OS ABI。
 - `classic-ui::wallpaper` 是 Windows 2000 墙纸合成（居中/平铺/拉伸，最近邻）的唯一实现；桌面外壳与显示属性预览共用。
   Canvas 绘制命令 kind 7 为墙纸预览：矩形代表整个屏幕，text 为图片路径，color 为显示方式；运行库按
   `wl_output` 当前模式换算的屏幕逻辑尺寸缩小居中/平铺原图。
