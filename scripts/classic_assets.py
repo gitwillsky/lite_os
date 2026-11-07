@@ -59,9 +59,34 @@ def sounds() -> tuple[tuple[str, Path], ...]:
     return tuple((path.name, path) for path in _files("sounds"))
 
 
-def shell_bitmaps() -> tuple[Path, ...]:
-    """返回必需的原生尺寸 BMP；不合并本地目录，不使用替代素材。"""
-    return _files("ui")
+def shell_resources() -> tuple[Path, ...]:
+    """从唯一已校验的 BMP 输入生成并缓存只读图集；产品只安装图集，不保留逐图解码路径。
+
+    Returns:
+        本次素材/转换器摘要对应的唯一 bitmaps.atlas，供构建与同步共同消费。
+
+    Raises:
+        OSError: 输入或产物不可读写。
+        ValueError: 输入不满足导入器约定，或转换后索引无效。
+    """
+    import shutil
+    from build_cache import cache_lock, fingerprint, manifest_matches, publish_directory, temporary_directory, write_manifest
+    from pack_shell_assets import atlas
+    inputs = _files("ui")
+    recipe = {"inputs": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs},
+              "converter": hashlib.sha256((ROOT / "scripts/pack_shell_assets.py").read_bytes()).hexdigest()}
+    root = ROOT / "target/classic-ui"
+    output = root / fingerprint(recipe)
+    with cache_lock(root / ".atlas.lock"):
+        if not manifest_matches(output, recipe, ("bitmaps.atlas",)):
+            temporary = temporary_directory(root, "atlas")
+            try:
+                atlas(inputs, temporary / "bitmaps.atlas")
+                write_manifest(temporary, recipe)
+                publish_directory(temporary, output)
+            finally:
+                shutil.rmtree(temporary, ignore_errors=True)
+    return (output / "bitmaps.atlas",)
 
 
 def wallpapers() -> tuple[Path, ...]:

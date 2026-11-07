@@ -77,6 +77,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   普通 Writer 尾部在带 FD 请求前入队，保持 wire/SCM_RIGHTS 顺序；上限错误是连接失败，不能重试重放 commit。
 - Waker 的 AtomicBool 合并重复登记，Mutex 只保护短队列；不在锁内 poll Future 或调用应用代码。
   入队后写非阻塞 socket，满 socket 已有未消费通知；注销后的唤醒无 UI 对象访问。
+- Background 的阻塞队列上限 64、并发上限 2；工作者按需启动，空闲 5 s 退出至零，不留周期扫描线程。
+  入队、工作者计数与退休同锁，任务和 UI Waker 始终锁外执行；首个线程创建失败不接收任务，扩容失败仍可由现有工作者推进。
+  提交句柄独立于工作者的 Arc 寿命计数，最后一个句柄退出时唤醒全部空闲线程，已接收任务仍按原语义排空，不在 UI join。
+  文件对话框的专属队列/通知 watch 在最后一个对话框关闭时退休；创建窗口失败也回收，旧结果不能投递给下一代 watch。
 - Task/窗口关闭后，Future 在 UI 线程释放；FD interest、定时器与接收端通过各自 RAII owner 撤销。
   在途 clipboard 传输和协议缓冲不依赖已释放的回调 userdata。
 - 协议断开向应用返回错误；库不调用 process::exit。Application 析构取消任务、关闭窗口，再释放连接。
@@ -217,12 +221,14 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   Canvas 绘制命令 kind 7 为墙纸预览：矩形代表整个屏幕，text 为图片路径，color 为显示方式；运行库按
   `wl_output` 当前模式换算的屏幕逻辑尺寸缩小居中/平铺原图。
 - `classic-ui::PictureLoader` 唯一拥有用户图片的引用缓存、在途任务与后台线程；Context 的 Canvas 与桌面 Art 共用该实现。
-  UI 更新当前引用集合并只借用就绪位图；文件读取与 crate 内部的 `Bitmap::load_picture` 解码全部在懒启动的单个 worker 执行，
+  UI 更新当前引用集合并只借用就绪位图；文件读取与 crate 内部的 `Bitmap::load_picture` 解码全部在按需启动的单次任务执行，
   不向调用方暴露同步用户图片加载入口。
-  任务与结果通道各容量一，同时只派发一项；其余当前引用留在 UI。完成经非阻塞 socket 纳入原有 Display poll，
+  结果通道容量一，同时只派发一项，解码/通知后立即退出线程；其余当前引用留在 UI，不保留空闲解码线程。
+  完成经非阻塞 socket 纳入原有 Display poll，
   不增加定时轮询；无 Wayland 事件时也推进结果和重绘，帧未就绪时保留失效。
   引用撤销立即移除缓存，旧任务仍占用唯一在途槽直至回收；重新引用同路径从 Pending 开始，旧 Loading 结果不能发布到它。
-  失败按当前引用记录一次，不逐帧重试。Drop 断开通道且不 join，已开始的读取/解码可继续到返回，不回调已关闭窗口。
+  失败按当前引用记录一次，不逐帧重试。socket EOF 只表示单次任务已退出，是否失去结果由结果通道判定。
+  Drop 断开通道且不 join，已开始的读取/解码可继续到返回，不回调已关闭窗口。
   Context 仅使含 kind 7 的窗口像素失效；Art 在路径改变或完成时清除背景合成缓存，等待期间只画背景色。
   解码输出独占预乘 ARGB；8-bit 输入以 Arc 保活不可变下标，Bitmap 因此可自然 Send，禁止 unsafe Send。
   重着色结果共享下标，不修改资源缓存内的源图；其他 UI 位图引用仍使用 Rc，不把原子引用计数带入逐帧绘制。

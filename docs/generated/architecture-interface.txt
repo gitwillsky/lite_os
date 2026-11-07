@@ -2138,6 +2138,9 @@ system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevi
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
 system/driver-host/src/drivers/virtio/blk.rs :: pub (super) impl VirtIOBlockDevice :: fn from_device (mut device : VirtIODevice) -> Option < Arc < Self > >
+system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn notify (& self)
+system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn post (& self , identity : RequestIdentity)
+system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) struct Completions
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum CompletionStatus :: DeviceError
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum CompletionStatus :: IoError
 system/driver-host/src/drivers/virtio/blk/policy.rs :: enum CompletionStatus :: Ok
@@ -2648,6 +2651,8 @@ system/driver-host/src/io_completion.rs :: pub (crate) type IoCompletion  = Wait
 system/driver-host/src/io_completion.rs :: trait CompletionSource :: fn dispatch_completions (& self) -> bool
 system/driver-host/src/io_completion.rs :: trait IoWaitTarget :: fn sleep (self : Arc < Self > , completion : & IoCompletion , request : IoWaitKey)
 system/driver-host/src/io_completion.rs :: trait IoWaitTarget :: fn wake (self : Arc < Self > , request : IoWaitKey)
+system/driver-host/src/io_completion/request_owner.rs :: enum CapacityTarget :: Event (Arc < native_runtime :: Event >)
+system/driver-host/src/io_completion/request_owner.rs :: enum CapacityTarget :: Thread (Arc < dyn IoWaitTarget >)
 system/driver-host/src/io_completion/request_owner.rs :: enum CommitOrWait :: # [doc = " capacity 仍满，waiter 已进入 FIFO index，caller 必须等待 outcome。"] Waiting (Arc < CapacityWait >)
 system/driver-host/src/io_completion/request_owner.rs :: enum CommitOrWait :: # [doc = " prepare window 内释放了 slot，prepared waiter 不发布并直接取得 identity。"] Reserved (RequestIdentity)
 system/driver-host/src/io_completion/request_owner.rs :: enum RequestOwnerError :: # [doc = " device 已进入 terminal failure。"] DeviceFailed
@@ -2656,17 +2661,20 @@ system/driver-host/src/io_completion/request_owner.rs :: enum ReserveOrWait :: #
 system/driver-host/src/io_completion/request_owner.rs :: enum ReserveOrWait :: # [doc = " 已取得唯一 slot identity。"] Reserved (RequestIdentity)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) RequestIdentity :: generation : u64
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) RequestIdentity :: slot : u16
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) enum CapacityTarget
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) enum CommitOrWait
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) enum RequestOwnerError
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) enum ReserveOrWait
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn publish (& self , outcome : Result < RequestIdentity , RequestOwnerError > ,) -> Option < CapacityWake >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn take_outcome (& self) -> Result < RequestIdentity , RequestOwnerError >
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn try_take_outcome (& self) -> Option < Result < RequestIdentity , RequestOwnerError > >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWait :: fn wait (& self)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWake :: fn drain (mut wake : Option < Self > , mut next : impl FnMut () -> Option < Self >)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CapacityWake :: fn wake (self)
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl CompletionClaim :: fn identity (& self) -> RequestIdentity
-system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl PreparedCapacityWait :: fn try_new (key : IoWaitKey , descriptors : usize , target : Arc < dyn IoWaitTarget > ,) -> Result < Self , RequestOwnerError >
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl PreparedCapacityWait :: fn try_new (key : IoWaitKey , descriptors : usize , target : CapacityTarget ,) -> Result < Self , RequestOwnerError >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn accept_completion (& mut self , claim : CompletionClaim) -> RequestIdentity
+system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn cancel_capacity (& mut self , waiter : & Arc < CapacityWait > ,) -> Option < Arc < CapacityWait > >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn capacity_key (& self , ticket : u64) -> IoWaitKey
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn claim_completion (& mut self , head : u16) -> Option < CompletionClaim >
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn commit_wait_or_reserve (& mut self , prepared : PreparedCapacityWait ,) -> CommitOrWait

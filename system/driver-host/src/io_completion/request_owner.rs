@@ -45,19 +45,26 @@ impl CompletionClaim {
     }
 }
 
+/// 容量结果的消费者：线程握手或 reactor 通知；两者共用同一个 FIFO/permit owner。
+#[derive(Clone)]
+pub(crate) enum CapacityTarget {
+    Thread(Arc<dyn IoWaitTarget>),
+    Event(Arc<native_runtime::Event>),
+}
+
 /// slot capacity waiter、completion handshake 与 handoff result 的唯一 owner。
 pub(crate) struct CapacityWait {
     key: IoWaitKey,
     descriptors: usize,
     completion: IoCompletion,
-    target: Arc<dyn IoWaitTarget>,
+    target: CapacityTarget,
     // OWNER: wait node 独占单次 slot handoff/terminal failure result。缺失该 result 会使
     // release/reset race 唤醒一个没有 permit 的 caller。
     outcome: Mutex<Option<Result<RequestIdentity, RequestOwnerError>>>,
 }
 
 impl CapacityWait {
-    fn new(key: IoWaitKey, descriptors: usize, target: Arc<dyn IoWaitTarget>) -> Self {
+    fn new(key: IoWaitKey, descriptors: usize, target: CapacityTarget) -> Self {
         let completion = IoCompletion::new();
         completion.reset();
         Self {
@@ -73,7 +80,10 @@ impl CapacityWait {
     ///
     /// 结果由 `take_outcome` 消费。
     pub(crate) fn wait(&self) {
-        self.target.clone().sleep(&self.completion, self.key);
+        let CapacityTarget::Thread(target) = &self.target else {
+            panic!("reactor capacity waiter must be polled")
+        };
+        target.clone().sleep(&self.completion, self.key);
     }
 
     /// 消费 wake 之前发布的唯一 capacity outcome。
@@ -86,10 +96,13 @@ impl CapacityWait {
     ///
     /// device reset/failure 返回 `DeviceFailed`；重复消费或无 outcome 时 fail-stop。
     pub(crate) fn take_outcome(&self) -> Result<RequestIdentity, RequestOwnerError> {
-        self.outcome
-            .lock()
-            .take()
+        self.try_take_outcome()
             .expect("driver capacity waiter woke without outcome")
+    }
+
+    /// reactor 消费已发表结果；尚未 handoff 时返回 None，不等待线程。
+    pub(crate) fn try_take_outcome(&self) -> Option<Result<RequestIdentity, RequestOwnerError>> {
+        self.outcome.lock().take()
     }
 
     /// 在摘除 waiter 后发布 slot handoff 或 terminal failure outcome。
@@ -100,7 +113,7 @@ impl CapacityWait {
     ///
     /// # Returns
     ///
-    /// waiter 已进入睡眠时返回待执行的锁外 wake；completion-before-arm 时返回 `None`。
+    /// Thread 已武装时返回锁外 wake，completion-before-arm 返回 None；Event 总是返回锁外通知。
     ///
     /// # Errors
     ///
@@ -110,7 +123,8 @@ impl CapacityWait {
         outcome: Result<RequestIdentity, RequestOwnerError>,
     ) -> Option<CapacityWake> {
         assert!(self.outcome.lock().replace(outcome).is_none());
-        self.completion.complete().then(|| CapacityWake {
+        let armed = self.completion.complete();
+        (armed || matches!(&self.target, CapacityTarget::Event(_))).then(|| CapacityWake {
             target: self.target.clone(),
             request: self.key,
         })
@@ -119,7 +133,7 @@ impl CapacityWait {
 
 /// owner 锁外消费 scheduler capacity membership 的唯一 wake capability。
 pub(crate) struct CapacityWake {
-    target: Arc<dyn IoWaitTarget>,
+    target: CapacityTarget,
     request: IoWaitKey,
 }
 
@@ -130,7 +144,12 @@ impl CapacityWake {
     ///
     /// 不返回错误；scheduler membership mismatch 由 target fail-stop。
     pub(crate) fn wake(self) {
-        self.target.wake(self.request);
+        match self.target {
+            CapacityTarget::Thread(target) => target.wake(self.request),
+            CapacityTarget::Event(event) => event
+                .signal(0, native_runtime::native_abi::signals::SIGNALED)
+                .expect("private capacity Event must remain usable"),
+        }
     }
 
     /// 在 owner 锁外唤醒已授予的等待者，再逐个取得剩余可满足的 FIFO handoff。
@@ -157,7 +176,7 @@ impl PreparedCapacityWait {
     ///
     /// - `key`: owner 已签发的 capacity wait key。
     /// - `descriptors`: 本次请求实际需要的 descriptor 数；与首次 reserve 参数一致。
-    /// - `target`: current task 的 scheduler adapter；冷启动期为 `None`。
+    /// - `target`: 调用线程的等待目标或 reactor 的 Event；Event 通知不要求先睡眠。
     ///
     /// # Returns
     ///
@@ -169,7 +188,7 @@ impl PreparedCapacityWait {
     pub(crate) fn try_new(
         key: IoWaitKey,
         descriptors: usize,
-        target: Arc<dyn IoWaitTarget>,
+        target: CapacityTarget,
     ) -> Result<Self, RequestOwnerError> {
         let waiter = Arc::try_new(CapacityWait::new(key, descriptors, target))
             .map_err(|_| RequestOwnerError::OutOfMemory)?;
@@ -517,6 +536,23 @@ impl RequestOwner {
         self.capacity_waiters.remove(&ticket)
     }
 
+    /// 撤销本 owner 尚未 handoff 的等待；已授予的结果由 caller 从 waiter 取回并归还 slot。
+    /// # Panics
+    /// 传入其他设备/不匹配的 FIFO owner，表示内部生命周期错误。
+    pub(crate) fn cancel_capacity(
+        &mut self,
+        waiter: &Arc<CapacityWait>,
+    ) -> Option<Arc<CapacityWait>> {
+        assert_eq!(waiter.key.device, self.device);
+        let crate::io_completion::IoWaitKind::Capacity(ticket) = waiter.key.kind else {
+            panic!("request used as capacity wait")
+        };
+        if let Some(registered) = self.capacity_waiters.get(&ticket) {
+            assert!(Arc::ptr_eq(registered, waiter));
+        }
+        self.capacity_waiters.remove(&ticket)
+    }
+
     /// 查询 terminal failure drain 是否仍有 capacity waiter。
     ///
     /// # Returns
@@ -587,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_failure_publishes_capacity_outcome_without_leaking_slot() {
+    fn capacity_failure_and_cancellation_preserve_permits() {
         let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
         let ReserveOrWait::Reserved(active) = owner.reserve_or_wait(6) else {
             panic!("slot missing")
@@ -596,8 +632,12 @@ mod tests {
             panic!("full owner must prepare wait")
         };
         let key = owner.capacity_key(ticket);
-        let prepared =
-            PreparedCapacityWait::try_new(key, 4, super::super::current_wait_target()).unwrap();
+        let prepared = PreparedCapacityWait::try_new(
+            key,
+            4,
+            CapacityTarget::Thread(super::super::current_wait_target()),
+        )
+        .unwrap();
         let CommitOrWait::Waiting(waiter) = owner.commit_wait_or_reserve(prepared) else {
             panic!("capacity unexpectedly appeared")
         };
@@ -616,5 +656,43 @@ mod tests {
         owner.release_without_handoff(active);
         assert!(owner.slots.iter().all(|slot| slot.generation == 0));
         assert_eq!(owner.available_descriptors, 8);
+
+        // 取消队首后，后续登记必须仍能取得完整 grant；已授予但未发布的 permit 也能归还。
+        let ReserveOrWait::Reserved(active) = owner.reserve_or_wait(8) else {
+            panic!("released capacity lost")
+        };
+        let enqueue = |owner: &mut RequestOwner| {
+            let ReserveOrWait::Prepare(ticket) = owner.reserve_or_wait(4) else {
+                panic!("capacity should be full")
+            };
+            let prepared = PreparedCapacityWait::try_new(
+                owner.capacity_key(ticket),
+                4,
+                CapacityTarget::Thread(super::super::current_wait_target()),
+            )
+            .unwrap();
+            let CommitOrWait::Waiting(waiter) = owner.commit_wait_or_reserve(prepared) else {
+                panic!("capacity should remain full")
+            };
+            waiter
+        };
+        let head = enqueue(&mut owner);
+        let next = enqueue(&mut owner);
+        assert!(Arc::ptr_eq(&owner.cancel_capacity(&head).unwrap(), &head));
+        assert!(head.try_take_outcome().is_none());
+        assert!(
+            owner.release_and_handoff(active).is_none(),
+            "unarmed thread receives its result without a wake"
+        );
+        assert!(
+            owner.cancel_capacity(&next).is_none(),
+            "handoff already removed FIFO membership"
+        );
+        let grant = next.try_take_outcome().unwrap().unwrap();
+        owner.release_without_handoff(grant);
+        let ReserveOrWait::Reserved(all) = owner.reserve_or_wait(8) else {
+            panic!("cancelled handoff leaked capacity")
+        };
+        owner.release_without_handoff(all);
     }
 }

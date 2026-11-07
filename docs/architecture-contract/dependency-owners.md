@@ -33,12 +33,16 @@
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。
 `service-rpc` 的弹性池把控制、可选共享数据面 Event、停止通知统一汇入同一 port；具体共享区格式、credits、DMA/flush 与完成仍属于设备协议。
 纯控制积压直接读 channel，不逐条往返 port；有活动源时按 port 来源顺序处理，避免控制流饿死数据。
+活动接口接受非空 Event 集合及非阻塞数据处理器，至少两个工作者；控制来源在 handler 返回后才重武装，最多一个耗时控制。
+请求与设备完成直接接入同一 reactor，不新增通知桥接线程。
 每个 worker 创建前以独立停止句柄预留一份异步 packet；停止 Event 无分配广播，空闲收缩关闭该句柄自动退订。
 source/rearm 失败先停止领取、唤醒全部读者，在途 handler 全部退出后才释放会话闭包；不靠定时轮询检查停止。
 仅多余空闲读者使用退出截止，最后一个空闲读者永久等真实通知；忙线程不算读者，不能在仍有阻塞工作时收缩掉唯一接收者。
 该 port 与停止 Event 是每个会话一次性准备的控制资源，没有另一组转发线程或内核工作队列。
 `device-model` 定义设备类词汇与 backing；各 `*-protocol` crate 拥有服务消息和客户端/服务端适配。
 它们是系统服务接口；Linux 应用的内核入口只使用 Linux UAPI。服务不得直接链接另一个服务的 binary 源码。
+块存储的 BlockDevice 是同步消费视图；BlockProvider/BlockIoQueue 是实际驱动及范围装配的非阻塞提交/完成能力。
+设备协议只向该 provider 发布设备，不能以默认阻塞实现伪造异步队列；缓冲保活、准入取消和退出排空由实际队列拥有。
 `task-observer-protocol` 是授予 adm 组系统工具的只读任务观测消息与端点 owner；仅定义数据，不依赖 native ABI、Linuxd 或 UI。
 原生权限、授权与观测契约见[执行契约](execution.md#原生任务观测)。
 `netcfg-protocol` 是网络设置与 DHCP 租约编码及 `/dev/network-settings` 帧格式的 owner；同样只定义数据，

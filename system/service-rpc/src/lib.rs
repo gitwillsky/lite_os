@@ -226,7 +226,7 @@ struct PoolState {
 }
 
 struct Activity {
-    event: Event,
+    events: Vec<Event>,
     handler: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
 }
 enum Work {
@@ -240,7 +240,7 @@ impl Pool {
         // 2. stop 置位会向共享 port 发布每工作者一份预留 packet，忙线程和空闲线程都算在内。
         // 3. 空闲收缩/创建失败时关闭本句柄，内核自动摘除未触发的登记并归还预留。
         let stop = self.stop.duplicate(native_abi::rights::SAME)?;
-        stop.wait_async(&self.port, 2, native_abi::signals::SIGNALED)?;
+        stop.wait_async(&self.port, 1, native_abi::signals::SIGNALED)?;
         let next = self.clone();
         native_runtime::thread::spawn(&self.name, move || serve_loop(&next, stop)).map(drop)
     }
@@ -250,6 +250,13 @@ impl Pool {
         self.stop
             .signal(0, native_abi::signals::SIGNALED)
             .expect("prepared service stop event must remain usable");
+    }
+    fn arm_channel(&self) -> Result<(), Status> {
+        self.channel.wait_async(
+            &self.port,
+            0,
+            native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
+        )
     }
     fn next(&self, deadline: i64) -> Result<Work, Status> {
         loop {
@@ -268,30 +275,32 @@ impl Pool {
             }
             let packet = self.port.wait(deadline)?;
             match packet.key {
-                0 => {
-                    let message = self.channel.read();
-                    self.channel.wait_async(
-                        &self.port,
-                        0,
-                        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
-                    )?;
-                    match message {
-                        Ok(message) => return Ok(Work::Message(message)),
-                        Err(native_abi::ERR_SHOULD_WAIT) => continue,
-                        Err(error) => return Err(error),
+                0 => match self.channel.read() {
+                    Ok(message) => {
+                        // 活动服务最多一个控制处理者；它返回后才重新武装，不能让耗时控制占满数据接收者。
+                        if self.activity.is_none() {
+                            self.arm_channel()?;
+                        }
+                        return Ok(Work::Message(message));
                     }
-                }
-                1 => {
-                    let activity = self.activity.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
-                    // 先清除再重新登记；处理期间的新通知仍会留在 port，不能在工作后清除。
-                    activity.event.signal(native_abi::signals::SIGNALED, 0)?;
-                    activity
-                        .event
-                        .wait_async(&self.port, 1, native_abi::signals::SIGNALED)?;
+                    Err(native_abi::ERR_SHOULD_WAIT) => {
+                        self.arm_channel()?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                },
+                1 => return Err(native_abi::ERR_CANCELED),
+                key => {
+                    let event = self
+                        .activity
+                        .as_ref()
+                        .and_then(|activity| activity.events.get((key - 2) as usize))
+                        .ok_or(native_abi::ERR_BAD_STATE)?;
+                    // clear -> arm -> drain；多个完成源共享一个 handler，也不需要通知桥接线程。
+                    event.signal(native_abi::signals::SIGNALED, 0)?;
+                    event.wait_async(&self.port, key, native_abi::signals::SIGNALED)?;
                     return Ok(Work::Activity);
                 }
-                2 => return Err(native_abi::ERR_CANCELED),
-                _ => return Err(native_abi::ERR_BAD_STATE),
             }
         }
     }
@@ -320,30 +329,33 @@ pub fn serve(
 }
 
 /// 在同一弹性线程池中消费 channel 控制消息与共享数据面的 Event 通知。
-/// 不增设常驻桥接线程；activity 可以阻塞，其他空闲工作者继续接收两个来源。
+/// 不增设常驻桥接线程；数据 handler 须非阻塞，控制处理至多一个，其余工作者推进数据源。
 ///
 /// # Parameters
 /// - `channel`/`workers`/`name`/`handler`: 与 [`serve`] 相同的控制连接、并发上限、名称和控制处理器。
-/// - `event`: 数据面通知；收到后先清除并重新武装，再调用 `activity`。
+/// - `events`: 非空的数据面通知集合；收到后先清除并重新武装，再调用 `activity`。至少需要两个工作者。
 /// - `activity`: 排空当前数据；失败停止接收新工作，所有在途处理结束后才释放会话。
 ///
 /// # Errors
-/// port、异步登记、内存或初始线程创建失败；失败不发表服务。
+/// 空事件集合或并发不足返回参数错误；port、异步登记、内存或初始线程创建失败不发表服务。
 pub fn serve_events(
     channel: Channel,
     workers: usize,
     name: &[u8],
     handler: Arc<Handler<'static>>,
-    event: Event,
+    events: Vec<Event>,
     activity: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
 ) -> Result<(), Status> {
+    if events.is_empty() || workers < 2 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     start(
         channel,
         workers,
         name,
         handler,
         Some(Activity {
-            event,
+            events,
             handler: activity,
         }),
     )
@@ -369,9 +381,9 @@ fn start(
         native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
     )?;
     if let Some(activity) = &activity {
-        activity
-            .event
-            .wait_async(&port, 1, native_abi::signals::SIGNALED)?;
+        for (index, event) in activity.events.iter().enumerate() {
+            event.wait_async(&port, index as u64 + 2, native_abi::signals::SIGNALED)?;
+        }
     }
     let pool = Arc::try_new(Pool {
         channel,
@@ -432,19 +444,34 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
             }
             grow
         };
-        if grow && pool.spawn().is_err() {
+        let control = matches!(&work, Work::Message(_));
+        let grow_failed = grow && pool.spawn().is_err();
+        if grow_failed {
             // 创建失败撤销计数，当前线程继续处理；准备的停止句柄已自动退订。
             let mut state = pool.state.lock();
             state.workers -= 1;
             state.idle -= 1;
         }
-        let result = match work {
-            Work::Message(message) => respond(&pool.channel, message, &*pool.handler),
-            Work::Activity => (pool
-                .activity
-                .as_ref()
-                .expect("activity source was selected")
-                .handler)(),
+        let result = if grow_failed && control && pool.activity.is_some() {
+            // 没有为可能阻塞的控制操作准备好接收者；停止会话并排空，不冒险堵死已有 DMA 的完成分派。
+            Err(native_abi::ERR_NO_MEMORY)
+        } else {
+            match work {
+                Work::Message(message) => {
+                    respond(&pool.channel, message, &*pool.handler).and_then(|()| {
+                        if pool.activity.is_some() {
+                            pool.arm_channel()
+                        } else {
+                            Ok(())
+                        }
+                    })
+                }
+                Work::Activity => (pool
+                    .activity
+                    .as_ref()
+                    .expect("activity source was selected")
+                    .handler)(),
+            }
         };
         pool.state.lock().idle += 1;
         if result.is_err() {

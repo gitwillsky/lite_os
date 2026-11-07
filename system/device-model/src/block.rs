@@ -4,6 +4,11 @@ use alloc::sync::Arc;
 use core::any::Any;
 use native_runtime::Vmo;
 
+mod submission;
+pub use submission::{
+    BlockCommand, BlockIoCompletion, BlockIoQueue, BlockProvider, BlockSubmission,
+};
+
 mod byte_buffers;
 pub use byte_buffers::BlockBufferPool;
 

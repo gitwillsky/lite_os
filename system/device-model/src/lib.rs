@@ -30,7 +30,8 @@ pub use audio_output::{
 };
 pub use backing::{DeviceBacking, DeviceExtent};
 pub use block::{
-    BLOCK_SIZE, BlockBuffer, BlockBufferPool, BlockDevice, BlockError, BlockOperation, BlockRequest,
+    BLOCK_SIZE, BlockBuffer, BlockBufferPool, BlockCommand, BlockDevice, BlockError,
+    BlockIoCompletion, BlockIoQueue, BlockOperation, BlockProvider, BlockRequest, BlockSubmission,
 };
 pub use display::{
     BootFramebuffer, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,

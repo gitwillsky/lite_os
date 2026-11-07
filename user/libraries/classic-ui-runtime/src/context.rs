@@ -162,6 +162,9 @@ impl Context {
             1 => "另存为",
             _ => return Err(invalid("unknown file dialog mode")),
         };
+        let app_id = self.host(parent)?.app_id.clone();
+        let mut model = FileDialog::new(mode, directory.to_owned(), name, filter)?;
+        model.decorate(&mut self.resources);
         if self.files.is_none() {
             let watch = self.next_watch;
             self.next_watch = watch
@@ -172,10 +175,13 @@ impl Context {
             self.watches.insert(watch, Watch { fd, interest: 1 });
             self.files = Some(worker);
         }
-        let app_id = self.host(parent)?.app_id.clone();
-        let mut model = FileDialog::new(mode, directory.to_owned(), name, filter)?;
-        model.decorate(&mut self.resources);
-        let id = self.window(title, &app_id, (540, 370), false, parent, true)?;
+        let id = match self.window(title, &app_id, (540, 370), false, parent, true) {
+            Ok(id) => id,
+            Err(error) => {
+                self.retire_files();
+                return Err(error);
+            }
+        };
         let action = model.initial(id);
         self.host_mut(id)?.body = WindowBody::Dialog(Box::new(model));
         self.file_action(id, action);
@@ -229,6 +235,19 @@ impl Context {
         }
         Ok(())
     }
+    fn retire_files(&mut self) {
+        if !self
+            .windows
+            .values()
+            .any(|host| matches!(host.body, WindowBody::Dialog(_)))
+            && let Some(worker) = self.files.take()
+        {
+            // OWNER: 最后一个文件对话框退出就撤销来源与任务队列，不把线程留到整个应用退出。
+            // 不 join；已开始的 I/O 可返回，旧结果没有接收者，也不能投递到下一代 watch。
+            self.watches.remove(&worker.watch);
+            drop(worker);
+        }
+    }
     fn blocked(&self, target: u64) -> bool {
         self.windows.iter().any(|(id, child)| {
             if *id == target || !child.modal {
@@ -269,6 +288,7 @@ impl Context {
             .remove(&id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown window"))?;
         self.events.retain(|event| event.window != id);
+        self.retire_files();
         self.display.destroy_window(host.frame.window())
     }
     pub fn step(

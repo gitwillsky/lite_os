@@ -58,23 +58,30 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
    多调用者不跨 DMA 持锁。
    当前调用者之一推进 CQ/port，其他调用者等本地 futex epoch；谓词在分派权交接的同一锁内重查。
    归还本地 credits 也通知完成 Event，不能让代表其他提交者等空位的分派者睡在没有新 DMA 的 port 上；无常驻转发线程。
-8. 服务复用 `service-rpc::serve_events` 的弹性池，由同一 port 接收控制与请求 Event；先清除/重新武装通知再处理共享环。
-   SQ 领取后剩余记录会再次通知一个空闲工作者，批内经 `BlockDevice::transfer_batch` 并发发布，不依赖同步 RPC 往返。
-   一个调用的整组记录原子发表、组间不交错；领取到 GROUP_LAST 即停止，不能把不同调用混成一个聚合 I/O 结果。
-   大组可拆成多个 64 项窗口；这些窗口仍只含同一调用，错误不会污染别的调用。
-   每次领取至多 64 项；有效请求先克隆登记、在表锁外等 DMA；完成只在同步设备方法确认 DMA 已结束后发表。
-   范围/分区适配、远端和 virtio provider 均累积无效项错误并继续其余有效请求，不能在预校验时静默跳过整批。
-   block::server 的分派描述符是有界栈内初始化前缀，不再为该分派步骤分配 Vec；provider 的 DMA 视图和分区平移仍由各自 owner 准备。合法请求可批量执行；设备按接口返回首个批错误，所涉有效项均收到该错误，已提交 DMA 全部结束后才返回。
-   flush 在 SQ 领取时封闭后续批次，等待此前所有 active 批次完成，再执行设备 flush；它前面的同批数据也必须先完成。
-   virtio-blk 自己占满 slot/描述符 credit 时先收割最老请求，不能阻塞等待自己的 credit；槽数由 virtqueue 大小协商。
-   provider 仍是同步批接口，当前最多 8 个工作者各等待 64 项；极深硬件队列的可同时提交上限仍受该并发量约束。
-   将设备完成并入 reactor、消除阻塞批工作者属于性能计划 M4，不能以共享环接通宣称该项也已完成。
-9. 队列损坏只请求服务停止，不能当作 DMA 取消完成；source/rearm 失败也先停止领取、等待全部 handler 结束。
-   BlockSession 最后析构先释放登记，再发布 closed 和完成通知。等待资源暂时不足只限速重查，不提前归还在途 credits；
-   正常路径按通知阻塞，无定时轮询。设备宿主退出仍由实际 channel PEER_CLOSED 及既有 PMT quarantine 契约处理。
-   目录的观测句柄由 SessionEnd 共享 owner 持有，状态回收后主动摘除，再发布 ended；服务退出不能被观测句柄伪装为在线。
-   若服务在线程启动后、OPEN 安装观测前已退出，观测 owner 的 Finished 状态禁止重新安装并保活死亡端点。
-   未登记 CPU 缓冲仍经 BlockBufferPool 暂存 VMO 适配，read_block_ranges 合并多个区间；直接供页保持登记 VMO DMA 路径。
+8. 服务复用 `service-rpc::serve_events`，在同一 port 接收控制、提交与驱动完成 Event；clear → arm → drain 后才等待。
+   活动服务一次只处理一个控制操作，返回后才重新武装控制来源；数据 handler 非阻塞，最多两个工作者，空闲时收缩为一个。
+   注册、pin 等耗时控制不能占满数据接收者；若无法为控制准备接收者，停止并排空会话，不执行可能阻塞的控制。
+   `BlockProvider` 是实际驱动/范围装配的提交能力，创建 `BlockIoQueue`；远端文件系统 client 仍使用同步 BlockDevice 视图。
+   两者共用同一 RequestOwner/descriptor/状态解码与退休机制，没有旧的数据 RPC 或把同步设备调用包装为 async 的替代路径。
+9. `BlockIoQueue::try_submit` 返回 Queued/Completed/Busy，错误没有接收命令。Queued 在完成被 reap 消费前保活缓冲 Arc；
+   SQ 每次领取至多 64 项，只是本地待提交窗口，不限制在途深度。一次 dispatch 最多推进 256 项，预算耗尽重发提交通知；
+   不再用阻塞批次或工作线程数量限制硬件队列。每条实际完成单独返回结果，不把一条 I/O 的失败投影给同批成功项。
+   Busy 队首保有已经解析的登记及命令，不能在 DETACH/复用 vmoid 后改绑到别的缓冲。
+   flush 封闭后续 SQ，先收割本队列此前全部请求，再非阻塞提交 flush，收到其完成后才继续。
+10. 驱动每个提交者有预留容量的完成 FIFO 与 physical-slot→caller-ID/缓冲 owner，完成只追加到目标 FIFO；
+    reactor 直接消费已完成 token，不扫描所有在途请求。物理 slot、descriptor credits 与 generation 仍只由 RequestOwner 拥有。
+    完成分派在硬件/slot 锁外按目的队列分组，每个目的队列一轮通知；不逐请求 signal，不广播给空闲会话。
+    线程等待者只在握手武装后 wake；reactor 完成始终入自身 FIFO，两种消费者共享同一物理请求生命周期。
+11. 非阻塞准入复用 RequestOwner 的 FIFO。每队列最多一个队首等待登记，节点锁外准备；Event target 获得 grant 或错误时无须睡眠也会通知。
+    换命令/退出先撤销未授予的节点；已经 handoff 的 permit 必须取回并归还，取消队首后继续推进新 FIFO 头。
+    failure drain 可能在摘下节点后、锁外发布错误；取消不得把此窗口误认为丢失了 grant，也不得重复释放。
+    descriptor publication 失败且尚无完成方时，先把 WaitCompletion 恢复到完成状态再归还 slot，block/RNG 遵守同一规则。
+12. 队列损坏/source/rearm 失败只停止领取，不等于 DMA 取消。最后 Session Drop 先撤销准入并排空已接收请求，
+    再释放登记、发布 closed 和完成通知。队列析构在自己的完成 FIFO 锁内复查空队列并登记停驻者，完成方锁外 unpark；
+    不依赖已经退出的服务 port，也不在退出时分配等待登记，不把丢弃 pending SQ 当作已停止硬件。
+    设备宿主退出仍由实际 channel PEER_CLOSED 及既有 PMT quarantine 契约处理。
+    目录观测句柄由 SessionEnd 共享 owner 持有，状态回收后主动摘除再发布 ended，死亡服务不能被观测引用伪装为在线。
+    OPEN 安装观测前服务已退出时，Finished 状态禁止重新安装死亡端点。未登记 CPU 缓冲仍经 BlockBufferPool 适配；直接供页仍是登记 VMO DMA。
 
 ## 运行时换版
 

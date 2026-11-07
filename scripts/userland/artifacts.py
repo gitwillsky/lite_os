@@ -6,7 +6,7 @@ from classic_assets import (
     boot_scene,
     cursors,
     fonts as classic_fonts,
-    shell_bitmaps,
+    shell_resources,
     sounds,
     wallpapers as classic_wallpapers,
 )
@@ -60,7 +60,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     fonts = tuple(UserlandArtifact(path, f"/usr/share/liteos/fonts/{path.name}")
                   for path in classic_fonts())
     ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
-               for path in shell_bitmaps())
+               for path in shell_resources())
     # 系统墙纸目录由 Git 持有的原创壁纸组成，显示属性按文件名列出。
     wallpapers = tuple(UserlandArtifact(path, f"/usr/share/liteos/wallpapers/{path.name}")
                        for path in classic_wallpapers())

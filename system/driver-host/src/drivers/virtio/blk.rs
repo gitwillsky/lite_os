@@ -2,6 +2,9 @@ use crate::sync::Mutex;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+mod async_io;
+use async_io::Completions;
+
 mod policy;
 use policy::{
     CompletionStatus, RequestOperation, completion_length_is_valid, decode_status, valid_transfer,
@@ -47,7 +50,21 @@ struct RequestData {
     result: Option<Result<(), BlockError>>,
     // 完成可能早于调用者进入 wait；waiter 保留到 finish，完成路径只克隆唤醒引用。
     // 提前 take 会使已完成的请求在 wait 中丢失等待者并 panic。
-    waiter: Option<Arc<dyn IoWaitTarget>>,
+    waiter: Option<CompletionTarget>,
+}
+
+#[derive(Clone)]
+enum CompletionTarget {
+    Thread(Arc<dyn IoWaitTarget>),
+    Queue(Arc<Completions>),
+}
+impl CompletionTarget {
+    fn after_completion(&self, armed: bool) -> Option<Self> {
+        match self {
+            Self::Thread(_) if !armed => None,
+            _ => Some(self.clone()),
+        }
+    }
 }
 
 struct RequestSlot {
@@ -284,9 +301,14 @@ impl VirtIOBlockDevice {
                 ReserveOrWait::Prepare(ticket) => owner.requests.capacity_key(ticket),
             }
         };
-        let prepared =
-            PreparedCapacityWait::try_new(key, descriptors, io_completion::current_wait_target())
-                .map_err(Self::request_owner_error)?;
+        let prepared = PreparedCapacityWait::try_new(
+            key,
+            descriptors,
+            crate::io_completion::request_owner::CapacityTarget::Thread(
+                io_completion::current_wait_target(),
+            ),
+        )
+        .map_err(Self::request_owner_error)?;
         let waiter = {
             let mut owner = self.queue.lock();
             if owner.failed {
@@ -310,7 +332,13 @@ impl VirtIOBlockDevice {
         let descriptors = 2 + payload.as_ref().map_or(0, DmaSlice::segment_count);
         let identity = self.wait_for_capacity(descriptors)?;
         let waiter = io_completion::current_wait_target();
-        self.submit_reserved(identity, operation, block_id, payload, waiter)
+        self.submit_reserved(
+            identity,
+            operation,
+            block_id,
+            payload,
+            CompletionTarget::Thread(waiter),
+        )
     }
 
     /// 校验一次传输并构造指向登记缓冲的 DMA 视图；不发布任何请求。
@@ -365,7 +393,7 @@ impl VirtIOBlockDevice {
         operation: RequestOperation,
         block_id: u64,
         payload: Option<DmaSlice<'_>>,
-        waiter: Arc<dyn IoWaitTarget>,
+        waiter: CompletionTarget,
     ) -> Result<RequestIdentity, BlockError> {
         let mut owner = self.queue.lock();
         if owner.failed {
@@ -424,6 +452,8 @@ impl VirtIOBlockDevice {
             Ok(head) => head,
             Err(_) => {
                 data.waiter = None;
+                // 尚未发表，没有完成方；先结束准备握手再归还槽，否则下一次 reset 会遇到残留 REQUESTED。
+                request_slot.completion.complete();
                 let wake = owner.requests.release_and_handoff(identity);
                 drop(data);
                 drop(owner);
@@ -444,11 +474,16 @@ impl VirtIOBlockDevice {
     fn wait(&self, identity: RequestIdentity) {
         let slot = &self.slots[identity.slot as usize];
         let waiter = slot.data.lock().waiter.clone();
-        let waiter = waiter.expect("submitted block request lost its waiter");
+        let Some(CompletionTarget::Thread(waiter)) = waiter else {
+            panic!("blocking wait used for a non-thread block request")
+        };
         waiter.sleep(&slot.completion, self.request_id(identity));
     }
 
-    fn finish(&self, identity: RequestIdentity) -> Result<(), BlockError> {
+    fn finish_owned(
+        &self,
+        identity: RequestIdentity,
+    ) -> (Result<(), BlockError>, Option<CapacityWake>) {
         let mut owner = self.queue.lock();
         let mut data = self.slots[identity.slot as usize].data.lock();
         assert_eq!(data.generation, identity.generation);
@@ -465,8 +500,44 @@ impl VirtIOBlockDevice {
         };
         drop(data);
         drop(owner);
+        (result, wake)
+    }
+
+    fn finish(&self, identity: RequestIdentity) -> Result<(), BlockError> {
+        let (result, wake) = self.finish_owned(identity);
         self.wake_capacity(wake);
         result
+    }
+
+    fn deliver_all(
+        &self,
+        mut wakes: [Option<(CompletionTarget, RequestIdentity)>; COMPLETION_BATCH],
+    ) {
+        // 按完成目的地分组；同队列一次 level 通知，不逐请求发 syscall，也不唤醒没有工作/额度等待的会话。
+        wakes.sort_unstable_by_key(|wake| match wake {
+            Some((CompletionTarget::Thread(_), _)) => 0,
+            Some((CompletionTarget::Queue(queue), _)) => Arc::as_ptr(queue) as usize,
+            None => usize::MAX,
+        });
+        let mut previous: Option<Arc<Completions>> = None;
+        for (target, identity) in wakes.into_iter().flatten() {
+            match target {
+                CompletionTarget::Thread(waiter) => waiter.wake(self.request_id(identity)),
+                CompletionTarget::Queue(queue) => {
+                    queue.post(identity);
+                    if previous
+                        .as_ref()
+                        .is_none_or(|last| !Arc::ptr_eq(last, &queue))
+                        && let Some(last) = previous.replace(queue)
+                    {
+                        last.notify();
+                    }
+                }
+            }
+        }
+        if let Some(last) = previous {
+            last.notify();
+        }
     }
 
     fn request_id(&self, identity: RequestIdentity) -> IoWaitKey {
@@ -489,7 +560,7 @@ impl VirtIOBlockDevice {
             self.fail_device();
             return false;
         }
-        let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; COMPLETION_BATCH] =
+        let mut wakes: [Option<(CompletionTarget, RequestIdentity)>; COMPLETION_BATCH] =
             core::array::from_fn(|_| None);
         let mut corrupt = false;
         let backlog = {
@@ -544,10 +615,12 @@ impl VirtIOBlockDevice {
                     let status = unsafe { core::ptr::read_volatile(status_address as *const u8) };
                     data.result = Some(Self::decode_status(status));
                     let armed = slot.completion.complete();
-                    if let Some(waiter) = data.waiter.clone()
-                        && armed
+                    if let Some(waiter) = data
+                        .waiter
+                        .as_ref()
+                        .and_then(|target| target.after_completion(armed))
                     {
-                        *wake = Some((waiter, self.request_id(identity)));
+                        *wake = Some((waiter, identity));
                     }
                 }
                 Some(owner.queue.has_used())
@@ -556,9 +629,7 @@ impl VirtIOBlockDevice {
         let Some(backlog) = backlog else {
             return self.drain_failed_capacity_waiters();
         };
-        for (waiter, request) in wakes.into_iter().flatten() {
-            waiter.wake(request);
-        }
+        self.deliver_all(wakes);
         if corrupt {
             self.fail_device();
             false
@@ -592,7 +663,7 @@ impl VirtIOBlockDevice {
             }
         }
         loop {
-            let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; COMPLETION_BATCH] =
+            let mut wakes: [Option<(CompletionTarget, RequestIdentity)>; COMPLETION_BATCH] =
                 core::array::from_fn(|_| None);
             let mut drained = 0;
             {
@@ -612,17 +683,18 @@ impl VirtIOBlockDevice {
                         "block outstanding request already has result"
                     );
                     data.result = Some(Err(BlockError::DeviceError));
-                    if slot.completion.complete()
-                        && let Some(waiter) = data.waiter.clone()
+                    let armed = slot.completion.complete();
+                    if let Some(waiter) = data
+                        .waiter
+                        .as_ref()
+                        .and_then(|target| target.after_completion(armed))
                     {
-                        *wake = Some((waiter, self.request_id(identity)));
+                        *wake = Some((waiter, identity));
                     }
                     drained += 1;
                 }
             }
-            for (waiter, request) in wakes.into_iter().flatten() {
-                waiter.wake(request);
-            }
+            self.deliver_all(wakes);
             if drained < COMPLETION_BATCH {
                 break;
             }
@@ -736,7 +808,7 @@ impl BlockDevice for VirtIOBlockDevice {
                     RequestOperation::from(request.operation),
                     request.first_block,
                     Some(payload),
-                    io_completion::current_wait_target(),
+                    CompletionTarget::Thread(io_completion::current_wait_target()),
                 )
             });
             match submitted {

@@ -4,19 +4,21 @@ use canvas::{Color, Image, Rect};
 use std::{
     io::{self, Read},
     path::Path,
-    sync::Arc,
 };
 
-/// 拥有预乘 ARGB 像素的系统图像；加载后可按整数 scale 重用。
+mod atlas;
+use atlas::{Indices, Pixels};
+
+/// 保活预乘 ARGB 像素的图像；系统素材借用只读图集，用户图片拥有解码后的存储。
 #[derive(Debug)]
 pub struct Bitmap {
-    pixels: Vec<u32>,
+    pixels: Pixels,
     width: i32,
     height: i32,
     // OWNER: 8 位 BMP 的不可变原始下标，由重着色结果共享；颜色改变不改变区域身份。
     // 缺少它只能从 RGB 反推下标，相同调色板颜色的不同区域会被错误合并。
-    // Arc 只共享不可变下标，使独占 Bitmap 可安全从解码线程转移到 UI，无 unsafe Send。
-    indices: Option<Arc<[u8]>>,
+    // 拥有的下标或只读图集均可自然 Send；不为线程转移引入 unsafe Send。
+    indices: Option<Indices>,
 }
 impl Bitmap {
     /// 整张位图的预乘 ARGB 视图。
@@ -43,7 +45,10 @@ impl Bitmap {
     ///
     /// 格式按文件签名识别为 PNG、Windows BMP 或 JPEG；损坏、截断或超限返回 InvalidData。
     pub fn load(path: &Path) -> io::Result<Self> {
-        Self::load_limited(path, Limits::UI)
+        match atlas::load(path)? {
+            Some(image) => Ok(image.bitmap()),
+            None => Self::load_limited(path, Limits::UI),
+        }
     }
 
     /// 读取用户图片（如桌面墙纸）：单边不超过 16384、像素总数不超过 1600 万、文件不超过 64 MiB。
@@ -197,14 +202,14 @@ impl Bitmap {
             pixels: positions
                 .iter()
                 .map(|position| self.pixels[*position])
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             indices: self.indices.map(|indices| {
-                Arc::from(
+                Indices::from(
                     positions
                         .iter()
                         .map(|position| indices[*position])
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
+                        .collect::<Vec<_>>(),
                 )
             }),
             width: size,
@@ -229,7 +234,7 @@ impl Bitmap {
         let output = reader.next_frame(&mut bytes).map_err(invalid)?;
         let (width, height) = (output.width, output.height);
         let channels = output.color_type.samples();
-        let pixels = bytes[..output.buffer_size()]
+        let pixels: Vec<u32> = bytes[..output.buffer_size()]
             .chunks_exact(channels)
             .map(|pixel| {
                 let (r, g, b, a) = match output.color_type {
@@ -247,7 +252,7 @@ impl Bitmap {
             })
             .collect();
         Ok(Self {
-            pixels,
+            pixels: pixels.into(),
             width: width as i32,
             height: height as i32,
             indices: None,
@@ -351,12 +356,12 @@ impl Bitmap {
             .ok_or_else(|| invalid_data("BMP pixel data outside file"))?;
         if matches!(compression, BI_RLE8 | BI_RLE4) {
             let indices = decode_rle(data, width, height, compression == BI_RLE4)?;
-            let pixels = indices
+            let pixels: Vec<u32> = indices
                 .iter()
                 .map(|index| index.map_or(0, |index| color_at(&palette, index)))
                 .collect();
             return Ok(Self {
-                pixels,
+                pixels: pixels.into(),
                 width: width as i32,
                 height: height as i32,
                 indices: None,
@@ -410,10 +415,10 @@ impl Bitmap {
             }
         }
         Ok(Self {
-            pixels,
+            pixels: pixels.into(),
             width: width as i32,
             height: height as i32,
-            indices: indices.map(|indices| Arc::from(indices.into_boxed_slice())),
+            indices: indices.map(Indices::from),
         })
     }
 
@@ -441,7 +446,7 @@ impl Bitmap {
         if channels == 0 || samples.len() != width * height * channels {
             return Err(invalid_data("unexpected JPEG output layout"));
         }
-        let pixels = samples
+        let pixels: Vec<u32> = samples
             .chunks_exact(channels)
             .map(|sample| match channels {
                 1 | 2 => opaque(sample[0], sample[0], sample[0]),
@@ -449,7 +454,7 @@ impl Bitmap {
             })
             .collect();
         Ok(Self {
-            pixels,
+            pixels: pixels.into(),
             width: width as i32,
             height: height as i32,
             indices: None,
@@ -468,12 +473,12 @@ impl Bitmap {
                 "palette colors must be RGB",
             ));
         }
-        let pixels = indices
+        let pixels: Vec<u32> = indices
             .iter()
             .map(|index| 0xff000000 | palette[usize::from(*index)])
             .collect();
         Ok(Self {
-            pixels,
+            pixels: pixels.into(),
             width: self.width,
             height: self.height,
             indices: Some(indices.clone()),
@@ -484,7 +489,7 @@ impl Bitmap {
     pub fn from_pixels(pixels: Vec<u32>, width: i32, height: i32) -> Self {
         debug_assert_eq!(pixels.len(), width as usize * height as usize);
         Self {
-            pixels,
+            pixels: pixels.into(),
             width,
             height,
             indices: None,
@@ -508,20 +513,29 @@ impl Bitmap {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        if matches!(self.pixels, Pixels::Shared(_)) {
+            let mut replacement = Vec::new();
+            replacement
+                .try_reserve_exact(pixels.len())
+                .map_err(|_| io::ErrorKind::OutOfMemory)?;
+            self.pixels = Pixels::Owned(replacement);
+        }
+        let Pixels::Owned(owned) = &mut self.pixels else {
+            unreachable!("mutable pixel storage")
+        };
         // 拖动时的小幅缩放复用容量；退出全屏等明显缩小时不长期保留峰值缓冲。
-        if pixels.len() < self.pixels.capacity() / 2 {
+        if pixels.len() < owned.capacity() / 2 {
             let mut smaller = Vec::new();
             if smaller.try_reserve_exact(pixels.len()).is_ok() {
-                self.pixels = smaller;
+                *owned = smaller;
             }
-        } else if pixels.len() > self.pixels.capacity() {
-            self.pixels
-                .try_reserve_exact(pixels.len() - self.pixels.len())
+        } else if pixels.len() > owned.capacity() {
+            owned
+                .try_reserve_exact(pixels.len() - owned.len())
                 .map_err(|_| io::ErrorKind::OutOfMemory)?;
         }
-        self.pixels.clear();
-        self.pixels
-            .extend(pixels.iter().map(|pixel| pixel | 0xff00_0000));
+        owned.clear();
+        owned.extend(pixels.iter().map(|pixel| pixel | 0xff00_0000));
         self.width = width;
         self.height = height;
         self.indices = None;
@@ -819,174 +833,4 @@ fn decode_rle(data: &[u8], width: usize, height: usize, four: bool) -> io::Resul
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn v4_bitmap_is_bounded_and_premultiplies_alpha() {
-        let mut bytes = vec![0; 126];
-        bytes[..2].copy_from_slice(b"BM");
-        for (offset, value) in [
-            (10, 122u32),
-            (14, 108),
-            (18, 1),
-            (22, (-1i32) as u32),
-            (26, 0x0020_0001),
-            (30, 3),
-            (54, 0x00ff0000),
-            (58, 0x0000ff00),
-            (62, 0xff),
-            (66, 0xff000000),
-            (70, 0x73524742),
-        ] {
-            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        }
-        bytes[122..].copy_from_slice(&[0, 0, 255, 128]);
-        assert_eq!(
-            Bitmap::decode(&bytes, Limits::UI).unwrap().pixels,
-            [0x80800000]
-        );
-        for length in 0..bytes.len() {
-            assert!(Bitmap::decode(&bytes[..length], Limits::UI).is_err());
-        }
-        bytes[22..26].copy_from_slice(&i32::MIN.to_le_bytes());
-        assert!(Bitmap::decode(&bytes, Limits::UI).is_err());
-    }
-
-    /// 写一个 40 字节 BITMAPINFOHEADER 的 BMP；`extra` 是调色板或位域，`data` 是像素数据。
-    fn info_bmp(
-        width: i32,
-        height: i32,
-        bpp: u16,
-        compression: u32,
-        extra: &[u8],
-        data: &[u8],
-    ) -> Vec<u8> {
-        let offset = 54 + extra.len() as u32;
-        let mut bytes = b"BM".to_vec();
-        for value in [offset + data.len() as u32, 0, offset, 40] {
-            bytes.extend(value.to_le_bytes());
-        }
-        bytes.extend(width.to_le_bytes());
-        bytes.extend(height.to_le_bytes());
-        bytes.extend(1u16.to_le_bytes());
-        bytes.extend(bpp.to_le_bytes());
-        bytes.extend(compression.to_le_bytes());
-        // biSizeImage、两项分辨率为零；调色板图像的 biClrUsed 声明实际条目数。
-        bytes.extend([0; 12]);
-        let used = if bpp <= 8 { extra.len() as u32 / 4 } else { 0 };
-        bytes.extend(used.to_le_bytes());
-        bytes.extend([0; 4]);
-        bytes.extend(extra);
-        bytes.extend(data);
-        bytes
-    }
-
-    #[test]
-    fn rle8_skipped_pixels_stay_transparent_and_absolute_runs_are_word_aligned() {
-        let palette = [0, 0, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0];
-        // 自底向上：底行 = 2×下标1、3 个绝对像素 [2,1,2]（补齐到偶数）；顶行跳过 2 列后 1×下标2。
-        let data = [2, 1, 0, 3, 2, 1, 2, 0, 0, 0, 0, 2, 2, 0, 1, 2, 0, 1];
-        let bitmap =
-            Bitmap::decode(&info_bmp(5, 2, 8, BI_RLE8, &palette, &data), Limits::UI).unwrap();
-        let (red, green) = (0xffff_0000, 0xff00_ff00);
-        assert_eq!(
-            bitmap.pixels,
-            [0, 0, green, 0, 0, red, red, green, red, green]
-        );
-        assert!(
-            Bitmap::decode(
-                &info_bmp(5, 2, 8, BI_RLE8, &palette, &data[..5]),
-                Limits::UI
-            )
-            .is_err()
-        );
-        assert!(Bitmap::decode(&info_bmp(5, -2, 8, BI_RLE8, &palette, &data), Limits::UI).is_err());
-    }
-
-    #[test]
-    fn bitfields_expand_565_and_reject_non_contiguous_masks() {
-        let masks: Vec<u8> = [0xf800u32, 0x07e0, 0x001f]
-            .iter()
-            .flat_map(|mask| mask.to_le_bytes())
-            .collect();
-        let data = [0x00, 0xf8, 0xe0, 0x07, 0x1f, 0x00, 0x00, 0x00];
-        let bitmap = Bitmap::decode(
-            &info_bmp(3, -1, 16, BI_BITFIELDS, &masks, &data),
-            Limits::UI,
-        )
-        .unwrap();
-        assert_eq!(bitmap.pixels, [0xffff_0000, 0xff00_ff00, 0xff00_00ff]);
-        let broken: Vec<u8> = [0xf00fu32, 0x07e0, 0x001f]
-            .iter()
-            .flat_map(|mask| mask.to_le_bytes())
-            .collect();
-        assert!(
-            Bitmap::decode(
-                &info_bmp(3, -1, 16, BI_BITFIELDS, &broken, &data),
-                Limits::UI
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn jpeg_color_and_grayscale_become_opaque_rgb() {
-        let color = Bitmap::decode(include_bytes!("testdata/solid-16x8.jpg"), Limits::UI).unwrap();
-        assert_eq!((color.width, color.height), (16, 8));
-        assert_eq!(color.pixels[2 * 16 + 2], 0xffc8_1e27);
-        let gray = Bitmap::decode(include_bytes!("testdata/gray-8x8.jpg"), Limits::UI).unwrap();
-        assert_eq!(gray.pixels[2 * 8 + 2], 0xff4d_4d4d);
-        let truncated = include_bytes!("testdata/solid-16x8.jpg");
-        assert!(Bitmap::decode(&truncated[..truncated.len() / 2], Limits::UI).is_err());
-    }
-}
-
-#[cfg(test)]
-mod png_tests {
-    use super::*;
-
-    #[test]
-    fn png_expands_palette_and_premultiplies_alpha_before_resizing() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
-            encoder.set_color(png::ColorType::Indexed);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder.set_palette(vec![255, 128, 0, 10, 20, 30]);
-            encoder.set_trns(vec![128, 0]);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&[0, 1])
-                .unwrap();
-        }
-        let bitmap = Bitmap::decode_png(&bytes, Limits::UI).unwrap();
-        assert_eq!(bitmap.pixels, [0x8080_4000, 0]);
-        let scaled = bitmap.resized(16);
-        assert_eq!(
-            (scaled.width, scaled.height, scaled.pixels.len()),
-            (16, 16, 256)
-        );
-        assert_eq!(scaled.pixels[0], 0x8080_4000);
-        assert_eq!(scaled.pixels[15], 0);
-        assert!(Bitmap::decode_png(&bytes[..bytes.len() / 2], Limits::UI).is_err());
-    }
-
-    #[test]
-    fn png_rejects_oversized_dimensions_before_allocating_output() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 2049, 1);
-            encoder.set_color(png::ColorType::Grayscale);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&[0; 2049])
-                .unwrap();
-        }
-        assert_eq!(
-            Bitmap::decode_png(&bytes, Limits::UI).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-    }
-}
+mod tests;

@@ -5,7 +5,7 @@ use std::{
     io::{self, Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread,
 };
 
@@ -16,9 +16,9 @@ enum Picture {
     Loaded(Option<Bitmap>),
 }
 
-/// UI 线程拥有的用户图片缓存与单个后台解码线程。
+/// UI 线程拥有的用户图片缓存与按需启动的单次后台解码任务。
 ///
-/// 缓存只保留当前引用；任务和结果队列各容量一，任何时刻至多一项在途。
+/// 缓存只保留当前引用，结果通道容量一，任何时刻至多一项在途；任务完成即退出线程。
 /// Drop 关闭通道，不等待已经开始的文件读取；后台仅转移 Bitmap，不接触窗口或 Wayland。
 #[derive(Default)]
 pub struct PictureLoader {
@@ -50,12 +50,14 @@ impl PictureLoader {
 
         // 2. 唤醒字节只是 readiness，完成通道才是结果 owner；两者先后被消费也不会丢失结果。
         let mut changed = false;
+        let mut completed = false;
         if let Some(worker) = &mut self.worker {
             worker.drain_wake()?;
             match worker.receiver.try_recv() {
                 Ok((path, result)) => {
                     debug_assert_eq!(self.active.as_ref(), Some(&path));
                     self.active = None;
+                    completed = true;
                     if let Some(picture @ Picture::Loading) = self.pictures.get_mut(&path) {
                         *picture = Picture::Loaded(
                             result
@@ -74,22 +76,18 @@ impl PictureLoader {
             }
         }
 
-        // 3. 只向空闲线程发送当前仍需要的下一项；待选路径留在 UI，不把过期选择排进工作队列。
+        if completed {
+            self.worker = None;
+        }
+
+        // 3. 只为当前仍需要的下一项启动任务；待选路径留在 UI，不积压过期选择或常驻空闲线程。
         if self.active.is_none()
             && let Some((path, picture)) = self
                 .pictures
                 .iter_mut()
                 .find(|(_, picture)| matches!(picture, Picture::Pending))
         {
-            if self.worker.is_none() {
-                self.worker = Some(Worker::new()?);
-            }
-            self.worker
-                .as_ref()
-                .expect("picture worker created")
-                .sender
-                .try_send(path.clone())
-                .map_err(|error| io::Error::other(error.to_string()))?;
+            self.worker = Some(Worker::new(path.clone())?);
             *picture = Picture::Loading;
             self.active = Some(path.clone());
         }
@@ -110,7 +108,7 @@ impl PictureLoader {
         }
     }
 
-    /// 返回应加入 UI poll 的可读通知源；尚未启动线程时返回 None。
+    /// 返回应加入 UI poll 的可读通知源；没有在途任务时返回 None。
     ///
     /// FD 只用于等待，调用方不得读取；唤醒后调用 [`Self::update`] 回收结果。
     pub fn notification(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
@@ -119,50 +117,44 @@ impl PictureLoader {
 }
 
 struct Worker {
-    sender: SyncSender<PathBuf>,
     receiver: Receiver<(PathBuf, io::Result<Bitmap>)>,
     reader: UnixStream,
 }
 
 impl Worker {
-    fn new() -> io::Result<Self> {
+    fn new(path: PathBuf) -> io::Result<Self> {
         let (reader, mut writer) = UnixStream::pair()?;
         reader.set_nonblocking(true)?;
         writer.set_nonblocking(true)?;
-        let (sender, jobs) = mpsc::sync_channel::<PathBuf>(1);
         let (results, receiver) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("picture-decode".into())
             .spawn(move || {
-                // OWNER: 线程只持有路径和独占位图；UI Drop 先断开请求/结果端，无 join、无 UI 回调。
-                while let Ok(path) = jobs.recv() {
-                    let result = Bitmap::load_picture(&path);
-                    if results.send((path, result)).is_err() {
-                        break;
-                    }
-                    loop {
-                        match writer.write(&[1]) {
-                            Ok(1) => break,
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                            // 缓冲已满表示已有未消费通知；结果仍在有界通道，不需要额外唤醒。
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                            _ => return,
-                        }
+                // OWNER: 线程只持有路径和独占位图，解码后直接退出，不持有 UI 或 Wayland。
+                // 1. 先发表结果；通道只有本次任务，send 不会因其他结果占用而阻塞。
+                // 2. 再发 readiness。即便 UI 已取走结果并关闭读端，也已拥有完整结果。
+                let result = Bitmap::load_picture(&path);
+                if results.send((path, result)).is_err() {
+                    return;
+                }
+                loop {
+                    match writer.write(&[1]) {
+                        Ok(1) => break,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        _ => return,
                     }
                 }
             })?;
-        Ok(Self {
-            sender,
-            receiver,
-            reader,
-        })
+        Ok(Self { receiver, reader })
     }
 
     fn drain_wake(&mut self) -> io::Result<()> {
         let mut bytes = [0; 64];
         loop {
             match self.reader.read(&mut bytes) {
-                Ok(0) => return Err(io::Error::other("picture wake socket closed")),
+                // 单次任务已退出；结果可能已经入队，先由 update 接收，断线由结果通道判定。
+                Ok(0) => return Ok(()),
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),

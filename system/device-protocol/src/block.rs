@@ -7,7 +7,8 @@ use alloc::{
     vec::Vec,
 };
 use device_model::{
-    BlockBuffer, BlockBufferPool, BlockDevice, BlockError, BlockOperation, BlockRequest,
+    BlockBuffer, BlockBufferPool, BlockCommand, BlockDevice, BlockError, BlockIoCompletion,
+    BlockIoQueue, BlockOperation, BlockProvider, BlockRequest, BlockSubmission,
 };
 use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::sync::Mutex;
@@ -25,7 +26,7 @@ const CONNECT: u32 = 5;
 const ATTACH: u32 = 6;
 const DETACH: u32 = 7;
 const QUEUE: u32 = 8;
-const WORKERS: usize = 8;
+const WORKERS: usize = 2;
 
 fn encode_error(error: BlockError) -> Status {
     match error {
@@ -55,7 +56,7 @@ fn describe(writer: &mut Writer, device: &dyn BlockDevice) {
 
 /// 子范围只平移设备区间，登记仍由实际硬件提供者拥有。
 struct BlockRange {
-    device: Arc<dyn BlockDevice>,
+    device: Arc<dyn BlockProvider>,
     first: u64,
     count: u64,
 }
@@ -173,11 +174,60 @@ impl BlockDevice for BlockRange {
     }
 }
 
+struct RangeQueue {
+    range: Arc<BlockRange>,
+    queue: Box<dyn BlockIoQueue>,
+}
+impl BlockProvider for BlockRange {
+    fn open_queue(self: Arc<Self>) -> Result<Box<dyn BlockIoQueue>, BlockError> {
+        let queue = self.device.clone().open_queue()?;
+        Box::try_new(RangeQueue { range: self, queue })
+            .map(|queue| queue as Box<dyn BlockIoQueue>)
+            .map_err(|_| BlockError::OutOfMemory)
+    }
+}
+impl BlockIoQueue for RangeQueue {
+    fn event(&self) -> &native_runtime::Event {
+        self.queue.event()
+    }
+    fn try_submit(
+        &mut self,
+        id: u64,
+        command: &BlockCommand,
+    ) -> Result<BlockSubmission, BlockError> {
+        match command {
+            BlockCommand::Transfer {
+                operation,
+                first_block,
+                blocks,
+                buffer,
+                buffer_offset,
+            } => self.queue.try_submit(
+                id,
+                &BlockCommand::Transfer {
+                    operation: *operation,
+                    first_block: self.range.translate(*first_block, *blocks)?,
+                    blocks: *blocks,
+                    buffer: buffer.clone(),
+                    buffer_offset: *buffer_offset,
+                },
+            ),
+            BlockCommand::Flush => self.queue.try_submit(id, command),
+        }
+    }
+    fn reap(&mut self, output: &mut [BlockIoCompletion]) -> usize {
+        self.queue.reap(output)
+    }
+    fn is_idle(&self) -> bool {
+        self.queue.is_idle()
+    }
+}
+
 /// 发布一个块设备；每次打开产生独立登记表。
 ///
 /// # Errors
 /// 目录或会话分配失败。
-pub fn publish(directory: &Directory, device: Arc<dyn BlockDevice>) -> Result<(), Status> {
+pub fn publish(directory: &Directory, device: Arc<dyn BlockProvider>) -> Result<(), Status> {
     let mut description = directory::description();
     describe(&mut description, &*device);
     directory

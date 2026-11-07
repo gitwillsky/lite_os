@@ -141,8 +141,14 @@ impl VirtIORngDevice {
                 ReserveOrWait::Prepare(ticket) => owner.requests.capacity_key(ticket),
             }
         };
-        let prepared = PreparedCapacityWait::try_new(key, 1, io_completion::current_wait_target())
-            .map_err(|_| ())?;
+        let prepared = PreparedCapacityWait::try_new(
+            key,
+            1,
+            crate::io_completion::request_owner::CapacityTarget::Thread(
+                io_completion::current_wait_target(),
+            ),
+        )
+        .map_err(|_| ())?;
         let waiter = {
             let mut owner = self.queue.lock();
             if owner.failed {
@@ -180,6 +186,8 @@ impl VirtIORngDevice {
             Ok(head) => head,
             Err(_) => {
                 data.waiter = None;
+                // 尚未发表，没有完成方；先结束准备握手再归还槽，否则下一次 reset 会遇到残留 REQUESTED。
+                slot.completion.complete();
                 let wake = owner.requests.release_and_handoff(identity);
                 drop(data);
                 drop(owner);

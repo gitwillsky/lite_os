@@ -1,18 +1,18 @@
-//! 块设备控制连接与共享提交环；DMA 等待不占登记表/环锁，flush 以先前批次为屏障。
+//! 块会话的 reactor：控制登记与非阻塞数据面分责，DMA 完成后才交付完成和释放借用。
 use super::*;
-use core::sync::atomic::{AtomicU32, Ordering};
-use native_runtime::native_abi::{DEADLINE_INFINITE, signals};
-use native_runtime::{Event, futex};
-use queue::{Queue, Request, Response};
+use native_runtime::Event;
+use native_runtime::native_abi::signals;
+use queue::{Queue, Request};
 
+const DISPATCH_BUDGET: usize = 256;
 pub(super) struct BlockSession {
-    device: Arc<dyn BlockDevice>,
+    device: Arc<dyn BlockProvider>,
     buffers: Mutex<Vec<Option<Arc<dyn BlockBuffer>>>>,
     queue: ServerQueue,
 }
 impl BlockSession {
-    pub(super) fn new(device: Arc<dyn BlockDevice>) -> Result<Self, Status> {
-        let queue = ServerQueue::new(device.queue_depth())?;
+    pub(super) fn new(device: Arc<dyn BlockProvider>) -> Result<Self, Status> {
+        let queue = ServerQueue::new(&device)?;
         Ok(Self {
             device,
             buffers: Mutex::new(Vec::new()),
@@ -23,183 +23,206 @@ impl BlockSession {
         usize::try_from(id.checked_sub(1).ok_or(native_abi::ERR_INVALID_ARGS)?)
             .map_err(|_| native_abi::ERR_INVALID_ARGS)
     }
-    fn execute(&self, wire: &[Request], responses: &mut [Response]) {
-        let mut buffers: [Option<Arc<dyn BlockBuffer>>; MAX_BATCH] = core::array::from_fn(|_| None);
-        {
-            let table = self.buffers.lock();
-            for (index, record) in wire.iter().enumerate() {
-                responses[index] = [record[0], native_abi::OK as u64];
-                let operation = record[1] & !queue::GROUP_LAST;
-                if operation == queue::FLUSH {
-                    continue;
-                }
-                let buffer = Self::index(record[2])
-                    .ok()
-                    .and_then(|id| table.get(id))
-                    .and_then(Option::as_ref);
-                if !matches!(operation, queue::READ | queue::WRITE)
-                    || usize::try_from(record[4]).is_err()
-                    || buffer.is_none()
-                {
-                    responses[index][1] = native_abi::ERR_INVALID_ARGS as u32 as u64;
-                } else {
-                    buffers[index] = buffer.cloned();
-                }
-            }
-        }
-        let mut requests =
-            [const { core::mem::MaybeUninit::<BlockRequest<'_>>::uninit() }; MAX_BATCH];
-        let mut count = 0;
-        for (index, record) in wire.iter().enumerate() {
-            if let Some(buffer) = &buffers[index] {
-                requests[count].write(BlockRequest {
-                    operation: if record[1] & !queue::GROUP_LAST == queue::READ {
-                        BlockOperation::Read
-                    } else {
-                        BlockOperation::Write
-                    },
-                    first_block: record[3],
-                    blocks: record[4] as usize,
-                    buffer: &**buffer,
-                    buffer_offset: record[5],
-                });
-                count += 1;
-            }
-        }
-        // SAFETY: 只借用逐项写入的前 count 个槽（count <= wire.len <= MAX_BATCH）；
-        // BlockRequest 只含 Copy 标量和借用，buffers 在同步 transfer_batch 完成前保活全部 Arc。
-        // 未初始化的尾部不读取/不析构，避免为每个批次分配描述符 Vec 或先填满无效模板。
-        let requests = unsafe {
-            core::slice::from_raw_parts(requests.as_ptr().cast::<BlockRequest<'_>>(), count)
+    fn command(&self, record: Request) -> Result<BlockCommand, Status> {
+        let operation = match record[1] & !queue::GROUP_LAST {
+            queue::READ => BlockOperation::Read,
+            queue::WRITE => BlockOperation::Write,
+            _ => return Err(native_abi::ERR_INVALID_ARGS),
         };
-        let status = self
-            .device
-            .transfer_batch(requests)
-            .map_or_else(encode_error, |()| native_abi::OK);
-        for (index, buffer) in buffers.iter().enumerate().take(wire.len()) {
-            if buffer.is_some() {
-                responses[index][1] = status as u32 as u64;
-            }
-        }
+        let index = Self::index(record[2])?;
+        let buffer = self
+            .buffers
+            .lock()
+            .get(index)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or(native_abi::ERR_NOT_FOUND)?;
+        Ok(BlockCommand::Transfer {
+            operation,
+            first_block: record[3],
+            blocks: usize::try_from(record[4]).map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+            buffer,
+            buffer_offset: record[5],
+        })
     }
 }
 impl Drop for BlockSession {
     fn drop(&mut self) {
-        // 所有 worker/handler 共同保活本 SessionState；最后一个退出后才会走到此处。
-        // 先释放登记及 PMT，再通知 closed，不能让一次 rearm/协议失败提前交还在途区间。
+        // 1. 最后一个 handler 退休后独占状态，先把已接收 DMA 的 owner 移出并排空。
+        // 2. 队列析构使用自己的完成握手，不依赖已经停下的服务 reactor。
+        // 3. 再释放登记、发布 closed，不能把停止读取或丢弃 SQ 当成 DMA 已经取消。
+        let consumer = self.queue.consumer.get_mut();
+        drop(consumer.io.take());
+        drop(consumer.batch.command.take());
         self.buffers.get_mut().clear();
         self.queue.ring.close();
         let _ = self.queue.progress.signal(0, signals::SIGNALED);
     }
 }
 
+#[derive(Clone, Copy)]
+enum Flush {
+    Waiting(u64),
+    Submitted(u64),
+}
+struct Batch {
+    records: [Request; MAX_BATCH],
+    next: usize,
+    count: usize,
+    // OWNER: Busy 队首绑定实际登记，重试不重新解析可被 DETACH/复用的 vmoid，也不反复 clone。
+    command: Option<BlockCommand>,
+}
 struct Consumer {
-    active: usize,
-    // FLAG: 领取 flush 后禁止后续批次越过它，直到所有先前 DMA 和 flush 本身完成。
-    barrier: bool,
-    // FLAG: 每个会话只授权一对环的 producer/consumer；重复 QUEUE 不能建立第二个竞争的 client。
+    // OWNER: 唯一在途请求 owner；仅退出时 take，之后不再处理调用。
+    io: Option<Box<dyn BlockIoQueue>>,
+    batch: Batch,
+    // OWNER: SQ 领取的持久化屏障；不用第二份 active 计数猜测设备完成。
+    flush: Option<Flush>,
+    // FLAG: 每会话只发表一对共享环，防止第二个 client 与已存在 producer 竞争。
     opened: bool,
 }
 struct ServerQueue {
     ring: Queue,
     ready: Event,
+    hardware: Event,
     progress: Event,
-    // OWNER: 唯一 SQ consumer 与 flush 屏障；锁只保护批次领取，不跨 DMA。
+    // OWNER: SQ/CQ、待提交窗口及屏障同锁；不阻塞等 DMA，控制的耗时登记不持本锁。
     consumer: Mutex<Consumer>,
-    // OWNER: 多工作者的 CQ producer；固定环在连接时准备，完成发布不分配。
-    producer: Mutex<()>,
-    // OWNER: active 减少后的本地唤醒序号。先快照、再检查 active、最后 futex wait，防止丢唤醒。
-    completed: AtomicU32,
 }
 impl ServerQueue {
-    fn new(depth: usize) -> Result<Self, Status> {
+    fn new(device: &Arc<dyn BlockProvider>) -> Result<Self, Status> {
+        let io = device.clone().open_queue().map_err(encode_error)?;
+        let hardware = io.event().duplicate(rights::SAME)?;
         Ok(Self {
-            ring: Queue::create(Queue::capacity_for(depth)?)?,
+            ring: Queue::create(Queue::capacity_for(device.queue_depth())?)?,
             ready: Event::create()?,
+            hardware,
             progress: Event::create()?,
             consumer: Mutex::new(Consumer {
-                active: 0,
-                barrier: false,
+                io: Some(io),
+                batch: Batch {
+                    records: [[0; 6]; MAX_BATCH],
+                    next: 0,
+                    count: 0,
+                    command: None,
+                },
+                flush: None,
                 opened: false,
             }),
-            producer: Mutex::new(()),
-            completed: AtomicU32::new(0),
         })
     }
+    fn reply(&self, id: u64, result: Result<(), Status>) -> Result<(), Status> {
+        self.ring
+            .complete(&[[id, result.err().unwrap_or(native_abi::OK) as u32 as u64]])
+    }
     fn dispatch(&self, session: &BlockSession) -> Result<(), Status> {
-        let mut wire = [[0; 6]; MAX_BATCH];
-        let (count, barrier) = {
-            let mut consumer = self.consumer.lock();
-            if self.ring.abort_requested() {
-                return Err(native_abi::ERR_BAD_STATE);
-            }
-            if consumer.barrier {
-                return Ok(());
-            }
-            let count = self.ring.take_requests(&mut wire)?;
-            if count == 0 {
-                return Ok(());
-            }
-            let barrier = wire[count - 1][1] & !queue::GROUP_LAST == queue::FLUSH;
-            consumer.active += 1;
-            consumer.barrier = barrier;
-            (count, barrier)
-        };
-        // 再通知一个空闲 worker 领取剩余项，不等待本批 DMA 后才接收下一批。
-        // 领取已提交后，任何失败也须经过下方 active 退休，不能从此处直接退出。
-        let mut result = if !barrier {
-            self.notify_pending()
-        } else {
-            Ok(())
-        };
+        let mut consumer = self.consumer.lock();
+        if self.ring.abort_requested() {
+            return Err(native_abi::ERR_BAD_STATE);
+        }
+        let mut output = [BlockIoCompletion {
+            id: 0,
+            result: Ok(()),
+        }; MAX_BATCH];
+        let count = consumer
+            .io
+            .as_mut()
+            .expect("live block queue")
+            .reap(&mut output);
         let mut responses = [[0; 2]; MAX_BATCH];
-        session.execute(&wire[..count], &mut responses[..count]);
-        if barrier {
-            loop {
-                let completed = self.completed.load(Ordering::Acquire);
-                if self.consumer.lock().active == 1 {
+        for (response, completion) in responses.iter_mut().zip(&output[..count]) {
+            *response = [
+                completion.id,
+                completion.result.err().map_or(native_abi::OK, encode_error) as u32 as u64,
+            ];
+            if matches!(consumer.flush, Some(Flush::Submitted(id)) if id == completion.id) {
+                consumer.flush = None;
+            }
+        }
+        let mut published = count != 0;
+        if published {
+            self.ring.complete(&responses[..count])?;
+        }
+        // 填满收割窗口说明可能仍有已完成记录；即使硬件已经停下来也得再分派一批。
+        let mut reschedule = count == MAX_BATCH;
+        for step in 0..DISPATCH_BUDGET {
+            if let Some(flush) = consumer.flush {
+                let id = match flush {
+                    Flush::Submitted(_) => break,
+                    Flush::Waiting(id) => id,
+                };
+                let io = consumer.io.as_mut().expect("live block queue");
+                if !io.is_idle() {
                     break;
                 }
-                // wait 出错也只重查谓词；在旧 DMA 完成前不能越过持久化屏障。
-                let _ = futex::wait(&self.completed, completed, DEADLINE_INFINITE, 0);
+                match io.try_submit(id, &BlockCommand::Flush) {
+                    Ok(BlockSubmission::Queued) => {
+                        consumer.flush = Some(Flush::Submitted(id));
+                        break;
+                    }
+                    Ok(BlockSubmission::Busy) => break,
+                    result => {
+                        self.reply(id, result.map(|_| ()).map_err(encode_error))?;
+                        consumer.flush = None;
+                        published = true;
+                    }
+                }
+            } else {
+                if consumer.batch.next == consumer.batch.count {
+                    consumer.batch.count = self.ring.take_requests(&mut consumer.batch.records)?;
+                    consumer.batch.next = 0;
+                    if consumer.batch.count == 0 {
+                        break;
+                    }
+                }
+                let record = consumer.batch.records[consumer.batch.next];
+                if record[1] & !queue::GROUP_LAST == queue::FLUSH {
+                    consumer.flush = Some(Flush::Waiting(record[0]));
+                } else {
+                    let result = if consumer.batch.command.is_none() {
+                        match session.command(record) {
+                            Ok(command) => {
+                                consumer.batch.command = Some(command);
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        Ok(())
+                    };
+                    let result = result.and_then(|()| {
+                        let Consumer { io, batch, .. } = &mut *consumer;
+                        io.as_mut()
+                            .expect("live block queue")
+                            .try_submit(
+                                record[0],
+                                batch.command.as_ref().expect("materialized block command"),
+                            )
+                            .map_err(encode_error)
+                    });
+                    match result {
+                        Ok(BlockSubmission::Busy) => break,
+                        Ok(BlockSubmission::Queued) => {}
+                        result => {
+                            self.reply(record[0], result.map(|_| ()))?;
+                            published = true;
+                        }
+                    }
+                    drop(consumer.batch.command.take());
+                }
+                consumer.batch.next += 1;
             }
-            responses[count - 1][1] = session
-                .device
-                .flush()
-                .map_or_else(encode_error, |()| native_abi::OK)
-                as u32 as u64;
-        }
-        {
-            let _producer = self.producer.lock();
-            if let Err(error) = self.ring.complete(&responses[..count]) {
-                result = Err(error);
+            if step + 1 == DISPATCH_BUDGET {
+                reschedule |= consumer.batch.next < consumer.batch.count
+                    || matches!(consumer.flush, Some(Flush::Waiting(_)))
+                    || self.ring.has_requests()?;
             }
         }
-        let wake_barrier = {
-            let mut consumer = self.consumer.lock();
-            consumer.active -= 1;
-            if barrier {
-                consumer.barrier = false;
-            }
-            self.completed.fetch_add(1, Ordering::Release);
-            consumer.barrier
-        };
-        if wake_barrier {
-            futex::wake(&self.completed, 1, 0);
+        drop(consumer);
+        if published {
+            self.progress.signal(0, signals::SIGNALED)?;
         }
-        if result.is_ok() {
-            result = self.progress.signal(0, signals::SIGNALED);
-        }
-        if result.is_ok()
-            && let Err(error) = self.notify_pending()
-        {
-            result = Err(error);
-        }
-        result
-    }
-    fn notify_pending(&self) -> Result<(), Status> {
-        let consumer = self.consumer.lock();
-        if !consumer.barrier && self.ring.has_requests()? {
+        if reschedule {
             self.ready.signal(0, signals::SIGNALED)?;
         }
         Ok(())
@@ -213,6 +236,7 @@ pub(super) fn serve_device(
     let watch = server.duplicate(rights::SAME)?;
     let session = Arc::try_new(session).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let ready = session.get().queue.ready.duplicate(rights::SAME)?;
+    let hardware = session.get().queue.hardware.duplicate(rights::SAME)?;
     let active = session.clone();
     let activity = Arc::try_new(move || active.get().queue.dispatch(active.get()))
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
@@ -286,7 +310,7 @@ pub(super) fn serve_device(
                     {
                         return Err(native_abi::ERR_OUT_OF_RANGE);
                     }
-                    let range: Arc<dyn BlockDevice> = Arc::try_new(BlockRange {
+                    let range: Arc<dyn BlockProvider> = Arc::try_new(BlockRange {
                         device: device.clone(),
                         first,
                         count,
@@ -302,6 +326,13 @@ pub(super) fn serve_device(
         },
     )
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    service_rpc::serve_events(server, WORKERS, b"block-server", handler, ready, activity)?;
+    service_rpc::serve_events(
+        server,
+        WORKERS,
+        b"block-server",
+        handler,
+        alloc::vec![ready, hardware],
+        activity,
+    )?;
     Ok((client, watch))
 }
