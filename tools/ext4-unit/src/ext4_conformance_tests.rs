@@ -161,6 +161,81 @@ fn first_extent_allocation_no_space_preserves_committed_killpriv() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn delayed_allocation_reserves_space_and_writeback_leaves_timestamps_alone() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let path = scratch_copy("delalloc-reservation.img");
+    let fs = mount(&path);
+    let root = fs.root_inode().unwrap();
+    let buffered = root.create(b"buffered", InodeType::File, FILE).unwrap();
+    let other = root.create(b"other", InodeType::File, FILE).unwrap();
+    let before = fs.statistics().unwrap();
+
+    // 预留 10 个 hole block：可用空间同步减少，已预留的块重复预留不再计数。
+    let mut reserved = alloc::collections::BTreeSet::new();
+    buffered
+        .reserve_buffered_write(0, 10 * FS_BLOCK, &mut reserved)
+        .unwrap();
+    assert_eq!(reserved.len(), 10);
+    assert_eq!(
+        fs.statistics().unwrap().blocks_available,
+        before.blocks_available - 10
+    );
+    buffered
+        .reserve_buffered_write(FS_BLOCK as u64, 2 * FS_BLOCK, &mut reserved)
+        .unwrap();
+    assert_eq!(reserved.len(), 10);
+
+    // 超过剩余空间的预留以 NoSpace 失败，且不改变任何状态。
+    let mut huge = alloc::collections::BTreeSet::new();
+    assert_eq!(
+        other.reserve_buffered_write(0, (before.blocks_available as usize) * FS_BLOCK, &mut huge),
+        Err(FileSystemError::NoSpace)
+    );
+    assert!(huge.is_empty());
+    assert_eq!(
+        fs.statistics().unwrap().blocks_available,
+        before.blocks_available - 10
+    );
+
+    // 其他分配只能使用预留之外的空间：耗尽后文件系统仍给预留留着 10 个块。
+    let mut index = 0u64;
+    loop {
+        match other.allocate_storage(index * FS_BLOCK as u64, FS_BLOCK as u64, None) {
+            Ok(()) => index += 1,
+            Err(FileSystemError::NoSpace) => break,
+            Err(error) => panic!("unexpected allocation {error:?}"),
+        }
+    }
+    // 耗尽之后统计里可用块恰好不超过被预留的数量（预留的 10 块没有被别的分配吃掉）。
+    assert!(fs.statistics().unwrap().blocks_available == 0);
+
+    // 回写：先归还预留再分配；回写不改 size，也不把 mtime 改成回写时刻。
+    // 缓冲写入在写入时已经提交了大小（回写之前文件就是这个大小，hole 读为零）。
+    buffered.note_buffered_write(3 * FS_BLOCK as u64).unwrap();
+    assert_eq!(buffered.size(), 3 * FS_BLOCK as u64);
+    buffered.set_times(Some(1_000_000_000), Some(1_000_000_001)).unwrap();
+    let mtime = buffered.metadata().unwrap().mtime;
+    buffered.release_buffered_reservation(reserved.len() as u64);
+    assert_eq!(
+        buffered
+            .write_back_storage(0, &[7u8; 3 * FS_BLOCK])
+            .unwrap(),
+        3 * FS_BLOCK
+    );
+    assert_eq!(buffered.size(), 3 * FS_BLOCK as u64, "writeback never changes the size");
+    assert_eq!(buffered.metadata().unwrap().mtime, mtime);
+    let mut readback = vec![0u8; 3 * FS_BLOCK];
+    assert_eq!(buffered.read_storage(0, &mut readback).unwrap(), 3 * FS_BLOCK);
+    assert!(readback.iter().all(|&byte| byte == 7));
+
+    root.sync_storage().unwrap();
+    drop((buffered, other, root));
+    drop(fs);
+    e2fsck_clean(&path);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// 直接读写镜像副本的 block device；flush 为 no-op（host 进程退出前文件内容已写入）。
 struct WritableImage(Mutex<File>);
 

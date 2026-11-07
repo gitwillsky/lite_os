@@ -453,3 +453,12 @@ MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不
   覆盖与 cache generation 重试语义不变）；journal 的 ordered 数据、metadata checkpoint 与 replay 写回 home 时，块号连续的映像
   合并为至多 64 块的区间写（`write_fs_blocks_home`，每块仍计一次 home 写，区间缓冲分配失败按设备写失败处理）。
   提交点之后不得再因合并而新增分配失败路径：缓冲在写入前一次性预留，失败即提交失败。
+- ext4 普通文件的缓冲写入是延迟分配（data=ordered + delalloc）：`Content::write` 只做三件事——为尚未分配的 hole block 向文件系统
+  预留空间（`reserve_buffered_write`，ENOSPC 在 write 返回前同步报告）、提交文件大小与修改时间（`note_buffered_write`，
+  大小增长或 mtime 秒数变化才开一次 journal mutation）、把数据写入内容 VMO 并留下脏标记。块分配与落盘发生在回写
+  （fsync、syncfs、5 秒周期、节点释放、单文件脏数据超过 8 MiB 时由写者同步回写，即脏页限流）。预留是精确块数
+  （`delalloc_reserved`），准入检查另给总预留留出每 128 块一个 extent 节点的余量；其他分配（metadata、fallocate、直接写）
+  只能使用预留之外的空闲 block（`allocate_block` 检查），`statfs` 的可用块已扣除预留。回写（`write_back_storage`）
+  先归还本区间的预留再分配，分配失败则补回预留并把数据留作脏页；它只映射 block，不改大小也不改时间戳，
+  所以不会覆盖使用者随后用 `utimensat` 设置的 mtime。截断后越过新 EOF 的预留作废，内容被丢弃时剩余预留一并归还。
+  这取代了此前“先直写存储再写 VMO”的 write：数据不再同时存在于 journal staged 副本与内容 VMO 两份。

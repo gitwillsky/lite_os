@@ -1,5 +1,5 @@
 //! 同一 VMAR/VMO owner 的两种硬件视图：normal 可见共享服务区，private 仅可见成员私有区。
-//! 两张页表不拥有第二份映射政策；private 叶项只在同一地址空间事务中从实际映射安装/撤销。
+//! 私有区下级页表由 normal 唯一拥有，private 只借用根入口；supervisor 区仍分别拥有。
 use core::ops::Range;
 
 use super::address_space::{SHARED_START, ZapMode};
@@ -20,7 +20,7 @@ pub(crate) enum ExecutionView {
 
 pub(super) struct ExecutionViews {
     pub(super) normal: PageTable,
-    // OWNER: 成员独有的受限根；不安装共享区叶项，不与 normal 共享页表页的析构 ownership。
+    // OWNER: 受限根只拥有根页和 supervisor 子树；私有用户子树借自 normal，同事务退休后才析构。
     private: Option<PageTable>,
 }
 
@@ -36,8 +36,16 @@ impl ExecutionViews {
             result?;
             Ok(table)
         }
+        // AArch64 的 trampoline 与服务区尾端共用根入口；成员 normal 从共享 owner 借用该子树，
+        // 不能预建另一份。private 的 supervisor 子树仍独立，避免把服务区 USER 映射带入。
+        let trampoline_branch = crate::arch::mmu::TRAMPOLINE_ADDRESS / PageTable::SUBTREE_SIZE;
+        let service_branch = super::USER_END.saturating_sub(1) / PageTable::SUBTREE_SIZE;
         Ok(Self {
-            normal: root()?,
+            normal: if member && trampoline_branch == service_branch {
+                PageTable::try_new(AddressSpaceKind::User).map_err(|_| VmError::NoMemory)?
+            } else {
+                root()?
+            },
             private: member.then(root).transpose()?,
         })
     }
@@ -52,7 +60,7 @@ impl ExecutionViews {
         self.private.as_ref().unwrap_or(&self.normal)
     }
 
-    /// 实际映射安装两种视图；共享区只进入 normal，错误返回前仍提交已发生的退休。
+    /// 在 normal owner 安装映射，私有区同时借给 private；错误返回前仍提交已发生的退休。
     pub(super) fn install(
         &mut self,
         vpn: VirtualPageNumber,
@@ -82,11 +90,12 @@ impl ExecutionViews {
         let mut commit = TranslationCommit::new();
         let result = (|| {
             install(&mut self.normal, vpn, ppn, permissions, &mut commit)?;
-            if vpn.as_usize() < SHARED_START / PAGE_SIZE
-                && let Some(private) = &mut self.private
-            {
-                install(private, vpn, ppn, permissions, &mut commit)?;
-            }
+            self.share_private(vpn)?;
+            // 已有共享叶项也可能因负向 TLB/权限缓存再次缺页，当前 CPU 必须刷新。
+            commit.record(
+                vpn.as_usize(),
+                super::translation::TranslationTransition::Publish,
+            );
             Ok(())
         })();
         if let Err(error) = result {
@@ -115,13 +124,22 @@ impl ExecutionViews {
         self.normal
             .map(vpn, ppn, permissions, commit)
             .map_err(|_| VmError::NoMemory)?;
+        self.share_private(vpn)?;
+        Ok(())
+    }
+
+    fn share_private(&mut self, vpn: VirtualPageNumber) -> Result<(), VmError> {
         if vpn.as_usize() < SHARED_START / PAGE_SIZE
             && let Some(private) = &mut self.private
-            && private.translate(vpn).is_none()
         {
-            private
-                .map(vpn, ppn, permissions, commit)
-                .map_err(|_| VmError::NoMemory)?;
+            let address = vpn.as_usize() * PAGE_SIZE;
+            // SAFETY: 两根同属 ExecutionViews，所有访问由同一 SpaceInner 锁串行化，
+            // 退出时先退休两个根的全部 ASID，再释放 normal 子树；private 不修改用户叶项。
+            unsafe {
+                self.normal
+                    .share_root_range(private, address..address + PAGE_SIZE)
+            }
+            .map_err(|_| VmError::BadState)?;
         }
         Ok(())
     }
@@ -133,7 +151,8 @@ impl ExecutionViews {
         mode: ZapMode,
     ) -> Result<TranslationCommit, VmError> {
         let mut commit = TranslationCommit::new();
-        for table in core::iter::once(&mut self.normal).chain(self.private.iter_mut()) {
+        {
+            let table = &mut self.normal;
             let end = range.end.div_ceil(PAGE_SIZE);
             let mut cursor = range.start / PAGE_SIZE;
             while let Some((page, entry)) = table.next_mapped(cursor, end) {
@@ -213,11 +232,20 @@ mod tests {
             .unwrap()
             .synchronize()
             .unwrap();
-        views
+        let mut service_owner = ExecutionViews::new(false).unwrap();
+        service_owner
             .install(service, page, permissions)
             .unwrap()
             .synchronize()
             .unwrap();
+        let address = service.as_usize() * PAGE_SIZE;
+        // SAFETY: owner 保活至两个视图退休；本用例串行执行所有页表访问。
+        unsafe {
+            service_owner
+                .normal
+                .share_root_range(&mut views.normal, address..address + PAGE_SIZE)
+        }
+        .unwrap();
         assert_eq!(views.normal.translate(vpn).unwrap().ppn(), page);
         let private = views.private.as_ref().unwrap();
         assert_eq!(private.translate(vpn).unwrap().ppn(), page);
@@ -247,6 +275,22 @@ mod tests {
             .unwrap();
         assert!(views.normal.translate(vpn).is_none());
         assert!(views.private.as_ref().unwrap().translate(vpn).is_none());
+        // 撤销必须直接对已借用的成员生效；最后一页删去后再次装入不得留下悬空根入口。
+        service_owner
+            .zap(address..address + PAGE_SIZE, ZapMode::Unmap)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        assert!(views.normal.translate(service).is_none());
+        service_owner
+            .install(service, page, permissions)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        assert_eq!(views.normal.translate(service).unwrap().ppn(), page);
+        assert!(views.private.as_ref().unwrap().translate(service).is_none());
         views.retire();
+        drop(views);
+        service_owner.retire();
     }
 }

@@ -49,19 +49,30 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   迟到的缺页不能重新安装已退休映射。protect 不得超过创建时的 rights ceiling。
 - 页框/页表页的退休顺序固定为：撤销 PTE → local/remote translation fence 完成 → 释放 owner。
   fence 失败必须保活 owner 并 fail-stop；不能用错误展开提前释放。
-- 共享区撤销必须传播到全部已登记成员。成员的私有区不跨空间共享页表；硬件身份不作为 logical CPU 索引。
+- 共享区页表由共享地址空间唯一拥有，成员 normal 根借用顶层入口；成员持有共享 owner 的 Arc，
+  且自身根析构后才释放它。私有区由成员 normal 拥有，private 根借用同一子树；不同成员的私有区不共享。
+  `SHARED_START` 按 architecture 提供的根入口粒度对齐，不在通用 VM 编码页表层级。
+- 借用时只复制根入口，不分配叶表；成员创建时接入已有子树，首次访问新根分支时在 owner 装页后接入。
+  被借用的顶层子表随 owner 存活，空的更低层表仍可在 fence 后回收；不预分配整个服务区的空表。
+  architecture 拒绝经借用根修改子树。所有软件 walk/read 也须锁实际 owner，避免与其下级表回收并发。
+  不再登记成员或逐成员复制/撤销叶项；全 CPU、全 ASID fence 使共享叶项的撤销对所有根生效。
 - zap 按实际页表叶项推进，跳过缺失的中间表覆盖范围；稀疏大 VMAR 不得逐个空页遍历。
   unmap/protect 仍使用同一 TranslationCommit，跳过空洞不能跳过已安装叶项的 fence。
 - 地址空间析构先全局 fence，再退休 ASID，再释放页表与映射。ASID 换代和 activation 的握手由 arch owner 保证。
 - 设备页表不由 CPU 激活。IOMMU 必须先完成设备侧失效，才消费 DeviceAddressSpace 的 retirement token；
   PMT 随后才能解除 pin。该域的 create/map 只报告页表分配失败，不依赖上层对象的 status codec。
 
+共享/受限子树的寿命参照 [Zircon unified aspace](https://fuchsia.googlesource.com/fuchsia/+/c9e12e24495130db393289d9f948f43b1b81e80e/zircon/kernel/arch/arm64/mmu.cc)。
+LiteOS 复用已有地址空间 Arc 保活，不另设逐页引用计数；新分支按需接入，避免预分配全部顶层子表。
+Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复用页表 static/disassembly 门禁，最终用原基线比较页表内存与多进程缺页成本。
+
 ## 受限执行视图
 
 1. 共享进程成员有独立 normal/private 根和独立 ASID context；VMAR、映射、VMO 与页寿命只保留一个 owner。
    normal 可见成员私有区与共享服务区；private 只安装私有区 USER 叶项，supervisor trampoline/context 在两根中均可用。
-2. 同一地址空间锁内安装、写保护和撤销两个视图；同一个全 ASID translation commit 覆盖两根后才释放页表页。
-   private 根不借用 normal 的 table-frame ownership；错误清理不能只撤销其中一根。
+2. 同一地址空间锁内只修改 normal 拥有的私有用户子树；private 根引用同一页表页，无重复装页/清理。
+   supervisor trampoline/context 子树分别拥有，防止与服务区共用根入口时泄露 USER 叶项。
+   同一个全 ASID translation commit 覆盖全部引用根后才释放下级表；两个根均退休后才析构其 frame owner。
 3. private 缺页先校验私有区边界，不能调用共享区补页。最终返回前由对象 mode 投影一次 ExecutionView，
    thread 不复制模式状态；IRQ mask 后只取得预存根 token，不进入可睡眠锁。restricted enter 仅接受共享进程成员。
 4. context 部分映射失败先撤销已发布的叶项、完成 fence，再释放 context frame；地址空间退休先全 CPU fence，
@@ -176,7 +187,7 @@ normal/private 的硬件镜像不重复计数；成员的共享服务区归实�
 地址空间先复制 Mapping 引用并释放空间锁，再按 VMO 树锁 → 地址空间锁观察翻译。`vmo::attribution` 每次查询按树构造
 临时物理页索引，扫描已有映射登记并排序、二分计数；不新增全局页索引、页热路径 mapcount、锁或原子更新。
 树锁保活页框，空间锁保护 live 与页表读取；跨空间 publication/munmap 仍可变化，因此是瞬时观测，不声明全系统原子快照。
-共享服务区在 owner 与其成员 normal 根中取翻译并集，同一逻辑映射的硬件副本去重。
+共享服务区只观察唯一 owner 的子树，不扫描成员或构造硬件副本并集。
 页内容来源由真实 Page owner 给出，沿 COW/slice 偏移与继承上限解析；页表的缺失页不会因 backing 已提交而被计入。
 
 `vmo::creation` 集中构造 VMO 与树；发布 Arc 前登记连续页，构造失败与正常析构共用同一释放路径。

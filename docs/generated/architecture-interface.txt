@@ -590,6 +590,7 @@ kernel/src/boot/cmdline.rs :: enum CommandLineError :: # [doc = " `loglevel=` �
 kernel/src/boot/cmdline.rs :: enum CommandLineError :: # [doc = " `panic=` 的值不是十进制整数。"] InvalidPanicTimeout
 kernel/src/boot/cmdline.rs :: pub (crate) KernelParameters :: log_level : Option < u8 >
 kernel/src/boot/cmdline.rs :: pub (crate) KernelParameters :: panic_seconds : Option < i32 >
+kernel/src/boot/cmdline.rs :: pub (crate) KernelParameters :: stack_probe : bool
 kernel/src/boot/cmdline.rs :: pub (crate) enum CommandLineError
 kernel/src/boot/cmdline.rs :: pub (crate) fn parse (line : & [u8]) -> Result < KernelParameters , CommandLineError >
 kernel/src/boot/cmdline.rs :: pub (crate) struct KernelParameters
@@ -1722,6 +1723,7 @@ kernel/src/vm/kernel_space.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex 
 kernel/src/vm/kernel_space.rs :: pub (crate) struct KernelRetirement
 kernel/src/vm/kernel_space.rs :: pub (crate) struct KernelSpace
 kernel/src/vm/kernel_stack.rs :: pub (crate) fn active_range (pointer : usize) -> Option < (usize , usize) >
+kernel/src/vm/kernel_stack.rs :: pub (crate) fn enable_probe ()
 kernel/src/vm/kernel_stack.rs :: pub (crate) fn kernel_stack_bounds (pointer : usize) -> Option < (usize , usize) >
 kernel/src/vm/kernel_stack.rs :: pub (crate) fn mapped_pages () -> usize
 kernel/src/vm/kernel_stack.rs :: pub (crate) impl KernelStack :: fn get_top (& self) -> usize
@@ -1750,6 +1752,7 @@ kernel/src/vm/mod.rs :: pub (crate) use execution_views :: ExecutionView
 kernel/src/vm/mod.rs :: pub (crate) use fault :: FaultAccess
 kernel/src/vm/mod.rs :: pub (crate) use kernel_space :: { KERNEL_SPACE , initialize as initialize_kernel_space }
 kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: KernelStack
+kernel/src/vm/mod.rs :: pub (crate) use kernel_stack :: enable_probe as enable_kernel_stack_probe
 kernel/src/vm/mod.rs :: pub (crate) use vmo :: initialize_zero_page
 kernel/src/vm/mod.rs :: pub (crate) use vmo :: { CachePolicy , ChildKind , FaultSource , PagerBinding , PagerRequest , PagerSink , PinnedRange , RangeOp , Vmo , VmoOptions , evicted_pages , physical_page_statistics , relieve_memory_pressure , }
 kernel/src/vm/page_table.rs :: pub (crate) fn table_pages () -> usize
@@ -2783,7 +2786,10 @@ system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn root 
 system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn sector_delta (& self) -> i64
 system/ext4/src/ext4/extent.rs :: pub (super) struct Extent
 system/ext4/src/ext4/extent.rs :: pub (super) struct ExtentTree < 'a >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn release_delalloc (& self , blocks : u64)
 system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn remount_writable (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn reserve_delalloc (& self , blocks : u64) -> Result < () , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn restore_delalloc (& self , blocks : u64)
 system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn root_inode (& self) -> Result < Arc < Ext4Inode > , FileSystemError >
 system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
 system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn start_writeback (self : & Arc < Self >) -> Result < () , FileSystemError >
@@ -2807,6 +2813,7 @@ system/ext4/src/ext4/inode.rs :: pub (super) Ext4Inode :: inode_num : u32
 system/ext4/src/ext4/inode.rs :: pub (super) LiveInode :: disk : Ext4InodeDisk
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn apply_tree (disk : & mut Ext4InodeDisk , root : [u8 ; INODE_BLOCK_BYTES] , sector_delta : i64 ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn is_fast_symlink (disk : & Ext4InodeDisk) -> bool
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn is_hole (& self , file_block : u32) -> Result < bool , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn load (fs : Arc < Ext4FileSystem > , inode_num : u32 ,) -> Result < Arc < Self > , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block (& self , file_block : u32) -> Result < u64 , FileSystemError >
 system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block_sparse (& self , file_block : u32) -> Result < Option < u64 > , FileSystemError >
@@ -2824,6 +2831,7 @@ system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn seconds (self)
 system/ext4/src/ext4/inode.rs :: pub (super) struct LiveInode
 system/ext4/src/ext4/inode.rs :: pub (super) struct Timestamp
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn allocate_storage (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn block_size (& self) -> usize
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_xattr (& self , change : crate :: vfs :: XattrChange < '_ > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
@@ -2834,13 +2842,17 @@ system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn link (& se
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn list_xattrs (& self , trusted : bool) -> Result < Vec < u8 > , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn mknod (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata , device : Option < crate :: vfs :: DeviceNumber > ,) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn note_buffered_write (& self , end : u64) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn number (& self) -> u64
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn prepare_cached_write (& self , policy : crate :: vfs :: WritePolicy ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8] ,) -> Result < usize , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_xattr (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn release_buffered_reservation (& self , blocks : u64)
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn reserve_buffered_write (& self , offset : u64 , length : usize , reserved : & mut alloc :: collections :: BTreeSet < u32 > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn restore_buffered_reservation (& self , blocks : u64)
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn size (& self) -> u64
 system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn symlink (& self , name : & [u8] , target : & [u8] , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
@@ -2982,6 +2994,8 @@ system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn recover_
 system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn remove_orphan_locked (& self , target : u32) -> Result < () , FileSystemError >
 system/ext4/src/ext4/orphan.rs :: pub (super) impl OrphanFile :: const fn unavailable () -> Self
 system/ext4/src/ext4/orphan.rs :: pub (super) struct OrphanFile
+system/ext4/src/ext4/storage_mutation.rs :: pub (crate) impl Ext4Inode :: fn write_back_storage (& self , offset : u64 , buf : & [u8] ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn finish_write_locked (& self , mutation : & mut MutationGuard < '_ > , end : usize ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn allocate_range (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u64 , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn remove_write_privileges_locked (& self , mutation : & mut MutationGuard < '_ > , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >

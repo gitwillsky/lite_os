@@ -128,6 +128,7 @@ mod arch {
             PageTableEntry as ArchitecturePageTableEntry, TablePage,
         };
         pub(crate) use super::pte::PagePermissions;
+        pub(crate) const TRAMPOLINE_ADDRESS: usize = (1 << 38) - 4096;
         #[derive(Clone)]
         pub(crate) struct AddressSpaceToken(pub(crate) usize);
         pub(crate) struct KernelTrapToken;
@@ -159,7 +160,9 @@ mod vm {
     #[derive(Debug, PartialEq)]
     pub(crate) enum VmError {
         NoMemory,
+        BadState,
     }
+    pub(crate) const USER_END: usize = (1 << 38) - 8192;
     pub(crate) mod address_space {
         pub(crate) const SHARED_START: usize = 1 << 37;
         pub(crate) enum ZapMode {

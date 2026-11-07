@@ -47,9 +47,10 @@
 3. `disable_for_transfer` 之后只允许非阻塞 snapshot、ASID activation 和硬件安装；所有 Arc 必须在 noreturn 前显式释放。
 
 RISC-V supervisor trap-context mapping 退休必须完成 translation fence；AArch64 context 随 kernel stack owner 退休。
-Boot、secondary 与每个原生线程的 kernel stack 统一为 `config::KERNEL_STACK_SIZE`（32 KiB，另有 guard page），
-创建时整栈提交，是每线程（含每个 Linux 线程的承载线程）的固定内存。尺寸依据实测峰值（musl 门禁 18648 字节，
-含 AArch64 顶部上下文保留）取约 1.7 倍余量；新增深调用路径或大栈帧时须重新测量，不得在 kernel stack 放大块 staging。
+Boot/secondary 的栈预留与原生线程栈槽位使用 `config::KERNEL_STACK_SIZE`（32 KiB）。线程槽位中底页为 guard，
+映射 28 KiB；AArch64 顶页另外保留执行上下文，实际可用调用栈为 24 KiB（RISC-V 为 28 KiB）。
+因此槽位降到 16 KiB 后，可用栈分别仅为 8/12 KiB，不能把历史包含上下文的写入深度直接与槽位尺寸比较。
+新增深调用路径或大栈帧时须重新测量，不得在 kernel stack 放大块 staging。
 illegal-instruction 分类与最终提交使用短 context transaction，读取用户指令在两者之间，禁止持有 context claim 获取可阻塞的 VM 锁。
 
 AArch64 lower-EL entry 必须在进入 Rust 前以 TTBR1 kernel root 替换 TTBR0 并执行 ISB；ASID 0 保留，kernel root 的低用户地址范围为空。
@@ -83,6 +84,11 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
   同桶只锁一次；`Waiter::slot` 只在持有所在桶锁时改写，超时摘除在桶锁内复核。Benchmark 决策：队列逻辑（key 哈希、FIFO 唤醒、requeue）是 `futex/queue.rs` 的纯函数，
 architecture-bench `futex enqueue + wake` 约束无竞争入队/摘除的 CPU 成本，host 单测覆盖 FIFO、唤醒数、
 同桶/跨桶 requeue 与哈希稳定/分布；锁争用吞吐用计划基线 4 的 guest 诊断。
+- 内核栈高水位探针：启动参数 `stack_probe` 默认关闭，在创建线程前确定。开启时新栈的可用区涂写非零标记，
+  退出时扫描首个改变的字，创新高记录 `kernel stack high-water mark: X of Y usable bytes (written lower bound)`；
+  guard 与 AArch64 context reserve 均排除。开销限于创建的一次写和退出的一次读，不进入 trap/调度路径。
+  标记可观察普通零写入；未触及的帧空隙、恰好等于标记的写入仍不可见，因此结果是写入深度下界，不能独自证明缩栈安全。
+  缩栈还需结合深路径/编译器栈帧审查和余量；本轮保持 32 KiB，不用未经测量的估计压低内存。
 - native channel 每个���点的积压按字节限额（4 MiB，含每条消息 64 字节固定开销），超过返回 `ERR_NO_RESOURCES`；
   条数上限会让 64 KiB 整消息放大到数百 MiB、同时对小消息过紧。字节记账与队列同锁增减，端点关闭时随队列清零。
 - 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。

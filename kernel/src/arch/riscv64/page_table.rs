@@ -149,6 +149,8 @@ pub(crate) struct PageTable<Page: TablePage> {
     table_pages: FallibleMap<usize, Page>,
     address_space_context: Option<Arc<AddressSpaceContext>>,
     kind: AddressSpaceKind,
+    // OWNER: 借用根入口后，顶层子表随本 owner 存活；若仍按空表剪枝，其他根将引用已回收页。
+    shared_root_tables: bool,
 }
 
 impl<Page: TablePage> PageTable<Page> {
@@ -174,7 +176,54 @@ impl<Page: TablePage> PageTable<Page> {
             table_pages,
             address_space_context,
             kind,
+            shared_root_tables: false,
         })
+    }
+
+    /// 一个根入口覆盖的字节数；VM owner 用它分隔互不共享的子树。
+    pub(crate) const ROOT_SPAN_BYTES: usize = 1 << (PAGE_SHIFT + 18);
+
+    /// 把 `pages` 覆盖的根入口借给 `target`，不复制下级页表。
+    ///
+    /// # Safety
+    /// 调用者串行化源的全部修改，保证源比目标的硬件可达寿命长；目标只能读借用区，
+    /// 撤销/改权限由源完成并 fence 全部 ASID。目标必须为空或已引用同一子树。
+    /// # Errors
+    /// 非 table 入口、非本 owner 的子树或目标冲突返回 `InvalidPageTable`；无分配。
+    pub(crate) unsafe fn share_root_range(
+        &mut self,
+        target: &mut Self,
+        pages: core::ops::Range<usize>,
+    ) -> Result<(), PageTableError> {
+        let span = Self::ROOT_SPAN_BYTES >> PAGE_SHIFT;
+        for page in ((pages.start & !(span - 1))..pages.end).step_by(span) {
+            let index = sv39::indexes(page)[0];
+            let entry = Self::read_entry(self.root_page, index);
+            if !entry.is_valid() {
+                continue;
+            }
+            if !(entry.is_next_table()) || !self.table_pages.contains_key(&entry.physical_page()) {
+                return Err(PageTableError::InvalidPageTable);
+            }
+            let old = Self::read_entry(target.root_page, index);
+            if old.0 == entry.0 {
+                continue;
+            }
+            if old.is_valid() {
+                return Err(PageTableError::InvalidPageTable);
+            }
+            self.shared_root_tables = true;
+            Self::write_entry(target.root_page, index, entry);
+        }
+        Ok(())
+    }
+
+    fn require_owned_branch(&self, virtual_page: usize) -> Result<(), PageTableError> {
+        let entry = Self::read_entry(self.root_page, sv39::indexes(virtual_page)[0]);
+        if entry.is_next_table() && !self.table_pages.contains_key(&entry.physical_page()) {
+            return Err(PageTableError::InvalidPageTable);
+        }
+        Ok(())
     }
 
     /// 根表的物理页号（交给 IOMMU 等硬件页表遍历器）。
@@ -247,6 +296,7 @@ impl<Page: TablePage> PageTable<Page> {
         virtual_page: usize,
         target_level: usize,
     ) -> Result<(usize, usize), PageTableError> {
+        self.require_owned_branch(virtual_page)?;
         assert!(target_level < SV39_LEVELS);
         let indexes = sv39::indexes(virtual_page);
         let mut table_page = self.root_page;
@@ -369,6 +419,7 @@ impl<Page: TablePage> PageTable<Page> {
     }
 
     pub(crate) fn unmap(&mut self, virtual_page: usize) -> Result<Unmapped<Page>, PageTableError> {
+        self.require_owned_branch(virtual_page)?;
         let indexes = sv39::indexes(virtual_page);
         let mut tables = [self.root_page; 3];
         for level in 0..SV39_LEVELS {
@@ -385,7 +436,9 @@ impl<Page: TablePage> PageTable<Page> {
                 Self::write_entry(tables[level], indexes[level], PageTableEntry::empty());
                 let mut retired = RetiredTablePages::new();
                 for child_level in (1..=level).rev() {
-                    if !Self::table_is_empty(tables[child_level]) {
+                    if (child_level == 1 && self.shared_root_tables)
+                        || !Self::table_is_empty(tables[child_level])
+                    {
                         break;
                     }
                     Self::write_entry(
@@ -418,6 +471,7 @@ impl<Page: TablePage> PageTable<Page> {
         virtual_page: usize,
         permissions: PagePermissions,
     ) -> Result<(), PageTableError> {
+        self.require_owned_branch(virtual_page)?;
         let flags = pte::encode(permissions).ok_or(PageTableError::InvalidFlags)?;
         let indexes = sv39::indexes(virtual_page);
         let mut table = self.root_page;

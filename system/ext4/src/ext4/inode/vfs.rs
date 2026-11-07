@@ -182,6 +182,78 @@ impl Ext4Inode {
         mutation.commit()
     }
 
+    /// 为缓冲写入 `[offset, offset + length)` 预留尚未分配的 block（延迟分配），登记到 `reserved`。
+    ///
+    /// `reserved` 是调用者（内容缓存）按文件持有的“已预留的 file block”集合：已在集合里的块不重复预留，
+    /// 回写分配它们之前由调用者归还。
+    ///
+    /// # Errors
+    /// 空闲 block 不足返回 `NoSpace`（此时 `reserved` 与文件系统预留都不变）。
+    pub(crate) fn reserve_buffered_write(
+        &self,
+        offset: u64,
+        length: usize,
+        reserved: &mut alloc::collections::BTreeSet<u32>,
+    ) -> Result<(), FileSystemError> {
+        if length == 0 {
+            return Ok(());
+        }
+        let block_size = self.fs.block_size as u64;
+        let first = u32::try_from(offset / block_size).map_err(|_| FileSystemError::NoSpace)?;
+        let last = u32::try_from((offset + length as u64 - 1) / block_size)
+            .map_err(|_| FileSystemError::NoSpace)?;
+        let mut missing = Vec::new();
+        for block in first..=last {
+            if !reserved.contains(&block) && self.is_hole(block)? {
+                missing
+                    .try_reserve(1)
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                missing.push(block);
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        self.fs.reserve_delalloc(missing.len() as u64)?;
+        reserved.extend(missing);
+        Ok(())
+    }
+
+    /// 文件系统块大小（字节）。
+    pub(crate) fn block_size(&self) -> usize {
+        self.fs.block_size
+    }
+
+    /// 归还 `blocks` 个块的延迟分配预留（回写即将分配它们，或预留所属的区间被丢弃）。
+    pub(crate) fn release_buffered_reservation(&self, blocks: u64) {
+        if blocks != 0 {
+            self.fs.release_delalloc(blocks);
+        }
+    }
+
+    /// 回写分配失败后补回 `blocks` 个块的预留。
+    pub(crate) fn restore_buffered_reservation(&self, blocks: u64) {
+        if blocks != 0 {
+            self.fs.restore_delalloc(blocks);
+        }
+    }
+
+    /// 缓冲写入已进入内容缓存之后提交文件大小与修改时间（数据本身由回写落盘）。
+    ///
+    /// 只在大小增长或修改时间的秒数变化时开一次 journal mutation，连续的小写入不会每次都改 inode。
+    pub(crate) fn note_buffered_write(&self, end: u64) -> Result<(), FileSystemError> {
+        let now = Timestamp::now();
+        {
+            let inode = self.disk.lock();
+            if end <= inode.size() && inode.mtime().seconds() == now.seconds() {
+                return Ok(());
+            }
+        }
+        let mut mutation = self.fs.begin_mutation()?;
+        self.finish_write_locked(&mut mutation, usize::try_from(end).map_err(|_| FileSystemError::NoSpace)?)?;
+        mutation.commit()
+    }
+
     pub(crate) fn truncate_storage(
         &self,
         size: u64,

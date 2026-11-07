@@ -1,6 +1,6 @@
 //! 内核启动参数（DTB `/chosen/bootargs`）中内核自身消费的选项。
 //!
-//! 只识别 `loglevel=N`、`quiet`、`debug` 与 `panic=N`；其余选项原样交给根服务。
+//! 只识别 `loglevel=N`、`quiet`、`debug`、`panic=N` 与 `stack_probe`；其余选项原样交给根服务。
 
 /// 内核消费的启动参数。
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -9,6 +9,8 @@ pub(crate) struct KernelParameters {
     pub(crate) log_level: Option<u8>,
     /// `panic=`：0 停机，正数为秒数后重启，负数立即重启。
     pub(crate) panic_seconds: Option<i32>,
+    /// `stack_probe`：线程退出时测量内核栈高水位并在创新高时记录（评估 `KERNEL_STACK_SIZE` 用，默认关闭）。
+    pub(crate) stack_probe: bool,
 }
 
 /// 选项值无法解析的原因。
@@ -49,6 +51,8 @@ pub(crate) fn parse(line: &[u8]) -> Result<KernelParameters, CommandLineError> {
     {
         if word == b"quiet" {
             parameters.log_level = Some(4);
+        } else if word == b"stack_probe" {
+            parameters.stack_probe = true;
         } else if word == b"debug" {
             parameters.log_level = Some(10);
         } else if let Some(value) = word.strip_prefix(b"loglevel=") {

@@ -32,6 +32,19 @@ impl KernelStack {
             mapped_bottom..top,
             PagePermissions::READ | PagePermissions::WRITE,
         )?;
+        if STACK_PROBE.load(core::sync::atomic::Ordering::Relaxed) {
+            let usable_top = top - crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE;
+            let words = (usable_top - mapped_bottom) / size_of::<usize>();
+            // SAFETY: 新栈尚未发表给执行体，页已映射且字对齐；仅涂写实际可用区，保留上下文区仍为零。
+            // handle 复用前的退休 fence 已完成，不存在旧栈上的并发访问。
+            for index in 0..words {
+                unsafe {
+                    (mapped_bottom as *mut usize)
+                        .add(index)
+                        .write_volatile(STACK_PATTERN)
+                };
+            }
+        }
         LIVE_STACKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         Ok(Self { handle })
     }
@@ -63,8 +76,14 @@ impl KernelStack {
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
-        let (bottom, _) = kernel_stack_position(self.handle.0);
+        let (bottom, top) = kernel_stack_position(self.handle.0);
         let mapped_bottom = bottom + PAGE_SIZE;
+        if STACK_PROBE.load(core::sync::atomic::Ordering::Relaxed) {
+            record_high_water(
+                mapped_bottom,
+                top - crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE,
+            );
+        }
         // 1. 只在 KERNEL_SPACE lock 内摘除 VMA/PTE，并由 retirement token 保活全部 frame。
         // 2. 先释放 lock 再等待 remote ack；目标 CPU 可能正以 IRQ masked 状态等待同一 lock，
         //    若持锁 shootdown 会让双方永久互等。
@@ -122,6 +141,36 @@ struct KernelStackHandle(usize);
 impl Drop for KernelStackHandle {
     fn drop(&mut self) {
         KERNEL_STACK_HANDLE_ALLOCATOR.lock().dealloc(self.0);
+    }
+}
+
+// OWNER: 内核栈高水位探针开关（启动参数 `stack_probe`）。关闭时线程退出不扫描栈；
+// 启动时在线程创建前确定；开启后创建时涂写、退出时扫描实际可用区，不进入 trap/调度热路径。
+static STACK_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+// OWNER: 探针观察到的全局最大栈使用字节数；只作诊断，缺失时无法判断栈能否缩小。
+static STACK_PEAK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const STACK_PATTERN: usize = usize::from_ne_bytes([0xa5; size_of::<usize>()]);
+
+/// 开启内核栈高水位探针。
+pub(crate) fn enable_probe() {
+    STACK_PROBE.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// 退出后扫描创建时的非零标记；普通零写入也可观察，不计 guard/context reserve。
+/// 这是历史写入深度的下界：未触及的栈帧空隙与恰好匹配标记的写入不可见，不能单凭它证明缩栈安全。
+fn record_high_water(mapped_bottom: usize, top: usize) {
+    let words = (top - mapped_bottom) / size_of::<usize>();
+    let base = mapped_bottom as *const usize;
+    let untouched = (0..words)
+        // SAFETY: 区间是本栈已映射、可读的页；线程已退出，没有并发写入。
+        .take_while(|&index| unsafe { base.add(index).read_volatile() } == STACK_PATTERN)
+        .count();
+    let used = top - mapped_bottom - untouched * size_of::<usize>();
+    if STACK_PEAK.fetch_max(used, core::sync::atomic::Ordering::Relaxed) < used {
+        info!(
+            "kernel stack high-water mark: {used} of {} usable bytes (written lower bound)",
+            top - mapped_bottom
+        );
     }
 }
 

@@ -36,10 +36,13 @@ impl Ext4FileSystem {
         Ok(FileSystemStatistics {
             block_size: self.block_size as u64,
             blocks: superblock.blocks_count().saturating_sub(overhead),
-            blocks_free: superblock.free_blocks_count(),
+            blocks_free: superblock
+                .free_blocks_count()
+                .saturating_sub(self.delalloc_reserved.load(Ordering::Relaxed)),
             blocks_available: superblock
                 .free_blocks_count()
-                .saturating_sub(superblock.reserved_blocks_count()),
+                .saturating_sub(superblock.reserved_blocks_count())
+                .saturating_sub(self.delalloc_reserved.load(Ordering::Relaxed)),
             files: superblock.s_inodes_count as u64,
             files_free: superblock.s_free_inodes_count as u64,
             name_length: 255,
@@ -172,4 +175,42 @@ impl Ext4FileSystem {
 #[cfg(test)]
 pub(crate) fn test_run_writeback_daemon(fs: Arc<Ext4FileSystem>, sleep_until: fn(u64)) {
     fs.run_writeback_daemon(sleep_until);
+}
+
+impl Ext4FileSystem {
+    /// 为延迟分配预留 `blocks` 个 block：成功后写者收到的成功不会因回写时没有空间而失效。
+    ///
+    /// 记账是精确的块数；准入检查另给总预留留出 extent 树节点的余量（每 128 个数据块一个，
+    /// 回写分配数据块时还可能要拆分 extent 叶），所以余量不在预留/归还之间漂移。
+    ///
+    /// # Errors
+    /// 除去 root 保留块、已有预留与余量后的空闲 block 不足返回 `NoSpace`。
+    pub(crate) fn reserve_delalloc(&self, blocks: u64) -> Result<(), FileSystemError> {
+        let superblock = self.superblock.lock();
+        let available = superblock
+            .free_blocks_count()
+            .saturating_sub(superblock.reserved_blocks_count());
+        self.delalloc_reserved
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |reserved| {
+                let total = reserved.checked_add(blocks)?;
+                (total + total / 128 < available).then_some(total)
+            })
+            .map(drop)
+            .map_err(|_| FileSystemError::NoSpace)
+    }
+
+    /// 归还 [`Self::reserve_delalloc`] 预留的 `blocks` 个 block（回写即将分配它们，或预留所属的区间被丢弃）。
+    pub(crate) fn release_delalloc(&self, blocks: u64) {
+        let _ = self
+            .delalloc_reserved
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |reserved| {
+                Some(reserved.saturating_sub(blocks))
+            });
+    }
+
+    /// 回写分配失败后把已归还的预留补回（不检查空闲数）：数据仍在内容 VMO 里等待下一次回写，
+    /// 承诺不能因为一次失败的尝试而消失。
+    pub(crate) fn restore_delalloc(&self, blocks: u64) {
+        self.delalloc_reserved.fetch_add(blocks, Ordering::Relaxed);
+    }
 }

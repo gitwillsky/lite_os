@@ -336,7 +336,8 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   可能短暂睡眠，自旋锁下不允许；私有与共享 key 共用同一张全局分桶表（空间 koid / VMO id 参与哈希）。双架构 Clippy 通过。
 - M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
   并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
-  内核栈尺寸评估需要栈染色测量工具，尚未做。
+  内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；
+  零初始化扫描不能可靠识别零写入。32 KiB 槽位保持不变；最终工作负载采样与深栈帧审查后再决定是否缩小，不把测量留给用户补做。
 - M5 已实现待运行验收：bootfs 文件内容按页对齐（打包器把填充放进路径名字段，标准 cpio 读取器兼容）；`Image::from_vmo`
   让 ELF 段成为 bootfs VMO 的写时复制子对象（末页清零，bss 为独立零页），不再逐段复制；ext4 映像与 driver-host 映像
   以 `Bootfs::file_vmo` 子对象交付，不再 `bootfs_copy`；客户端提供的替换映像仍复制（防止之后被改写）。
@@ -359,9 +360,13 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
 - 8 部分实现：共享零页（根匿名 VMO 的读缺页映射全局只读零页，写时分配；kernel-unit 用例通过）。
   尚缺：accessed 位分代回收与后台回收线程。
-- 9 部分实现：写 home 的区间合并（上）；延迟分配本身（write 只进内容 VMO、回写时分配并直接从 VMO 写）尚未做。
-- 6 已实现待运行验收：`PageList`（16 页块 + 有序表索引）替换逐页节点；`supply_pages` 与 COW 折叠的“提交不失败”由前置预留保证；
-  kernel-unit 新增两项 PageList 单测，vmo 全部 19 项通过（含 fork/exit 折叠与 supply 用例），双架构 Clippy 与 architecture-check 通过。
-- 尚未完成：5（页表子树共享）、8 余项（回收分代/后台线程）、9 余项（延迟分配）、P2.1（截止时间调度类）、
+- 9 已实现待运行验收：`Content::write` 改为延迟分配（预留 + 大小/时间提交 + 只写内容 VMO），回写时才分配并只映射 block，
+  脏页限流（单文件 8 MiB）；journal 写 home 的连续块区间合并；ext4-unit 70 项（含 e2fsck 校验的预留/回写用例）通过。
+  数据不再同时存在于 journal staged 副本与内容 VMO。非整块写不再读盘（页由 pager 补入内容 VMO）。
+- 5 与 M6 页表部分已实现待运行验收：AArch64/RISC-V 根入口借用同一 owner 子树；共享区只在共享地址空间装页/撤销，
+  成员 normal/private 共用私有区下级表；取消成员登记与 O(N) 叶项撤销。沿现有 Arc/ExecutionViews 寿命保活，
+  被借用的顶层子表不再空表剪枝，较低层表仍按全 CPU/ASID fence 退休；新根分支按需接入，不预分配空子树。
+  共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
+- 尚未完成：8 余项（回收分代/后台线程）、P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
-  M4 内核栈尺寸评估、M6（随 5）、M7 余项；不以阶段性基础改动代替整项验收。
+  M4 内核栈尺寸评估、M7 余项；不以阶段性基础改动代替整项验收。

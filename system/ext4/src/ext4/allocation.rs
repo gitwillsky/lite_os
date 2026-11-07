@@ -174,6 +174,11 @@ impl Ext4FileSystem {
         if contents.len() != self.block_size {
             return Err(FileSystemError::IoError);
         }
+        // 已向写者承诺的延迟分配 block 不能被别的分配占用；回写在分配前先归还自己的预留。
+        if self.superblock.lock().free_blocks_count() <= self.delalloc_reserved.load(Ordering::Relaxed)
+        {
+            return Err(FileSystemError::NoSpace);
+        }
         let group_count = self.groups.lock().len();
         let (goal_group, goal_bit) = self.group_of_block(goal).unwrap_or((0, 0));
         for step in 0..=group_count {

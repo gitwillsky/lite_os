@@ -62,13 +62,7 @@ impl AddressSpace {
         }
         let mut permissions = mapping.permissions | PagePermissions::USER;
         permissions.remove(PagePermissions::WRITE);
-        let owner_guard = if Arc::ptr_eq(owner, self) {
-            None
-        } else {
-            let Ok(guard) = owner.lock() else { return };
-            Some(guard)
-        };
-        let Ok(mut inner) = self.lock() else { return };
+        let Ok(mut inner) = owner.lock() else { return };
         if !mapping.live.load(Ordering::Acquire) {
             return;
         }
@@ -82,9 +76,19 @@ impl AddressSpace {
             {
                 break;
             }
+            if !Arc::ptr_eq(owner, self) {
+                // 可选 fault-around 的锁获取失败只放弃借用；源中的已装页保持有效。
+                let Ok(mut member) = self.lock() else { break };
+                // SAFETY: owner 锁 → member 锁；成员 Arc 保活 source；借用区域只由 owner 修改。
+                unsafe {
+                    inner
+                        .views
+                        .normal
+                        .share_root_range(&mut member.views.normal, address..address + PAGE_SIZE)
+                }
+                .expect("shared service root conflicts with member topology");
+            }
         }
-        drop(inner);
-        drop(owner_guard);
     }
 
     /// 由 VMO 解析回调调用（持树锁）：装入一条翻译。
@@ -102,21 +106,28 @@ impl AddressSpace {
         if page.cache == CachePolicy::Device {
             permissions |= PagePermissions::DEVICE;
         }
-        let owner_guard = if Arc::ptr_eq(owner, self) {
-            None
-        } else {
-            Some(owner.lock()?)
-        };
-        let mut inner = self.lock()?;
-        let commit = TranslationCommit::new();
+        let mut inner = owner.lock()?;
         if !mapping.live.load(Ordering::Acquire) {
-            drop(owner_guard);
-            return Ok(commit);
+            return Ok(TranslationCommit::new());
         }
         let vpn = VirtualAddress::from(address).floor();
+        // 在任何 PTE 修改前取得成员锁；可失败的锁分配不会遗失已修改页表的 commit。
+        let mut member = if Arc::ptr_eq(owner, self) {
+            None
+        } else {
+            Some(self.lock()?)
+        };
         let commit = inner.views.install(vpn, page.ppn, permissions)?;
-        drop(inner);
-        drop(owner_guard);
+        if let Some(member) = &mut member {
+            // SAFETY: 同 install_around；SHARED_START 按根边界划分，private 根永不借用此区。
+            unsafe {
+                inner
+                    .views
+                    .normal
+                    .share_root_range(&mut member.views.normal, address..address + PAGE_SIZE)
+            }
+            .expect("shared service root conflicts with member topology");
+        }
         Ok(commit)
     }
 }

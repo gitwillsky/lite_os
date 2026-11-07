@@ -28,6 +28,7 @@ pub(crate) use device_space::DeviceAddressSpace;
 pub(crate) use execution_views::ExecutionView;
 pub(crate) use fault::FaultAccess;
 pub(crate) use kernel_space::{KERNEL_SPACE, initialize as initialize_kernel_space};
+pub(crate) use kernel_stack::enable_probe as enable_kernel_stack_probe;
 pub(crate) use vmo::initialize_zero_page;
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use vmo::{

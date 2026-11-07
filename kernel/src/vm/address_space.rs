@@ -7,11 +7,11 @@
 //!
 //! # 共享地址空间
 //!
-//! 共享空间管理高半区，其成员各自管理低半区，并在自己的页表中按需填充共享区的翻译：
+//! 共享空间管理高半区，成员管理低半区；成员 normal 根借用共享 owner 的子树：
 //!
-//! 1. 成员在共享区缺页时，到共享空间查找映射，把翻译装进成员自己的页表；
-//! 2. 共享区撤销翻译时，依次持有共享空间锁与每个成员的锁，从全部页表中撤销；
-//! 3. 映射的 `live` 标志在共享空间锁内清除，装页前在同一把锁内复查，迟到的缺页不会复活旧翻译。
+//! 1. 成员创建时借用已有根入口，首次缺页在共享 owner 中装页后补借对应入口；
+//! 2. 叶项与下级表只在 owner 修改一次，全 ASID fence 覆盖全部借用根；
+//! 3. 成员持有共享空间 Arc；被借用的顶层子表直到 owner 析构才回收，空叶表仍按 fence 退休。
 //!
 //! # 映射的修改
 //!
@@ -34,10 +34,10 @@ use alloc::vec::Vec;
 use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
 use fallible_tree::FallibleMap;
-use spin::Mutex;
 
-/// 共享区起点：用户区间的上半部分，按 1 GiB 对齐，使两区不共享任何中间页表页。
-pub(crate) const SHARED_START: usize = (USER_END / 2) & !((1 << 30) - 1);
+/// 共享区起点：用户区间上半部，按 architecture 根子树对齐，保证私有/服务区不共享下级表。
+pub(crate) const SHARED_START: usize =
+    (USER_END / 2) & !(super::page_table::PageTable::SUBTREE_SIZE - 1);
 
 /// 撤销翻译的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,11 +168,10 @@ pub(crate) struct AddressSpace {
     // OWNER: private 根的不变身份；最终 IRQ-masked transfer 不取可睡眠的地址空间锁。
     // 两 token 仅保活各根的 ASID context，映射与页表生命周期仍由 inner 唯一管理。
     private_token: Option<AddressSpaceToken>,
-    shared: Option<Arc<AddressSpace>>,
-    // OWNER: 共享空间登记的成员；共享区撤销翻译时逐个处理。Weak 不延长成员寿命。
-    members: Mutex<Vec<Weak<AddressSpace>>>,
     // OWNER: 页表与 VMAR 树同锁；拆开会让缺页装入已解除映射的翻译。
     inner: TaskMutex<SpaceInner>,
+    // OWNER: 在成员根析构后才释放共享 owner；它唯一拥有 normal 借用的服务区子树。
+    shared: Option<Arc<AddressSpace>>,
 }
 
 /// VMAR 句柄引用的地址区间。
@@ -240,7 +239,6 @@ impl AddressSpace {
             private_token: views.private_token(),
             range: range.clone(),
             shared,
-            members: Mutex::new(Vec::new()),
             inner: TaskMutex::new(SpaceInner {
                 views,
                 nodes,
@@ -285,16 +283,19 @@ impl AddressSpace {
         if shared.range.start != SHARED_START || shared.shared.is_some() {
             return Err(VmError::InvalidArgs);
         }
-        let mut members = shared.members.lock();
-        members.retain(|member| member.strong_count() != 0);
-        members.try_reserve(1).map_err(|_| VmError::NoMemory)?;
-        drop(members);
         let (space, root) = Self::create_with(USER_START..SHARED_START, Some(shared.clone()))?;
-        let mut members = shared.members.lock();
-        if members.try_reserve(1).is_err() {
-            return Err(VmError::NoMemory);
+        {
+            let mut owner = shared.lock()?;
+            let mut member = space.lock()?;
+            // SAFETY: 成员持有 shared Arc，源/目标均未脱离各自锁；目标借用区无独立映射。
+            unsafe {
+                owner
+                    .views
+                    .normal
+                    .share_root_range(&mut member.views.normal, SHARED_START..USER_END)
+            }
+            .map_err(|_| VmError::BadState)?;
         }
-        members.push(Arc::downgrade(&space));
         Ok((space, root))
     }
 
@@ -398,37 +399,13 @@ impl AddressSpace {
         done
     }
 
-    /// 撤销 `range` 内的翻译（本空间及全部成员），返回前完成 fence。
+    /// 在唯一 owner 撤销 `range`，全 CPU/ASID fence 同时覆盖全部借用根。
     pub(super) fn zap_range(&self, range: Range<usize>, mode: ZapMode) -> Result<(), VmError> {
-        let mut commits = Vec::new();
-        {
-            let mut inner = self.lock()?;
-            let members = self.member_snapshot()?;
-            commits
-                .try_reserve_exact(members.len() + 1)
-                .map_err(|_| VmError::NoMemory)?;
-            commits.push(inner.zap(range.clone(), mode)?);
-            for member in &members {
-                commits.push(member.lock()?.zap(range.clone(), mode)?);
-            }
-            drop(inner);
-        }
-        for mut commit in commits {
-            commit
-                .synchronize()
-                .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        }
+        let mut commit = self.lock()?.zap(range, mode)?;
+        commit
+            .synchronize()
+            .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
         Ok(())
-    }
-
-    fn member_snapshot(&self) -> Result<Vec<Arc<Self>>, VmError> {
-        let members = self.members.lock();
-        let mut snapshot = Vec::new();
-        snapshot
-            .try_reserve_exact(members.len())
-            .map_err(|_| VmError::NoMemory)?;
-        snapshot.extend(members.iter().filter_map(Weak::upgrade));
-        Ok(snapshot)
     }
 
     /// 从当前地址空间复制用户内存；缺页按普通缺页处理。
@@ -489,7 +466,12 @@ impl AddressSpace {
         {
             return Err(VmError::NotMapped);
         }
-        let inner = self.lock()?;
+        let owner = self
+            .shared
+            .as_deref()
+            .filter(|owner| owner.range.contains(&address))
+            .unwrap_or(self);
+        let inner = owner.lock()?;
         let Some(entry) = inner
             .views
             .normal
@@ -533,7 +515,12 @@ impl AddressSpace {
             let chunk = (PAGE_SIZE - offset).min(end - cursor);
             let start = cursor - address;
             let copied = {
-                let inner = self.lock()?;
+                let owner = self
+                    .shared
+                    .as_deref()
+                    .filter(|owner| owner.range.contains(&cursor))
+                    .unwrap_or(self);
+                let inner = owner.lock()?;
                 match inner
                     .views
                     .normal
@@ -948,7 +935,7 @@ impl Vmar {
             retired
                 .try_reserve_exact(affected.len())
                 .map_err(|_| VmError::NoMemory)?;
-            let mut commits = Vec::new();
+            let mut commit;
             {
                 let mut inner = self.space.lock()?;
                 let node = inner.nodes.get(&self.id).ok_or(VmError::BadState)?;
@@ -972,20 +959,11 @@ impl Vmar {
                     replacement.live.store(true, Ordering::Release);
                     node.children.commit_vacant(entry);
                 }
-                let members = self.space.member_snapshot()?;
-                commits
-                    .try_reserve_exact(members.len() + 1)
-                    .map_err(|_| VmError::NoMemory)?;
-                commits.push(inner.zap(range.clone(), ZapMode::Unmap)?);
-                for member in &members {
-                    commits.push(member.lock()?.zap(range.clone(), ZapMode::Unmap)?);
-                }
+                commit = inner.zap(range.clone(), ZapMode::Unmap)?;
             }
-            for mut commit in commits {
-                commit
-                    .synchronize()
-                    .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-            }
+            commit
+                .synchronize()
+                .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
             drop(retired);
             return Ok(());
         }
@@ -997,7 +975,7 @@ impl Vmar {
     /// 分配失败返回 `NoMemory`，已销毁返回 `BadState`。
     pub(crate) fn destroy(&self) -> Result<(), VmError> {
         let mut retired = Vec::new();
-        let mut commits = Vec::new();
+        let mut commit;
         {
             let mut inner = self.space.lock()?;
             let node = inner.nodes.remove(&self.id).ok_or(VmError::BadState)?;
@@ -1027,21 +1005,12 @@ impl Vmar {
                     }
                 }
             }
-            let members = self.space.member_snapshot()?;
-            commits
-                .try_reserve_exact(members.len() + 1)
-                .map_err(|_| VmError::NoMemory)?;
             let range = self.base..self.base + self.size;
-            commits.push(inner.zap(range.clone(), ZapMode::Unmap)?);
-            for member in &members {
-                commits.push(member.lock()?.zap(range.clone(), ZapMode::Unmap)?);
-            }
+            commit = inner.zap(range, ZapMode::Unmap)?;
         }
-        for mut commit in commits {
-            commit
-                .synchronize()
-                .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        }
+        commit
+            .synchronize()
+            .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
         drop(retired);
         Ok(())
     }

@@ -78,6 +78,9 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
         log::apply_console_loglevel(level);
     }
     crash::configure(parameters.panic_seconds);
+    if parameters.stack_probe {
+        vm::enable_kernel_stack_probe();
+    }
     info!(
         "kernel command line: {}",
         core::str::from_utf8(platform::kernel_command_line()).unwrap_or("<non-utf8>")

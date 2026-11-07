@@ -190,6 +190,15 @@ impl Ext4Inode {
         })
     }
 
+    /// `file_block` 是否是尚未分配 block 的 hole（已分配的 unwritten extent 不是）。
+    ///
+    /// 延迟分配只需要为 hole 预留空间：写入已分配或 unwritten 的 block 不消耗新的空闲 block。
+    pub(super) fn is_hole(&self, file_block: u32) -> Result<bool, FileSystemError> {
+        let disk = self.disk.lock().disk;
+        let tree = ExtentTree::new(&self.fs, self.inode_num, &disk)?;
+        Ok(matches!(tree.lookup(file_block)?, Mapping::Hole { .. }))
+    }
+
     /// 返回 logical block 的已初始化物理 block；hole 返回 `NotFound`。
     pub(super) fn map_block(&self, file_block: u32) -> Result<u64, FileSystemError> {
         self.map_block_sparse(file_block)?

@@ -60,6 +60,30 @@ impl core::fmt::Debug for PageTable {
 }
 
 impl PageTable {
+    /// 根入口覆盖的字节数；分区边界由 architecture 机制提供。
+    pub(super) const SUBTREE_SIZE: usize = ArchitecturePageTable::<TableFrame>::ROOT_SPAN_BYTES;
+
+    /// 借用源的根子树，不增加 frame owner 或复制叶项。
+    ///
+    /// # Safety
+    /// 源须活过目标硬件视图；修改只经源且受同一 owner 锁保护，撤销 fence 覆盖所有 ASID。
+    /// # Errors
+    /// 目标冲突或源不是独占子树时返回页表错误；不分配。
+    pub(super) unsafe fn share_root_range(
+        &mut self,
+        target: &mut Self,
+        range: core::ops::Range<usize>,
+    ) -> Result<(), PageTableError> {
+        // SAFETY: 调用者承担上面列出的跨 owner 生命周期与串行化约束。
+        unsafe {
+            self.0.share_root_range(
+                &mut target.0,
+                range.start / crate::memory::PAGE_SIZE
+                    ..range.end.div_ceil(crate::memory::PAGE_SIZE),
+            )
+        }
+    }
+
     pub(crate) fn try_new(kind: AddressSpaceKind) -> Result<Self, PageTableError> {
         ArchitecturePageTable::try_new(kind).map(Self)
     }

@@ -126,6 +126,33 @@ impl Ext4Inode {
         Ok(written)
     }
 
+    /// 回写：把内容缓存里已经确认的数据落到存储，只分配/映射 block，不改文件大小与时间戳。
+    ///
+    /// 写入时已经提交了大小与 mtime（缓冲写入），回写若再走普通写路径会把 mtime 改成回写时刻，
+    /// 并覆盖使用者随后用 utimensat 设置的时间。
+    pub(crate) fn write_back_storage(
+        &self,
+        offset: u64,
+        buf: &[u8],
+    ) -> Result<usize, FileSystemError> {
+        if self.inode_type() == InodeType::Directory {
+            return Err(FileSystemError::IsDirectory);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let offset = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        let written = self.write_data_locked(&mut mutation, offset, buf)?;
+        // 新映射的 extent 与 sector 数在 inode 工作副本里：必须持久化，但不改大小与时间戳。
+        {
+            let inode = mutation.inode(self)?;
+            self.fs.write_inode_disk(self.inode_num, &inode)?;
+        }
+        mutation.commit()?;
+        Ok(written)
+    }
+
     /// Caller policy is applied under the same MutationGuard as data; internal/writeback pass None.
     pub(super) fn remove_write_privileges_locked(
         &self,
@@ -184,7 +211,7 @@ impl Ext4Inode {
         Ok(done)
     }
 
-    fn finish_write_locked(
+    pub(in crate::ext4) fn finish_write_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
         end: usize,

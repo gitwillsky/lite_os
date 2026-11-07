@@ -16,46 +16,20 @@ impl Mapping {
         let Some(owner) = self.space.upgrade() else {
             return Ok(pages);
         };
-        let mut collect = |space: &AddressSpace| -> Result<(), VmError> {
-            let inner = space.inner.lock().map_err(|_| VmError::NoMemory)?;
-            if !self.live.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            let table = if space.range.contains(&self.base) {
-                inner.views.resident_table()
-            } else {
-                &inner.views.normal
-            };
-            let mut cursor = self.base / PAGE_SIZE;
-            let end = self.end() / PAGE_SIZE;
-            while let Some((page, entry)) = table.next_mapped(cursor, end) {
-                cursor = page + 1;
-                if entry.permissions().contains(PagePermissions::USER) {
-                    pages.try_reserve(1).map_err(|_| VmError::NoMemory)?;
-                    pages.push((page, entry.ppn().as_usize()));
-                }
-            }
-            Ok(())
-        };
-        collect(&owner)?;
-        // 共享服务区可能只在成员 normal 根中安装过；它仍是 owner 的一个逻辑映射。
-        // Weak 快照在 members 锁外提升，避免 Arc 最终析构在该锁内移除自己而递归加锁。
-        let members = {
-            let registered = owner.members.lock();
-            let mut members = Vec::new();
-            members
-                .try_reserve_exact(registered.len())
-                .map_err(|_| VmError::NoMemory)?;
-            members.extend(registered.iter().cloned());
-            members
-        };
-        for member in members {
-            if let Some(member) = member.upgrade() {
-                collect(&member)?;
+        let inner = owner.lock()?;
+        if !self.live.load(Ordering::Acquire) {
+            return Ok(pages);
+        }
+        let table = inner.views.resident_table();
+        let mut cursor = self.base / PAGE_SIZE;
+        let end = self.end() / PAGE_SIZE;
+        while let Some((page, entry)) = table.next_mapped(cursor, end) {
+            cursor = page + 1;
+            if entry.permissions().contains(PagePermissions::USER) {
+                pages.try_reserve(1).map_err(|_| VmError::NoMemory)?;
+                pages.push((page, entry.ppn().as_usize()));
             }
         }
-        pages.sort_unstable();
-        pages.dedup();
         Ok(pages)
     }
 }

@@ -11,7 +11,7 @@ use alloc::{
 };
 use core::{
     cmp, mem,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use crate::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation};
@@ -544,6 +544,11 @@ pub(crate) struct Ext4FileSystem {
     // 写前准备（`RECOVER` 标志与 orphan 回收）已完成。只读挂载为 false，`remount,rw` 时才补做；缺失时
     // 只读挂载会改磁盘，或 `remount,rw` 之后遗留的 orphan 永远不被回收。
     writable: AtomicBool,
+    // OWNER: 延迟分配已向写者承诺、尚未分配的 block 数（写入只进内容 VMO，回写时才分配）。
+    // 非延迟分配的分配（metadata、fallocate、直接写）只能使用 `free - delalloc_reserved` 之外的空闲 block；
+    // 缺失它，write() 返回成功之后回写才发现没有空间，已确认的数据只能丢弃。Relaxed：只在 CAS 循环里自洽，
+    // 与 superblock 空闲计数的一致性由 `reserve_delalloc` 持 superblock 锁读取空闲数保证。
+    delalloc_reserved: AtomicU64,
 }
 
 impl core::fmt::Debug for Ext4FileSystem {

@@ -259,6 +259,7 @@ impl Ext4FileSystem {
             groups: Mutex::new(Vec::new()),
             mutation: TaskMutex::new(()),
             pending_orphan_reclaim: AtomicBool::new(false),
+            delalloc_reserved: AtomicU64::new(0),
             writable: AtomicBool::new(false),
             journal: Mutex::new(JournalOwner::unavailable()),
             commit_event: TaskEvent::new(),
