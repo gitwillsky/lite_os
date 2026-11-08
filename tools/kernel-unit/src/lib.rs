@@ -237,6 +237,10 @@ mod io_uring_abi;
 mod virtio_net_rx_slots;
 
 #[cfg(test)]
+#[path = "../../../system/driver-host/src/drivers/virtio/net/offload.rs"]
+mod virtio_net_offload;
+
+#[cfg(test)]
 #[path = "../../../system/driver-host/src/drivers/virtio/gpu/sequence_policy.rs"]
 #[allow(dead_code)]
 mod virtio_gpu_sequence_policy;

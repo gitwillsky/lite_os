@@ -476,6 +476,7 @@ impl RouteSocket {
                 groups: 0,
             })),
             internet_packet_info: None,
+            packet_information: None,
             rights: None,
             credentials: None,
         })

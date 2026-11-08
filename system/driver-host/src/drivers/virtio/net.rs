@@ -6,6 +6,7 @@ use alloc::{
 use core::sync::atomic::{AtomicU8, Ordering};
 
 mod control;
+mod offload;
 mod queue_pair;
 mod rx_slots;
 use control::ControlQueue;
@@ -18,11 +19,17 @@ use super::{
 };
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::network::{
-    NetworkController, NetworkError, NetworkProvider, NetworkRssCapabilities,
-    NetworkRssConfiguration, RECEIVE_HASH_TYPES,
+    NetworkController, NetworkError, NetworkProvider, NetworkQueueConfiguration,
+    NetworkRssCapabilities, NetworkRssConfiguration, NetworkTransmitCapabilities,
+    RECEIVE_HASH_TYPES,
 };
 
 const VIRTIO_NET_F_CSUM: u64 = 1;
+const VIRTIO_NET_F_GUEST_CSUM: u64 = 1 << 1;
+const VIRTIO_NET_F_HOST_TSO4: u64 = 1 << 11;
+const VIRTIO_NET_F_HOST_TSO6: u64 = 1 << 12;
+const VIRTIO_NET_F_HOST_ECN: u64 = 1 << 13;
+const VIRTIO_NET_F_GUEST_HDRLEN: u64 = 1 << 59;
 const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
 const VIRTIO_NET_F_MQ: u64 = 1 << 22;
 const VIRTIO_NET_F_RSS: u64 = 1 << 60;
@@ -43,7 +50,7 @@ const VIRTIO_NET_HEADER_SIZE: usize = 12;
 const RX_BUFFER_SIZE: usize = 2048;
 const MAX_ETHERNET_FRAME: usize = 1514;
 // 64-byte 对齐的密集槽，保持头部/数据 cache line 边界，不为每个 1526-byte frame 独占一页。
-const TX_BUFFER_SIZE: usize = (VIRTIO_NET_HEADER_SIZE + MAX_ETHERNET_FRAME).next_multiple_of(64);
+const MAX_SEGMENTED_FRAME: usize = 65_535 + 14;
 
 /// 物理 NIC 与传输 owner；活动队列按独占会话请求创建，不把 CPU 策略固化到驱动。
 pub(crate) struct VirtIONetworkDevice {
@@ -106,9 +113,24 @@ impl VirtIONetworkDevice {
         } else {
             0
         };
+        let segmentation = if features & VIRTIO_NET_F_CSUM != 0 {
+            let tcp = features & (VIRTIO_NET_F_HOST_TSO4 | VIRTIO_NET_F_HOST_TSO6);
+            if tcp != 0 {
+                tcp | features & (VIRTIO_NET_F_HOST_ECN | VIRTIO_NET_F_GUEST_HDRLEN)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         let features = required_features
             | queue_features
-            | features & (VIRTIO_NET_F_CSUM | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_SPEED_DUPLEX);
+            | segmentation
+            | features
+                & (VIRTIO_NET_F_CSUM
+                    | VIRTIO_NET_F_GUEST_CSUM
+                    | VIRTIO_NET_F_STATUS
+                    | VIRTIO_NET_F_SPEED_DUPLEX);
         device.set_driver_features(features).ok()?;
         let status = device.get_status().ok()?;
         device
@@ -212,8 +234,21 @@ impl NetworkController for VirtIONetworkDevice {
     fn maximum_queue_pairs(&self) -> u16 {
         self.maximum_pairs
     }
-    fn transmit_checksum(&self) -> bool {
-        self.features & VIRTIO_NET_F_CSUM != 0
+    fn transmit_capabilities(&self) -> NetworkTransmitCapabilities {
+        let tcp_ipv4 = self.features & VIRTIO_NET_F_HOST_TSO4 != 0;
+        let tcp_ipv6 = self.features & VIRTIO_NET_F_HOST_TSO6 != 0;
+        NetworkTransmitCapabilities {
+            checksum: self.features & VIRTIO_NET_F_CSUM != 0,
+            tcp_ipv4,
+            tcp_ipv6,
+            tcp_ecn: self.features & VIRTIO_NET_F_HOST_ECN != 0,
+            maximum_frame_length: MAX_ETHERNET_FRAME as u32,
+            maximum_buffer_length: if tcp_ipv4 || tcp_ipv6 {
+                MAX_SEGMENTED_FRAME
+            } else {
+                MAX_ETHERNET_FRAME
+            } as u32,
+        }
     }
     fn receive_scaling(&self) -> Option<NetworkRssCapabilities> {
         self.rss
@@ -225,10 +260,12 @@ impl NetworkController for VirtIONetworkDevice {
         // 名称只由物理驱动提供，活动会话按 owner 借用。
         "virtio_net"
     }
-    fn open(self: Arc<Self>, count: u16) -> Result<Arc<dyn NetworkProvider>, NetworkError> {
-        if count == 0 || count > self.maximum_pairs {
-            return Err(NetworkError::InvalidConfiguration);
-        }
+    fn open(
+        self: Arc<Self>,
+        configuration: NetworkQueueConfiguration,
+    ) -> Result<Arc<dyn NetworkProvider>, NetworkError> {
+        configuration.validate(self.maximum_pairs, self.transmit_capabilities())?;
+        let count = configuration.queue_pairs;
         let mut lease = loop {
             let lease = self.lease.lock();
             if lease.active.is_none() {
@@ -278,7 +315,8 @@ impl NetworkController for VirtIONetworkDevice {
             .map_err(|_| NetworkError::NoMemory)?;
         for index in 0..count {
             queues.push(Mutex::new(
-                QueueState::try_new(&self.device, index).ok_or(NetworkError::NoMemory)?,
+                QueueState::try_new(&self.device, index, configuration.transmit_bytes as usize)
+                    .ok_or(NetworkError::NoMemory)?,
             ));
             activity.push(None);
         }

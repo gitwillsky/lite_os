@@ -30,12 +30,12 @@ fn initialize() {
     }
     impl FrameLoans {
         const fn new() -> Self { Self { received: None, transmit: alloc::vec::Vec::new(), reserved: false } }
-        fn receive<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16, frame: alloc::vec::Vec<u8>) -> device_model::network::NetworkReceiveFrame<'a> {
+        fn receive<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16, frame: alloc::vec::Vec<u8>, checksum_valid: bool) -> device_model::network::NetworkReceiveFrame<'a> {
             assert!(self.received.is_none());
             self.received = Some(frame);
             let frame = self.received.as_ref().unwrap();
             // SAFETY: Vec 的独立存储由 owner（或全局串行 fixture）保活，不 resize；只有 token 释放后才 take。
-            unsafe { device_model::network::NetworkReceiveFrame::new(owner, queue, 0, 1, frame.as_ptr() as usize, frame.len()) }
+            unsafe { device_model::network::NetworkReceiveFrame::new(owner, queue, 0, 1, frame.as_ptr() as usize, frame.len(), checksum_valid) }
         }
         fn reserve<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16) -> Result<device_model::network::NetworkTransmit<'a>, device_model::network::NetworkError> {
             if self.reserved { return Err(device_model::network::NetworkError::WouldBlock); }
@@ -53,7 +53,7 @@ fn initialize() {
     struct Device;
     impl device_model::network::NetworkDevice for Device {
         fn queue_count(&self) -> u16 { 1 }
-        fn transmit_checksum(&self) -> bool { true }
+        fn transmit_capabilities(&self) -> device_model::network::NetworkTransmitCapabilities { device_model::network::NetworkTransmitCapabilities { checksum: true, tcp_ipv4: false, tcp_ipv6: false, tcp_ecn: false, maximum_frame_length: 1514, maximum_buffer_length: 1514 } }
         fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
@@ -70,7 +70,7 @@ fn initialize() {
             let mut wire = WIRE.lock().unwrap();
             if wire.2.received.is_some() { return Err(device_model::network::NetworkError::WouldBlock); }
             let Some(frame) = wire.0.pop_front() else { return Err(device_model::network::NetworkError::WouldBlock); };
-            Ok(wire.2.receive(self, queue, frame))
+            Ok(wire.2.receive(self, queue, frame, false))
         }
         fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
@@ -82,7 +82,8 @@ fn initialize() {
             Ok(())
         }
         // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>) -> Result<(), device_model::network::NetworkError> {
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>, segmentation: Option<device_model::network::NetworkTcpSegmentation>) -> Result<(), device_model::network::NetworkError> {
+            assert!(segmentation.is_none());
             let mut wire = WIRE.lock().unwrap();
             let mut frame = wire.2.complete(length);
             if let Some(checksum) = checksum {
@@ -335,7 +336,7 @@ impl ReceiveEndpoint for InetSocket {
     fn receive_into(&self, buffer: &mut crate::receive::ReceiveBuffer, peek: bool) -> Result<Self::Receipt, SocketError> { self.receive(buffer, peek) }
 }
 impl ReceiveEndpoint for crate::packet::PacketSocket {
-    type Receipt = (usize, usize, network_protocol::PacketAddress);
+    type Receipt = (usize, usize, network_protocol::PacketAddress, network_protocol::PacketInformation);
     fn receive_into(&self, buffer: &mut crate::receive::ReceiveBuffer, peek: bool) -> Result<Self::Receipt, SocketError> { self.receive(buffer, peek) }
 }
 fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool) -> Result<E::Receipt, SocketError> {
@@ -349,6 +350,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
     pub(crate) struct WireDevice {
         pub(crate) queue_count: u16,
         pub(crate) checksum: bool,
+        pub(crate) receive_checksum_valid: core::sync::atomic::AtomicBool,
         pub(crate) receive_on: core::sync::atomic::AtomicU16,
         pub(crate) cancelled_queue: core::sync::atomic::AtomicU16,
         pub(crate) wire: std::sync::Mutex<WireQueues>,
@@ -361,6 +363,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             Self {
                 queue_count: 1,
                 checksum: false,
+                receive_checksum_valid: core::sync::atomic::AtomicBool::new(false),
                 receive_on: core::sync::atomic::AtomicU16::new(0),
                 cancelled_queue: core::sync::atomic::AtomicU16::new(u16::MAX),
                 wire: std::sync::Mutex::new((
@@ -376,7 +379,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
     }
     impl device_model::network::NetworkDevice for WireDevice {
         fn queue_count(&self) -> u16 { self.queue_count }
-        fn transmit_checksum(&self) -> bool { self.checksum }
+        fn transmit_capabilities(&self) -> device_model::network::NetworkTransmitCapabilities { device_model::network::NetworkTransmitCapabilities { checksum: self.checksum, tcp_ipv4: false, tcp_ipv6: false, tcp_ecn: false, maximum_frame_length: 1514, maximum_buffer_length: 1514 } }
         fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
@@ -395,7 +398,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             let mut wire = self.wire.lock().unwrap();
             if wire.2.received.is_some() { return Err(device_model::network::NetworkError::WouldBlock); }
             let Some(frame) = wire.0.pop_front() else { return Err(device_model::network::NetworkError::WouldBlock); };
-            Ok(wire.2.receive(self, queue, frame))
+            Ok(wire.2.receive(self, queue, frame, self.receive_checksum_valid.load(core::sync::atomic::Ordering::Relaxed)))
         }
         fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
@@ -407,7 +410,8 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             Ok(())
         }
         // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>) -> Result<(), device_model::network::NetworkError> {
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>, segmentation: Option<device_model::network::NetworkTcpSegmentation>) -> Result<(), device_model::network::NetworkError> {
+            assert!(segmentation.is_none());
             let mut wire = self.wire.lock().unwrap();
             let mut frame = wire.2.complete(length);
             if let Some(checksum) = checksum {

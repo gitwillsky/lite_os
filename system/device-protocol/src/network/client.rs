@@ -1,15 +1,16 @@
 use super::queue::{MAX_BATCH, Queue, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_error, encode_checksum,
-    queue_request,
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_capabilities,
+    decode_error, encode_checksum, encode_segmentation, queue_request,
 };
 use crate::directory::{DirectoryClient, Entry};
 use crate::{ActivityBinding, EventHub, Writer, call, take_handle};
 use alloc::{sync::Arc, vec::Vec};
 use device_model::network::{
     NetworkChecksum, NetworkCompletion, NetworkDevice, NetworkError, NetworkLink,
-    NetworkReceiveFrame, NetworkRssCapabilities, NetworkRssConfiguration, NetworkStatistics,
-    NetworkTransmit, RECEIVE_HASH_TYPES,
+    NetworkQueueConfiguration, NetworkReceiveFrame, NetworkRssCapabilities,
+    NetworkRssConfiguration, NetworkStatistics, NetworkTcpSegmentation, NetworkTransmit,
+    NetworkTransmitCapabilities, RECEIVE_HASH_TYPES,
 };
 use device_model::{Activity, DeviceBacking};
 use native_runtime::native_abi::{self, Status, rights, signals};
@@ -140,7 +141,7 @@ impl RemoteQueue {
         if self.activity.disconnected() {
             return Err(NetworkError::Disconnected);
         }
-        let mut records = [[0; 4]; MAX_BATCH];
+        let mut records = [[0; 5]; MAX_BATCH];
         let mut completed = 0;
         while completed < budget {
             let limit = MAX_BATCH.min(budget - completed);
@@ -151,7 +152,7 @@ impl RemoteQueue {
             if count == 0 {
                 break;
             }
-            for [slot, ticket, status, reserved] in &records[..count] {
+            for [slot, ticket, status, reserved, extra] in &records[..count] {
                 let slot = u16::try_from(*slot).map_err(|_| self.abort())?;
                 let owner = state
                     .transmit
@@ -159,6 +160,7 @@ impl RemoteQueue {
                     .ok_or_else(|| self.abort())?;
                 if *status != 0
                     || *reserved != 0
+                    || *extra != 0
                     || !matches!(*owner, TransmitOwner::Submitted { ticket: current } if current == *ticket)
                 {
                     return Err(self.abort());
@@ -190,9 +192,9 @@ pub struct RemoteNetwork {
     mac: [u8; 6],
     driver: alloc::string::String,
     rss: Option<NetworkRssCapabilities>,
-    transmit_checksum: bool,
+    transmit_capabilities: NetworkTransmitCapabilities,
 }
-/// 显式请求 queue_pairs 个队列，打开硬件会话并一次映射 DMA/共享环。
+/// 按 configuration 显式请求队列数与发送容量，打开硬件会话并一次映射 DMA/共享环。
 /// directory 是已授权的网络设备目录，entry 的静态描述公布硬件上限；不自动截断请求。
 /// 绑定各队列进度事件；调用者的 worker 策略负责选择数量。
 /// # Errors
@@ -200,7 +202,7 @@ pub struct RemoteNetwork {
 pub fn connect(
     directory: &DirectoryClient,
     entry: &Entry,
-    queue_pairs: u16,
+    configuration: NetworkQueueConfiguration,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemoteNetwork>, Status> {
     let mut reader = entry.reader();
@@ -208,11 +210,12 @@ pub fn connect(
         return Err(native_abi::ERR_NOT_SUPPORTED);
     }
     let maximum = reader.u16()?;
-    if queue_pairs == 0 || queue_pairs > maximum {
-        return Err(native_abi::ERR_INVALID_ARGS);
-    }
-    let count = queue_pairs;
-    let transmit_checksum = reader.bool()?;
+    let mut transmit_capabilities = decode_capabilities(&mut reader)?;
+    configuration
+        .validate(maximum, transmit_capabilities)
+        .map_err(super::encode_error)?;
+    let count = configuration.queue_pairs;
+    transmit_capabilities.maximum_buffer_length = configuration.transmit_bytes;
     let rss = if reader.bool()? {
         let cap = NetworkRssCapabilities {
             maximum_key_bytes: reader.u8()?,
@@ -239,7 +242,10 @@ pub fn connect(
         .try_reserve_exact(name.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     driver.push_str(name);
-    let mut announcement = directory.open(entry, &queue_pairs.to_le_bytes())?;
+    let mut options = [0u8; 6];
+    options[..2].copy_from_slice(&configuration.queue_pairs.to_le_bytes());
+    options[2..].copy_from_slice(&configuration.transmit_bytes.to_le_bytes());
+    let mut announcement = directory.open(entry, &options)?;
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
     let mut queues = Vec::new();
     queues
@@ -247,6 +253,9 @@ pub fn connect(
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for index in 0..count {
         let memory = QueueMemory::connect(&channel, index)?;
+        if memory.transmit_limit != configuration.transmit_bytes as usize {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
         let mut reply = call(&channel, &queue_request(QUEUE, index), Vec::new())?;
         let capacity = reply.reader().usize()?;
         let ring = Queue::open(
@@ -296,7 +305,7 @@ pub fn connect(
         mac,
         driver,
         rss,
-        transmit_checksum,
+        transmit_capabilities,
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
@@ -331,8 +340,8 @@ impl NetworkDevice for RemoteNetwork {
     fn queue_count(&self) -> u16 {
         self.queues.len() as u16
     }
-    fn transmit_checksum(&self) -> bool {
-        self.transmit_checksum
+    fn transmit_capabilities(&self) -> NetworkTransmitCapabilities {
+        self.transmit_capabilities
     }
     fn bind_activity(&self, queue: u16, activity: Activity) {
         self.queues[queue as usize].activity.bind(activity);
@@ -362,7 +371,7 @@ impl NetworkDevice for RemoteNetwork {
         let memory = &queue.memory;
         let mut state = queue.producer.lock();
         queue.check()?;
-        let mut records = [[0; 4]; 1];
+        let mut records = [[0; 5]; 1];
         if queue
             .ring
             .pop(Ring::Receive, &mut records)
@@ -371,7 +380,7 @@ impl NetworkDevice for RemoteNetwork {
         {
             return Err(NetworkError::WouldBlock);
         }
-        let [slot, ticket, length, metadata] = records[0];
+        let [slot, ticket, length, metadata, extra] = records[0];
         let slot = u16::try_from(slot).map_err(|_| queue.abort())?;
         let owner = state
             .received
@@ -381,7 +390,8 @@ impl NetworkDevice for RemoteNetwork {
             return Err(queue.abort());
         };
         if ticket <= last_ticket
-            || metadata != 0
+            || metadata > 1
+            || extra != 0
             || length == 0
             || length > (memory.receive_stride - memory.header) as u64
         {
@@ -392,7 +402,15 @@ impl NetworkDevice for RemoteNetwork {
         // SAFETY: 布局/slot/length 已校验，RX Acquire 交付本槽 CPU ownership；Borrowed 状态阻止
         // 重复领取，唯一 token 释放前不发表 FILL。self 保活 backing，返回引用不越过 self。
         Ok(unsafe {
-            NetworkReceiveFrame::new(self, queue_index, slot, ticket, address, length as usize)
+            NetworkReceiveFrame::new(
+                self,
+                queue_index,
+                slot,
+                ticket,
+                address,
+                length as usize,
+                metadata != 0,
+            )
         })
     }
     fn reserve_transmit(&self, queue_index: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
@@ -447,7 +465,7 @@ impl NetworkDevice for RemoteNetwork {
         // SAFETY 契约已结束全部 CPU 内容引用；FILL Release 后设备才可能重新取得该范围。
         queue
             .ring
-            .push(Ring::Fill, &[[u64::from(slot), ticket, 0, 0]])
+            .push(Ring::Fill, &[[u64::from(slot), ticket, 0, 0, 0]])
             .map_err(|_| queue.abort())?;
         *owner = ReceiveOwner::Available {
             last_ticket: ticket,
@@ -462,6 +480,7 @@ impl NetworkDevice for RemoteNetwork {
         ticket: u64,
         length: usize,
         checksum: Option<NetworkChecksum>,
+        segmentation: Option<NetworkTcpSegmentation>,
     ) -> Result<(), NetworkError> {
         let queue = self
             .queues
@@ -472,12 +491,8 @@ impl NetworkDevice for RemoteNetwork {
         if length == 0 || length > queue.memory.transmit_limit {
             return Err(NetworkError::FrameTooLarge);
         }
-        if let Some(checksum) = checksum {
-            if !self.transmit_checksum {
-                return Err(NetworkError::InvalidConfiguration);
-            }
-            checksum.validate(length)?;
-        }
+        self.transmit_capabilities
+            .validate_packet(length, checksum, segmentation)?;
         let owner = state
             .transmit
             .get_mut(slot as usize)
@@ -495,6 +510,7 @@ impl NetworkDevice for RemoteNetwork {
                     ticket,
                     length as u64,
                     encode_checksum(checksum),
+                    encode_segmentation(segmentation),
                 ]],
             )
             .map_err(|_| queue.abort())?;

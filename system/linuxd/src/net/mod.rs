@@ -52,8 +52,8 @@ pub(crate) use inet::{
 pub(crate) use netstack::init;
 pub(crate) use network_protocol::{
     InetAddress, InterfaceSnapshot, InternetOption, InternetPacketInfo, InternetSendPacketInfo,
-    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress, RouteChange,
-    RouteSnapshot, SocketError, SocketPollState,
+    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress,
+    PacketChecksum, PacketInformation, RouteChange, RouteSnapshot, SocketError, SocketPollState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +84,7 @@ pub(crate) struct ReceivedMessage {
     pub(crate) full_length: usize,
     pub(crate) source: Option<SocketAddress>,
     pub(crate) internet_packet_info: Option<InternetPacketInfo>,
+    pub(crate) packet_information: Option<PacketInformation>,
     pub(crate) rights: Option<UnixReceivedRights>,
     pub(crate) credentials: Option<UnixCredentials>,
 }
@@ -378,6 +379,7 @@ impl Socket {
                     full_length,
                     source: source.map(SocketAddress::Unix),
                     internet_packet_info: None,
+                    packet_information: None,
                     rights,
                     credentials,
                 },
@@ -388,6 +390,7 @@ impl Socket {
                     full_length,
                     source: source.map(SocketAddress::Inet),
                     internet_packet_info,
+                    packet_information: None,
                     rights: None,
                     credentials: None,
                 },
@@ -395,14 +398,17 @@ impl Socket {
             SocketBackend::Packet(socket) => {
                 socket
                     .receive(output, peek)
-                    .map(|(count, full_length, source)| ReceivedMessage {
-                        count,
-                        full_length,
-                        source: Some(SocketAddress::Packet(source)),
-                        internet_packet_info: None,
-                        rights: None,
-                        credentials: None,
-                    })
+                    .map(
+                        |(count, full_length, source, information)| ReceivedMessage {
+                            count,
+                            full_length,
+                            source: Some(SocketAddress::Packet(source)),
+                            internet_packet_info: None,
+                            packet_information: Some(information),
+                            rights: None,
+                            credentials: None,
+                        },
+                    )
             }
             SocketBackend::Kobject(socket) => socket.receive(output, peek),
             SocketBackend::Route(socket) => socket.receive(output, peek),

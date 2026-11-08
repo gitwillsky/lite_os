@@ -44,6 +44,8 @@ impl InternetChecksum {
         sum = (sum & 0xffff_ffff) + (sum >> 32);
         sum = (sum & 0xffff) + (sum >> 16);
         sum = (sum & 0xffff) + (sum >> 16);
+        // 64→32 的结果可有第 33 位；最后一次 16-bit carry 也必须回卷。
+        sum = (sum & 0xffff) + (sum >> 16);
         sum as u16
     }
     /// 返回取反后的 checksum；不会改变状态，后续仍可追加片段。
@@ -65,6 +67,7 @@ mod tests {
     fn rfc_vector_and_every_fragment_boundary_keep_byte_parity() {
         let data = [0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7];
         assert_eq!(checksum(&data), 0x220d);
+        assert_eq!(checksum(&[0xff, 0xff, 0xff, 0xff, 0, 1, 0, 0]), 0xfffe);
         for length in 0..=data.len() {
             for split in 0..=length {
                 let mut state = InternetChecksum::new();

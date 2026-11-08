@@ -335,6 +335,7 @@ impl KobjectSocket {
                 groups: KOBJECT_UEVENT_GROUP,
             })),
             internet_packet_info: None,
+            packet_information: None,
             rights: None,
             credentials: None,
         })

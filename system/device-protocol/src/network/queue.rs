@@ -11,8 +11,8 @@ const CLOSED: usize = 512;
 const ABORT: usize = 516;
 const KICK: usize = 520;
 const MAX_CAPACITY: usize = 1 << 16;
-/// RX/TX: [slot, ticket, length, metadata]；Fill: [slot, ticket, 0, 0]；Completion: [slot, ticket, status, 0]。
-pub(super) type Record = [u64; 4];
+/// RX/TX: [slot, ticket, length, checksum, segmentation]；Fill/CQ 的 metadata 必须为零。
+pub(super) type Record = [u64; 5];
 
 #[derive(Clone, Copy)]
 pub(super) enum Ring {
@@ -45,7 +45,8 @@ impl Queue {
         if !capacity.is_power_of_two() || !(MAX_BATCH..=MAX_CAPACITY).contains(&capacity) {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
-        Ok((HEADER + capacity * 4 * 4 * 8).next_multiple_of(native_abi::PAGE_SIZE))
+        Ok((HEADER + capacity * 4 * core::mem::size_of::<Record>())
+            .next_multiple_of(native_abi::PAGE_SIZE))
     }
     pub(super) fn create(capacity: usize) -> Result<Self, Status> {
         Self::open(Vmo::create(Self::bytes(capacity)? as u64, 0)?, capacity)
@@ -110,8 +111,12 @@ impl RingView {
         for (index, record) in records.iter().enumerate() {
             let slot = head.wrapping_add(index as u32) as usize & (self.capacity - 1);
             for (word, value) in record.iter().enumerate() {
-                self.word(HEADER + ((ring as usize * self.capacity + slot) * 4 + word) * 8)
-                    .store(value.to_le(), Ordering::Relaxed);
+                self.word(
+                    HEADER
+                        + (ring as usize * self.capacity + slot) * core::mem::size_of::<Record>()
+                        + word * 8,
+                )
+                .store(value.to_le(), Ordering::Relaxed);
             }
         }
         // Release 同时交出记录和 TX payload；consumer Acquire 后才访问。
@@ -128,8 +133,13 @@ impl RingView {
             let slot = tail.wrapping_add(index as u32) as usize & (self.capacity - 1);
             for (word, value) in record.iter_mut().enumerate() {
                 *value = u64::from_le(
-                    self.word(HEADER + ((ring as usize * self.capacity + slot) * 4 + word) * 8)
-                        .load(Ordering::Relaxed),
+                    self.word(
+                        HEADER
+                            + (ring as usize * self.capacity + slot)
+                                * core::mem::size_of::<Record>()
+                            + word * 8,
+                    )
+                    .load(Ordering::Relaxed),
                 );
             }
         }
@@ -178,14 +188,14 @@ mod tests {
                 .store((u32::MAX - 4).to_le(), Ordering::Relaxed);
             ring.counter(offset + 64)
                 .store((u32::MAX - 4).to_le(), Ordering::Relaxed);
-            let input = [[7, 100, 1514, 0]; MAX_BATCH];
+            let input = [[7, 100, 1514, 0, 0]; MAX_BATCH];
             ring.push(kind, &input).unwrap();
             assert_eq!(ring.free(kind), Ok(0));
             assert_eq!(
                 ring.push(kind, &input[..1]),
                 Err(native_abi::ERR_SHOULD_WAIT)
             );
-            let mut output = [[0; 4]; MAX_BATCH];
+            let mut output = [[0; 5]; MAX_BATCH];
             assert_eq!(ring.pop(kind, &mut output), Ok(MAX_BATCH));
             assert_eq!(input, output);
             assert_eq!(ring.pending(kind), Ok(0));

@@ -43,8 +43,10 @@ IPv6、多网卡、其他 raw protocol、multicast、完整 rtnetlink/veth/设�
 IPv4 不开放分片/重组；UDP/raw 发送在真实出口 MTU 校验后入队，超长返回 EMSGSIZE。RAW ICMP(1) 与 IPPROTO_RAW(255) 使用实际 smoltcp 队列；后者默认 IP_HDRINCL、只发送。创建仍要求 CAP_NET_RAW，其他 raw protocol 返回 EPROTONOSUPPORT。
 IP_HDRINCL 支持基础 20-byte 未分片 IPv4 header：总长度和 checksum 总是重算，source/ID 仅在零值时填充，保留用户 TTL/TOS/DF/protocol。IP options、分片和与 sockaddr 不同的 header destination 返回 EOPNOTSUPP；不接受后丢弃。
 AF_PACKET 出口 tap 在网卡之前；设备启用 TX partial checksum 时，内核生成的 TCP/UDP 帧可能仍含伪头 seed，而非线上最终 checksum。
-当前未提供 PACKET_AUXDATA/checksum-not-ready 状态；不能把出口抓包直接视为 wire checksum 验证。
-AF_PACKET 自行发送的帧不请求卸载，内容保持调用者字节。标准 AUXDATA 接入列入路由方案阶段 2。
+标准 SOL_PACKET/PACKET_AUXDATA 支持 i32 开关与短 getter；recvmsg 输出 20-byte tpacket_auxdata，卸载请求标明 TP_STATUS_CSUMNOTREADY。
+USER、原长、捕获长度与 L3 偏移来自实际帧，PEEK 保持信息；用户缓冲截断不改变捕获长度，短控制缓冲沿既有 MSG_CTRUNC 规则。
+RX checksum 已验证或驱动补全后标明 CSUM_VALID；未验证包保持无校验标志。未协商 GSO/VLAN 剥离时不伪造其状态位；不支持 packet ring/fanout/BPF。
+AF_PACKET 自行发送的帧不请求卸载，内容保持调用者字节。
 TCP/UDP/raw 当前使用固定有界协议缓冲，INET 的 SO_SNDBUF/SO_RCVBUF 调优明确返回 EOPNOTSUPP，不伪造 getter 或设置成功。
 
 新增 AF_UNIX 与 KOBJECT netlink MSG_PEEK 已有原始队列消费模式及回归源码SCM_RIGHTS peek 复制实际 OFD、保留原 inflight 与 readiness。family-only autobind 与按 socket type 隔离的 abstract bind 已修改源码及回

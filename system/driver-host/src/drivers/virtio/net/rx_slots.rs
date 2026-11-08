@@ -34,6 +34,11 @@ pub(super) struct ReceiveClaim<'a, B, const BUFFER_SIZE: usize> {
 }
 
 impl<B, const BUFFER_SIZE: usize> ReceiveClaim<'_, B, BUFFER_SIZE> {
+    /// claim 持有 DriverOwned 独占槽；只在归还/发表前访问设备已完成的内容。
+    pub(super) fn buffer_mut(&mut self) -> &mut B {
+        &mut self.owner.slots[self.slot_index as usize].buffer
+    }
+
     /// 消费已验证的 claim，交出共享槽；不读 payload、不 repost。
     pub(super) fn complete(self) -> ReceiveCompletion {
         debug_assert_eq!(
@@ -109,13 +114,6 @@ impl<B, const BUFFER_SIZE: usize> ReceiveSlots<B, BUFFER_SIZE> {
     }
 
     /// 冷路径授权共享池时借用槽的 buffer owner，不转移其 CPU/DMA ownership。
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "host lifecycle fixture does not open native VMO grants; the driver uses this cold accessor to authorize pool memory"
-        )
-    )]
     pub(super) fn buffer(&self, slot: usize) -> Option<&B> {
         self.slots.get(slot).map(|slot| &slot.buffer)
     }
@@ -247,7 +245,10 @@ mod tests {
         let mut slots = TestSlots::try_new(1, 2).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
-        let completion = slots.claim(0, 16, 12).unwrap().complete();
+        let mut claim = slots.claim(0, 16, 12).unwrap();
+        claim.buffer_mut()[12] = 42;
+        let completion = claim.complete();
+        assert_eq!(slots.buffer(completion.slot as usize).unwrap()[12], 42);
         assert_eq!((completion.slot, completion.length), (0, 4));
         assert_eq!(slots.ownership_counts(), (0, 1, 0));
         assert!(queue.published.is_empty());

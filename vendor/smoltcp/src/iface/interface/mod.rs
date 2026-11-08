@@ -780,6 +780,15 @@ impl Interface {
         mut reply: impl FnMut(&Ipv4Reply<'_>) -> bool,
     ) -> PollIngressSingleResult {
         let rx_meta = rx_token.meta();
+        // 单一 ingress owner 的作用域策略；仅本帧省略 L4 RX 校验，保留 TX 和 IP/ICMP 语义。
+        let checksum = self.inner.caps.checksum.clone();
+        if rx_meta.rx_checksum_valid {
+            let without_rx = |mode: crate::phy::Checksum| {
+                if mode.tx() { crate::phy::Checksum::Tx } else { crate::phy::Checksum::None }
+            };
+            self.inner.caps.checksum.tcp = without_rx(checksum.tcp);
+            self.inner.caps.checksum.udp = without_rx(checksum.udp);
+        }
         let result = rx_token.consume(|frame| {
             if frame.is_empty() {
                 return PollIngressSingleResult::PacketProcessed;
@@ -855,6 +864,7 @@ impl Interface {
             }
             PollIngressSingleResult::SocketStateChanged
         });
+        self.inner.caps.checksum = checksum;
         self.inner.ingress_facts = None;
         self.inner.reply_bound_interface = None;
         result

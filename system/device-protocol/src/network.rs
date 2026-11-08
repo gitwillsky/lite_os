@@ -1,16 +1,19 @@
-//! 以太网卡 v7：OPEN 显式协商 pair 数；一次授权 VMO，四条共享环传递收发，事件合并通知。
+//! 以太网卡 v9：OPEN 显式协商 pair 数；一次授权 VMO，四条共享环传递收发，事件合并通知。
 mod client;
 mod queue;
 mod rss;
 mod server;
 
-use crate::Writer;
+use crate::{Reader, Writer};
 pub use client::{RemoteNetwork, connect};
-use device_model::network::{NetworkChecksum, NetworkError};
+use device_model::network::{
+    NetworkChecksum, NetworkError, NetworkTcpSegmentation, NetworkTcpVersion,
+    NetworkTransmitCapabilities,
+};
 use native_runtime::native_abi::{self, Status};
 pub use server::publish;
 
-const NETWORK_VERSION: u16 = 7;
+const NETWORK_VERSION: u16 = 9;
 const STATISTICS: u32 = 8;
 const LINK: u32 = 9;
 const MEMORY: u32 = 12;
@@ -65,6 +68,60 @@ fn decode_checksum(word: u64) -> Result<Option<NetworkChecksum>, Status> {
     }))
 }
 
+fn encode_capabilities(writer: &mut Writer, cap: NetworkTransmitCapabilities) {
+    writer
+        .u8(u8::from(cap.checksum)
+            | u8::from(cap.tcp_ipv4) << 1
+            | u8::from(cap.tcp_ipv6) << 2
+            | u8::from(cap.tcp_ecn) << 3)
+        .u32(cap.maximum_frame_length)
+        .u32(cap.maximum_buffer_length);
+}
+fn decode_capabilities(reader: &mut Reader<'_>) -> Result<NetworkTransmitCapabilities, Status> {
+    let flags = reader.u8()?;
+    if flags & !15 != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let cap = NetworkTransmitCapabilities {
+        checksum: flags & 1 != 0,
+        tcp_ipv4: flags & 2 != 0,
+        tcp_ipv6: flags & 4 != 0,
+        tcp_ecn: flags & 8 != 0,
+        maximum_frame_length: reader.u32()?,
+        maximum_buffer_length: reader.u32()?,
+    };
+    cap.validate().map_err(encode_error)?;
+    Ok(cap)
+}
+fn encode_segmentation(segmentation: Option<NetworkTcpSegmentation>) -> u64 {
+    segmentation.map_or(0, |value| {
+        u64::from(value.maximum_segment_size)
+            | (match value.version {
+                NetworkTcpVersion::Ipv4 => 1,
+                NetworkTcpVersion::Ipv6 => 2,
+            } << 16)
+            | u64::from(value.ecn) << 18
+    })
+}
+fn decode_segmentation(word: u64) -> Result<Option<NetworkTcpSegmentation>, Status> {
+    if word == 0 {
+        return Ok(None);
+    }
+    if word >> 19 != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let version = match word >> 16 & 3 {
+        1 => NetworkTcpVersion::Ipv4,
+        2 => NetworkTcpVersion::Ipv6,
+        _ => return Err(native_abi::ERR_INVALID_ARGS),
+    };
+    Ok(Some(NetworkTcpSegmentation {
+        version,
+        maximum_segment_size: word as u16,
+        ecn: word >> 18 & 1 != 0,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +138,26 @@ mod tests {
         );
         assert_eq!(decode_checksum(0), Ok(None));
         assert_eq!(decode_checksum(1 << 63), Err(native_abi::ERR_INVALID_ARGS));
+        for version in [NetworkTcpVersion::Ipv4, NetworkTcpVersion::Ipv6] {
+            let segmentation = NetworkTcpSegmentation {
+                version,
+                maximum_segment_size: 1440,
+                ecn: true,
+            };
+            assert_eq!(
+                decode_segmentation(encode_segmentation(Some(segmentation))),
+                Ok(Some(segmentation))
+            );
+        }
+        assert_eq!(decode_segmentation(0), Ok(None));
+        assert_eq!(
+            decode_segmentation(1 << 19),
+            Err(native_abi::ERR_INVALID_ARGS)
+        );
+        assert_eq!(
+            decode_segmentation(3 << 16),
+            Err(native_abi::ERR_INVALID_ARGS)
+        );
         assert!(checksum.validate(53).is_err());
         assert!(
             NetworkChecksum {

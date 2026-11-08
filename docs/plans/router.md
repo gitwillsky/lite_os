@@ -177,10 +177,10 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
   见[执行契约](../architecture-contract/execution.md#cpu-分区)。两架构静态检查与 scheduler-unit 覆盖不代替 SMP 硬件验收；硬件行为在统一验收阶段验证。
 - 阶段 0 网络前置：PCI 通知改为每队列初始化时校验的独立 doorbell，移除运行时共享 queue_select 竞争；网络 adapter 复用 MMIO/PCI 传输。
   MQ 已接入驱动队列、版本化设备消息、独立活动通知与主机栈全队列轮询；队列 1 UDP/回复预留归还由实际引擎 fixture 覆盖。
-  队列数已由使用者显式请求；RX 校验和/TSO 卸载、MSI-X 及硬件 MQ 运行验收仍未完成；PCI 仍为 INTx。
-- 阶段 0 下一步：补 RX 校验和/TSO 卸载和每队列中断。
+  队列数已由使用者显式请求；MSI-X 及硬件 MQ 运行验收仍未完成；PCI 仍为 INTx。
+- 阶段 0 下一步：补每队列中断，并继续阶段 2 的原生数据面。
   不以当前主机栈轮询适配层替代最终数据面。
-- DMA 池已跨进程授权：线性非重叠槽共用 VMO/pin，区间投影二分定位缓存片段；v7 的 RX/Fill/TX/CQ 四环替换逐次描述符 RPC。
+- DMA 池已跨进程授权：线性非重叠槽共用 VMO/pin，区间投影二分定位缓存片段；v9 的 RX/Fill/TX/CQ 四环替换逐次描述符 RPC。
   每队列固定 ticket 表与批窗口，批量硬件提交/完成和合并通知；关闭先排空 TX，异常同步 stop DMA 后才 closed。
   客户端一次映射并用有寿命的帧借用直接消费 RX/构造 TX，已移除适配复制；最终每核路由引擎与跨网卡转发借用尚未完成。
   四环 codec 容量/回绕/畸形位置/kick 用例及双架构 Clippy 通过，不代替跨进程 DMA/吞吐运行验收。
@@ -188,15 +188,25 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - 显式队列协商已接通：目录 OPEN 透明传递设备类选项，netcfg 只委托目录/id 给 netstack，由实际 worker owner 请求 pair 数。
   物理 controller 与活动 DMA 租约分离，初始化失败/正常关闭/异常 stop 后均先撤销 DMA 再退休；下次 OPEN 可请求不同数量。
   当前旧主机协议引擎只有一个 worker，明确请求一对；不借此宣称阶段 2 的多核引擎已完成。运行时重开/MQ 硬件验证待统一验收。
-- RSS 控制已接通：真实能力发布、领域校验、v7 只读 VMO 配置快照、标准 RSS_CONFIG/ACK，支持只提供 RSS 的硬件初始化。
+- RSS 控制已接通：真实能力发布、领域校验、v9 只读 VMO 配置快照、标准 RSS_CONFIG/ACK，支持只提供 RSS 的硬件初始化。
   动态控制存储按设备上限分配；单 worker 不额外启用散列，多队列策略由 netstack 选择均衡表与随机 key。
-  真实流分布、硬件重配及性能仍待最终来宾验收；HASH_REPORT、RX 校验和/TSO 卸载、每队列中断和阶段 2 的多核引擎均未冒充完成。
+  真实流分布、硬件重配及性能仍待最终来宾验收；HASH_REPORT、主机 TSO 大包生成、每队列中断和阶段 2 的多核引擎均未冒充完成。
 - 共享帧已改为借用：RX 的 token 结束才归还，TX 直接在 Reserved 槽编码；不逐包分配或增减设备 Arc，移除旧复制接口。
   现有主机栈与 AF_PACKET 已接通，保留 TX 拥塞下的协议推进、取消回滚及实际 codec 零初始化；两架构 Clippy 和现有 wire/ownership 用例覆盖。
-  RX/TSO 卸载元数据、可变大帧容量、跨网卡转发缓冲登记与实际硬件验收继续推进，不据此宣称阶段 0 或完整零拷贝数据面完成。
+  跨网卡转发缓冲登记、主机 TSO 大包生成与实际硬件验收继续推进，不据此宣称阶段 0 或完整零拷贝数据面完成。
 
-- 阶段 0 TX partial checksum 已接通：真实能力位、v7 逐帧元数据、提交范围校验与 VirtIO NEEDS_CSUM；
+- 阶段 0 TX partial checksum 已接通：真实能力位、v9 逐帧元数据、提交范围校验与 VirtIO NEEDS_CSUM；
   TCP/UDP emitter 显式请求，RAW/AF_PACKET 原字节保留，无能力及分片软件回退。现有 TCP/UDP wire fixture 模拟设备补全并独立验和，
-  双架构 Clippy 通过；RX/TSO 与硬件性能未完成。出口抓包 AUXDATA 状态需在阶段 2 补齐。
+  双架构 Clippy 通过；主机 TSO 大包生成与硬件性能未完成。出口抓包已经 socket 环传递 checksum 状态，并由 Linuxd 的标准 PACKET_AUXDATA 输出；未运行来宾抓包验收。
 - R16 已开始：`packet-wire` 目前仅有 RFC 1071 校验和累加，未实现格式 codec，smoltcp 产品依赖仍在；
   不以本轮适配冒充协议引擎重写。
+
+- 阶段 0 RX checksum 已接通：协商 GUEST_CSUM、claim 内原地补全 NEEDS_CSUM、DATA_VALID 逐帧传递；
+  主机栈逐包选择 TCP/UDP 验证，IP header 始终验证，AF_PACKET/AUXDATA 保持同一状态事实。
+  现有 wire 用例覆盖下一帧恢复软件验证及坏 IP header 拒绝；生产 header helper 覆盖偏移越界、未知 flags 和未协商 GSO。
+  主机 TSO 大包生成、每队列 MSI-X、跨网卡缓冲登记与阶段 2 多核引擎仍未完成；没有硬件验收结论。
+
+- 阶段 0 TSO 驱动接口与按需大帧池已接通：显式 OPEN 容量、真实 TCPv4/v6/ECN 能力及依赖、v9 分段元数据与标准 VirtIO header。
+  校验同时覆盖 checksum/MSS/头长/普通 MTU/槽容量，普通帧不能借大槽绕过 MTU；原生数据通路可请求最大 65549 字节 TX 槽。
+  现有主机引擎仍明确请求 1514，不提前增加默认内存；阶段 2 重写时接入真实 TCP 大包生成与抓包 GSO 状态。
+  定长和运行时 DMA 区间共用唯一线性池/映射/pin/投影规则；主机用例覆盖槽寿命、codec 与能力/头字节，硬件 TSO 和性能仍待统一验收。

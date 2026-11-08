@@ -14,6 +14,8 @@ const TCP_SYNCNT: usize = 7;
 const TCP_USER_TIMEOUT: usize = 18;
 const TCP_LINGER2: usize = 8;
 const SOL_SOCKET: usize = 1;
+const SOL_PACKET: usize = 263;
+const PACKET_AUXDATA: usize = 8;
 const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
 const SO_ACCEPTCONN: usize = 30;
@@ -63,6 +65,9 @@ pub(crate) fn sys_setsockopt(
         return -errno::EINVAL;
     }
     let length = length as usize;
+    if level == SOL_PACKET && socket.domain() != super::SocketDomain::Packet {
+        return -errno::ENOPROTOOPT;
+    }
     if level == IPPROTO_TCP
         && (socket.domain() != super::SocketDomain::Inet
             || socket.socket_type() != SocketType::Stream)
@@ -70,6 +75,11 @@ pub(crate) fn sys_setsockopt(
         return -errno::ENOPROTOOPT;
     }
     match (level, option) {
+        (SOL_PACKET, PACKET_AUXDATA) => read_i32(value, length).and_then(|value| {
+            socket
+                .set_packet_auxiliary(value != 0)
+                .map_err(socket_error)
+        }),
         (IPPROTO_IP, IP_HDRINCL) => read_ip_i32(value, length).and_then(|value| {
             socket
                 .set_ipv4_header_included(value != 0)
@@ -269,6 +279,9 @@ pub(crate) fn sys_getsockopt(
         Ok(value) => value,
         Err(error) => return error,
     };
+    if level == SOL_PACKET && socket.domain() != super::SocketDomain::Packet {
+        return -errno::ENOPROTOOPT;
+    }
     if level == IPPROTO_TCP
         && (socket.domain() != super::SocketDomain::Inet
             || socket.socket_type() != SocketType::Stream)
@@ -286,6 +299,10 @@ pub(crate) fn sys_getsockopt(
     }
     let mut result = [0u8; 16];
     let result_length = match (level, option) {
+        (SOL_PACKET, PACKET_AUXDATA) => {
+            result[..4].copy_from_slice(&i32::from(socket.packet_auxiliary()).to_ne_bytes());
+            4
+        }
         (SOL_SOCKET, SO_TYPE) => {
             let value: i32 = match socket.socket_type() {
                 SocketType::Stream => 1,

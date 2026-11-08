@@ -7,7 +7,7 @@ use super::transport::VirtQueueAddresses;
 
 mod dma;
 #[cfg_attr(test, allow(unused_imports))]
-pub(super) use dma::{DeviceWriteBuffer, DmaBuffer, DmaPool, DmaSlice};
+pub(super) use dma::{DeviceWriteBuffer, DmaBuffer, DmaPool, DmaRegion, DmaSlice};
 use dma::{DmaChainRequirement, descriptor_requirement};
 
 /// Virtqueue descriptor chain 在 publication 前的可恢复构造错误。

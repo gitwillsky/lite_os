@@ -13,6 +13,8 @@ const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
 const IPPROTO_IP: i32 = 0;
 const IP_PKTINFO: i32 = 8;
+const SOL_PACKET: i32 = 263;
+const PACKET_AUXDATA: i32 = 8;
 
 pub(super) const MSG_CTRUNC: i32 = 0x8;
 pub(super) const MSG_CMSG_CLOEXEC: usize = 0x4000_0000;
@@ -242,6 +244,8 @@ pub(super) struct ReceiveContent {
     pub(super) source: Option<SocketAddress>,
     /// actual ingress冻结的IP_PKTINFO；不查询当前caller或已变更接口。
     pub(super) internet_packet_info: Option<crate::net::InternetPacketInfo>,
+    /// 实际帧状态及完整长度，仅启用 PACKET_AUXDATA 时提供。
+    pub(super) packet_auxiliary: Option<(crate::net::PacketInformation, usize)>,
     /// 当前 socket 是否请求 IP_PKTINFO。
     pub(super) packet_info: bool,
     /// AF_UNIX transport 转交的 descriptor capabilities。
@@ -283,6 +287,7 @@ pub(super) fn write_receive(
     let ReceiveContent {
         source,
         internet_packet_info,
+        packet_auxiliary,
         packet_info,
         rights,
         credentials,
@@ -344,6 +349,34 @@ pub(super) fn write_receive(
             control_length.saturating_sub(written),
             IPPROTO_IP,
             IP_PKTINFO,
+            &data,
+            &mut output_flags,
+        );
+    }
+    if let Some((information, full_length)) = packet_auxiliary {
+        // Linux tpacket_auxdata：USER | 实际 checksum 状态，未启用 BPF 截短，snaplen 与原长相同。
+        // 用户 iovec 的截断不改变 snaplen；VLAN 未剥离，TCI/TPID 和有效位均保持零。
+        let mut data = [0u8; 20];
+        let status = 1u32
+            | match information.checksum {
+                crate::net::PacketChecksum::Unverified => 0,
+                crate::net::PacketChecksum::Partial => 1 << 3,
+                crate::net::PacketChecksum::Verified => 1 << 7,
+            };
+        data[..4].copy_from_slice(&status.to_ne_bytes());
+        data[4..8].copy_from_slice(&(full_length as u32).to_ne_bytes());
+        data[8..12].copy_from_slice(&(full_length as u32).to_ne_bytes());
+        data[14..16].copy_from_slice(&information.network_offset.to_ne_bytes());
+        written += write_control(
+            task,
+            if control == 0 {
+                0
+            } else {
+                control.wrapping_add(written)
+            },
+            control_length.saturating_sub(written),
+            SOL_PACKET,
+            PACKET_AUXDATA,
             &data,
             &mut output_flags,
         );

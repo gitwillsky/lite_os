@@ -102,22 +102,6 @@ pub enum InetOptionChange {
     MaxSegment(i32),
 }
 
-/// 一次 INET receive 的结果。
-pub struct InetReceived {
-    pub data: Vec<u8>,
-    /// 消息的完整长度（datagram 截断时大于 `data.len()`）。
-    pub full_length: usize,
-    pub source: Option<InetAddress>,
-    pub packet_info: Option<InternetPacketInfo>,
-}
-
-/// 一次 packet receive 的结果。
-pub struct PacketReceived {
-    pub data: Vec<u8>,
-    pub full_length: usize,
-    pub source: PacketAddress,
-}
-
 /// 服务端：网络服务的控制面。
 pub trait NetworkService: Send + Sync {
     /// 返回交给使用者的域 channel。`initial` 时连上 netstack 的默认网络（持有全部网卡、启用回环，

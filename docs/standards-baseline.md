@@ -120,8 +120,7 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 
 - Virtual I/O Device `1.4` Committee Specification 01；source commit `917e900e0246b7fe21cdde795b0e566dd4f57d8d`。
 - 来源：[CS01 HTML](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)、[固定源码](https://github.com/oasis-tcs/virtio-spec/tree/917e900e0246b7fe21cdde795b0e566dd4f57d8d)。
-- 它定义 transport、feature negotiation、status、virtqueue ownership、notification、reset 与 device conformance。
-- TX 伪头 seed 使用 [RFC 1071](https://www.rfc-editor.org/rfc/rfc1071.html)（September 1988）的并行累加与分组奇偶算法，不使用其增量更新公式；`packet-wire` 无分配或对齐依赖。
+- 定义 transport、feature、virtqueue、DMA 与 reset；TX 校验和采用 [RFC 1071](https://www.rfc-editor.org/rfc/rfc1071.html) 的并行求和与奇偶规则，不使用其增量更新公式。
 
 ### Arm PrimeCell UART
 

@@ -406,13 +406,24 @@ pub(super) struct EthernetRxToken<'a> {
 }
 
 impl RxToken for EthernetRxToken<'_> {
+    fn meta(&self) -> smoltcp::phy::PacketMeta {
+        let mut metadata = smoltcp::phy::PacketMeta::default();
+        metadata.rx_checksum_valid = self.frame.checksum_valid();
+        metadata
+    }
     fn consume<R, F>(self, operation: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
     {
         let frame = &self.frame;
         self.ingress_reset.set(TcpReset::from_frame(frame));
-        packet::deliver(self.net_id, self.interface_index, self.mac, frame);
+        packet::deliver(
+            self.net_id,
+            self.interface_index,
+            self.mac,
+            frame,
+            frame.checksum_valid(),
+        );
         let result = operation(frame);
         if let Err(error) = self.frame.release() {
             self.received_errors
@@ -464,7 +475,7 @@ impl TxToken for EthernetTxToken<'_> {
                     1,
                     frame[..14].try_into().unwrap(),
                     &frame[14..],
-                    u16::from_be_bytes([frame[12], frame[13]]),
+                    matches!(checksum, Ok(Some(_))),
                     None,
                 );
             }
@@ -479,7 +490,7 @@ impl TxToken for EthernetTxToken<'_> {
                 (
                     result,
                     checksum
-                        .and_then(|checksum| reservation.submit(length, checksum))
+                        .and_then(|checksum| reservation.submit(length, checksum, None))
                         .err(),
                 )
             }
@@ -589,7 +600,7 @@ impl Device for EthernetDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ethernet;
         capabilities.max_transmission_unit = self.mtu + 14;
-        if self.device.transmit_checksum() {
+        if self.device.transmit_capabilities().checksum {
             capabilities.checksum.tcp = smoltcp::phy::Checksum::Rx;
             capabilities.checksum.udp = smoltcp::phy::Checksum::Rx;
         }

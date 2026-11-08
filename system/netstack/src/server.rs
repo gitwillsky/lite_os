@@ -102,7 +102,10 @@ impl InstallerService for Network {
                 class: Class::Network,
                 description,
             },
-            1,
+            device_model::network::NetworkQueueConfiguration {
+                queue_pairs: 1,
+                transmit_bytes: 1514,
+            },
             &self.hub,
         )?;
         // 单 worker 无须逐包计算 RSS 散列；多队列时由使用者选择稳定表与随机密钥。
@@ -380,11 +383,12 @@ impl PacketSocketService for PacketSocket {
 
     fn receive(&self, limit: usize, peek: bool) -> Result<PacketReceived, SocketError> {
         let mut output = receive_buffer(limit)?;
-        let (_, full_length, source) = PacketSocket::receive(self, &mut output, peek)?;
+        let (_, full_length, source, information) = PacketSocket::receive(self, &mut output, peek)?;
         Ok(PacketReceived {
             data: output.into_bytes(),
             full_length,
             source,
+            information,
         })
     }
 

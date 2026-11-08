@@ -243,6 +243,21 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
     configure_up(&scope, 2, true).unwrap();
     let endpoint = scoped_endpoint(&scope, InetProtocol::Udp);
     endpoint.bind(address(43177)).unwrap();
+    let taps: Vec<_> = [
+        network_protocol::PacketKind::Raw,
+        network_protocol::PacketKind::Datagram,
+    ]
+    .into_iter()
+    .map(|kind| {
+        crate::packet::PacketSocket::new(
+            kind,
+            0x0800u16.to_be(),
+            Arc::new(crate::Event::default()),
+            scope.clone(),
+        )
+        .unwrap()
+    })
+    .collect();
     nic.wire
         .lock()
         .unwrap()
@@ -262,6 +277,16 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
         udp_peer(44017).address,
     ));
     advance_actual_domains();
+    // 先消费接收镜像；出口镜像必须独立携带尚待硬件补全的状态。
+    for tap in &taps {
+        let mut bytes = [0; 1600];
+        let (_, _, source, information) = receive(tap, &mut bytes, false).unwrap();
+        assert_ne!(source.packet_type, 4);
+        assert_eq!(
+            information.checksum,
+            network_protocol::PacketChecksum::Unverified
+        );
+    }
     endpoint
         .send_to(b"offload-udp", Some(udp_peer(44017)), None)
         .unwrap();
@@ -282,5 +307,56 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
     assert!(udp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
     assert_eq!(udp.payload(), b"offload-udp");
     drop(wire);
+    for (tap, network_offset) in taps.iter().zip([14, 0]) {
+        let mut short = [0; 4];
+        let (count, full, source, information) = receive(tap, &mut short, true).unwrap();
+        assert_eq!(count, short.len());
+        assert_eq!(
+            full,
+            usize::from(network_offset) + 20 + 8 + b"offload-udp".len()
+        );
+        assert_eq!(source.packet_type, 4);
+        assert_eq!(
+            information,
+            network_protocol::PacketInformation {
+                checksum: network_protocol::PacketChecksum::Partial,
+                network_offset,
+            }
+        );
+        let mut complete = [0; 1600];
+        let (_, consumed_full, _, consumed_information) =
+            receive(tap, &mut complete, false).unwrap();
+        assert_eq!((consumed_full, consumed_information), (full, information));
+    }
+    // 硬件验证只属于这一帧；后续未验证包必须重新做软件校验，IP header 始终验证。
+    let mut verified = peer_udp_frame(udp_peer(44017), 43177, b"hardware");
+    verified[40..42].copy_from_slice(&0x1234u16.to_be_bytes());
+    nic.receive_checksum_valid
+        .store(true, core::sync::atomic::Ordering::Relaxed);
+    nic.wire.lock().unwrap().0.push_back(verified.clone());
+    advance_actual_domains();
+    assert_eq!(udp_read(&endpoint, false).unwrap().0, b"hardware");
+    for tap in &taps {
+        let mut bytes = [0; 1600];
+        let (_, _, _, information) = receive(tap, &mut bytes, false).unwrap();
+        assert_eq!(
+            information.checksum,
+            network_protocol::PacketChecksum::Verified
+        );
+    }
+    nic.receive_checksum_valid
+        .store(false, core::sync::atomic::Ordering::Relaxed);
+    nic.wire.lock().unwrap().0.push_back(verified.clone());
+    advance_actual_domains();
+    assert_eq!(udp_read(&endpoint, false), Err(SocketError::Again));
+    nic.receive_checksum_valid
+        .store(true, core::sync::atomic::Ordering::Relaxed);
+    verified[24] ^= 1;
+    nic.wire.lock().unwrap().0.push_back(verified);
+    advance_actual_domains();
+    assert_eq!(udp_read(&endpoint, false), Err(SocketError::Again));
+    for tap in taps {
+        tap.close_description();
+    }
     endpoint.close_description();
 }

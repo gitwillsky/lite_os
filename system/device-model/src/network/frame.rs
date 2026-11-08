@@ -1,5 +1,5 @@
 //! 有寿命的共享帧借用；不逐包分配或增减 Arc，不把 VMO 映射存在当作字节所有权。
-use super::{NetworkChecksum, NetworkDevice, NetworkError};
+use super::{NetworkChecksum, NetworkDevice, NetworkError, NetworkTcpSegmentation};
 
 /// 唯一的 CPU RX 借用；释放或 Drop 后才能把该槽重新交给设备。
 pub struct NetworkReceiveFrame<'a> {
@@ -8,12 +8,14 @@ pub struct NetworkReceiveFrame<'a> {
     identity: Option<(u16, u64)>,
     address: usize,
     length: usize,
+    checksum_valid: bool,
 }
 impl<'a> NetworkReceiveFrame<'a> {
     /// 从已经领取的槽建立借用；device 保活映射，slot/ticket 标识本次唯一所有权。
     /// # Safety
     /// address 非零，范围不超过 isize::MAX 且不跨映射边界，在 device 寿命内有效且已初始化；设备/其他 CPU 在 release_received
     /// 前不能写入或复用该范围。不能为同一所有权构造两个 token。
+    /// checksum_valid 只能在设备已验证 transport checksum 或驱动补全后为 true；否则上层会跳过必要校验。
     pub unsafe fn new(
         device: &'a dyn NetworkDevice,
         queue: u16,
@@ -21,6 +23,7 @@ impl<'a> NetworkReceiveFrame<'a> {
         ticket: u64,
         address: usize,
         length: usize,
+        checksum_valid: bool,
     ) -> Self {
         Self {
             device,
@@ -28,7 +31,12 @@ impl<'a> NetworkReceiveFrame<'a> {
             identity: Some((slot, ticket)),
             address,
             length,
+            checksum_valid,
         }
+    }
+    /// transport checksum 已由设备验证或在交付前补全；不涵盖网络头校验。
+    pub fn checksum_valid(&self) -> bool {
+        self.checksum_valid
     }
     /// 显式归还 RX，以便调用者记录错误；无论成功与否不再访问内容或重复归还。
     /// # Errors
@@ -100,21 +108,19 @@ impl<'a> NetworkTransmit<'a> {
         mut self,
         length: usize,
         checksum: Option<NetworkChecksum>,
+        segmentation: Option<NetworkTcpSegmentation>,
     ) -> Result<(), NetworkError> {
         if length == 0 || length > self.capacity {
             return Err(NetworkError::FrameTooLarge);
         }
-        if let Some(checksum) = checksum {
-            if !self.device.transmit_checksum() {
-                return Err(NetworkError::InvalidConfiguration);
-            }
-            checksum.validate(length)?;
-        }
+        self.device
+            .transmit_capabilities()
+            .validate_packet(length, checksum, segmentation)?;
         let (slot, ticket) = self.identity.expect("transmit frame consumed twice");
         // SAFETY: 消费 self 后所有 buffer_mut 的引用均已结束，唯一 token 交出本次 reservation。
         unsafe {
             self.device
-                .submit_transmit(self.queue, slot, ticket, length, checksum)
+                .submit_transmit(self.queue, slot, ticket, length, checksum, segmentation)
         }?;
         self.identity.take();
         Ok(())

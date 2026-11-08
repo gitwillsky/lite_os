@@ -2525,8 +2525,13 @@ system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl Control
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_rss (& mut self , device : & VirtIODevice , pairs : u16 , config : & NetworkRssConfiguration ,) -> Result < () , NetworkError >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32 , rss : Option < NetworkRssCapabilities > ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) struct ControlQueue
+system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn receive (buffer : & mut [u8] , negotiated : bool) -> Result < bool , NetworkError >
+system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn transmit (header : & mut [u8] , checksum : Option < NetworkChecksum > , segmentation : Option < NetworkTcpSegmentation > ,)
+system/driver-host/src/drivers/virtio/net/queue_pair.rs :: pub (super) impl QueueState :: fn try_new (device : & VirtIODevice , index : u16 , transmit_limit : usize ,) -> Option < Self >
+system/driver-host/src/drivers/virtio/net/queue_pair.rs :: pub (super) struct QueueState
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: length : usize
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: slot : u16
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveClaim < '_ , B , BUFFER_SIZE > :: fn buffer_mut (& mut self) -> & mut B
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveClaim < '_ , B , BUFFER_SIZE > :: fn complete (self) -> ReceiveCompletion
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn buffer (& self , slot : usize) -> Option < & B >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn claim (& mut self , head : u16 , used_length : usize , header_size : usize ,) -> Option < ReceiveClaim < '_ , B , BUFFER_SIZE > >
@@ -2607,7 +2612,7 @@ system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqAvail
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqDesc
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsed
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsedElem
-system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaPool , DmaSlice }
+system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaPool , DmaRegion , DmaSlice }
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " caller 未提供任何有效 segment。"] Empty
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " chain 非空且可由给定数量的 descriptor 表示。"] Required (usize)
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " segment 总数溢出或超过当前 capacity。"] ExceedsCapacity
@@ -2626,15 +2631,21 @@ system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable_all (& self) -> DmaSlice < '_ >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: unsafe fn share_vmo (& self ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
-system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool < SIZE > :: fn take (& mut self) -> Option < DmaBuffer < SIZE > >
-system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool < SIZE > :: fn try_new (count : usize , bti : & Bti ,) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn take (& mut self) -> Option < DmaRegion >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn take_fixed < const SIZE : usize > (& mut self ,) -> Option < DmaBuffer < SIZE > >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn try_new (count : usize , stride : usize , bti : & Bti ,) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn as_mut_slice (& mut self) -> & mut [u8]
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn len (& self) -> usize
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn readable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: unsafe fn share_vmo (& self ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn length (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn limit_segment_size (mut self , maximum : usize ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < 'mapping > :: fn backing (backing : & 'mapping DeviceBacking , range : Range < usize > , device_writable : bool ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DeviceWriteBuffer < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaBuffer < const SIZE : usize >
-system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaPool < const SIZE : usize >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaPool
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaRegion
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaSlice < 'mapping >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) enum DmaChainRequirement
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) fn descriptor_requirement (buffers : & [DmaSlice < '_ >] , capacity : usize ,) -> DmaChainRequirement
@@ -7728,6 +7739,7 @@ system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: count : usize
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: credentials : Option < UnixCredentials >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: full_length : usize
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: internet_packet_info : Option < InternetPacketInfo >
+system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: packet_information : Option < PacketInformation >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: rights : Option < UnixReceivedRights >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: source : Option < SocketAddress >
 system/linuxd/src/net/mod.rs :: pub (crate) UnixConnectResources :: data : UnixConnectionData
@@ -7772,7 +7784,7 @@ system/linuxd/src/net/mod.rs :: pub (crate) use inet :: { configure_address , co
 system/linuxd/src/net/mod.rs :: pub (crate) use kobject :: { publish_drm_hotplug , publish_input }
 system/linuxd/src/net/mod.rs :: pub (crate) use net_namespace :: { NetNamespace , initial_net , initialize_net }
 system/linuxd/src/net/mod.rs :: pub (crate) use netstack :: init
-system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , RouteChange , RouteSnapshot , SocketError , SocketPollState , }
+system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , PacketChecksum , PacketInformation , RouteChange , RouteSnapshot , SocketError , SocketPollState , }
 system/linuxd/src/net/mod.rs :: pub (crate) use preparation :: { PreparedSocket , SocketRequest }
 system/linuxd/src/net/mod.rs :: pub (crate) use timeouts :: { SocketIoDirection , SocketTimeout }
 system/linuxd/src/net/mod.rs :: pub (crate) use unix :: { SCM_MAX_FD , UnixAddress , UnixFileLimit , UnixNode , UnixPassedFile , UnixPathIdentity , UnixReceivedRights , UnixRights , }
@@ -7808,6 +7820,7 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn buffer_limit (
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn internet_option (& self , option : super :: InternetOption ,) -> Result < i32 , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn ipv4_packet_info (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn net_namespace (& self) -> alloc :: sync :: Arc < super :: NetNamespace >
+system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn packet_auxiliary (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn pass_credentials (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn peer_credentials (& self) -> Option < UnixCredentials >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn reserve_control_memory (& self , bytes : usize ,) -> Option < super :: ControlMemoryCharge >
@@ -7817,6 +7830,7 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_internet_t
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_header_included (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_hop_limit (& self , value : Option < u8 >) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_packet_info (& self , enabled : bool) -> Result < () , SocketError >
+system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_packet_auxiliary (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_pass_credentials (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_tcp_max_segment (& self , value : i32) -> Result < () , SocketError >
@@ -7824,14 +7838,16 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_tcp_no_del
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_timeout (& self , direction : SocketIoDirection , value : SocketTimeout ,) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn timeout (& self , direction : SocketIoDirection) -> SocketTimeout
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn auxiliary (& self) -> bool
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn bind (& self , address : PacketAddress) -> Result < () , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn close_description (& self)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn consume_wait_notifications (& self)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn new (socket_type : SocketType , protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) , namespace : Arc < NetNamespace > ,) -> Result < Arc < Self > , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn readiness_generation (& self) -> u64
-system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , PacketAddress , PacketInformation) , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn set_auxiliary (& self , enabled : bool)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn take_error (& self) -> Option < SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn try_poll_state (& self) -> Option < SocketPollState >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn wait_sources (& self) -> super :: SocketWaitSources
@@ -8616,6 +8632,7 @@ system/linuxd/src/syscall/socket.rs :: pub (super) use interface :: socket_ioctl
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: cloexec : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: credentials : Option < crate :: net :: UnixCredentials >
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: internet_packet_info : Option < crate :: net :: InternetPacketInfo >
+system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: packet_auxiliary : Option < (crate :: net :: PacketInformation , usize) >
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: packet_info : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: pass_credentials : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: rights : Option < crate :: net :: UnixReceivedRights >
@@ -10453,6 +10470,7 @@ system/netstack/src/inet/device.rs :: pub (super) struct EthernetDevice
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetTxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct TcpReset
+system/netstack/src/inet/device/checksum.rs :: pub (super) fn prepare (frame : & mut [u8]) -> Result < Option < NetworkChecksum > , NetworkError >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn can_transmit (& self) -> bool
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn inject (& self , header : [u8 ; 14] , packet : & [u8] , sender : usize ,) -> Result < () , SocketError >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) struct LoopbackDevice
@@ -10684,9 +10702,9 @@ system/netstack/src/namespace.rs :: pub (crate) impl Namespace :: fn install_pro
 system/netstack/src/namespace.rs :: pub (crate) impl Namespace :: fn protocol (& self) -> Option < & NetworkStackOwner >
 system/netstack/src/namespace.rs :: pub (crate) struct Namespace
 system/netstack/src/namespace.rs :: pub (crate) struct NetworkNamespaceBatch
-system/netstack/src/packet.rs :: pub (crate) fn deliver (net_id : u64 , index : u32 , mac : [u8 ; 6] , frame : & [u8])
+system/netstack/src/packet.rs :: pub (crate) fn deliver (net_id : u64 , index : u32 , mac : [u8 ; 6] , frame : & [u8] , checksum_valid : bool)
 system/netstack/src/packet.rs :: pub (crate) fn deliver_loopback (net_id : u64 , header : [u8 ; ETH_HEADER_LENGTH] , packet : & [u8])
-system/netstack/src/packet.rs :: pub (crate) fn deliver_outgoing (net_id : u64 , index : u32 , hardware_type : u16 , header : [u8 ; ETH_HEADER_LENGTH] , payload : & [u8] , protocol : u16 , sender : Option < usize > ,)
+system/netstack/src/packet.rs :: pub (crate) fn deliver_outgoing (net_id : u64 , index : u32 , hardware_type : u16 , header : [u8 ; ETH_HEADER_LENGTH] , payload : & [u8] , checksum_partial : bool , sender : Option < usize > ,)
 system/netstack/src/packet.rs :: pub (crate) fn init ()
 system/netstack/src/packet.rs :: pub (crate) fn publish_interface_removed (net_id : u64 , index : u32)
 system/netstack/src/packet.rs :: pub (crate) fn publish_transmit_ready (net_id : u64 , index : u32)
@@ -10697,7 +10715,7 @@ system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn close_descr
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn new (kind : PacketKind , protocol : u16 , readiness : Arc < Event > , namespace : Arc < Namespace > ,) -> Result < Arc < Self > , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn notify (& self)
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
-system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
+system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer , peek : bool ,) -> Result < (usize , usize , PacketAddress , PacketInformation) , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn take_error (& self) -> Option < SocketError >
 system/netstack/src/packet.rs :: pub (crate) struct PacketSocket

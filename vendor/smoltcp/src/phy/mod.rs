@@ -170,6 +170,8 @@ pub struct PacketMeta {
     pub interface_index: Option<u32>,
     /// emitter 明确省略了本次传输层 checksum；RAW 不设置，PHY 不凭报文内容猜测。
     pub tx_checksum: bool,
+    /// 本帧 transport checksum 已验证；不覆盖 IPv4/ICMP header，也不影响下一帧。
+    pub rx_checksum_valid: bool,
     #[cfg(feature = "packetmeta-id")]
     pub id: u32,
 }

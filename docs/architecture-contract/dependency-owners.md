@@ -80,7 +80,7 @@ FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带�
 （每文件一个 pager VMO），linuxd 经挂载控制取得它做 mmap；PCM 设备与混音属于 audio-core，linuxd 只翻译 ALSA。
 
 `libraries/packet-wire` 只拥有无状态报文字节算法，当前为 RFC 1071 校验和；不依赖服务或原生对象。
-Netstack 的设备 adapter 消费它构造伪头 seed，硬件能力与缓冲寿命仍归设备 owner，路由/传输状态仍归 netstack。
+Netstack 的设备 adapter 消费它构造伪头 seed，driver-host 在独占 RX claim 内使用它补全部分校验和；硬件能力与缓冲寿命仍归设备 owner，路由/传输状态仍归 netstack。
 
 ## 验证职责
 

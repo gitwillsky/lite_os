@@ -3,9 +3,10 @@
 //! 控制经 socket channel、收发与 poll 经固定共享 SQ/CQ；就绪经 netstack 置位的 Event 唤醒本地 notification，见 [`super::netstack`]。
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use device_protocol::ActivityBinding;
-use network_protocol::{PacketKind, RemotePacketSocket};
+use network_protocol::{PacketInformation, PacketKind, RemotePacketSocket};
 
 use super::{
     NetNamespace, PacketAddress, SocketError, SocketPollState, SocketType, SocketWaitSource,
@@ -16,6 +17,8 @@ use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
 /// 一个 AF_PACKET socket 的本地端。
 pub(super) struct PacketSocket {
     remote: RemotePacketSocket,
+    // OWNER: OFD 的 AUXDATA 输出策略；独立标量不发布其他状态，Relaxed 足够，缺失则所有 recvmsg 都会强制输出控制消息。
+    auxiliary: AtomicBool,
     // OWNER: netstack 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
     readiness: ActivityBinding,
     notify_read: Arc<PipeEnd>,
@@ -45,6 +48,7 @@ impl PacketSocket {
         let readiness = netstack::bind_readiness(endpoint.readiness, &endpoint.channel, &notify.1)?;
         Arc::try_new(Self {
             remote: RemotePacketSocket::new(endpoint.channel)?,
+            auxiliary: AtomicBool::new(false),
             readiness,
             notify_read: notify.0,
             notify_write: notify.1,
@@ -81,13 +85,25 @@ impl PacketSocket {
         &self,
         output: &mut ReceiveBuffer<'_>,
         peek: bool,
-    ) -> Result<(usize, usize, PacketAddress), SocketError> {
+    ) -> Result<(usize, usize, PacketAddress, PacketInformation), SocketError> {
         let received = self.remote.receive(output.remaining(), peek)?;
         output
             .prepare_append(received.data.len())
             .map_err(|()| SocketError::NoMemory)?;
         let count = output.append(&received.data);
-        Ok((count, received.full_length, received.source))
+        Ok((
+            count,
+            received.full_length,
+            received.source,
+            received.information,
+        ))
+    }
+
+    pub(super) fn set_auxiliary(&self, enabled: bool) {
+        self.auxiliary.store(enabled, Ordering::Relaxed);
+    }
+    pub(super) fn auxiliary(&self) -> bool {
+        self.auxiliary.load(Ordering::Relaxed)
     }
 
     pub(super) fn poll_state(&self) -> SocketPollState {

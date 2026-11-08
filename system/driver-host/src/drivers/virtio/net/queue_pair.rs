@@ -1,9 +1,9 @@
 //! 每个 queue pair 的 DMA、slot 与收发/完成路径；配置租约由父模块拥有。
-use super::super::queue::{DmaBuffer, DmaPool, VirtQueue, VirtQueueError};
+use super::super::queue::{DmaBuffer, DmaPool, DmaRegion, VirtQueue, VirtQueueError};
 use super::rx_slots::{ReceiveQueue, ReceiveSlots};
 use super::{
-    ActiveNetwork, MAX_ETHERNET_FRAME, QUEUE_SIZE, RX_BUFFER_SIZE, SPEED_OFFSET, STATUS_OFFSET,
-    TX_BUFFER_SIZE, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_SPEED_DUPLEX,
+    ActiveNetwork, QUEUE_SIZE, RX_BUFFER_SIZE, SPEED_OFFSET, STATUS_OFFSET,
+    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_SPEED_DUPLEX,
     VIRTIO_NET_F_STATUS, VIRTIO_NET_HEADER_SIZE, VIRTIO_NET_S_LINK_UP, VirtIODevice,
     VirtIONetworkDevice,
 };
@@ -19,7 +19,7 @@ enum TransmitSlotState {
 }
 
 struct TransmitSlot {
-    bytes: DmaBuffer<TX_BUFFER_SIZE>,
+    bytes: DmaRegion,
     state: TransmitSlotState,
 }
 
@@ -31,11 +31,16 @@ pub(super) struct QueueState {
     transmit_slots: Vec<TransmitSlot>,
     transmit_by_head: Vec<Option<u16>>,
     statistics: NetworkStatistics,
+    transmit_limit: usize,
 }
 
 impl QueueState {
     /// 在 DRIVER_OK 前为一个 queue pair 准备所有 ring/slot；失败不启用设备 DMA。
-    pub(super) fn try_new(device: &VirtIODevice, index: u16) -> Option<Self> {
+    pub(super) fn try_new(
+        device: &VirtIODevice,
+        index: u16,
+        transmit_limit: usize,
+    ) -> Option<Self> {
         let mut receive = VirtIONetworkDevice::create_queue(device, u32::from(index) * 2)?;
         let transmit = VirtIONetworkDevice::create_queue(device, u32::from(index) * 2 + 1)?;
         let receive_capacity = receive.size / 2;
@@ -44,9 +49,10 @@ impl QueueState {
         }
         let mut receive_slots =
             ReceiveSlots::try_new(receive_capacity as usize, receive.size as usize)?;
-        let mut receive_pool = DmaPool::try_new(receive_capacity as usize, device.bti()).ok()?;
+        let mut receive_pool =
+            DmaPool::try_new(receive_capacity as usize, RX_BUFFER_SIZE, device.bti()).ok()?;
         for _ in 0..receive_capacity {
-            let bytes = receive_pool.take()?;
+            let bytes = receive_pool.take_fixed()?;
             let output = bytes.writable_all();
             let Ok(head) = receive.add_dma(&[output]) else {
                 break;
@@ -66,7 +72,12 @@ impl QueueState {
         transmit_slots
             .try_reserve_exact(transmit_capacity as usize)
             .ok()?;
-        let mut transmit_pool = DmaPool::try_new(transmit_capacity as usize, device.bti()).ok()?;
+        let mut transmit_pool = DmaPool::try_new(
+            transmit_capacity as usize,
+            (VIRTIO_NET_HEADER_SIZE + transmit_limit).next_multiple_of(64),
+            device.bti(),
+        )
+        .ok()?;
         for _ in 0..transmit_capacity {
             transmit_slots.push(TransmitSlot {
                 bytes: transmit_pool.take()?,
@@ -87,6 +98,7 @@ impl QueueState {
             transmit_slots,
             transmit_by_head,
             statistics: NetworkStatistics::default(),
+            transmit_limit,
         })
     }
 }
@@ -185,9 +197,14 @@ impl NetworkProvider for ActiveNetwork {
             receive_slots: queues.receive_slots.len() as u16,
             transmit_slots: queues.transmit_slots.len() as u16,
             receive_stride: RX_BUFFER_SIZE,
-            transmit_stride: TX_BUFFER_SIZE,
+            transmit_stride: queues
+                .transmit_slots
+                .first()
+                .ok_or(NetworkError::Device)?
+                .bytes
+                .len(),
             header_bytes: VIRTIO_NET_HEADER_SIZE,
-            transmit_limit: MAX_ETHERNET_FRAME,
+            transmit_limit: queues.transmit_limit,
         })
     }
 
@@ -216,10 +233,22 @@ impl NetworkProvider for ActiveNetwork {
                 receive_slots,
                 ..
             } = &mut *queues;
-            let Some(claim) = receive_slots.claim(used.head(), used_length, VIRTIO_NET_HEADER_SIZE)
+            let Some(mut claim) =
+                receive_slots.claim(used.head(), used_length, VIRTIO_NET_HEADER_SIZE)
             else {
                 drop(queues);
                 return Err(self.fail_device());
+            };
+            let checksum_valid = match super::offload::receive(
+                &mut claim.buffer_mut().as_mut_slice()[..used_length],
+                self.features & VIRTIO_NET_F_GUEST_CSUM != 0,
+            ) {
+                Ok(valid) => valid,
+                Err(_) => {
+                    drop(claim);
+                    drop(queues);
+                    return Err(self.fail_device());
+                }
             };
             if receive.recycle_used(used).is_err() {
                 drop(claim);
@@ -236,6 +265,7 @@ impl NetworkProvider for ActiveNetwork {
             output[count] = NetworkReceive {
                 slot: completion.slot,
                 length: completion.length,
+                checksum_valid,
             };
             count += 1;
         }
@@ -270,20 +300,16 @@ impl NetworkProvider for ActiveNetwork {
             return Err(NetworkError::Device);
         }
         let mut seen = [0u64; (QUEUE_SIZE as usize).div_ceil(64)];
+        let mut capabilities = self.owner.transmit_capabilities();
+        capabilities.maximum_buffer_length = queues.transmit_limit as u32;
         for frame in input {
             let Some(slot) = queues.transmit_slots.get(frame.slot as usize) else {
                 return Err(NetworkError::Device);
             };
-            if frame.length == 0 || frame.length > MAX_ETHERNET_FRAME {
-                return Err(NetworkError::FrameTooLarge);
-            }
-            if let Some(checksum) = frame.checksum {
-                if self.features & VIRTIO_NET_F_CSUM == 0 {
-                    return Err(NetworkError::InvalidConfiguration);
-                }
-                checksum.validate(frame.length)?;
-            }
-            let word = &mut seen[frame.slot as usize / 64];
+            capabilities.validate_packet(frame.length, frame.checksum, frame.segmentation)?;
+            let word = seen
+                .get_mut(frame.slot as usize / 64)
+                .ok_or(NetworkError::Device)?;
             let bit = 1u64 << (frame.slot % 64);
             if !matches!(slot.state, TransmitSlotState::Free) || *word & bit != 0 {
                 return Err(NetworkError::Device);
@@ -301,13 +327,7 @@ impl NetworkProvider for ActiveNetwork {
         for frame in input {
             let slot = &mut transmit_slots[frame.slot as usize];
             let header = &mut slot.bytes.as_mut_slice()[..VIRTIO_NET_HEADER_SIZE];
-            header.fill(0);
-            if let Some(checksum) = frame.checksum {
-                header[0] = 1; // VIRTIO_NET_HDR_F_NEEDS_CSUM；GSO 保持 NONE。
-                header[2..4].copy_from_slice(&checksum.header_length.to_le_bytes());
-                header[6..8].copy_from_slice(&checksum.start.to_le_bytes());
-                header[8..10].copy_from_slice(&checksum.offset.to_le_bytes());
-            }
+            super::offload::transmit(header, frame.checksum, frame.segmentation);
             let buffer = match slot
                 .bytes
                 .readable(0..VIRTIO_NET_HEADER_SIZE + frame.length)
