@@ -163,6 +163,17 @@ impl Tree {
                     }),
                 )
             }
+            // 自绘凹槽决定行程，自然宽度让凹槽两端恰好对应数值端点；TBS_NOTICKS 只需滑块高度。
+            widget::SLIDER => (
+                node.channel.as_ref().map_or(width, |channel| {
+                    classic_ui::Trackbar::length_for(channel.width)
+                }),
+                if node.state & state::TRACK_NO_TICKS != 0 {
+                    classic_ui::Trackbar::THUMB_ACROSS
+                } else {
+                    line + 10
+                },
+            ),
             widget::CALENDAR => (224, (line + 7) * 8),
             widget::MENU_BAR => (width, line + 4),
             _ => (width, line + 10),

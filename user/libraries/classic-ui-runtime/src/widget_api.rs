@@ -1,5 +1,5 @@
 //! 控件数据与状态的稳定 ABI 入口；内部对象不跨边界。
-use super::toolbar::{Button, Toolbar};
+use super::toolbar::{Button, Toolbar, ToolbarChange};
 use super::{
     Context, Text, abi, calendar_control, copy_text, invalid, invoke, text, text_editor, widgets,
 };
@@ -356,7 +356,7 @@ pub(super) unsafe extern "C" fn draw(
             };
             let mut drawing = Vec::with_capacity(count);
             for command in values {
-                if !(1..=7).contains(&command.kind)
+                if !(1..=8).contains(&command.kind)
                     || command.rect.width < 0
                     || command.rect.height < 0
                     || [
@@ -370,6 +370,11 @@ pub(super) unsafe extern "C" fn draw(
                 {
                     return Err(invalid("invalid drawing command"));
                 }
+                let name = text(command.text)?;
+                // 位图命令在设置时一次解析：绘制路径不查资源表，缺图按契约不绘制。
+                let bitmap = (command.kind == 8)
+                    .then(|| context.ui_bitmap(&name))
+                    .flatten();
                 drawing.push(widgets::Command {
                     kind: command.kind,
                     rect: canvas::Rect::new(
@@ -380,7 +385,8 @@ pub(super) unsafe extern "C" fn draw(
                     ),
                     color: command.color,
                     bold: command.bold != 0,
-                    text: text(command.text)?,
+                    text: name,
+                    bitmap,
                 });
             }
             let host = context.host_mut(window)?;
@@ -848,6 +854,43 @@ pub(super) unsafe extern "C" fn read_state(
     }
 }
 
+/// ABI 字体用途编号（[`abi::Api::set_font`] 与 [`abi::Api::text_width`] 共用）；未知编号为 None。
+fn font_role(role: u32) -> Option<classic_ui::FontRole> {
+    use classic_ui::FontRole;
+    Some(match role {
+        0 => FontRole::Caption,
+        1 => FontRole::SmallCaption,
+        2 => FontRole::Menu,
+        3 => FontRole::Status,
+        4 => FontRole::Message,
+        5 => FontRole::Icon,
+        _ => return None,
+    })
+}
+
+pub(super) unsafe extern "C" fn text_width(
+    pointer: *mut c_void,
+    window: u64,
+    role: u32,
+    value: abi::Text,
+    output: *mut i32,
+) -> i32 {
+    let Some(role) = font_role(role) else {
+        return abi::INVALID;
+    };
+    if output.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: 文本在调用期间借用并复制，输出独占；度量使用窗口当前 scale 的同一份字体。
+    unsafe {
+        invoke(pointer, |context| {
+            let value = text(value)?;
+            output.write(context.text_width(window, role, &value)?);
+            Ok(())
+        })
+    }
+}
+
 pub(super) unsafe extern "C" fn set_font(
     pointer: *mut c_void,
     window: u64,
@@ -856,15 +899,8 @@ pub(super) unsafe extern "C" fn set_font(
     points: u32,
     weight: u32,
 ) -> i32 {
-    use classic_ui::FontRole;
-    let role = match role {
-        0 => FontRole::Caption,
-        1 => FontRole::SmallCaption,
-        2 => FontRole::Menu,
-        3 => FontRole::Status,
-        4 => FontRole::Message,
-        5 => FontRole::Icon,
-        _ => return abi::INVALID,
+    let Some(role) = font_role(role) else {
+        return abi::INVALID;
     };
     if points > 72 || weight > 1000 {
         return abi::INVALID;
@@ -923,6 +959,10 @@ pub(super) unsafe extern "C" fn status_parts(
                 .get_mut(&id)
                 .filter(|node| node.kind == abi::widget::STATUS)
                 .ok_or_else(|| invalid("not a status bar"))?;
+            // 应用在每次 Configure 后按字体重新量分格；宽度没变时不让交互缩放的每一帧都多一次整窗重画。
+            if node.status_parts == parts {
+                return Ok(());
+            }
             node.status_parts = parts;
             host.frame.invalidate();
             Ok(())
@@ -966,6 +1006,54 @@ pub(super) unsafe extern "C" fn background(
                 .filter(|node| matches!(node.kind, abi::widget::COLUMN | abi::widget::ROW))
                 .ok_or_else(|| invalid("not a column or row"))?;
             node.background = (color.is_some() || image.is_some()).then_some((color, image));
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn slider_channel(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    bitmap: abi::Text,
+    source_x: i32,
+    source_width: i32,
+) -> i32 {
+    // SAFETY: 位图名在调用期间借用并复制；位图由资源上下文加载并共享，失败不改旧凹槽。
+    unsafe {
+        invoke(pointer, |context| {
+            let name = text(bitmap)?;
+            let channel = if name.is_empty() {
+                None
+            } else {
+                let image = context
+                    .ui_bitmap(&name)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown bitmap"))?;
+                if source_x < 0
+                    || source_width <= 0
+                    || source_x
+                        .checked_add(source_width)
+                        .is_none_or(|end| end > image.width())
+                {
+                    return Err(invalid("slider channel outside the bitmap"));
+                }
+                Some(widgets::SliderChannel {
+                    bitmap: image,
+                    source_x,
+                    width: source_width,
+                })
+            };
+            let host = context.host_mut(window)?;
+            let controls = host.controls_mut()?;
+            let node = controls
+                .nodes
+                .get_mut(&id)
+                .filter(|node| node.kind == abi::widget::SLIDER && !node.range.vertical)
+                .ok_or_else(|| invalid("not a horizontal slider"))?;
+            node.channel = channel;
+            // 自然宽度由凹槽决定，布局必须重算。
+            controls.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
         })
@@ -1034,11 +1122,18 @@ pub(super) unsafe extern "C" fn toolbar_items(
                 .get_mut(&id)
                 .filter(|node| node.kind == abi::widget::TOOLBAR)
                 .ok_or_else(|| invalid("not a toolbar"))?;
-            node.toolbar
+            let change = node
+                .toolbar
                 .get_or_insert_with(Toolbar::default)
                 .set_buttons(buttons);
-            host.controls_mut()?.layout_dirty = true;
-            host.frame.invalidate();
+            match change {
+                ToolbarChange::Layout => {
+                    host.controls_mut()?.layout_dirty = true;
+                    host.frame.invalidate();
+                }
+                ToolbarChange::Paint => host.frame.invalidate(),
+                ToolbarChange::None => {}
+            }
             Ok(())
         })
     }

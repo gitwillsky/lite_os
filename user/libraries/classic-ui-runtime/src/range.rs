@@ -126,7 +126,7 @@ impl Tree {
                 self.focus = Some(id);
                 if node.kind == widget::SLIDER {
                     node.position.press_slider(
-                        Trackbar::new(node.rect, node.range.vertical),
+                        Trackbar::new(node.slider_rect(), node.range.vertical),
                         node.range.limit(),
                         (f64::from(pointer.0), f64::from(pointer.1)),
                     );
@@ -143,7 +143,7 @@ impl Tree {
                 self.pointer = pointer;
                 if node.kind == widget::SLIDER {
                     node.position.drag_slider(
-                        Trackbar::new(node.rect, node.range.vertical),
+                        Trackbar::new(node.slider_rect(), node.range.vertical),
                         node.range.limit(),
                         (f64::from(pointer.0), f64::from(pointer.1)),
                     );

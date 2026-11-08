@@ -741,6 +741,17 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
+    "ui/media-logo-1x.bmp": {
+      "group": "ui",
+      "bytes": 71802,
+      "sha256": "1bc22fbc5ff28b605d085a4939684dda809f333bbf6db6d3378bf9725aefba88",
+      "origin": {
+        "source": "msdxm.ocx",
+        "resource": 140,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
     "ui/media-player-16.bmp": {
       "group": "ui",
       "bytes": 1146,
@@ -759,6 +770,39 @@
       "origin": {
         "source": "mplayer2.exe",
         "resource": 110,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/media-transport-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 14522,
+      "sha256": "321b5fdeda061585ba6782a3fc95cd5a3606d369c98d16056b5825540dfb6680",
+      "origin": {
+        "source": "msdxm.ocx",
+        "resource": 5208,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/media-transport-disabled-1x.bmp": {
+      "group": "ui",
+      "bytes": 14522,
+      "sha256": "4d8ff0515a8d83503c69e3d4b13ecea12ded74119f1a16c2ee7182d7f30782ef",
+      "origin": {
+        "source": "msdxm.ocx",
+        "resource": 5209,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/media-volume-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 8122,
+      "sha256": "4b6b7a31513bc1cb5e028e14fa9f18efda61bf2bbd33cbe0a7684deadd84704d",
+      "origin": {
+        "source": "msdxm.ocx",
+        "resource": 5212,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }

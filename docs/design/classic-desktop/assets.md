@@ -110,6 +110,10 @@ classic-ui 的 Bitmap 保活只读 MAP_PRIVATE 视图；每进程 Weak 目录只
 | `brand-26` | `browseui.dll:305` |
 | `brand-38` | `browseui.dll:304` |
 | `worldmap` | `timedate.cpl:50` |
+| `media-transport-default` | `msdxm.ocx:5208` |
+| `media-transport-disabled` | `msdxm.ocx:5209` |
+| `media-volume-default` | `msdxm.ocx:5212` |
+| `media-logo` | `msdxm.ocx:140` |
 | `webview-left` | `webvw.dll` 类型 23 `WVLEFT.BMP` |
 | `webview-line` | `webvw.dll` 类型 23 `WVLINE.GIF` |
 

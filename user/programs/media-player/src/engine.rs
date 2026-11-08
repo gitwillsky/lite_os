@@ -104,11 +104,28 @@ impl Changes {
     }
 }
 
+/// WMP“预览播放列表中的每个剪辑”：每个剪辑只播开头 [`PREVIEW_SECONDS`] 后跳到下一个，最后一个结束后停止。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preview {
+    Off,
+    /// 正在预览当前剪辑，到时长后前进一次。
+    Watching,
+    /// 已经请求下一个剪辑、等待其载入；时间事件在切换前仍会到达，此状态保证每个剪辑只前进一次。
+    Advanced,
+}
+
+/// 预览每个剪辑播放的秒数。
+const PREVIEW_SECONDS: f64 = 10.;
+
 pub struct State {
+    pub preview: Preview,
     pub native_card: Option<u32>,
     pub outputs: Vec<linux_uapi::alsa::NativeOutput>,
     pub idle: bool,
     pub paused: bool,
+    /// WMP 的“停止”：媒体仍然打开，暂停在开头；再次播放或换媒体时清除。
+    /// 缺少它，停止只能关闭文件（mpv `stop`），无法从开头重新播放同一媒体。
+    pub stopped: bool,
     pub buffering: bool,
     pub position: f64,
     pub duration: f64,
@@ -129,10 +146,12 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            preview: Preview::Off,
             native_card: None,
             outputs: linux_uapi::alsa::native_outputs().unwrap_or_default(),
             idle: true,
             paused: false,
+            stopped: false,
             buffering: false,
             position: 0.,
             duration: 0.,
@@ -230,6 +249,9 @@ impl Engine {
             }
             Event::FileLoaded => {
                 self.state.message.clear();
+                if self.state.preview == Preview::Advanced {
+                    self.state.preview = Preview::Watching;
+                }
                 changes = Changes::ALL;
             }
             Event::AudioReconfig => {
@@ -253,6 +275,10 @@ impl Engine {
             TIME => {
                 self.state.position = number(&value).unwrap_or(0.);
                 changes.position = true;
+                if self.state.preview == Preview::Watching && self.state.position >= PREVIEW_SECONDS
+                {
+                    changes.controls |= self.advance_preview();
+                }
             }
             DURATION => {
                 self.state.duration = number(&value).unwrap_or(0.);
@@ -260,11 +286,15 @@ impl Engine {
             }
             PAUSE => {
                 self.state.paused = value == Value::Flag(true);
+                // 任何来源的继续播放（按钮、空格、菜单）都结束“已停止”。
+                self.state.stopped &= self.state.paused;
                 changes.controls = true;
             }
             IDLE => {
                 self.state.idle = value != Value::Flag(false);
                 if self.state.idle {
+                    self.state.stopped = false;
+                    self.state.preview = Preview::Off;
                     self.state.position = 0.;
                     self.state.duration = 0.;
                     self.state.title.clear();
@@ -542,6 +572,11 @@ impl Engine {
 
     /// 在播放列表里加载文件；`append` 为真时加入队尾，否则替换并立即播放。
     pub fn open(&mut self, path: &str, append: bool) -> bool {
+        // 替换打开的媒体总是从头播放：mpv 的 pause 会延续到下一个文件，停止或暂停后打开新文件不能停在暂停。
+        if !append && !self.state.idle {
+            self.set("pause", "no");
+            self.state.stopped = false;
+        }
         self.run(&[
             "loadfile",
             path,
@@ -555,6 +590,66 @@ impl Engine {
         }
         // 由 mpv 原子切换真实状态；UI 观察事件可能尚未到达，不能据旧快照重写同一个值。
         self.run(&["cycle", "pause"]);
+    }
+
+    /// 播放按钮：从暂停或停止处继续；没有打开媒体时什么也不做。
+    pub fn play(&mut self) {
+        if !self.state.idle {
+            self.set("pause", "no");
+        }
+    }
+
+    /// 暂停按钮：停在当前位置。
+    pub fn pause(&mut self) {
+        if !self.state.idle {
+            self.set("pause", "yes");
+        }
+    }
+
+    /// 停止按钮（WMP 语义）：媒体保持打开，暂停并回到开头；关闭文件另由 mpv `stop` 完成。
+    pub fn stop(&mut self) {
+        if self.state.idle {
+            return;
+        }
+        self.set("pause", "yes");
+        self.run(&["seek", "0", "absolute"]);
+        self.state.stopped = true;
+    }
+
+    /// 预览按钮：开启时从当前剪辑（未打开时从第一个）开始逐个预览，再按一次退出预览、继续正常播放。
+    pub fn toggle_preview(&mut self) {
+        if self.state.preview != Preview::Off {
+            self.state.preview = Preview::Off;
+            return;
+        }
+        if self.state.playlist.len() < 2 {
+            return;
+        }
+        if self.state.idle {
+            self.state.preview = Preview::Advanced;
+            self.play_index(0);
+        } else {
+            self.state.preview = Preview::Watching;
+            self.play();
+        }
+    }
+
+    /// 当前剪辑预览到时：还有下一个就前进一次，最后一个则结束预览并停止；返回控件是否需要刷新。
+    fn advance_preview(&mut self) -> bool {
+        let last = self
+            .state
+            .playlist
+            .iter()
+            .position(|entry| entry.current)
+            .is_none_or(|index| index + 1 >= self.state.playlist.len());
+        if last {
+            self.state.preview = Preview::Off;
+            self.stop();
+        } else {
+            self.state.preview = Preview::Advanced;
+            self.run(&["playlist-next"]);
+        }
+        true
     }
 
     pub fn seek_relative(&mut self, seconds: f64) {

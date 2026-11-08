@@ -54,15 +54,34 @@ pub struct Node {
     pub background: Option<(Option<classic_theme::Rgb>, Option<Rc<classic_ui::Bitmap>>)>,
     /// 微调钮的按住状态。
     pub updown: Option<super::updown::UpDown>,
+    /// 横向滑块的凹槽自绘；None 画标准凹陷凹槽。
+    pub channel: Option<SliderChannel>,
 }
 
-#[derive(PartialEq, Eq)]
+/// 滑块凹槽自绘的位图区域：x 从 `source_x` 起、宽 `width`，行程等于该宽度。
+pub struct SliderChannel {
+    pub bitmap: Rc<classic_ui::Bitmap>,
+    pub source_x: i32,
+    pub width: i32,
+}
+
 pub struct Command {
     pub kind: u32,
     pub rect: Rect,
     pub color: u32,
     pub bold: bool,
     pub text: String,
+    /// kind 8 在设置时按 `text` 解析出的系统位图；缺图为 None。
+    pub bitmap: Option<Rc<classic_ui::Bitmap>>,
+}
+
+/// 显示列表比较只看应用提交的命令字段：`bitmap` 由 `text` 中的位图名唯一决定，
+/// 不能按指针比较，否则资源缓存逐出后同一命令会被误判为变化并整块重绘。
+impl PartialEq for Command {
+    fn eq(&self, other: &Self) -> bool {
+        (self.kind, self.rect, self.color, self.bold, &self.text)
+            == (other.kind, other.rect, other.color, other.bold, &other.text)
+    }
 }
 
 impl Node {
@@ -123,6 +142,7 @@ impl Node {
             status_parts: Vec::new(),
             background: None,
             updown: None,
+            channel: None,
         })
     }
     pub fn text(&self) -> &str {
@@ -171,6 +191,31 @@ impl Node {
         Some(font)
     }
 
+    /// 滑块绘制与命中共用的几何：无刻度（TBS_NOTICKS）时滑块高度固定，在被布局拉伸的矩形里沿垂直轨道方向居中，
+    /// 与同一行的按钮对齐；有刻度时占满整个矩形。绘制和输入必须用同一个矩形，否则点中的不是看到的滑块。
+    pub fn slider_rect(&self) -> Rect {
+        let rect = self.rect;
+        if self.state & state::TRACK_NO_TICKS == 0 {
+            return rect;
+        }
+        let across = classic_ui::Trackbar::THUMB_ACROSS;
+        if self.range.vertical {
+            Rect::new(
+                rect.x + (rect.width - across).max(0) / 2,
+                rect.y,
+                across.min(rect.width),
+                rect.height,
+            )
+        } else {
+            Rect::new(
+                rect.x,
+                rect.y + (rect.height - across).max(0) / 2,
+                rect.width,
+                across.min(rect.height),
+            )
+        }
+    }
+
     pub fn contains(&self, x: i32, y: i32) -> bool {
         self.visible()
             && self.enabled()
@@ -213,7 +258,9 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::DROPDOWN_LIST
             | state::FILE_DRAG
             | state::EDIT_LABELS
-            | state::KEYBOARD_CONTEXT_MENU)
+            | state::KEYBOARD_CONTEXT_MENU
+            | state::TRACK_NO_TICKS
+            | state::TRACK_BOTH)
         != 0
     {
         return Err(invalid("unknown widget state"));

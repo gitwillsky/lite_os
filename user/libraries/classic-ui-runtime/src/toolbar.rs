@@ -41,6 +41,14 @@ pub struct Button {
     state: u32,
 }
 
+/// 整组替换按钮的影响范围，由粗到细：需要重排、只需重画、完全相同。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolbarChange {
+    Layout,
+    Paint,
+    None,
+}
+
 #[derive(Default)]
 pub struct Toolbar {
     buttons: Vec<Button>,
@@ -83,19 +91,49 @@ impl Button {
 }
 
 impl Toolbar {
-    /// 替换按钮；同一组按钮只刷新状态（启用、选中）时保留悬停与按下，按钮组变化才复位交互状态。
-    pub fn set_buttons(&mut self, buttons: Vec<Button>) {
+    /// 替换按钮；同一组按钮只刷新状态（启用、选中、帧）时保留悬停与按下，按钮组变化才复位交互状态。
+    ///
+    /// 返回本次替换的影响：播放器这类应用每次状态变化都整组提交，调用者据此只在几何变化时重排、
+    /// 只在像素变化时重画，避免无变化的提交触发整窗布局与光栅。
+    pub fn set_buttons(&mut self, buttons: Vec<Button>) -> ToolbarChange {
         let same = self.buttons.len() == buttons.len()
             && self
                 .buttons
                 .iter()
                 .zip(&buttons)
                 .all(|(old, new)| old.id == new.id);
+        let geometry = !same
+            || self.buttons.iter().zip(&buttons).any(|(old, new)| {
+                old.style != new.style
+                    || old.text != new.text
+                    || self.image_width(old) != self.image_width(new)
+            });
+        let visible = geometry
+            || self.buttons.iter().zip(&buttons).any(|(old, new)| {
+                old.state != new.state
+                    || old.frame != new.frame
+                    || !old
+                        .strips
+                        .iter()
+                        .zip(&new.strips)
+                        .all(|(old, new)| match (old, new) {
+                            (Some(old), Some(new)) => Rc::ptr_eq(old, new),
+                            (None, None) => true,
+                            _ => false,
+                        })
+            });
         self.buttons = buttons;
         if !same {
             self.hot = None;
             self.pressed = None;
             self.tip = None;
+        }
+        if geometry {
+            ToolbarChange::Layout
+        } else if visible {
+            ToolbarChange::Paint
+        } else {
+            ToolbarChange::None
         }
     }
 

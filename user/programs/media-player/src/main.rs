@@ -265,8 +265,18 @@ fn perform(
             }
             refresh.menus = true;
         }
-        Action::Pause => shell.engine.borrow_mut().toggle_pause(),
-        Action::Stop | Action::CloseFile => {
+        Action::TogglePause => shell.engine.borrow_mut().toggle_pause(),
+        Action::Play => shell.engine.borrow_mut().play(),
+        Action::Pause => shell.engine.borrow_mut().pause(),
+        Action::Stop => {
+            shell.engine.borrow_mut().stop();
+            refresh.controls = true;
+        }
+        Action::Preview => {
+            shell.engine.borrow_mut().toggle_preview();
+            refresh.controls = true;
+        }
+        Action::CloseFile => {
             shell.engine.borrow_mut().run(&["stop"]);
         }
         Action::Previous => {
@@ -368,7 +378,7 @@ fn key_action(code: u32, modifiers: u32) -> Option<Action> {
     let shift = modifiers & 1 != 0;
     let ctrl = modifiers & 2 != 0;
     Some(match code {
-        57 => Action::Pause,
+        57 => Action::TogglePause,
         105 => Action::Seek(if shift { -60. } else { -5. }),
         106 => Action::Seek(if shift { 60. } else { 5. }),
         103 => Action::VolumeStep(5.),
@@ -445,6 +455,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             EventKind::Close => Some(Action::Exit),
             EventKind::Configure { scale, .. } => {
                 view.scale.set(scale);
+                view.measure_status()?;
                 shell.sync(Changes {
                     frame: true,
                     ..Default::default()
@@ -459,12 +470,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .play_index(value.saturating_sub(1) as usize);
                 None
             }
-            EventKind::Activate { .. } if event.node == view.play.id() => Some(Action::Pause),
-            EventKind::Activate { .. } if event.node == view.stop.id() => Some(Action::Stop),
-            EventKind::Activate { .. } if event.node == view.previous.id() => {
-                Some(Action::Previous)
+            // 传输与静音按钮的编号就是菜单命令编号，与菜单走同一个解码表。
+            EventKind::Activate { value }
+                if event.node == view.transport.id() || event.node == view.audio.id() =>
+            {
+                Action::decode(value)
             }
-            EventKind::Activate { .. } if event.node == view.next.id() => Some(Action::Next),
             EventKind::Changed { value } if event.node == view.seek.id() => {
                 shell.engine.borrow_mut().seek_permille(value);
                 None

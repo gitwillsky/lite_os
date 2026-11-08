@@ -903,6 +903,22 @@ impl Context {
         let color = self.resources.theme().color(color);
         Ok(u32::from(color.red) << 16 | u32::from(color.green) << 8 | u32::from(color.blue))
     }
+    /// `value` 以 `role` 字体在窗口当前 scale 下的逻辑像素宽度（向上取整），与控件绘制用同一份字体。
+    pub(super) fn text_width(
+        &mut self,
+        window: u64,
+        role: classic_ui::FontRole,
+        value: &str,
+    ) -> io::Result<i32> {
+        let protocol = self.host(window)?.frame.window();
+        let scale = self
+            .display
+            .configuration(protocol)
+            .map_or(1, |configuration| configuration.scale)
+            .max(1);
+        let fonts = self.resources.fonts(scale)?;
+        Ok((fonts.role(role).measure(value, false) + scale - 1) / scale)
+    }
     pub(super) fn app_id(&mut self, window: u64, value: &str) -> io::Result<()> {
         let host = self.host(window)?;
         if host.app_id == value {

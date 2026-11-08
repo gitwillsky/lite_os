@@ -92,7 +92,9 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
 
 - 媒体播放：`mpv-client` 独占对上游 libmpv 的函数表签名、事件解码与软件渲染上下文，`linux-uapi::dynamic_library` 独占 `dlopen`（符号导入只在 linux-uapi，`mpv-client` 只声明函数指针类型与回调）；
   mpv 的唤醒/帧更新回调只向一个非阻塞 socket 写字节，所有 mpv 调用与渲染都在播放器 UI 线程。`media-player` 的 `Engine` 独占
-  播放状态镜像，`View` 独占控件；视频帧经 Canvas `canvas_frame` 显示，没有私有显示协议。libmpv/FFmpeg 的 APK 提取与闭包由
+  播放状态镜像（含 WMP 语义的“已停止”与预览三态，每个剪辑只前进一次），`View` 独占控件；界面按 Windows Media Player 6.4：
+  msdxm.ocx 的传输/静音位图条经共享 Toolbar、音量楔形经 slider_channel、空闲标志经 Canvas kind 8，按钮编号即菜单命令编号，
+  与菜单共用 `Action::decode`；状态栏用字符串表原文，时间格按 text_width 定宽。视频帧经 Canvas `canvas_frame` 显示，没有私有显示协议。libmpv/FFmpeg 的 APK 提取与闭包由
   `scripts/mpv_runtime.py`/`apk_elf_closure.py` 拥有（AArch64；其他 target 不安装，播放器启动时报告缺库）。
   `dlopen` 的 unsafe 契约：符号只在 `Library` 存活期间有效，`Mpv` 以字段顺序保证先释放渲染上下文与核心、最后卸载库；
   缺少它，卸载后的回调会跳进已解除映射的代码。

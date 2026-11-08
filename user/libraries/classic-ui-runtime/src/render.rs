@@ -2,7 +2,7 @@
 use super::widgets::{Node, Tree};
 use canvas::Rect;
 use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{ButtonState, Ink, Painter, PictureLoader, WallpaperStyle};
+use classic_ui::{ButtonState, Ink, Painter, PictureLoader, TrackbarStyle, WallpaperStyle};
 use classic_ui_abi::{state, widget};
 
 /// 一次重绘中 Canvas 命令共用的资源，由 Context 在绘制前按命令需要一次准备好。
@@ -318,13 +318,19 @@ impl Tree {
                 }
                 widget::SLIDER => {
                     p.trackbar(
-                        rect,
+                        node.slider_rect(),
                         node.range.vertical,
                         (
                             node.position.position,
                             node.range.maximum - node.range.minimum,
                         ),
-                        10,
+                        TrackbarStyle {
+                            ticks: (node.state & state::TRACK_NO_TICKS == 0).then_some(10),
+                            both: node.state & state::TRACK_BOTH != 0,
+                            channel: node.channel.as_ref().map(|channel| {
+                                (channel.bitmap.as_ref(), channel.source_x, channel.width)
+                            }),
+                        },
                     );
                     if self.focus == Some(id) && keyboard_focus && !disabled {
                         p.focus_rect(rect.inset(1));
@@ -381,6 +387,18 @@ impl Tree {
                                     };
                                     let screen = canvas.screen.map_or(r.width, |(width, _)| width);
                                     image.paint_wallpaper(p, r, style, (r.width, screen));
+                                }
+                            }
+                            // 系统界面位图：原尺寸居中，超出命令矩形的部分裁掉。
+                            8 => {
+                                if let Some(bitmap) = &command.bitmap {
+                                    p.clipped(r, |p| {
+                                        bitmap.paint(
+                                            p,
+                                            r.x + (r.width - bitmap.width()) / 2,
+                                            r.y + (r.height - bitmap.height()) / 2,
+                                        );
+                                    });
                                 }
                             }
                             _ => {}

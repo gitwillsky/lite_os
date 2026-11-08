@@ -163,6 +163,10 @@ pub mod state {
     pub const EDIT_LABELS: u32 = 4096;
     /// 列表声明由应用提供右键菜单，运行库负责把键盘请求定位到当前选择。
     pub const KEYBOARD_CONTEXT_MENU: u32 = 8192;
+    /// 滑块不画刻度（TBS_NOTICKS），控件只需要滑块本身的高度。
+    pub const TRACK_NO_TICKS: u32 = 16384;
+    /// 滑块为两侧对称的矩形凸起按钮（TBS_BOTH），而不是指向刻度的尖角。
+    pub const TRACK_BOTH: u32 = 32768;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {
@@ -233,6 +237,7 @@ pub struct Widget {
 
 /// 自绘批次：kind=1 填充，2 矩形框，3 文本，4 换行文本、5 等宽文字（8×16 逻辑单元格），
 /// 6 居中单行文字；颜色为 0x00RRGGBB。kind=7 墙纸预览，text 为路径，color 为 0 居中/1 平铺/2 拉伸。
+/// kind=8 系统界面位图：text 为位图名，按原尺寸在 rect 内水平垂直居中并裁剪到 rect，缺图时不绘制。
 /// 文本与绘图命令在调用期间复制，不包含裸像素或 Rust 对象。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -551,6 +556,13 @@ pub struct Api {
     pub row_checks: unsafe extern "C" fn(*mut c_void, u64, u64, *const RowCheck, usize) -> i32,
     /// 按列 ID 读取表头的实际逻辑宽度，包括拖动和自动调宽的结果。
     pub read_column_width: unsafe extern "C" fn(*mut c_void, u64, u64, u64, *mut i32) -> i32,
+    /// 横向滑块的凹槽自绘（comctl32 NM_CUSTOMDRAW 的 TBCD_CHANNEL）：系统界面位图 `bitmap` 中
+    /// x 从 `source_x` 起、宽 `source_width` 的区域替代凹陷凹槽，滑块的行程等于该宽度，自然宽度随之确定。
+    /// 空名清除自绘；非滑块、竖向滑块、区域越出位图或位图缺失返回 INVALID，旧凹槽不变。
+    pub slider_channel: unsafe extern "C" fn(*mut c_void, u64, u64, Text, i32, i32) -> i32,
+    /// 文本以系统字体用途（编号同 [`Api::set_font`]）在窗口当前 scale 下的逻辑像素宽度（GetTextExtentPoint32）；
+    /// 用于按实际字体决定状态栏分格等固定宽度。未知用途或空输出返回 INVALID，未知窗口返回 NOT_FOUND。
+    pub text_width: unsafe extern "C" fn(*mut c_void, u64, u32, Text, *mut i32) -> i32,
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

@@ -1,8 +1,8 @@
 //! 窗口控件与菜单：全部使用共享控件，视频帧经 Canvas 的媒体帧入口显示。
-use crate::engine::{Changes, Engine, Repeat, State, TrackKind, clock};
+use crate::engine::{Changes, Engine, Preview, Repeat, State, TrackKind, clock};
 use liteos_ui::{
-    Draw, Layout, Menu, MenuItem, Range, Rect, Widget, WidgetKind as Kind, WidgetSpec, Window,
-    state,
+    Draw, FontRole, Layout, Menu, MenuItem, Range, Rect, ToolbarButton, ToolbarKind, Widget,
+    WidgetKind as Kind, WidgetSpec, Window, state,
 };
 use std::cell::Cell;
 
@@ -15,7 +15,14 @@ pub enum Action {
     Screenshot,
     CloseFile,
     Exit,
+    /// 菜单与空格键的“播放/暂停”切换。
+    TogglePause,
+    /// 传输按钮“播放”：从暂停或停止处继续。
+    Play,
+    /// 传输按钮“暂停”。
     Pause,
+    /// 预览播放列表中的每个剪辑：每个剪辑只播开头一段后跳到下一个。
+    Preview,
     Stop,
     Previous,
     Next,
@@ -65,7 +72,10 @@ const ADD: u64 = 3;
 const SHOT: u64 = 4;
 const CLOSE_FILE: u64 = 5;
 const EXIT: u64 = 6;
-const PAUSE: u64 = 10;
+const PLAY: u64 = 7;
+const PAUSE: u64 = 8;
+const PREVIEW: u64 = 9;
+const TOGGLE_PAUSE: u64 = 10;
 const STOP: u64 = 11;
 const PREV: u64 = 12;
 const NEXT: u64 = 13;
@@ -135,7 +145,10 @@ impl Action {
             SHOT => Self::Screenshot,
             CLOSE_FILE => Self::CloseFile,
             EXIT => Self::Exit,
+            PLAY => Self::Play,
             PAUSE => Self::Pause,
+            PREVIEW => Self::Preview,
+            TOGGLE_PAUSE => Self::TogglePause,
             STOP => Self::Stop,
             PREV => Self::Previous,
             NEXT => Self::Next,
@@ -196,19 +209,159 @@ fn child(parent: &Widget, kind: Kind, text: &str, layout: Layout) -> liteos_ui::
     parent.child(spec)
 }
 
+/// WMP 6.4 的传输按钮条：播放、暂停、停止 | 向后跳进、快退、快进、向前跳进 | 预览。
+/// 当前状态对应的按钮保持按下（播放中“播放”、暂停中“暂停”、停止后“停止”），提示文字取自 msdxm.ocx。
+fn transport_buttons(state_: &State) -> [ToolbarButton<'static>; 10] {
+    let open = !state_.idle;
+    let list = state_.playlist.len() > 1;
+    let button = |id, frame, text, enabled, checked| ToolbarButton {
+        id,
+        kind: ToolbarKind::Button,
+        strip: TRANSPORT,
+        frame,
+        text,
+        show_text: false,
+        enabled,
+        checked,
+    };
+    let separator = |id| ToolbarButton {
+        id,
+        kind: ToolbarKind::Separator,
+        strip: "",
+        frame: 0,
+        text: "",
+        show_text: false,
+        enabled: true,
+        checked: false,
+    };
+    let playing = open && !state_.paused;
+    [
+        button(PLAY, frame::PLAY, "播放", open, playing),
+        button(
+            PAUSE,
+            frame::PAUSE,
+            "暂停",
+            open,
+            open && state_.paused && !state_.stopped,
+        ),
+        button(STOP, frame::STOP, "停止", open, open && state_.stopped),
+        separator(SEPARATORS[0]),
+        button(PREV, frame::SKIP_BACK, "向后跳进", list, false),
+        button(BACK5, frame::REWIND, "快退", open, false),
+        button(FWD5, frame::FAST_FORWARD, "快进", open, false),
+        button(NEXT, frame::SKIP_FORWARD, "向前跳进", list, false),
+        separator(SEPARATORS[1]),
+        button(
+            PREVIEW,
+            frame::PREVIEW,
+            "预览播放列表中的每个剪辑",
+            list,
+            state_.preview != Preview::Off,
+        ),
+    ]
+}
+
+/// 静音按钮：常态、静音与禁用各用 5212 的一帧（原生独占输出时音量由设备调节，按钮禁用）。
+fn mute_button(state_: &State) -> ToolbarButton<'static> {
+    let enabled = state_.native_card.is_none();
+    ToolbarButton {
+        id: MUTE,
+        kind: ToolbarKind::Button,
+        strip: AUDIO,
+        frame: match (enabled, state_.muted) {
+            (false, _) => frame::SPEAKER_DISABLED,
+            (true, true) => frame::MUTED,
+            (true, false) => frame::SPEAKER,
+        },
+        text: "静音",
+        show_text: false,
+        enabled,
+        checked: enabled && state_.muted,
+    }
+}
+
+/// 状态栏两格：左格是播放状态（WMP 6.4 字符串表 2001/2088/5101/5102），附带速度、A-B 循环等补充；
+/// 右格是“已播放的时间 / 总计时间”。未打开媒体时两格都为空。
+fn status_text(state_: &State) -> String {
+    if state_.idle {
+        return if state_.message.is_empty() {
+            "\t".to_owned()
+        } else {
+            format!("{}\t", state_.message)
+        };
+    }
+    let mut left = vec![if !state_.message.is_empty() {
+        state_.message.clone()
+    } else if state_.buffering {
+        "正在进行缓冲处理...".to_owned()
+    } else if state_.stopped {
+        "已停止".to_owned()
+    } else if state_.paused {
+        "已暂停".to_owned()
+    } else {
+        "正在播放".to_owned()
+    }];
+    if (state_.speed - 1.).abs() > f64::EPSILON {
+        left.push(format!("{} 倍速", state_.speed));
+    }
+    match (state_.loop_a, state_.loop_b) {
+        (Some(a), Some(b)) => left.push(format!("A-B {} – {}", clock(a), clock(b))),
+        (Some(a), None) => left.push(format!("A {}", clock(a))),
+        _ => {}
+    }
+    if state_.native_card.is_some() {
+        left.push("原生独占输出".to_owned());
+    }
+    format!(
+        "{}\t{} / {}",
+        left.join(" - "),
+        clock(state_.position),
+        clock(state_.duration)
+    )
+}
+
+/// msdxm.ocx 位图 5208/5209 的传输按钮帧序（9 帧 20×20）。
+mod frame {
+    pub const PLAY: u32 = 0;
+    pub const PAUSE: u32 = 1;
+    pub const STOP: u32 = 2;
+    pub const SKIP_BACK: u32 = 3;
+    pub const REWIND: u32 = 4;
+    pub const FAST_FORWARD: u32 = 5;
+    pub const SKIP_FORWARD: u32 = 6;
+    pub const PREVIEW: u32 = 7;
+    /// 5212 中静音按钮的常态、静音与禁用帧。
+    pub const SPEAKER: u32 = 0;
+    pub const MUTED: u32 = 1;
+    pub const SPEAKER_DISABLED: u32 = 2;
+}
+/// 传输按钮条的两个分隔符：工具栏要求编号非零且唯一，取菜单命令编号空间之外的值，decode 不会还原出动作。
+const SEPARATORS: [u64; 2] = [u64::MAX, u64::MAX - 1];
+/// 传输按钮条与静音按钮条（ISO 导入的 msdxm.ocx 位图）。
+const TRANSPORT: &str = "media-transport";
+const AUDIO: &str = "media-volume";
+/// 5212 中 x=60 起 40×20 的音量楔形，作为音量滑块的自绘凹槽。
+const VOLUME_CHANNEL: (&str, i32, i32) = ("media-volume-default-1x", 60, 40);
+/// 未打开媒体时视频区居中的 Windows Media 标志（msdxm.ocx 位图 140）。
+const LOGO: &str = "media-logo-1x";
+/// 时间格按最长的时、分、秒格式度量，播放中宽度不随数字跳动。
+const TIME_SAMPLE: &str = "00:00:00 / 00:00:00";
+/// 状态栏两侧留白：comctl32 分格文字左右各约 4 像素，加分格边框。
+const STATUS_PART_PADDING: i32 = 12;
+
 /// 窗口里所有控件的 owner：`Widget` 析构会删除运行库里的节点，所以每个控件都存放在这里。
 pub struct View {
     pub window: Window,
     pub menu: Widget,
     pub video: Widget,
     pub list: Widget,
+    /// WMP 的“搜索栏”：无刻度、矩形滑块的进度条，范围 0..=1000。
     pub seek: Widget,
     pub volume: Widget,
-    pub previous: Widget,
-    pub play: Widget,
-    pub stop: Widget,
-    pub next: Widget,
-    time: Widget,
+    /// 传输按钮条；按钮编号就是菜单命令编号，激活时同样经 [`Action::decode`] 还原。
+    pub transport: Widget,
+    /// 静音按钮条。
+    pub audio: Widget,
     status: Widget,
     side: Widget,
     controls: Widget,
@@ -274,78 +427,43 @@ impl View {
             },
         )?;
         list.set_state(state::CLIENT_EDGE)?;
+        // WMP 6.4 的控制区：上面一整行“搜索栏”，下面左侧传输按钮、右侧静音与音量楔形。
         let controls = child(
             &root,
             Kind::Column,
             "",
             Layout {
-                padding: 6,
-                gap: 4,
+                padding: 2,
+                gap: 0,
                 ..Default::default()
             },
         )?;
-        let seek = child(
-            &controls,
-            Kind::Slider,
-            "",
-            Layout {
-                height: 25,
-                ..Default::default()
-            },
-        )?;
+        let slider_style = state::TRACK_NO_TICKS | state::TRACK_BOTH;
+        let seek = child(&controls, Kind::Slider, "", Layout::default())?;
+        seek.set_state(slider_style)?;
         let row = child(
             &controls,
             Kind::Row,
             "",
             Layout {
-                height: 25,
-                gap: 4,
+                gap: 0,
                 ..Default::default()
             },
         )?;
-        let button = |text: &str, width: i32| {
-            child(
-                &row,
-                Kind::Button,
-                text,
-                Layout {
-                    width,
-                    ..Default::default()
-                },
-            )
-        };
-        let previous = button("上一个", 56)?;
-        let play = button("播放", 56)?;
-        let stop = button("停止", 56)?;
-        let next = button("下一个", 56)?;
-        let time = child(
+        let transport = child(&row, Kind::Toolbar, "", Layout::default())?;
+        let spacer = child(
             &row,
-            Kind::Label,
+            Kind::Column,
             "",
             Layout {
                 grow: 1,
                 ..Default::default()
             },
         )?;
-        let volume_label = child(
-            &row,
-            Kind::Label,
-            "音量",
-            Layout {
-                width: 34,
-                ..Default::default()
-            },
-        )?;
-        let volume = child(
-            &row,
-            Kind::Slider,
-            "",
-            Layout {
-                width: 110,
-                ..Default::default()
-            },
-        )?;
-        let status = child(&root, Kind::Status, "", Layout::default())?;
+        let audio = child(&row, Kind::Toolbar, "", Layout::default())?;
+        let volume = child(&row, Kind::Slider, "", Layout::default())?;
+        volume.set_state(slider_style)?;
+        volume.set_slider_channel(Some(VOLUME_CHANNEL))?;
         volume.set_range(Range {
             minimum: 0,
             maximum: 130,
@@ -354,28 +472,34 @@ impl View {
             step: 5,
             vertical: 0,
         })?;
-        Ok(Self {
+        let status = child(&root, Kind::Status, "\t", Layout::default())?;
+        let view = Self {
             window: window.clone(),
             menu,
             video,
             list,
             seek,
             volume,
-            previous,
-            play,
-            stop,
-            next,
-            time,
+            transport,
+            audio,
             status,
             side,
             controls,
-            _layout: vec![root, body, row, volume_label],
+            _layout: vec![root, body, row, spacer],
             fullscreen: Cell::new(false),
             side_visible: Cell::new(false),
             fast_scaling: Cell::new(false),
             scale: Cell::new(1),
             last_position: Cell::new(None),
-        })
+        };
+        view.measure_status()?;
+        Ok(view)
+    }
+
+    /// 状态栏：左格占满，右格按状态栏字体量出的最长时间文字定宽；scale 改变后由 Configure 重新调用。
+    pub fn measure_status(&self) -> liteos_ui::Result<()> {
+        let time = self.window.text_width(FontRole::Status, TIME_SAMPLE)? + STATUS_PART_PADDING;
+        self.status.set_status_parts(&[-1, time])
     }
 
     /// 按变化的部分把引擎状态同步到控件；位置类更新限频，避免每帧都重排滑块与标签。
@@ -414,20 +538,13 @@ impl View {
         self.window.set_title(&title)?;
         let open = !state_.idle;
         let disabled = |enabled: bool| if enabled { 0 } else { state::DISABLED };
-        self.play.set_text(if open && !state_.paused {
-            "暂停"
-        } else {
-            "播放"
-        })?;
-        self.play.set_state(disabled(open))?;
-        self.stop.set_state(disabled(open))?;
-        self.previous
-            .set_state(disabled(state_.playlist.len() > 1))?;
-        self.next.set_state(disabled(state_.playlist.len() > 1))?;
+        let slider_style = state::TRACK_NO_TICKS | state::TRACK_BOTH;
+        self.transport.set_toolbar(&transport_buttons(state_))?;
+        self.audio.set_toolbar(&[mute_button(state_)])?;
         self.seek
-            .set_state(disabled(open && state_.duration > 0.))?;
+            .set_state(slider_style | disabled(open && state_.duration > 0.))?;
         self.volume
-            .set_state(disabled(state_.native_card.is_none()))?;
+            .set_state(slider_style | disabled(state_.native_card.is_none()))?;
         self.volume.set_range(Range {
             minimum: 0,
             maximum: 130,
@@ -436,35 +553,11 @@ impl View {
             step: 5,
             vertical: 0,
         })?;
-        let mut parts = vec![if state_.message.is_empty() {
-            match (open, state_.paused, state_.buffering) {
-                (false, ..) => "就绪".to_owned(),
-                (true, _, true) => "正在缓冲…".to_owned(),
-                (true, true, _) => "已暂停".to_owned(),
-                _ => "正在播放".to_owned(),
-            }
-        } else {
-            state_.message.clone()
-        }];
-        parts.push(if state_.native_card.is_some() {
-            "原生独占输出".to_owned()
-        } else {
-            format!("速度 {}x", state_.speed)
-        });
-        parts.push(match (state_.loop_a, state_.loop_b) {
-            (Some(a), Some(b)) => format!("A-B {} – {}", clock(a), clock(b)),
-            (Some(a), None) => format!("A {}", clock(a)),
-            _ => String::new(),
-        });
-        self.status.set_text(&parts.join("\t"))
+        self.status.set_text(&status_text(state_))
     }
 
     fn position(&self, state_: &State) -> liteos_ui::Result<()> {
-        self.time.set_text(&format!(
-            "{} / {}",
-            clock(state_.position),
-            clock(state_.duration)
-        ))?;
+        self.status.set_text(&status_text(state_))?;
         let permille = if state_.duration > 0. {
             (state_.position / state_.duration * 1000.).clamp(0., 1000.) as i32
         } else {
@@ -502,7 +595,7 @@ impl View {
             .then(|| ((area.width * scale) as u32, (area.height * scale) as u32)))
     }
 
-    /// 渲染当前帧；空闲时画黑底并清除旧帧。
+    /// 渲染当前帧；空闲时清除旧帧，在黑底上居中显示 Windows Media 标志（WMP 6.4 未打开媒体时的画面）。
     pub fn render(&self, engine: &mut Engine) -> liteos_ui::Result<()> {
         let Some((width, height)) = self.canvas_pixels()? else {
             return Ok(());
@@ -510,13 +603,23 @@ impl View {
         if engine.state.idle {
             self.video.set_frame(0, 0, &[])?;
             let area = self.video.geometry()?;
-            return self.video.set_drawing(&[Draw {
-                kind: 1,
-                rect: Rect::new(0, 0, area.width, area.height),
-                color: 0,
-                bold: false,
-                text: "",
-            }]);
+            let rect = Rect::new(0, 0, area.width, area.height);
+            return self.video.set_drawing(&[
+                Draw {
+                    kind: 1,
+                    rect,
+                    color: 0,
+                    bold: false,
+                    text: "",
+                },
+                Draw {
+                    kind: 8,
+                    rect,
+                    color: 0,
+                    bold: false,
+                    text: LOGO,
+                },
+            ]);
         }
         self.video.set_drawing(&[])?;
         match engine.render(width, height) {
@@ -602,7 +705,7 @@ impl View {
             item(EXIT, "退出(X)", "", SEPARATOR, 0),
         ];
         let mut play = vec![
-            item(PAUSE, "播放/暂停(P)", "空格", gate(open), 0),
+            item(TOGGLE_PAUSE, "播放/暂停(P)", "空格", gate(open), 0),
             item(STOP, "停止(S)", "", gate(open), 0),
             item(PREV, "上一个(V)", "P", gate(state_.playlist.len() > 1), 0),
             item(NEXT, "下一个(N)", "N", gate(state_.playlist.len() > 1), 0),

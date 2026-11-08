@@ -1,4 +1,4 @@
-//! 滑块条（trackbar）：凹槽、刻度与带尖角的凸起滑块，Windows 2000 的音量与平衡滑块。
+//! 滑块条（trackbar）：凹槽、刻度与凸起滑块，按 comctl32 TBS_NOTICKS/TBS_BOTH 与凹槽自绘语义绘制。
 
 use canvas::Rect;
 use classic_theme::SystemColor as C;
@@ -10,6 +10,28 @@ const THUMB_ALONG: i32 = 11;
 const THUMB_ACROSS: i32 = 20;
 /// 轨道两端为滑块留出的余量。
 const END_MARGIN: i32 = 5;
+
+/// comctl32 trackbar 的外观样式；默认值是带 10 段刻度、尖角滑块的标准滑块条。
+#[derive(Clone, Copy)]
+pub struct TrackbarStyle<'a> {
+    /// TBS_AUTOTICKS 的等分段数；`None` 对应 TBS_NOTICKS，不画刻度。
+    pub ticks: Option<i32>,
+    /// TBS_BOTH：滑块是两侧对称的矩形凸起按钮，而不是指向刻度的尖角。
+    pub both: bool,
+    /// 凹槽自绘（NM_CUSTOMDRAW 的 TBCD_CHANNEL）：位图及其 `(source_x, source_width)` 区域，
+    /// 不缩放地从行程起点画起并在垂直轨道方向居中，替代凹陷凹槽；滑块仍画在其上。只用于横向滑块。
+    pub channel: Option<(&'a crate::Bitmap, i32, i32)>,
+}
+
+impl Default for TrackbarStyle<'_> {
+    fn default() -> Self {
+        Self {
+            ticks: Some(10),
+            both: false,
+            channel: None,
+        }
+    }
+}
 
 /// 滑块条的绘制与输入共用几何；坐标为逻辑像素，不保存控件数值。
 #[derive(Clone, Copy)]
@@ -39,6 +61,14 @@ impl Trackbar {
 
     fn axis(self, point: (f64, f64)) -> f64 {
         if self.vertical { point.1 } else { point.0 }
+    }
+
+    /// 滑块完整的垂直轨道方向长度；TBS_NOTICKS 时这就是控件需要的高度（横向）或宽度（竖向）。
+    pub const THUMB_ACROSS: i32 = THUMB_ACROSS;
+
+    /// 行程恰好为 `travel` 像素时的沿轨道控件长度；自绘凹槽据此让两端与数值端点一一对应。
+    pub fn length_for(travel: i32) -> i32 {
+        travel.max(0) + 2 * END_MARGIN + 1
     }
 
     fn span(self) -> (i32, i32) {
@@ -128,14 +158,15 @@ impl TrackbarDrag {
 impl Painter<'_> {
     /// 画一个滑块条。
     ///
-    /// 竖向时滑块指向右、刻度在右侧，`position` 从上往下数；横向时滑块指向下、刻度在下方，`position` 从左往右数。
-    /// `rect` 沿轨道方向留出两端各 5 像素给滑块，垂直方向至少 28 像素。`position` 取 `0..=maximum`，`ticks` 是刻度间隔数。
+    /// 竖向时 `position` 从上往下数，横向时从左往右数；尖角滑块竖向指向右、横向指向下，刻度在尖角一侧。
+    /// `rect` 沿轨道方向两端各留 5 像素给滑块，有刻度时垂直方向至少 28 像素，TBS_NOTICKS 时至少
+    /// [`Trackbar::THUMB_ACROSS`]。`position` 取 `0..=maximum`；`style` 选择刻度、滑块形状与凹槽自绘。
     pub fn trackbar(
         &mut self,
         rect: Rect,
         vertical: bool,
         (position, maximum): (i32, i32),
-        ticks: i32,
+        style: TrackbarStyle<'_>,
     ) {
         // 统一用（沿轨道，垂直轨道）坐标作图，再映射回 x/y。
         let origin_across = if vertical { rect.x } else { rect.y };
@@ -150,21 +181,44 @@ impl Painter<'_> {
             };
             p.fill(cell, color);
         };
-        // 凹槽：4 像素宽的凹陷边框，两端各伸出 1 像素。
-        let channel = if vertical {
-            Rect::new(origin_across + 8, start - 1, 4, end - start + 3)
-        } else {
-            Rect::new(start - 1, origin_across + 8, end - start + 3, 4)
-        };
-        self.edge(channel, classic_theme::Edge::Sunken);
-        // 刻度。
-        for tick in 0..=ticks.max(1) {
-            let along = start + tick * (end - start) / ticks.max(1);
-            put(self, along, THUMB_ACROSS + 3, 3, 1, C::ButtonShadow);
+        // 1. 凹槽：自绘位图从行程起点画起、垂直轨道方向居中并裁剪到控件内；
+        //    否则是 4 像素宽、两端各伸出 1 像素的凹陷边框。
+        match style.channel {
+            Some((bitmap, source_x, source_width)) if !vertical => {
+                let y = origin_across + (THUMB_ACROSS - bitmap.height()) / 2;
+                self.clipped(rect, |p| {
+                    bitmap.paint_region(p, start - source_x, y, source_x, source_width);
+                });
+            }
+            _ => {
+                let channel = if vertical {
+                    Rect::new(origin_across + 8, start - 1, 4, end - start + 3)
+                } else {
+                    Rect::new(start - 1, origin_across + 8, end - start + 3, 4)
+                };
+                self.edge(channel, classic_theme::Edge::Sunken);
+            }
         }
-        // 滑块。
+        // 2. 刻度（TBS_AUTOTICKS）；TBS_NOTICKS 不画。
+        if let Some(ticks) = style.ticks {
+            for tick in 0..=ticks.max(1) {
+                let along = start + tick * (end - start) / ticks.max(1);
+                put(self, along, THUMB_ACROSS + 3, 3, 1, C::ButtonShadow);
+            }
+        }
+        // 3. 滑块：TBS_BOTH 是矩形凸起按钮（DrawEdge EDGE_RAISED|BF_SOFT 加按钮面），否则是指向刻度的尖角。
         let centre = geometry.centre(position, maximum);
         let half = THUMB_ALONG / 2;
+        if style.both {
+            let thumb = if vertical {
+                Rect::new(origin_across, centre - half, THUMB_ACROSS, THUMB_ALONG)
+            } else {
+                Rect::new(centre - half, origin_across, THUMB_ALONG, THUMB_ACROSS)
+            };
+            self.fill(thumb, C::ButtonFace);
+            self.edge(thumb, classic_theme::Edge::RaisedSoft);
+            return;
+        }
         for step in 0..THUMB_ALONG {
             let along = centre - half + step;
             // 尖端在中线：每远离中线一行，末端缩进一像素。

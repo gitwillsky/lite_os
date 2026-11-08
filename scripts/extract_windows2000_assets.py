@@ -34,6 +34,8 @@ PE_FILES = (
     "devmgr.dll", "netshell.dll", "notepad.exe",
     # 文件夹 Web 视图的模板、样式与左侧水印/分隔线（类型 23 资源）。
     "webvw.dll", "mprui.dll", "mplay32.exe", "mspaint.exe",
+    # Windows Media Player 6.4 的界面控件主体：传输按钮条、静音/音量楔形与空闲标志。
+    "msdxm.ocx",
 )
 # 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
 # 不影响上面逐图核对的核心素材。
@@ -128,11 +130,19 @@ BITMAPS = {
     "brand-38": ("browseui.dll", 304),
     # “日期/时间 属性”时区页的世界地图（356×184，8 位调色板）。
     "worldmap": ("timedate.cpl", 50),
+    # 媒体播放机传输按钮：播放、暂停、停止、上一个、快退、快进、下一个、预览、DVD，9 帧 20×20，常态/禁用。
+    "media-transport-default": ("msdxm.ocx", 5208),
+    "media-transport-disabled": ("msdxm.ocx", 5209),
+    # 静音按钮三帧（常态、静音、禁用）与 x=60 起 40×20 的音量楔形凹槽。
+    "media-volume-default": ("msdxm.ocx", 5212),
+    # 未打开媒体时视频区居中的 Windows Media 标志（160×112）。
+    "media-logo": ("msdxm.ocx", 140),
 }
 # 这些位图用 #FF00FF 表示透明，转 PNG 时换成 alpha 0。
 COLOR_KEYED = {
     "toolbar-default", "toolbar-hot", "toolbar-disabled",
     "ie-toolbar-default", "ie-toolbar-hot", "ie-toolbar-disabled", "go-default", "go-hot",
+    "media-transport-default", "media-transport-disabled", "media-volume-default",
 }
 # 保留原始调色板下标的位图：时区地图按注册表 Time Zones 的 MapID 在运行时着色。
 INDEXED = {"worldmap"}

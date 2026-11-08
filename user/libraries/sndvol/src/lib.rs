@@ -2,7 +2,7 @@
 extern crate liteos_runtime as _;
 use canvas::Rect;
 use classic_theme::SystemColor as C;
-use classic_ui::{Ink, Painter, Trackbar, TrackbarDrag};
+use classic_ui::{Ink, Painter, Trackbar, TrackbarDrag, TrackbarStyle};
 use linux_uapi::alsa::control::{MasterControl, MasterVolume};
 use std::time::{Duration, Instant};
 
@@ -177,7 +177,12 @@ impl Volume {
         );
         if let Some((label, bar)) = layout.balance_label.zip(layout.balance_bar) {
             p.text(label.0, label.1, "平衡:", Ink::Color(C::ButtonText), false);
-            p.trackbar(bar, false, (self.balance + 100, 200), 10);
+            p.trackbar(
+                bar,
+                false,
+                (self.balance + 100, 200),
+                TrackbarStyle::default(),
+            );
         }
         if let Some((x, y)) = layout.volume_label {
             p.text(x, y, "音量:", Ink::Color(C::ButtonText), false);
@@ -186,7 +191,7 @@ impl Volume {
             layout.slider_hit,
             true,
             (100 - i32::from(percent.unwrap_or(0)), 100),
-            10,
+            TrackbarStyle::default(),
         );
         let (check_x, check_y) = layout.check;
         p.checkbox(
