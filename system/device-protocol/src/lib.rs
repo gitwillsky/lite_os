@@ -51,6 +51,8 @@ pub fn activity_signal(event: Arc<Event>) -> Result<device_model::Activity, Stat
 /// peer 只弱引用活动 source，避免活动 owner 与关闭监听互相保活。
 enum ActivityState {
     Live {
+        // FLAG: 真实 peer 关闭后永久保留；通知被消费也不能丢掉断开事实。
+        disconnected: bool,
         callback: Option<device_model::Activity>,
         peer: Option<(u64, Arc<Source>)>,
     },
@@ -138,6 +140,7 @@ impl EventHub {
         let (source, key) = self.add(Source::Activity(
             event,
             Mutex::new(ActivityState::Live {
+                disconnected: false,
                 callback: None,
                 peer: None,
             }),
@@ -179,11 +182,16 @@ impl EventHub {
         };
         let mut state = slot.lock();
         let ActivityState::Live {
-            peer: registered, ..
+            peer: registered,
+            disconnected,
+            ..
         } = &mut *state
         else {
             return Err(native_abi::ERR_BAD_STATE);
         };
+        if *disconnected {
+            return Err(native_abi::ERR_PEER_CLOSED);
+        }
         if registered.is_some() {
             return Err(native_abi::ERR_ALREADY_BOUND);
         }
@@ -321,11 +329,15 @@ impl EventHub {
                         && let Source::Activity(_, slot) = &*activity
                     {
                         let (callback, peer) = match &mut *slot.lock() {
-                            ActivityState::Live { callback, peer }
-                                if peer.as_ref().is_some_and(|(key, registered)| {
-                                    *key == packet.key && Arc::ptr_eq(registered, &source)
-                                }) =>
+                            ActivityState::Live {
+                                callback,
+                                peer,
+                                disconnected,
+                            } if peer.as_ref().is_some_and(|(key, registered)| {
+                                *key == packet.key && Arc::ptr_eq(registered, &source)
+                            }) =>
                             {
+                                *disconnected = true;
                                 (callback.clone(), peer.take())
                             }
                             ActivityState::Live { .. } => (None, None),
@@ -363,6 +375,19 @@ impl Drop for ActivityRegistration {
 }
 
 impl ActivityBinding {
+    /// 已确认关联会话关闭或登记退休。只读取事件 owner 的事实，不在数据热路径查询内核。
+    pub fn disconnected(&self) -> bool {
+        let Some(source) = self.registration.source.upgrade() else {
+            return true;
+        };
+        let Source::Activity(_, state) = &*source else {
+            unreachable!("activity binding kind");
+        };
+        match &*state.lock() {
+            ActivityState::Live { disconnected, .. } => *disconnected,
+            ActivityState::Retired => true,
+        }
+    }
     /// 绑定（或替换）通知，并补发一次以覆盖绑定前到达的活动。
     pub fn bind(&self, activity: device_model::Activity) {
         let Some(source) = self.registration.source.upgrade() else {

@@ -45,7 +45,7 @@ fn measure(sources: &[SourceFile]) -> Result<DmaSubmissionCost, String> {
     )?;
     let block = source(sources, "system/driver-host/src/drivers/virtio/blk.rs")?;
     let net_rx_locks = runtime_translation(method_text(net, "repost")?);
-    let net_tx_locks = runtime_translation(method_text(net, "submit_transmit")?);
+    let net_tx_locks = runtime_translation(method_text(net, "transmit_batch")?);
     let input_locks = runtime_translation(method_text(input, "receive_event")?);
     let gpu_locks = runtime_translation(method_text(gpu, "publish_prepared")?)
         + runtime_translation(method_text(damage, "publish_next")?);
@@ -116,7 +116,7 @@ fn reset_before_dma_drop(sources: &[SourceFile]) -> bool {
         && [
             (
                 "system/driver-host/src/drivers/virtio/net.rs",
-                "VirtIONetworkDevice",
+                "ActiveNetwork",
             ),
             (
                 "system/driver-host/src/drivers/virtio/input.rs",

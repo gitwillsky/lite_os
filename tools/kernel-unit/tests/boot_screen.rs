@@ -266,7 +266,17 @@ fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
             width: width as usize,
             pixels: vec![0xdeadbeef; width as usize * height as usize],
         };
-        compositor_boot::paint(&mut handoff, SCENE, boot_scene::KERNEL_PROGRESS_PERMILLE).unwrap();
+        let scene = compositor_boot::Scene::load(SCENE.to_vec()).unwrap();
+        compositor_boot::paint(
+            &mut handoff,
+            &scene,
+            compositor_boot::Frame {
+                offset: 0,
+                permille: boot_scene::KERNEL_PROGRESS_PERMILLE,
+            },
+            true,
+        )
+        .unwrap();
         for (index, (bytes, pixel)) in scanout
             .memory
             .lock()

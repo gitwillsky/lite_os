@@ -5,9 +5,9 @@
 //! 2. 区段在构造时缓存，提交 descriptor 时只投影、不分配。
 //! 3. 缓冲释放时撤销设备地址；adapter 必须先 reset 设备，保证设备不再访问。
 
-use alloc::boxed::Box;
 #[cfg(not(test))]
 use alloc::vec::Vec;
+use alloc::{boxed::Box, sync::Arc};
 use core::ops::{Deref, DerefMut, Range};
 
 #[cfg(not(test))]
@@ -72,11 +72,14 @@ fn segments_from_extents(
     Ok(segments.into_boxed_slice())
 }
 
-/// `SIZE` 字节的固定 DMA 存储：VMO、CPU 映射与设备区段。
-#[cfg(not(test))]
+/// 固定 DMA 存储：VMO、CPU 映射与按逻辑 offset 排序的设备区段，多个不重叠槽可共用。
 struct FixedStorage {
     // OWNER: 持有 VMO 与固定记录：释放即撤销设备地址与 CPU 映射；`base`/`segments` 只在它存活期间有效。
+    #[cfg(not(test))]
     _backing: DeviceBacking,
+    // OWNER: host 夹具只替换页分配/设备地址；AtomicU8 提供与 VMO 映射相同的内部可变存储。
+    #[cfg(test)]
+    _bytes: Box<[core::sync::atomic::AtomicU8]>,
     base: usize,
     segments: Box<[DmaSegment]>,
 }
@@ -106,12 +109,65 @@ impl FixedStorage {
 /// 内容在 VMO 中，地址在本对象存活期间稳定。adapter 必须在 Drop 本对象前 reset device，
 /// 并以 slot state 排除 CPU 与 device 对 writable range 的并发访问。
 pub(in crate::drivers::virtio) struct DmaBuffer<const SIZE: usize> {
+    storage: Arc<FixedStorage>,
+    offset: usize,
+}
+
+/// 一个共享 DMA owner 的线性切分器；只在构造阶段逐一交出不重叠槽位，不允许复制/重复取得槽位。
+/// backing、映射与 pin 由所有槽位共同保活，最后一个槽位退出后才释放。
+pub(in crate::drivers::virtio) struct DmaPool<const SIZE: usize> {
+    storage: Arc<FixedStorage>,
+    next: usize,
+    count: usize,
+}
+
+impl<const SIZE: usize> DmaPool<SIZE> {
+    /// 以同一 VMO/BTI 准备 count 个 SIZE 字节槽；不在每个槽边界向上取整到页。
+    /// # Errors
+    /// 空池、大小溢出、VMO/映射/固定或 owner 分配失败。
     #[cfg(not(test))]
-    storage: FixedStorage,
-    #[cfg(test)]
-    bytes: Box<[u8; SIZE]>,
-    #[cfg(test)]
-    segments: Box<[DmaSegment]>,
+    pub(in crate::drivers::virtio) fn try_new(
+        count: usize,
+        bti: &Bti,
+    ) -> Result<Self, DmaMappingError> {
+        let length = SIZE
+            .checked_mul(count)
+            .filter(|length| *length != 0)
+            .ok_or(DmaMappingError::InvalidRange)?;
+        Self::from_storage(FixedStorage::allocate(length, bti)?, count)
+    }
+
+    fn from_storage(storage: FixedStorage, count: usize) -> Result<Self, DmaMappingError> {
+        let length = SIZE
+            .checked_mul(count)
+            .filter(|length| *length != 0)
+            .ok_or(DmaMappingError::InvalidRange)?;
+        if storage
+            .segments
+            .last()
+            .is_none_or(|last| last.offset + last.length < length)
+        {
+            return Err(DmaMappingError::InvalidRange);
+        }
+        Ok(Self {
+            storage: Arc::try_new(storage).map_err(|_| DmaMappingError::OutOfMemory)?,
+            next: 0,
+            count,
+        })
+    }
+
+    /// 恰好交出一次下一个槽位；耗尽返回 None，槽位不能经此入口回收或重复生成。
+    pub(in crate::drivers::virtio) fn take(&mut self) -> Option<DmaBuffer<SIZE>> {
+        if self.next == self.count {
+            return None;
+        }
+        let offset = self.next * SIZE;
+        self.next += 1;
+        Some(DmaBuffer {
+            storage: self.storage.clone(),
+            offset,
+        })
+    }
 }
 
 /// 由 device 写入的 fixed DMA bytes 与设备区段的共同 owner。
@@ -182,32 +238,45 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
     /// 分配、映射或固定失败时返回 `DmaMappingError`。
     #[cfg(not(test))]
     pub(in crate::drivers::virtio) fn try_zeroed(bti: &Bti) -> Result<Self, DmaMappingError> {
-        Ok(Self {
-            storage: FixedStorage::allocate(SIZE, bti)?,
-        })
+        DmaPool::try_new(1, bti)?
+            .take()
+            .ok_or(DmaMappingError::InvalidRange)
+    }
+
+    /// 复制共享池 VMO 的授权；该句柄覆盖池内所有槽，而非仅当前槽。
+    /// # Safety
+    /// 调用者必须以完整槽协议约束另一端：CPU/DMA/对端 CPU 的字节借用互斥，不能在对端
+    /// 持有槽时经本对象访问内容；映射本身不证明 ownership。pool 及每个槽仍须保活到 DMA 完成或 reset。
+    /// # Errors
+    /// 句柄复制失败。
+    #[cfg(not(test))]
+    pub(in crate::drivers::virtio) unsafe fn share_vmo(
+        &self,
+    ) -> Result<native_runtime::Vmo, native_runtime::native_abi::Status> {
+        use native_runtime::native_abi::rights;
+        self.storage._backing.vmo().duplicate(
+            rights::DUPLICATE
+                | rights::TRANSFER
+                | rights::READ
+                | rights::WRITE
+                | rights::MAP
+                | rights::INSPECT,
+        )
     }
 
     fn bytes(&self) -> &[u8; SIZE] {
-        #[cfg(not(test))]
-        // SAFETY: 映射至少 SIZE 字节、与本对象同寿命；`&self` 排除经本对象的并发可变访问。
-        return unsafe { &*(self.storage.base as *const [u8; SIZE]) };
-        #[cfg(test)]
-        return &self.bytes;
+        // SAFETY: pool 的构造证明整个映射有效；线性 take 只交出一次该不重叠范围。
+        // &self 阻止经同一槽的可变访问；adapter 还须遵守 DMA ownership 及 share_vmo 的对端 CPU 借用契约。
+        unsafe { &*((self.storage.base + self.offset) as *const [u8; SIZE]) }
     }
 
     fn bytes_mut(&mut self) -> &mut [u8; SIZE] {
-        #[cfg(not(test))]
-        // SAFETY: 同上，`&mut self` 保证独占。
-        return unsafe { &mut *(self.storage.base as *mut [u8; SIZE]) };
-        #[cfg(test)]
-        return &mut self.bytes;
+        // SAFETY: 同上；DmaBuffer 不可复制，&mut self 是此槽的唯一 CPU owner。
+        unsafe { &mut *((self.storage.base + self.offset) as *mut [u8; SIZE]) }
     }
 
     fn segments(&self) -> &[DmaSegment] {
-        #[cfg(not(test))]
-        return &self.storage.segments;
-        #[cfg(test)]
-        return &self.segments;
+        &self.storage.segments
     }
 
     pub(in crate::drivers::virtio) fn as_slice(&self) -> &[u8] {
@@ -248,7 +317,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
         assert!(SIZE != 0, "zero-sized DMA buffer has no descriptor");
         DmaSlice {
             source: DmaSource::Mapped(self.segments()),
-            range: 0..SIZE,
+            range: self.offset..self.offset + SIZE,
             device_writable,
             segment_limit: u32::MAX as usize,
         }
@@ -264,7 +333,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
         }
         Ok(DmaSlice {
             source: DmaSource::Mapped(self.segments()),
-            range,
+            range: self.offset + range.start..self.offset + range.end,
             device_writable,
             segment_limit: u32::MAX as usize,
         })
@@ -320,10 +389,17 @@ enum DmaSource<'mapping> {
 }
 
 impl DmaSource<'_> {
-    fn for_each(&self, mut visit: impl FnMut(DmaSegment)) {
+    fn for_each(&self, range: &Range<usize>, mut visit: impl FnMut(DmaSegment)) {
         match self {
             Self::Mapped(segments) => {
-                for segment in *segments {
+                // 固定映射表按 offset 排序且无重叠；二分定位首个覆盖片段，再只走本次范围。
+                // 大共享池不能让每个 1.5 KiB 报文扫描整个 VMO 的物理片段。
+                let first = segments
+                    .partition_point(|segment| segment.offset + segment.length <= range.start);
+                for segment in segments[first..]
+                    .iter()
+                    .take_while(|segment| segment.offset < range.end)
+                {
                     visit(*segment);
                 }
             }
@@ -390,7 +466,7 @@ impl DmaSlice<'_> {
 
     pub(in crate::drivers::virtio) fn segment_count(&self) -> usize {
         let mut count = 0;
-        self.source.for_each(|segment| {
+        self.source.for_each(&self.range, |segment| {
             if segment_overlaps(&segment, &self.range) {
                 let start = segment.offset.max(self.range.start);
                 let end = (segment.offset + segment.length).min(self.range.end);
@@ -401,7 +477,7 @@ impl DmaSlice<'_> {
     }
 
     pub(super) fn for_each_segment(&self, mut visit: impl FnMut(u64, usize, bool)) {
-        self.source.for_each(|segment| {
+        self.source.for_each(&self.range, |segment| {
             if !segment_overlaps(&segment, &self.range) {
                 return;
             }
@@ -449,6 +525,26 @@ mod tests {
 
     use super::{DmaChainRequirement, DmaSegment, DmaSlice, DmaSource, descriptor_requirement};
 
+    fn test_pool<const SIZE: usize>(
+        count: usize,
+        segments: alloc::boxed::Box<[DmaSegment]>,
+    ) -> super::DmaPool<SIZE> {
+        let bytes = (0..SIZE * count)
+            .map(|_| core::sync::atomic::AtomicU8::new(0))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let base = bytes.as_ptr() as usize;
+        super::DmaPool::from_storage(
+            super::FixedStorage {
+                _bytes: bytes,
+                base,
+                segments,
+            },
+            count,
+        )
+        .unwrap()
+    }
+
     fn segments() -> [DmaSegment; 3] {
         [
             DmaSegment {
@@ -467,6 +563,50 @@ mod tests {
                 length: 4098,
             },
         ]
+    }
+
+    #[test]
+    fn dense_pool_issues_disjoint_slots_and_keeps_cross_page_dma_alive() {
+        let mut pool = test_pool::<1536>(
+            3,
+            alloc::vec![
+                DmaSegment {
+                    device_address: 0x1000,
+                    offset: 0,
+                    length: 4096
+                },
+                DmaSegment {
+                    device_address: 0x9000,
+                    offset: 4096,
+                    length: 512
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let owner = alloc::sync::Arc::downgrade(&pool.storage);
+        let mut first = pool.take().unwrap();
+        let mut second = pool.take().unwrap();
+        let mut third = pool.take().unwrap();
+        assert!(pool.take().is_none());
+        first.as_mut_slice().fill(0xa5);
+        second.as_mut_slice().fill(0x5a);
+        third.as_mut_slice().fill(0x3c);
+        drop(pool);
+        assert!(first.as_slice().iter().all(|byte| *byte == 0xa5));
+        assert!(second.as_slice().iter().all(|byte| *byte == 0x5a));
+        assert!(third.as_slice().iter().all(|byte| *byte == 0x3c));
+        let mut observed = Vec::new();
+        third
+            .readable_all()
+            .for_each_segment(|address, length, writable| {
+                observed.push((address, length, writable))
+            });
+        assert_eq!(observed, [(0x1c00, 1024, false), (0x9000, 512, false)]);
+        drop(first);
+        drop(second);
+        assert!(owner.upgrade().is_some());
+        drop(third);
+        assert!(owner.upgrade().is_none());
     }
 
     #[test]
@@ -491,9 +631,9 @@ mod tests {
 
     #[test]
     fn writable_prefix_does_not_publish_unused_response_page() {
-        let response = super::DmaBuffer::<4120> {
-            bytes: alloc::boxed::Box::new([0; 4120]),
-            segments: alloc::vec![
+        let mut pool = test_pool::<4120>(
+            1,
+            alloc::vec![
                 DmaSegment {
                     device_address: 0x1000,
                     offset: 0,
@@ -506,7 +646,8 @@ mod tests {
                 },
             ]
             .into_boxed_slice(),
-        };
+        );
+        let response = pool.take().unwrap();
         assert_eq!(response.writable_all().segment_count(), 2);
         let prefix = response.writable(0..24).unwrap();
         let mut observed = Vec::new();

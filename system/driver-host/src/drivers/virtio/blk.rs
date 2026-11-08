@@ -161,7 +161,7 @@ impl VirtIOBlockDevice {
 
     /// 使用已发现的 MMIO/PCI transport 初始化同一 block queue、DMA 与 completion owner。
     /// 必要 feature、队列或 DMA 分配缺失时返回 None，不发布部分 adapter。
-    pub(super) fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
+    pub(super) fn from_device(device: VirtIODevice) -> Option<Arc<Self>> {
         if device.device_id() != 2 {
             return None;
         }
@@ -879,9 +879,9 @@ struct VirtIOBlockIrqHandler {
 
 impl InterruptHandler for VirtIOBlockIrqHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
-        self.device
-            .completion_irq
-            .acknowledge_and_defer(&self.device.device);
+        let _ = self.device.completion_irq.acknowledge(&self.device.device);
+        // Spurious/config 与失败读取也必须推进一次完成处理，不能依赖下一次设备边沿。
+        crate::completion::raise();
         Ok(())
     }
 }

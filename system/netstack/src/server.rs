@@ -6,7 +6,7 @@ use core::net::Ipv4Addr;
 
 use device_model::network::NetworkDevice;
 use device_protocol::EventHub;
-use device_protocol::directory::{Class, OpenedDevice};
+use device_protocol::directory::Class;
 use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::{Channel, Event, Handle};
 use network_protocol::{
@@ -87,18 +87,28 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
 impl InstallerService for Network {
     fn install_device(
         &self,
+        device_id: u64,
         description: Vec<u8>,
-        handles: Vec<Handle>,
+        mut handles: Vec<Handle>,
     ) -> Result<(u32, Channel), Status> {
+        let directory = device_protocol::directory::DirectoryClient::new(Channel::from_handle(
+            service_rpc::take_handle(&mut handles, 0)?,
+        ));
+        // 当前协议引擎由单一 worker 推进；队列策略属于使用者，不能由驱动按 CPU 数猜测。
         let device = device_protocol::network::connect(
-            OpenedDevice {
+            &directory,
+            &device_protocol::directory::Entry {
+                id: device_id,
                 class: Class::Network,
                 description,
-                handles,
             },
+            1,
             &self.hub,
         )?;
-        device.bind_activity(crate::worker::device_activity()?);
+        let activity = crate::worker::device_activity()?;
+        for queue in 0..device.queue_count() {
+            device.bind_activity(queue, activity.clone());
+        }
         let (lifetime, held) = Channel::create()?;
         let index =
             inet::install_interface(&self.default, device, held).map_err(|error| match error {

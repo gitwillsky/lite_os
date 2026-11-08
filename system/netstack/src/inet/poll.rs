@@ -73,18 +73,17 @@ impl NetworkStack {
             };
             match interface.device.poll_completions(completion_remaining) {
                 Ok(completion) => {
+                    completion_remaining -= completion.completed;
                     backlog |= completion.backlog;
                     if completion.transmit_became_available {
                         packet_transmit_ready[cursor - first] = Some(interface.index);
                     }
                 }
                 Err(failure) => {
+                    // 错误前可能已回收一部分；没有精确计数时保守耗尽本轮预算。
+                    completion_remaining = 0;
                     device_failures[cursor - first] = Some((interface.index, failure));
                 }
-            }
-            // lo没有硬件completion，不消费预算；实际NIC轮换首次身份，不能让eth0独占回收。
-            if interface.index != 1 {
-                completion_remaining = 0;
             }
             if !interface.state.up {
                 continue;

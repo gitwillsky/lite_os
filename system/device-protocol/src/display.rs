@@ -193,7 +193,10 @@ pub fn publish(
             Class::Display,
             &description,
             true,
-            Box::new(move |end| {
+            Box::new(move |end, options| {
+                if !options.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
                 // 交接：回退画面的事务全部完成并撤下之后才交出新会话。
                 if let Some(virtcon) = &virtcon {
                     virtcon.dismiss();

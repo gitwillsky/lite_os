@@ -94,7 +94,7 @@ fn open(
     hub: &Arc<EventHub>,
     boot: &mut Option<BootProgress>,
 ) -> Result<(), Status> {
-    attach(directory.open(entry)?, hub, boot)
+    attach(directory.open(entry, &[])?, hub, boot)
 }
 
 /// 先清除变化 Event 再读取，读取之后到达的变化不会丢失；没有新设备时等待下一次变化。

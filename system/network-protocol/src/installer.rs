@@ -10,7 +10,7 @@ const INSTALL_DEVICE: u32 = 1;
 
 /// 服务端：网卡安装（只路由给接口配置 owner netcfg）。
 pub trait InstallerService: Send + Sync {
-    /// 把设备目录中打开的一块网卡（目录条目描述与会话句柄）安装为默认网络的新接口。
+    /// 把授权目录中的 device_id 安装为新接口；netstack 按 worker 配置打开会话，handles 只携带目录能力。
     ///
     /// # Returns
     ///
@@ -22,6 +22,7 @@ pub trait InstallerService: Send + Sync {
     /// 描述或句柄不完整、连接失败或资源不足。
     fn install_device(
         &self,
+        device_id: u64,
         description: Vec<u8>,
         handles: Vec<Handle>,
     ) -> Result<(u32, Channel), Status>;
@@ -41,12 +42,13 @@ pub fn dispatch_installer(
 ) -> Result<Vec<Handle>, Status> {
     match ordinal {
         INSTALL_DEVICE => {
+            let device_id = request.u64()?;
             let description = request.bytes()?;
             let mut copy = Vec::new();
             copy.try_reserve_exact(description.len())
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             copy.extend_from_slice(description);
-            let (index, lifetime) = service.install_device(copy, handles)?;
+            let (index, lifetime) = service.install_device(device_id, copy, handles)?;
             reply.u32(index);
             let mut returned = Vec::new();
             returned
@@ -81,11 +83,12 @@ impl NetworkInstaller {
     /// 服务拒绝该设备或已终止。
     pub fn install_device(
         &self,
+        device_id: u64,
         description: &[u8],
         handles: Vec<Handle>,
     ) -> Result<(u32, Channel), Status> {
         let mut writer = Writer::request(INSTALL_DEVICE);
-        writer.bytes(description);
+        writer.u64(device_id).bytes(description);
         let mut reply = call(&self.channel, &writer, handles)?;
         let (mut reader, handles) = reply.split();
         let index = reader.u32()?;

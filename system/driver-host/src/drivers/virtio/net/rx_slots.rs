@@ -19,22 +19,32 @@ pub(super) trait ReceiveQueue<B> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ReceiveOutcome {
-    Packet { length: usize },
-    FrameTooLarge { length: usize },
-    DeviceError,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ReceiveCompletion {
-    pub(super) outcome: ReceiveOutcome,
-    pub(super) reposted: bool,
+    pub(super) slot: u16,
+    pub(super) length: usize,
 }
 
 /// 已从 head mapping exactly-once 取得、且 device length 已验证的 RX slot capability。
 #[must_use = "claimed receive slot must be completed after VirtQueue recycles its descriptor"]
-pub(super) struct ReceiveClaim {
+pub(super) struct ReceiveClaim<'a, B, const BUFFER_SIZE: usize> {
+    // OWNER: 验证后的 claim 借用实际池；不能拿到另一个队列完成，也不能替换已验证长度。
+    owner: &'a mut ReceiveSlots<B, BUFFER_SIZE>,
     slot_index: u16,
+    length: usize,
+}
+
+impl<B, const BUFFER_SIZE: usize> ReceiveClaim<'_, B, BUFFER_SIZE> {
+    /// 消费已验证的 claim，交出共享槽；不读 payload、不 repost。
+    pub(super) fn complete(self) -> ReceiveCompletion {
+        debug_assert_eq!(
+            self.owner.slots[self.slot_index as usize].state,
+            SlotState::DriverOwned
+        );
+        ReceiveCompletion {
+            slot: self.slot_index,
+            length: self.length,
+        }
+    }
 }
 
 pub(super) struct ReceiveSlots<B, const BUFFER_SIZE: usize> {
@@ -42,10 +52,7 @@ pub(super) struct ReceiveSlots<B, const BUFFER_SIZE: usize> {
     by_head: Vec<Option<u16>>,
 }
 
-impl<B, const BUFFER_SIZE: usize> ReceiveSlots<B, BUFFER_SIZE>
-where
-    B: AsRef<[u8; BUFFER_SIZE]> + AsMut<[u8; BUFFER_SIZE]>,
-{
+impl<B, const BUFFER_SIZE: usize> ReceiveSlots<B, BUFFER_SIZE> {
     pub(super) fn try_new(slot_capacity: usize, queue_size: usize) -> Option<Self> {
         let mut slots = Vec::new();
         slots.try_reserve_exact(slot_capacity).ok()?;
@@ -89,44 +96,40 @@ where
         head: u16,
         used_length: usize,
         header_size: usize,
-    ) -> Option<ReceiveClaim> {
+    ) -> Option<ReceiveClaim<'_, B, BUFFER_SIZE>> {
         let slot_index = self.claim_head(head)?;
         if !(header_size..=BUFFER_SIZE).contains(&used_length) {
             return None;
         }
-        Some(ReceiveClaim { slot_index })
+        Some(ReceiveClaim {
+            owner: self,
+            slot_index,
+            length: used_length - header_size,
+        })
     }
 
-    /// 在 VirtQueue 已回收合法 completion 后复制 payload 并 repost 同一 slot。
-    pub(super) fn complete<Q: ReceiveQueue<B>>(
-        &mut self,
-        queue: &mut Q,
-        claim: ReceiveClaim,
-        used_length: usize,
-        header_size: usize,
-        frame: &mut [u8],
-    ) -> ReceiveCompletion {
-        let slot_index = claim.slot_index;
-        let payload_length = used_length - header_size;
-        if payload_length <= frame.len() {
-            frame[..payload_length].copy_from_slice(
-                &self.slots[slot_index as usize].buffer.as_ref()
-                    [header_size..header_size + payload_length],
-            );
+    /// 冷路径授权共享池时借用槽的 buffer owner，不转移其 CPU/DMA ownership。
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "host lifecycle fixture does not open native VMO grants; the driver uses this cold accessor to authorize pool memory"
+        )
+    )]
+    pub(super) fn buffer(&self, slot: usize) -> Option<&B> {
+        self.slots.get(slot).map(|slot| &slot.buffer)
+    }
+
+    /// 客户端已结束字节借用后归还槽；重复/未知归还不会触碰 ring。
+    pub(super) fn release<Q: ReceiveQueue<B>>(&mut self, queue: &mut Q, slot_index: u16) -> bool {
+        if self
+            .slots
+            .get(slot_index as usize)
+            .is_none_or(|slot| slot.state != SlotState::DriverOwned)
+        {
+            return false;
         }
-        let reposted = self.repost(queue, slot_index);
-        let outcome = if !reposted {
-            ReceiveOutcome::DeviceError
-        } else if payload_length > frame.len() {
-            ReceiveOutcome::FrameTooLarge {
-                length: payload_length,
-            }
-        } else {
-            ReceiveOutcome::Packet {
-                length: payload_length,
-            }
-        };
-        ReceiveCompletion { outcome, reposted }
+        self.repost(queue, slot_index)
     }
 
     fn claim_head(&mut self, head: u16) -> Option<u16> {
@@ -199,21 +202,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ReceiveOutcome, ReceiveQueue, ReceiveSlots};
+    use super::{ReceiveQueue, ReceiveSlots};
     use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
-
     type TestSlots = ReceiveSlots<Box<[u8; 32]>, 32>;
-
     fn buffer() -> Box<[u8; 32]> {
-        Box::new([0u8; 32])
+        Box::new([0; 32])
     }
-
     struct MockQueue {
         repost_heads: VecDeque<Option<u16>>,
         published: Vec<u16>,
         retired: Vec<u16>,
     }
-
     impl MockQueue {
         fn returning(heads: impl IntoIterator<Item = Option<u16>>) -> Self {
             Self {
@@ -223,53 +222,42 @@ mod tests {
             }
         }
     }
-
     impl ReceiveQueue<Box<[u8; 32]>> for MockQueue {
-        fn repost(&mut self, _buffer: &Box<[u8; 32]>) -> Option<u16> {
+        fn repost(&mut self, _: &Box<[u8; 32]>) -> Option<u16> {
             self.repost_heads.pop_front().flatten()
         }
-
         fn publish(&mut self, head: u16) {
             self.published.push(head);
         }
-
         fn retire_unpublished(&mut self, head: u16) {
             self.retired.push(head);
         }
     }
-
     #[test]
     fn malformed_completion_is_claimed_for_terminal_reset_without_repost() {
         let mut slots = TestSlots::try_new(1, 2).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
-
-        let claim = slots.claim(0, 4, 12);
-
-        assert!(claim.is_none());
+        assert!(slots.claim(0, 4, 12).is_none());
         assert_eq!(slots.len(), 1);
         assert_eq!(slots.ownership_counts(), (0, 1, 0));
         slots.assert_invariant();
     }
-
     #[test]
-    fn normal_completion_copies_payload_then_reposts_the_same_slot() {
+    fn normal_completion_holds_payload_until_explicit_release() {
         let mut slots = TestSlots::try_new(1, 2).unwrap();
-        let mut bytes = buffer();
-        bytes[12..16].copy_from_slice(&[1, 2, 3, 4]);
-        slots.insert_posted(0, bytes).unwrap();
+        slots.insert_posted(0, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
-        let mut frame = [0u8; 8];
-
-        let claim = slots.claim(0, 16, 12).unwrap();
-        let completion = slots.complete(&mut queue, claim, 16, 12, &mut frame);
-
-        assert_eq!(completion.outcome, ReceiveOutcome::Packet { length: 4 });
-        assert_eq!(&frame[..4], &[1, 2, 3, 4]);
+        let completion = slots.claim(0, 16, 12).unwrap().complete();
+        assert_eq!((completion.slot, completion.length), (0, 4));
+        assert_eq!(slots.ownership_counts(), (0, 1, 0));
+        assert!(queue.published.is_empty());
+        assert!(slots.release(&mut queue, completion.slot));
         assert_eq!(slots.ownership_counts(), (1, 0, 0));
         assert_eq!(queue.published, [1]);
+        assert!(!slots.release(&mut queue, completion.slot));
+        assert!(!slots.release(&mut queue, 9));
         slots.assert_invariant();
     }
-
     #[test]
     fn malformed_batch_never_reaches_descriptor_repost() {
         const CAPACITY: usize = 32;
@@ -278,62 +266,47 @@ mod tests {
             slots.insert_posted(head, buffer()).unwrap();
         }
         for head in 0..CAPACITY as u16 {
-            let used_length = if (head as usize).is_multiple_of(2) {
+            let length = if (head as usize).is_multiple_of(2) {
                 4
             } else {
                 33
             };
-            assert!(slots.claim(head, used_length, 12).is_none());
+            assert!(slots.claim(head, length, 12).is_none());
+            slots.assert_invariant();
         }
         assert_eq!(slots.ownership_counts(), (0, CAPACITY, 0));
-        slots.assert_invariant();
     }
-
     #[test]
     fn repost_capacity_failure_explicitly_retires_the_claimed_slot() {
         let mut slots = TestSlots::try_new(1, 2).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
         let mut queue = MockQueue::returning([None]);
-
-        let claim = slots.claim(0, 12, 12).unwrap();
-        let completion = slots.complete(&mut queue, claim, 12, 12, &mut [0u8; 32]);
-
-        assert_eq!(completion.outcome, ReceiveOutcome::DeviceError);
-        assert!(!completion.reposted);
+        let completion = slots.claim(0, 12, 12).unwrap().complete();
+        assert!(!slots.release(&mut queue, completion.slot));
         assert_eq!(slots.ownership_counts(), (0, 0, 1));
         assert!(queue.published.is_empty());
         slots.assert_invariant();
     }
-
     #[test]
     fn duplicate_completion_does_not_claim_the_reposted_slot() {
         let mut slots = TestSlots::try_new(1, 2).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
-        let claim = slots.claim(0, 12, 12).unwrap();
-        let first = slots.complete(&mut queue, claim, 12, 12, &mut [0u8; 32]);
-
-        let duplicate = slots.claim(0, 12, 12);
-
-        assert!(first.reposted);
-        assert!(duplicate.is_none());
+        let completion = slots.claim(0, 12, 12).unwrap().complete();
+        assert!(slots.release(&mut queue, completion.slot));
+        assert!(slots.claim(0, 12, 12).is_none());
         assert_eq!(slots.ownership_counts(), (1, 0, 0));
         assert_eq!(queue.published, [1]);
         slots.assert_invariant();
     }
-
     #[test]
     fn conflicting_repost_head_retires_only_the_completed_slot() {
         let mut slots = TestSlots::try_new(2, 2).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
         slots.insert_posted(1, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
-
-        let claim = slots.claim(0, 12, 12).unwrap();
-        let completion = slots.complete(&mut queue, claim, 12, 12, &mut [0u8; 32]);
-
-        assert_eq!(completion.outcome, ReceiveOutcome::DeviceError);
-        assert!(!completion.reposted);
+        let completion = slots.claim(0, 12, 12).unwrap().complete();
+        assert!(!slots.release(&mut queue, completion.slot));
         assert_eq!(slots.ownership_counts(), (1, 0, 1));
         assert!(queue.published.is_empty());
         assert_eq!(queue.retired, [1]);

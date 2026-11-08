@@ -6,7 +6,7 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 
 1. netstack 只提供协议栈：启动时创建只有回环（启用）的默认网络，经 `liteos.network.Control` 交出网络域与 socket，
    经 `liteos.network.Installer` 接受网卡会话并在默认网络中安装为 `eth<n>` 接口。默认网络随 netstack 存续。
-2. netcfg 是接口配置 owner（Fuchsia netcfg）：从 Network 类设备目录打开网卡并安装；每个接口的配置依次取用户设置、
+2. netcfg 是接口配置 owner（Fuchsia netcfg）：向 netstack 委托 Network 类目录能力与设备 ID；netstack 按自己的 worker 策略打开并独占队列；每个接口的配置依次取用户设置、
    bootfs 只读默认策略（`data/netcfg/default.conf`，`iface * inet dhcp`）、DHCP。静态地址直接配置；DHCP 经
    dhcp-client 取得租约后由 netcfg 配置地址、掩码、默认路由与 DNS。用户设置持久化在 netcfg 的私有数据目录。
    一个事件循环线程以一个 Port 等待 netstack 断开（重连、重新安装网卡、重新配置）、设备目录变化（热插拔网卡）与

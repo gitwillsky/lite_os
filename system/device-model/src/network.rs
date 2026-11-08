@@ -5,6 +5,10 @@ use alloc::sync::Arc;
 pub enum NetworkError {
     /// 设备暂时没有已完成的接收帧。
     WouldBlock,
+    /// 请求的硬件配置无效。
+    InvalidConfiguration,
+    /// 共享缓冲或会话元数据无法分配。
+    NoMemory,
     /// 帧超过设备或调用方 buffer 能表达的 MTU。
     FrameTooLarge,
     /// transport、queue 或设备返回了不可恢复错误。
@@ -35,9 +39,33 @@ pub struct NetworkStatistics {
     pub transmitted_dropped: u64,
 }
 
+impl NetworkStatistics {
+    /// 将另一队列的累计计数饱和汇入网卡快照；只用于低频统计，不复制队列 owner 状态。
+    pub fn accumulate(&mut self, other: Self) {
+        self.received_bytes = self.received_bytes.saturating_add(other.received_bytes);
+        self.received_packets = self.received_packets.saturating_add(other.received_packets);
+        self.received_errors = self.received_errors.saturating_add(other.received_errors);
+        self.received_dropped = self.received_dropped.saturating_add(other.received_dropped);
+        self.transmitted_bytes = self
+            .transmitted_bytes
+            .saturating_add(other.transmitted_bytes);
+        self.transmitted_packets = self
+            .transmitted_packets
+            .saturating_add(other.transmitted_packets);
+        self.transmitted_errors = self
+            .transmitted_errors
+            .saturating_add(other.transmitted_errors);
+        self.transmitted_dropped = self
+            .transmitted_dropped
+            .saturating_add(other.transmitted_dropped);
+    }
+}
+
 /// 一次有界 device completion drain 的结果。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NetworkCompletion {
+    /// 本轮实际回收的 TX descriptor head 数，用于跨队列共享同一完成预算。
+    pub completed: usize,
     /// 尚有 used entry 未回收，调用方必须重新投递 network softirq。
     pub backlog: bool,
     /// TX 容量从零变为非零，阻塞的 packet writer 需要被唤醒。
@@ -52,6 +80,7 @@ pub struct NetworkCompletion {
 pub struct NetworkTransmit {
     device: Arc<dyn NetworkDevice>,
     reservation: Option<u16>,
+    queue: u16,
 }
 
 impl NetworkTransmit {
@@ -59,7 +88,8 @@ impl NetworkTransmit {
     ///
     /// # Parameters
     ///
-    /// - `device`: DTB 选中的唯一 Ethernet adapter。
+    /// - `device`: 选中的唯一 Ethernet adapter。
+    /// - `queue`: 活动 queue pair 编号；槽号只在该队列内唯一，Drop 归还同一队列。
     ///
     /// # Returns
     ///
@@ -68,10 +98,11 @@ impl NetworkTransmit {
     /// # Errors
     ///
     /// pool 已满返回 `WouldBlock`；设备状态损坏返回 `Device`。
-    pub fn reserve(device: Arc<dyn NetworkDevice>) -> Result<Self, NetworkError> {
-        let reservation = device.reserve_transmit()?;
+    pub fn reserve(device: Arc<dyn NetworkDevice>, queue: u16) -> Result<Self, NetworkError> {
+        let reservation = device.reserve_transmit(queue)?;
         Ok(Self {
             device,
+            queue,
             reservation: Some(reservation),
         })
     }
@@ -95,7 +126,8 @@ impl NetworkTransmit {
             .as_ref()
             .copied()
             .expect("network transmit reservation consumed twice");
-        self.device.submit_transmit(reservation, frame)?;
+        self.device
+            .submit_transmit(self.queue, reservation, frame)?;
         // 只有 adapter 已成功把 reservation 转为 in-flight owner 后才解除 Drop rollback。
         // 若提前 take，任一可恢复构造错误都会泄漏固定 TX slot 并最终永久 EAGAIN。
         self.reservation.take();
@@ -106,15 +138,21 @@ impl NetworkTransmit {
 impl Drop for NetworkTransmit {
     fn drop(&mut self) {
         if let Some(reservation) = self.reservation.take() {
-            self.device.cancel_transmit(reservation);
+            self.device.cancel_transmit(self.queue, reservation);
         }
     }
 }
 
 /// 面向 Ethernet 协议栈的唯一 network device seam。
+///
+/// 收发方法的 `queue` 必须位于 `0..queue_count()`；同一设备的队列可并发调用。
+/// `reservation` 只属于创建它的 queue，不能跨队列提交/取消；每队列分别绑定活动通知。
 pub trait NetworkDevice: Send + Sync {
+    /// 当前活动 RX/TX queue pair 数；编号为 0..queue_count，实例寿命内固定且非零。
+    fn queue_count(&self) -> u16;
+
     /// 绑定接收/发送完成时调用的活动通知；绑定前到达的完成由绑定时的一次通知补偿。
-    fn bind_activity(&self, activity: crate::Activity);
+    fn bind_activity(&self, queue: u16, activity: crate::Activity);
 
     /// 返回设备出厂 MAC 地址。
     ///
@@ -124,7 +162,7 @@ pub trait NetworkDevice: Send + Sync {
     fn mac_address(&self) -> [u8; 6];
 
     /// 驱动名：Linux sysfs `/sys/class/net/<if>/device/uevent` 的 `DRIVER=` 值（如 `virtio_net`）。
-    fn driver(&self) -> &'static str;
+    fn driver(&self) -> &str;
 
     /// 读取驱动拥有的链路状态，不访问数据队列。设备无法读取时返回错误。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
@@ -133,12 +171,12 @@ pub trait NetworkDevice: Send + Sync {
     ///
     /// # Parameters
     ///
-    /// - `frame`: kernel-owned 接收缓冲区。
+    /// - `frame`: 使用者拥有的接收缓冲区。
     ///
     /// # Returns
     ///
     /// 帧长度；当前无包返回 `WouldBlock`，损坏或过长返回对应错误。
-    fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError>;
+    fn receive(&self, queue: u16, frame: &mut [u8]) -> Result<usize, NetworkError>;
 
     /// 从固定 TX pool 中预留一个 slot。
     ///
@@ -149,7 +187,7 @@ pub trait NetworkDevice: Send + Sync {
     /// # Errors
     ///
     /// pool 已满返回 `WouldBlock`；owner 状态损坏返回 `Device`。
-    fn reserve_transmit(&self) -> Result<u16, NetworkError>;
+    fn reserve_transmit(&self, queue: u16) -> Result<u16, NetworkError>;
 
     /// 把已预留 slot 转换为唯一 in-flight descriptor membership。
     ///
@@ -166,7 +204,12 @@ pub trait NetworkDevice: Send + Sync {
     ///
     /// frame 过长或 publication 前 transport 失败返回对应错误；返回错误时
     /// reservation 仍由 caller 持有，随后必须且只能取消一次。
-    fn submit_transmit(&self, reservation: u16, frame: &[u8]) -> Result<(), NetworkError>;
+    fn submit_transmit(
+        &self,
+        queue: u16,
+        reservation: u16,
+        frame: &[u8],
+    ) -> Result<(), NetworkError>;
 
     /// 取消尚未发布的 TX reservation。
     ///
@@ -177,14 +220,14 @@ pub trait NetworkDevice: Send + Sync {
     /// # Returns
     ///
     /// 无返回值；重复取消或取消 in-flight slot 会 fail-stop。
-    fn cancel_transmit(&self, reservation: u16);
+    fn cancel_transmit(&self, queue: u16, reservation: u16);
 
     /// 读取当前是否可以立即预留 TX slot。
     ///
     /// # Returns
     ///
     /// 至少一个 free slot 时返回 `true`。
-    fn transmit_available(&self) -> bool;
+    fn transmit_available(&self, queue: u16) -> bool;
 
     /// 有界回收 TX used-ring completion。
     ///
@@ -199,7 +242,11 @@ pub trait NetworkDevice: Send + Sync {
     /// # Errors
     ///
     /// used ring 或 descriptor owner 损坏返回 `Device`。
-    fn poll_completions(&self, budget: usize) -> Result<NetworkCompletion, NetworkError>;
+    fn poll_completions(
+        &self,
+        queue: u16,
+        budget: usize,
+    ) -> Result<NetworkCompletion, NetworkError>;
 
     /// 一轮 RX drain 结束后批量通知设备新的 available buffers。
     ///
@@ -210,13 +257,114 @@ pub trait NetworkDevice: Send + Sync {
     /// # Errors
     ///
     /// MMIO transport 失败返回 `Device`。
-    fn finish_receive_batch(&self) -> Result<(), NetworkError>;
+    fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError>;
 
     /// 读取与 queue completion 同一 owner 更新的累计 counters。
     ///
     /// # Returns
     ///
     /// 自设备初始化后的 RX/TX byte 与 packet 数。
+    fn statistics(&self) -> NetworkStatistics;
+}
+
+/// 已由硬件完成、尚未归还的接收槽；内容位于该队列共享 VMO 的 payload 范围。
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkReceive {
+    /// 当前 queue pair 内的槽号。
+    pub slot: u16,
+    /// 不含设备 header 的字节数。
+    pub length: usize,
+}
+
+/// 单队列共享存储的授权与布局；两份 VMO 由硬件提供者固定并保活。
+/// 客户端只在持有对应槽的 CPU ownership 时读写 payload，不能把映射存在当成所有权。
+pub struct NetworkQueueMemory {
+    /// NIC 写入的 RX 存储；receive 完成到 release_receive 之间归客户端。
+    pub receive: native_runtime::Vmo,
+    /// 客户端写入的 TX 存储；完成交还后至下次批量提交前归客户端。
+    pub transmit: native_runtime::Vmo,
+    /// RX 槽数。
+    pub receive_slots: u16,
+    /// TX 槽数。
+    pub transmit_slots: u16,
+    /// 每个 RX 槽的字节跨度。
+    pub receive_stride: usize,
+    /// 每个 TX 槽的字节跨度。
+    pub transmit_stride: usize,
+    /// 槽开头的设备私有 header，客户端不得访问。
+    pub header_bytes: usize,
+    /// 最大 TX payload 长度。
+    pub transmit_limit: usize,
+}
+
+/// 一次批量提交中的共享发送槽；payload 已由提交者写完，接受后不能再访问。
+#[derive(Clone, Copy, Debug)]
+pub struct NetworkTransmitDescriptor {
+    /// 当前 pair 内的槽号。
+    pub slot: u16,
+    /// 不含设备 header 的字节数。
+    pub length: usize,
+}
+
+/// 物理网卡的创建能力；公布硬件上限，队列数由使用者而非 CPU 探测策略决定。
+pub trait NetworkController: Send + Sync {
+    /// 设备可配置的最大 pair 数，非零。
+    fn maximum_queue_pairs(&self) -> u16;
+    /// 六字节 MAC。
+    fn mac_address(&self) -> [u8; 6];
+    /// 驱动自行提供的名称。
+    fn driver(&self) -> &str;
+    /// 独占创建恰好 queues 个活动 pair；旧会话彻底撤销 DMA 后才允许再次打开。
+    /// # Errors
+    /// 零/超限请求、仍有硬件租约、配置/分配或设备错误时失败，不悄悄减少数量。
+    fn open(
+        self: alloc::sync::Arc<Self>,
+        queues: u16,
+    ) -> Result<alloc::sync::Arc<dyn NetworkProvider>, NetworkError>;
+}
+
+/// 实际网络硬件提供者：只交换共享槽的描述，不实现客户端的 CPU 帧适配。
+/// 每个已接受 RX 完成必须归还一次；TX 槽交给 DMA owner 后只能由硬件完成或同步 stop 释放。
+pub trait NetworkProvider: Send + Sync {
+    /// 活动 pair 数，实例寿命内固定且非零。
+    fn queue_count(&self) -> u16;
+    /// 为 queue 登记活动通知，补偿登记前可能到达的完成。
+    fn bind_activity(&self, queue: u16, activity: crate::Activity);
+    /// 六字节出厂 MAC。
+    fn mac_address(&self) -> [u8; 6];
+    /// 提供者拥有的驱动名。
+    fn driver(&self) -> &str;
+    /// 当前链路；读取失败返回设备错误。
+    fn link(&self) -> Result<NetworkLink, NetworkError>;
+    /// 授权共享 VMO 与真实布局；无效队列、句柄复制或分配失败返回错误。
+    fn memory(&self, queue: u16) -> Result<NetworkQueueMemory, NetworkError>;
+    /// 有界领取 RX 完成，返回写入 output 的数量；已交出的槽在 release_receive 前归 CPU。
+    /// 空队列返回零，设备错误返回失败并由调用者停止数据面。
+    fn receive_batch(
+        &self,
+        queue: u16,
+        output: &mut [NetworkReceive],
+    ) -> Result<usize, NetworkError>;
+    /// 恰好归还一次 RX 槽，形成后续批量 repost；错误不允许客户端继续使用其内容。
+    fn release_receive(&self, queue: u16, slot: u16) -> Result<(), NetworkError>;
+    /// 批量提交空闲槽，返回已接受的前缀长度；零表示暂时无容量，未接受后缀仍归提交者。
+    /// 错误表示本数据面不可用，调用者必须 stop，不能把错误当作尚未接受。
+    fn transmit_batch(
+        &self,
+        queue: u16,
+        input: &[NetworkTransmitDescriptor],
+    ) -> Result<usize, NetworkError>;
+    /// 回收至多 output.len 个完成，写入真实槽号；所有输出都已结束 DMA 并归还硬件槽。
+    fn reap_transmit(
+        &self,
+        queue: u16,
+        output: &mut [u16],
+    ) -> Result<NetworkCompletion, NetworkError>;
+    /// 同步停止全部 DMA；返回后才能发表会话 closed，复位失败必须保活并 fail-stop。
+    fn stop(&self);
+    /// 批量通知已归还的 RX 缓冲；设备错误返回失败。
+    fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError>;
+    /// 低频汇总真实队列累计量。
     fn statistics(&self) -> NetworkStatistics;
 }
 
@@ -235,12 +383,15 @@ mod tests {
     }
 
     impl NetworkDevice for InjectedDevice {
-        fn bind_activity(&self, _: crate::Activity) {}
+        fn queue_count(&self) -> u16 {
+            1
+        }
+        fn bind_activity(&self, _: u16, _: crate::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [0; 6]
         }
 
-        fn driver(&self) -> &'static str {
+        fn driver(&self) -> &str {
             "injected"
         }
 
@@ -248,15 +399,20 @@ mod tests {
             Ok(NetworkLink::default())
         }
 
-        fn receive(&self, _frame: &mut [u8]) -> Result<usize, NetworkError> {
+        fn receive(&self, _queue: u16, _frame: &mut [u8]) -> Result<usize, NetworkError> {
             Err(NetworkError::WouldBlock)
         }
 
-        fn reserve_transmit(&self) -> Result<u16, NetworkError> {
+        fn reserve_transmit(&self, _queue: u16) -> Result<u16, NetworkError> {
             Ok(7)
         }
 
-        fn submit_transmit(&self, _reservation: u16, _frame: &[u8]) -> Result<(), NetworkError> {
+        fn submit_transmit(
+            &self,
+            _queue: u16,
+            _reservation: u16,
+            _frame: &[u8],
+        ) -> Result<(), NetworkError> {
             if self.submit_error {
                 Err(NetworkError::Device)
             } else {
@@ -264,19 +420,23 @@ mod tests {
             }
         }
 
-        fn cancel_transmit(&self, _reservation: u16) {
+        fn cancel_transmit(&self, _queue: u16, _reservation: u16) {
             *self.cancellations.lock() += 1;
         }
 
-        fn transmit_available(&self) -> bool {
+        fn transmit_available(&self, _queue: u16) -> bool {
             true
         }
 
-        fn poll_completions(&self, _budget: usize) -> Result<NetworkCompletion, NetworkError> {
+        fn poll_completions(
+            &self,
+            _queue: u16,
+            _budget: usize,
+        ) -> Result<NetworkCompletion, NetworkError> {
             Ok(NetworkCompletion::default())
         }
 
-        fn finish_receive_batch(&self) -> Result<(), NetworkError> {
+        fn finish_receive_batch(&self, _queue: u16) -> Result<(), NetworkError> {
             Ok(())
         }
 
@@ -294,7 +454,7 @@ mod tests {
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
         assert_eq!(
-            NetworkTransmit::reserve(device).unwrap().submit(&[]),
+            NetworkTransmit::reserve(device, 0).unwrap().submit(&[]),
             Err(NetworkError::Device)
         );
         assert_eq!(*adapter.cancellations.lock(), 1);
@@ -309,7 +469,7 @@ mod tests {
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
         assert_eq!(
-            NetworkTransmit::reserve(device).unwrap().submit(&[]),
+            NetworkTransmit::reserve(device, 0).unwrap().submit(&[]),
             Ok(())
         );
         assert_eq!(*adapter.cancellations.lock(), 0);

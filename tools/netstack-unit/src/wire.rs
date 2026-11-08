@@ -24,11 +24,12 @@ fn initialize() {
     use alloc::sync::Arc;
     struct Device;
     impl device_model::network::NetworkDevice for Device {
-        fn bind_activity(&self, _: device_model::Activity) {}
+        fn queue_count(&self) -> u16 { 1 }
+        fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
         }
-        fn driver(&self) -> &'static str {
+        fn driver(&self) -> &str {
             "fixture"
         }
         fn link(
@@ -36,7 +37,7 @@ fn initialize() {
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkLink::default())
         }
-        fn receive(&self, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
+        fn receive(&self, _queue: u16, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
             let Some(frame) = WIRE.lock().unwrap().0.pop_front() else {
                 return Err(device_model::network::NetworkError::WouldBlock);
             };
@@ -44,28 +45,29 @@ fn initialize() {
             output[..frame.len()].copy_from_slice(&frame);
             Ok(frame.len())
         }
-        fn reserve_transmit(&self) -> Result<u16, device_model::network::NetworkError> {
-            if self.transmit_available() {
+        fn reserve_transmit(&self, _queue: u16) -> Result<u16, device_model::network::NetworkError> {
+            if self.transmit_available(0) {
                 Ok(0)
             } else {
                 Err(device_model::network::NetworkError::WouldBlock)
             }
         }
-        fn submit_transmit(&self, _: u16, bytes: &[u8]) -> Result<(), device_model::network::NetworkError> {
+        fn submit_transmit(&self, _: u16, _: u16, bytes: &[u8]) -> Result<(), device_model::network::NetworkError> {
             WIRE.lock().unwrap().1.push(bytes.to_vec());
             Ok(())
         }
-        fn cancel_transmit(&self, _: u16) {}
-        fn transmit_available(&self) -> bool {
+        fn cancel_transmit(&self, _: u16, _: u16) {}
+        fn transmit_available(&self, _queue: u16) -> bool {
             TRANSMIT_AVAILABLE.load(core::sync::atomic::Ordering::Relaxed)
         }
         fn poll_completions(
             &self,
+            _: u16,
             _: usize,
         ) -> Result<device_model::network::NetworkCompletion, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkCompletion::default())
         }
-        fn finish_receive_batch(&self) -> Result<(), device_model::network::NetworkError> {
+        fn finish_receive_batch(&self, _queue: u16) -> Result<(), device_model::network::NetworkError> {
             Ok(())
         }
         fn statistics(&self) -> device_model::network::NetworkStatistics {
@@ -300,6 +302,9 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
 }
 
     pub(crate) struct WireDevice {
+        pub(crate) queue_count: u16,
+        pub(crate) receive_on: core::sync::atomic::AtomicU16,
+        pub(crate) cancelled_queue: core::sync::atomic::AtomicU16,
         pub(crate) wire: std::sync::Mutex<WireQueues>,
         pub(crate) error: core::sync::atomic::AtomicBool,
         pub(crate) transmit_available: core::sync::atomic::AtomicBool,
@@ -308,6 +313,9 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
     impl WireDevice {
         pub(crate) fn new() -> Self {
             Self {
+                queue_count: 1,
+                receive_on: core::sync::atomic::AtomicU16::new(0),
+                cancelled_queue: core::sync::atomic::AtomicU16::new(u16::MAX),
                 wire: std::sync::Mutex::new((
                     std::collections::VecDeque::new(),
                     alloc::vec::Vec::new(),
@@ -319,11 +327,12 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         }
     }
     impl device_model::network::NetworkDevice for WireDevice {
-        fn bind_activity(&self, _: device_model::Activity) {}
+        fn queue_count(&self) -> u16 { self.queue_count }
+        fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
         }
-        fn driver(&self) -> &'static str {
+        fn driver(&self) -> &str {
             "fixture"
         }
         fn link(
@@ -331,7 +340,10 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkLink::default())
         }
-        fn receive(&self, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
+        fn receive(&self, queue: u16, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
+            if queue != self.receive_on.load(core::sync::atomic::Ordering::Relaxed) {
+                return Err(device_model::network::NetworkError::WouldBlock);
+            }
             if self
                 .error
                 .swap(false, core::sync::atomic::Ordering::Relaxed)
@@ -345,7 +357,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             output[..frame.len()].copy_from_slice(&frame);
             Ok(frame.len())
         }
-        fn reserve_transmit(&self) -> Result<u16, device_model::network::NetworkError> {
+        fn reserve_transmit(&self, _queue: u16) -> Result<u16, device_model::network::NetworkError> {
             if self
                 .transmit_available
                 .load(core::sync::atomic::Ordering::Relaxed)
@@ -355,27 +367,31 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
                 Err(device_model::network::NetworkError::WouldBlock)
             }
         }
-        fn submit_transmit(&self, _: u16, frame: &[u8]) -> Result<(), device_model::network::NetworkError> {
+        fn submit_transmit(&self, _: u16, _: u16, frame: &[u8]) -> Result<(), device_model::network::NetworkError> {
             self.wire.lock().unwrap().1.push(frame.to_vec());
             Ok(())
         }
-        fn cancel_transmit(&self, _: u16) {}
-        fn transmit_available(&self) -> bool {
+        fn cancel_transmit(&self, queue: u16, _: u16) {
+            self.cancelled_queue.store(queue, core::sync::atomic::Ordering::Relaxed);
+        }
+        fn transmit_available(&self, _queue: u16) -> bool {
             self.transmit_available
                 .load(core::sync::atomic::Ordering::Relaxed)
         }
         fn poll_completions(
             &self,
+            _: u16,
             _: usize,
         ) -> Result<device_model::network::NetworkCompletion, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkCompletion {
+                completed: 0,
                 backlog: false,
                 transmit_became_available: self
                     .transmit_ready
                     .swap(false, core::sync::atomic::Ordering::Relaxed),
             })
         }
-        fn finish_receive_batch(&self) -> Result<(), device_model::network::NetworkError> {
+        fn finish_receive_batch(&self, _queue: u16) -> Result<(), device_model::network::NetworkError> {
             Ok(())
         }
         fn statistics(&self) -> device_model::network::NetworkStatistics {

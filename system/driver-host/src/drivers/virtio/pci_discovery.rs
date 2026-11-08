@@ -98,13 +98,13 @@ fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6]) -> Option<PciTranspor
         }
         current = next;
     }
-    Some(PciTransport::new(
+    PciTransport::new(
         capability_bus(bars, common?)?,
         capability_bus(bars, notify?)?,
         capability_bus(bars, isr?)?,
         device.and_then(|value| capability_bus(bars, value)),
         notify_multiplier?,
-    ))
+    )
 }
 
 fn capability_bus(bars: &[Option<Bar>; 6], capability: Capability) -> Option<MmioBus> {

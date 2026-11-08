@@ -12,23 +12,27 @@ impl VirtIOCompletionIrq {
         Self(AtomicBool::new(false))
     }
 
-    /// 读取/ack transport status，并始终发布一次 deferred reclaim。
+    /// 读取/ack transport status；失败锁存后返回 None，成功返回原始 status。
     ///
-    /// OWNER: IRQ handler 只发布 error latch，safe point 以 swap 消费。若 status/ack error
-    /// 被吞掉，PLIC 已消费的唯一 edge 后已提交 request 可能永久睡眠。
-    pub(super) fn acknowledge_and_defer(&self, device: &VirtIODevice) {
-        let failed = match device.interrupt_status() {
+    /// OWNER: IRQ handler 只发布 error latch，完成 owner 以 swap 消费。调用者必须在 None 时
+    /// 请求完成分派；block/RNG/sound 每次都分派，网络只在错误时分派，正常路径直接通知客户端。
+    /// 若 status/ack error 被吞掉，控制器已消费的唯一 edge 后已提交 request 可能永久睡眠。
+    pub(super) fn acknowledge(&self, device: &VirtIODevice) -> Option<u32> {
+        let status = match device.interrupt_status() {
             Ok(status) => {
                 let acknowledged = status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG);
-                acknowledged != 0 && device.interrupt_ack(acknowledged).is_err()
+                if acknowledged == 0 || device.interrupt_ack(acknowledged).is_ok() {
+                    Some(status)
+                } else {
+                    None
+                }
             }
-            Err(_) => true,
+            Err(_) => None,
         };
-        if failed {
+        if status.is_none() {
             self.0.store(true, Ordering::Release);
         }
-        // Spurious/config vectors and failed reads still get one bounded safe-point pass.
-        crate::completion::raise();
+        status
     }
 
     /// safe point 原子消费 hardirq 观察到的 transport error。

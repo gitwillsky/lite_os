@@ -317,7 +317,7 @@ impl PacketSocket {
             return Err(SocketError::Invalid);
         }
         let device = device.expect("Ethernet interface owns its NIC");
-        let transmit = NetworkTransmit::reserve(device).map_err(network_error)?;
+        let transmit = NetworkTransmit::reserve(device, 0).map_err(network_error)?;
         let mut frame = Vec::new();
         frame
             .try_reserve_exact(ETH_HEADER_LENGTH + payload.len())
@@ -650,7 +650,9 @@ fn packet_type(destination: &[u8], own_mac: [u8; 6]) -> u8 {
 
 fn network_error(error: NetworkError) -> SocketError {
     match error {
+        NetworkError::InvalidConfiguration => SocketError::Invalid,
         NetworkError::WouldBlock => SocketError::Again,
+        NetworkError::NoMemory => SocketError::NoMemory,
         NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
         NetworkError::Device => SocketError::Device,
         NetworkError::Disconnected => SocketError::NetworkDown,

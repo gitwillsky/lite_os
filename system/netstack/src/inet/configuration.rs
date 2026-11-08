@@ -327,7 +327,7 @@ pub(crate) fn packet_transmit_available(scope: &Namespace, index: i32) -> Option
             .filter(|interface| index == 0 || interface.index == index as u32)
             .any(|interface| match &interface.device {
                 super::device::ProtocolDevice::Ethernet(device) => {
-                    device.network_device().transmit_available()
+                    device.network_device().transmit_available(0)
                 }
                 super::device::ProtocolDevice::Loopback(device) => device.can_transmit(),
             }),

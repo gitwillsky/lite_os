@@ -61,6 +61,11 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 
 ## Interface
 
+- 安装协议只授权给接口配置 owner：请求携带设备目录能力、ID 和静态能力描述，netcfg 不预先打开硬件会话。
+  netstack 的 worker owner 选择非零 pair 数，经目录 OPEN 的设备类 options 交给 driver controller；硬件超限请求失败，不静默截断。
+  当前主机协议引擎单 worker 明确请求一对，最终每核/RSS 数据面仍属路由计划。目录转发不复制队列策略或配置状态。
+
+
 - DHCP 租约事件带服务器标识、发出请求的单调时刻及租期。netcfg 只在地址配置成功后发布租约，失效或切换配置时一并清除。
   只读快照用当前 UTC 与单调时钟的偏移投影取得和过期时刻；配置文件不包含租约，系统时钟校正不改变续租或失效期限。
 - DHCPv4 选项 15 提供租约后缀，netcfg 以手动连接后缀覆盖它。没有生效地址时不发布连接后缀。

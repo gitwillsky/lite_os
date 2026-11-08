@@ -122,7 +122,8 @@ impl VirtIODevice {
         self.device_id
     }
 
-    pub(in crate::drivers::virtio) fn initialize(&mut self) -> Result<(), BusError> {
+    /// 在无活动 DMA 的配置事务内识别并重置 transport；调用者串行化 feature/queue 配置。
+    pub(in crate::drivers::virtio) fn initialize(&self) -> Result<(), BusError> {
         match &self.transport {
             Transport::Mmio(bus) => {
                 let magic = bus.read_u32(MAGIC)?;

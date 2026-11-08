@@ -2228,7 +2228,7 @@ system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) fn bind (driver 
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
-system/driver-host/src/drivers/virtio/blk.rs :: pub (super) impl VirtIOBlockDevice :: fn from_device (mut device : VirtIODevice) -> Option < Arc < Self > >
+system/driver-host/src/drivers/virtio/blk.rs :: pub (super) impl VirtIOBlockDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn notify (& self)
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn post (& self , identity : RequestIdentity)
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) struct Completions
@@ -2244,7 +2244,7 @@ system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) enum RequestO
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn decode_status (status : u8) -> CompletionStatus
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_transfer (capacity_sectors : u64 , block : u64 , length : usize) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
-system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
+system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge (& self , device : & VirtIODevice) -> Option < u32 >
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
 system/driver-host/src/drivers/virtio/console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport , bti : & 'static native_runtime :: Bti ,) -> Option < Arc < Self > >
@@ -2519,18 +2519,20 @@ system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use sound :: VirtIOS
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) struct VirtIONetworkDevice
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: DeviceError
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: FrameTooLarge { length : usize }
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: Packet { length : usize }
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: outcome : ReceiveOutcome
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: reposted : bool
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) enum ReceiveOutcome
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn claim (& mut self , head : u16 , used_length : usize , header_size : usize ,) -> Option < ReceiveClaim >
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn complete < Q : ReceiveQueue < B > > (& mut self , queue : & mut Q , claim : ReceiveClaim , used_length : usize , header_size : usize , frame : & mut [u8] ,) -> ReceiveCompletion
+system/driver-host/src/drivers/virtio/net.rs :: pub (super) impl VirtIONetworkDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_pairs (& mut self , device : & VirtIODevice , pairs : u16) -> Result < () , () >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32) -> Option < Self >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) struct ControlQueue
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: length : usize
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: slot : u16
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveClaim < '_ , B , BUFFER_SIZE > :: fn complete (self) -> ReceiveCompletion
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn buffer (& self , slot : usize) -> Option < & B >
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn claim (& mut self , head : u16 , used_length : usize , header_size : usize ,) -> Option < ReceiveClaim < '_ , B , BUFFER_SIZE > >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn insert_posted (& mut self , head : u16 , buffer : B) -> Result < () , B >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn len (& self) -> usize
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn release < Q : ReceiveQueue < B > > (& mut self , queue : & mut Q , slot_index : u16) -> bool
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn try_new (slot_capacity : usize , queue_size : usize) -> Option < Self >
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveClaim
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveClaim < 'a , B , const BUFFER_SIZE : usize >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveCompletion
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveSlots < B , const BUFFER_SIZE : usize >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) trait ReceiveQueue < B >
@@ -2542,7 +2544,7 @@ system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport ::
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn get_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn interrupt_status (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Self
+system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn notify_queue (& self , index : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn read_config_u16 (& self , offset : usize) -> Result < u16 , BusError >
@@ -2603,7 +2605,7 @@ system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqAvail
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqDesc
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsed
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsedElem
-system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaSlice }
+system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaPool , DmaSlice }
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " caller 未提供任何有效 segment。"] Empty
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " chain 非空且可由给定数量的 descriptor 表示。"] Required (usize)
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " segment 总数溢出或超过当前 capacity。"] ExceedsCapacity
@@ -2621,12 +2623,16 @@ system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn try_zeroed (bti : & Bti) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable_all (& self) -> DmaSlice < '_ >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: unsafe fn share_vmo (& self ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool < SIZE > :: fn take (& mut self) -> Option < DmaBuffer < SIZE > >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool < SIZE > :: fn try_new (count : usize , bti : & Bti ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn length (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn limit_segment_size (mut self , maximum : usize ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < 'mapping > :: fn backing (backing : & 'mapping DeviceBacking , range : Range < usize > , device_writable : bool ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DeviceWriteBuffer < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaBuffer < const SIZE : usize >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaPool < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaSlice < 'mapping >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) enum DmaChainRequirement
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) fn descriptor_requirement (buffers : & [DmaSlice < '_ >] , capacity : usize ,) -> DmaChainRequirement
@@ -2697,7 +2703,7 @@ system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_features (& self) -> Result < u64 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_id (& self) -> u32
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn get_status (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn initialize (& mut self) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_ack (& self , interrupt : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn mmio_vendor_id (& self) -> Option < u32 >
@@ -10419,7 +10425,7 @@ system/netstack/src/inet/device.rs :: enum ProtocolTxToken :: Loopback (Loopback
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolDevice
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolTxToken < 'a >
-system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & 'static str
+system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & str
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn network_device (& self) -> Arc < dyn NetworkDevice >
@@ -10429,7 +10435,7 @@ system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn stat
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_error (& self) -> Option < NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn configure_mtu (& mut self , mtu : i32) -> Result < () , network_protocol :: SocketError >
-system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & 'static str >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & str >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn ip_mtu (& self) -> usize
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn link (& self) -> Option < NetworkLink >

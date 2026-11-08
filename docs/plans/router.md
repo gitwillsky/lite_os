@@ -175,3 +175,16 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - 阶段 0 开始；故障恢复依 R12 修订移至二期，其余阶段与用户可用目标保持完整。前置 socket 环边界见[性能覆盖](../development/performance-coverage.md)。
 - 阶段 0：原生中断对象已接通在线逻辑 CPU 亲和配置，GIC/PLIC 保持屏蔽与 ack；CPU 独占接口已接入配置准入、调度分派与退出归还，
   见[执行契约](../architecture-contract/execution.md#cpu-分区)。两架构静态检查与 scheduler-unit 覆盖不代替 SMP 硬件验收；多队列与队列授权传输仍在实施。
+- 阶段 0 网络前置：PCI 通知改为每队列初始化时校验的独立 doorbell，移除运行时共享 queue_select 竞争；网络 adapter 复用 MMIO/PCI 传输。
+  MQ 已接入驱动队列、版本化设备消息、独立活动通知与主机栈全队列轮询；队列 1 UDP/回复预留归还由实际引擎 fixture 覆盖。
+  队列数已由使用者显式请求；RSS/卸载、直接帧借用、MSI-X 及硬件 MQ 运行验收仍未完成；PCI 仍为 INTx。
+- 阶段 0 下一步：补直接帧借用、RSS/卸载和每队列中断。
+  不以当前主机栈轮询适配层替代最终数据面。
+- DMA 池已跨进程授权：线性非重叠槽共用 VMO/pin，区间投影二分定位缓存片段；v5 的 RX/Fill/TX/CQ 四环替换逐次描述符 RPC。
+  每队列固定 ticket 表与批窗口，批量硬件提交/完成和合并通知；关闭先排空 TX，异常同步 stop DMA 后才 closed。
+  客户端一次映射，现有主机栈仍有 CPU 帧适配拷贝；直接帧借用和最终每核引擎尚未完成。
+  四环 codec 容量/回绕/畸形位置/kick 用例及双架构 Clippy 通过，不代替跨进程 DMA/吞吐运行验收。
+- IRQ 传输错误已接到既有完成线程：沿设备级失败屏障延迟 reset 并唤醒各队列；正常网络 IRQ 仍直接通知，不增加转发线程。
+- 显式队列协商已接通：目录 OPEN 透明传递设备类选项，netcfg 只委托目录/id 给 netstack，由实际 worker owner 请求 pair 数。
+  物理 controller 与活动 DMA 租约分离，初始化失败/正常关闭/异常 stop 后均先撤销 DMA 再退休；下次 OPEN 可请求不同数量。
+  当前旧主机协议引擎只有一个 worker，明确请求一对；不借此宣称阶段 2 的多核引擎已完成。运行时重开/MQ 硬件验证待统一验收。

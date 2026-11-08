@@ -60,7 +60,7 @@ pub(crate) struct VirtIORngDevice {
 
 impl VirtIORngDevice {
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        let device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 4 {
             return None;
         }
@@ -433,9 +433,8 @@ struct VirtIORngIrqHandler {
 
 impl InterruptHandler for VirtIORngIrqHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
-        self.device
-            .completion_irq
-            .acknowledge_and_defer(&self.device.device);
+        let _ = self.device.completion_irq.acknowledge(&self.device.device);
+        crate::completion::raise();
         Ok(())
     }
 }

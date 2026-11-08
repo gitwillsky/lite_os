@@ -40,11 +40,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
                 path.segments
                     .last()
-                    .is_some_and(|segment| segment.ident == "NetworkDevice")
+                    .is_some_and(|segment| segment.ident == "NetworkProvider")
             }) =>
         {
             implementation.items.iter().find_map(|item| match item {
-                ImplItem::Fn(method) if method.sig.ident == "receive" => Some(method),
+                ImplItem::Fn(method) if method.sig.ident == "receive_batch" => Some(method),
                 _ => None,
             })
         }
@@ -57,7 +57,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if receive_methods.len() != 1 || calls.owner_calls != 1 || calls.legacy_head_takes != 0 {
         errors.push(format!(
-            "{VIRTIO_NET_SOURCE}: NetworkDevice::receive must delegate exactly once to `receive_slots.complete` and must not take head mappings directly"
+            "{VIRTIO_NET_SOURCE}: NetworkProvider::receive_batch must delegate exactly once to `claim.complete` and must not take head mappings directly"
         ));
     }
 }
@@ -75,7 +75,7 @@ struct CompletionCalls {
 impl<'ast> Visit<'ast> for CompletionCalls {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if call.method == "complete"
-            && matches!(&*call.receiver, Expr::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "receive_slots"))
+            && matches!(&*call.receiver, Expr::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "claim"))
         {
             self.owner_calls += 1;
         }
@@ -95,8 +95,8 @@ mod tests {
     fn source(receive_body: &str) -> SourceFile {
         let text = format!(
             "struct QueueState {{ receive_slots: ReceiveSlots<Box<[u8; 32]>, 32> }}\n\
-             trait NetworkDevice {{ fn receive(&self); }}\n\
-             impl NetworkDevice for Device {{ fn receive(&self) {{ {receive_body} }} }}"
+             trait NetworkProvider {{ fn receive_batch(&self); }}\n\
+             impl NetworkProvider for Device {{ fn receive_batch(&self) {{ {receive_body} }} }}"
         );
         SourceFile {
             relative: VIRTIO_NET_SOURCE.to_owned(),
@@ -111,12 +111,7 @@ mod tests {
     #[test]
     fn lifecycle_owner_dispatch_is_accepted() {
         let mut errors = Vec::new();
-        check(
-            &[source(
-                "receive_slots.complete(queue, head, len, 12, frame);",
-            )],
-            &mut errors,
-        );
+        check(&[source("claim.complete();")], &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
     }
 

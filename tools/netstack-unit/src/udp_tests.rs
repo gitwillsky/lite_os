@@ -220,3 +220,27 @@ fn udp_broadcast_delivers_all_matching_sockets_without_creating_a_recipient_queu
     second.close_description();
     assert_eq!(counts(), (0, 0, 0));
 }
+
+
+#[test]
+fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
+    let _serial = SERIAL.lock().unwrap();
+    initialize();
+    let scope = crate::namespace::Namespace::create().unwrap();
+    let mut nic = WireDevice::new();
+    nic.queue_count = 2;
+    nic.receive_on.store(1, core::sync::atomic::Ordering::Relaxed);
+    let nic = Arc::new(nic);
+    let device: Arc<dyn device_model::network::NetworkDevice> = nic.clone();
+    scope.install_protocol(prepare_network(&scope, core::slice::from_ref(&device), false).unwrap());
+    configure_address(&scope, 2, Ipv4Addr::new(10, 0, 2, 15)).unwrap();
+    configure_netmask(&scope, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
+    configure_up(&scope, 2, true).unwrap();
+    let endpoint = scoped_endpoint(&scope, InetProtocol::Udp);
+    endpoint.bind(address(43177)).unwrap();
+    nic.wire.lock().unwrap().0.push_back(peer_udp_frame(udp_peer(44017), 43177, b"queue-one"));
+    for _ in 0..4 { dispatch_network_work(); }
+    assert_eq!(udp_read(&endpoint, false).unwrap().0, b"queue-one");
+    assert_eq!(nic.cancelled_queue.load(core::sync::atomic::Ordering::Relaxed), 1);
+    endpoint.close_description();
+}

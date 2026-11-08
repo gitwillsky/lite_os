@@ -164,7 +164,7 @@ impl VirtIOGpuDevice {
     ///
     /// feature、queue、mode、frame allocation 或命令失败返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        let device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 16 {
             return None;
         }
@@ -412,7 +412,9 @@ impl VirtIOGpuDevice {
             !core::mem::replace(&mut control.failed, true)
         };
         if first_failure {
-            let _ = self.device.reset();
+            self.device
+                .reset()
+                .expect("VirtIO gpu must stop DMA before retiring ownership");
         }
         DisplayError::Device
     }
@@ -917,6 +919,8 @@ impl Drop for VirtIOGpuDevice {
     fn drop(&mut self) {
         // Reset revokes every published descriptor before controlq and cached DMA mappings drop.
         // Without this ordering, failed initialization or final Arc release can free live pages.
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("VirtIO gpu must stop DMA before retiring ownership");
     }
 }

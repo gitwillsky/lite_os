@@ -4,7 +4,7 @@
 //!
 //! 1. 控制 channel：使用者经根服务的服务目录连接（`service_directory::NETWORK`），为每个网络域创建一条域
 //!    channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。
-//! 2. 安装 channel（`service_directory::NETWORK_INSTALLER`，只路由给 netcfg）：把网卡会话安装为默认网络的接口
+//! 2. 安装 channel（`service_directory::NETWORK_INSTALLER`，只路由给 netcfg）：委托设备目录能力与 ID，由 netstack 打开队列并安装默认网络接口
 //!    （[`InstallerService::install_device`]）。
 //! 3. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
 //! 4. socket 控制 channel 与共享 SQ/CQ：每 socket 一组（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次

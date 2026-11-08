@@ -53,7 +53,7 @@ impl ProtocolDevice {
         }
     }
     /// 底层驱动名；loopback 是协议栈内部设备，没有驱动（Linux 的 lo 也没有 `device`）。
-    pub(super) fn driver(&self) -> Option<&'static str> {
+    pub(super) fn driver(&self) -> Option<&str> {
         match self {
             Self::Ethernet(device) => Some(device.driver()),
             Self::Loopback(_) => None,
@@ -203,6 +203,9 @@ pub(super) struct EthernetDevice {
     // OWNER: 仅保存当前一次 ingress callback 的 wire fact；不复制 socket 状态。
     // Closed transition 由 smoltcp 验证，fact 只区分 FIN 后的 RST 与正常终止。
     ingress_reset: Cell<Option<TcpReset>>,
+    // OWNER: 主机栈持同一 NET guard，逐轮轮转起点，防止繁忙 queue 0 饿死后续队列。
+    receive_queue: u16,
+    completion_queue: Cell<u16>,
 }
 
 impl EthernetDevice {
@@ -227,6 +230,8 @@ impl EthernetDevice {
             received_dropped: Cell::new(0),
             transmitted_errors: Cell::new(0),
             ingress_reset: Cell::new(None),
+            receive_queue: 0,
+            completion_queue: Cell::new(0),
         }
     }
 
@@ -242,7 +247,7 @@ impl EthernetDevice {
         self.device.mac_address()
     }
 
-    pub(super) fn driver(&self) -> &'static str {
+    pub(super) fn driver(&self) -> &str {
         self.device.driver()
     }
 
@@ -280,9 +285,24 @@ impl EthernetDevice {
         &self,
         budget: usize,
     ) -> Result<NetworkCompletion, NetworkError> {
-        self.device
-            .poll_completions(budget)
-            .inspect_err(|error| self.record_transmit_error(*error))
+        let count = self.device.queue_count();
+        let start = self.completion_queue.get();
+        self.completion_queue.set((start + 1) % count);
+        let mut total = NetworkCompletion::default();
+        for offset in 0..count {
+            let queue = ((u32::from(start) + u32::from(offset)) % u32::from(count)) as u16;
+            let done = self
+                .device
+                .poll_completions(queue, budget - total.completed)
+                .inspect_err(|error| self.record_transmit_error(*error))?;
+            if done.completed > budget - total.completed {
+                return Err(NetworkError::Device);
+            }
+            total.completed += done.completed;
+            total.backlog |= done.backlog;
+            total.transmit_became_available |= done.transmit_became_available;
+        }
+        Ok(total)
     }
 
     /// 把本轮重新发布的 RX buffers 一次通知给设备。
@@ -291,9 +311,12 @@ impl EthernetDevice {
     ///
     /// 成功或 transport 错误。
     pub(super) fn finish_receive_batch(&self) -> Result<(), NetworkError> {
-        self.device
-            .finish_receive_batch()
-            .inspect_err(|error| self.record_receive_error(*error))
+        for queue in 0..self.device.queue_count() {
+            self.device
+                .finish_receive_batch(queue)
+                .inspect_err(|error| self.record_receive_error(*error))?;
+        }
+        Ok(())
     }
 
     /// 在actual设备deferred诊断phase消费callback首个adapter error。
@@ -453,23 +476,33 @@ impl Device for EthernetDevice {
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         self.ingress_reset.set(None);
-        let reservation = match device_error::classify_optional(
-            NetworkTransmit::reserve(self.device.clone()),
-            |error| *error == NetworkError::WouldBlock,
-        ) {
-            // 库要求receive同时提供不可失败的reply token；TX拥塞不应阻塞RX/ACK。
-            // 无reservation时token只执行同一codec并丢弃reply，已排队TX仍由transmit背压。
-            Ok(reservation) => reservation,
-            Err(error) => {
-                self.record_transmit_error(error);
-                return None;
-            }
-        };
         let mut frame = [0u8; RECEIVE_CAPACITY];
-        match device_error::classify_optional(self.device.receive(&mut frame), |error| {
-            *error == NetworkError::WouldBlock
-        }) {
-            Ok(Some(length)) => Some((
+        for _ in 0..self.device.queue_count() {
+            let queue = self.receive_queue;
+            self.receive_queue = (queue + 1) % self.device.queue_count();
+            let length = match device_error::classify_optional(
+                self.device.receive(queue, &mut frame),
+                |error| *error == NetworkError::WouldBlock,
+            ) {
+                Ok(Some(length)) => length,
+                Ok(None) => continue,
+                Err(error) => {
+                    self.record_receive_error(error);
+                    return None;
+                }
+            };
+            let reservation = match device_error::classify_optional(
+                NetworkTransmit::reserve(self.device.clone(), queue),
+                |error| *error == NetworkError::WouldBlock,
+            ) {
+                // TX 拥塞不阻塞 RX/ACK；reply token 仍执行同一 codec，并记录无法提交的回复。
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    self.record_transmit_error(error);
+                    return None;
+                }
+            };
+            return Some((
                 EthernetRxToken {
                     net_id: self.net_id,
                     interface_index: self.interface_index,
@@ -487,18 +520,14 @@ impl Device for EthernetDevice {
                     transmitted_errors: &self.transmitted_errors,
                     pending_error: &self.pending_error,
                 },
-            )),
-            Ok(None) => None,
-            Err(error) => {
-                self.record_receive_error(error);
-                None
-            }
+            ));
         }
+        None
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         match device_error::classify_optional(
-            NetworkTransmit::reserve(self.device.clone()),
+            NetworkTransmit::reserve(self.device.clone(), 0),
             |error| *error == NetworkError::WouldBlock,
         ) {
             Ok(reservation) => reservation.map(|reservation| EthernetTxToken {

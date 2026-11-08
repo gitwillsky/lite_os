@@ -238,7 +238,10 @@ pub fn publish(directory: &Directory, device: Arc<dyn BlockProvider>) -> Result<
             Class::Block,
             &description,
             true,
-            Box::new(move |end| {
+            Box::new(move |end, options| {
+                if !options.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
                 let (client, server) =
                     serve_device(SessionState::new(BlockSession::new(device.clone())?, end))?;
                 Ok(Session {
