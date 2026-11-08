@@ -53,6 +53,7 @@ fn initialize() {
     struct Device;
     impl device_model::network::NetworkDevice for Device {
         fn queue_count(&self) -> u16 { 1 }
+        fn transmit_checksum(&self) -> bool { true }
         fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
@@ -75,16 +76,27 @@ fn initialize() {
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
             WIRE.lock().unwrap().2.reserve(self, queue)
         }
+        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
         unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
             assert!(WIRE.lock().unwrap().2.received.take().is_some());
             Ok(())
         }
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize) -> Result<(), device_model::network::NetworkError> {
+        // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>) -> Result<(), device_model::network::NetworkError> {
             let mut wire = WIRE.lock().unwrap();
-            let frame = wire.2.complete(length);
+            let mut frame = wire.2.complete(length);
+            if let Some(checksum) = checksum {
+                checksum.validate(frame.len())?;
+                // 只模拟 NIC 的 ones-complement 完成，不重写协议状态；输入已含实际 producer 的 seed。
+                let value = packet_wire::checksum::checksum(&frame[usize::from(checksum.start)..]);
+                let value = if value == 0 { u16::MAX } else { value };
+                let field = usize::from(checksum.start) + usize::from(checksum.offset);
+                frame[field..field + 2].copy_from_slice(&value.to_be_bytes());
+            }
             wire.1.push(frame);
             Ok(())
         }
+        // SAFETY: production token 只在尚未提交时取消，内容引用已结束，无硬件异步访问。
         unsafe fn cancel_transmit(&self, queue: u16, _: u16, _: u64) {
             WIRE.lock().unwrap().2.reserved = false;
             let _ = queue;
@@ -208,6 +220,7 @@ pub(super) fn syn_ack(port: u16) -> smoltcp::wire::TcpSeqNumber {
             continue;
         }
         let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()), "actual emitted TCP checksum");
         if tcp.src_port() == port && tcp.dst_port() == 44000 && tcp.syn() && tcp.ack() {
             return tcp.seq_number() + 1;
         }
@@ -335,6 +348,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
 
     pub(crate) struct WireDevice {
         pub(crate) queue_count: u16,
+        pub(crate) checksum: bool,
         pub(crate) receive_on: core::sync::atomic::AtomicU16,
         pub(crate) cancelled_queue: core::sync::atomic::AtomicU16,
         pub(crate) wire: std::sync::Mutex<WireQueues>,
@@ -346,6 +360,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         pub(crate) fn new() -> Self {
             Self {
                 queue_count: 1,
+                checksum: false,
                 receive_on: core::sync::atomic::AtomicU16::new(0),
                 cancelled_queue: core::sync::atomic::AtomicU16::new(u16::MAX),
                 wire: std::sync::Mutex::new((
@@ -361,6 +376,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
     }
     impl device_model::network::NetworkDevice for WireDevice {
         fn queue_count(&self) -> u16 { self.queue_count }
+        fn transmit_checksum(&self) -> bool { self.checksum }
         fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
@@ -385,16 +401,27 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
             self.wire.lock().unwrap().2.reserve(self, queue)
         }
+        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
         unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
             assert!(self.wire.lock().unwrap().2.received.take().is_some());
             Ok(())
         }
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize) -> Result<(), device_model::network::NetworkError> {
+        // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>) -> Result<(), device_model::network::NetworkError> {
             let mut wire = self.wire.lock().unwrap();
-            let frame = wire.2.complete(length);
+            let mut frame = wire.2.complete(length);
+            if let Some(checksum) = checksum {
+                checksum.validate(frame.len())?;
+                // 只模拟 NIC 的 ones-complement 完成，不重写协议状态；输入已含实际 producer 的 seed。
+                let value = packet_wire::checksum::checksum(&frame[usize::from(checksum.start)..]);
+                let value = if value == 0 { u16::MAX } else { value };
+                let field = usize::from(checksum.start) + usize::from(checksum.offset);
+                frame[field..field + 2].copy_from_slice(&value.to_be_bytes());
+            }
             wire.1.push(frame);
             Ok(())
         }
+        // SAFETY: production token 只在尚未提交时取消，内容引用已结束，无硬件异步访问。
         unsafe fn cancel_transmit(&self, queue: u16, _: u16, _: u64) {
             self.wire.lock().unwrap().2.reserved = false;
             self.cancelled_queue.store(queue, core::sync::atomic::Ordering::Relaxed);

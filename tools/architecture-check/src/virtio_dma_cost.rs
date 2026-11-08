@@ -36,7 +36,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 }
 
 fn measure(sources: &[SourceFile]) -> Result<DmaSubmissionCost, String> {
-    let net = source(sources, "system/driver-host/src/drivers/virtio/net.rs")?;
+    let net = source(
+        sources,
+        "system/driver-host/src/drivers/virtio/net/queue_pair.rs",
+    )?;
     let input = source(sources, "system/driver-host/src/drivers/virtio/input.rs")?;
     let gpu = source(sources, "system/driver-host/src/drivers/virtio/gpu.rs")?;
     let damage = source(

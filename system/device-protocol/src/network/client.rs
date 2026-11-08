@@ -1,14 +1,15 @@
 use super::queue::{MAX_BATCH, Queue, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_error, queue_request,
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_error, encode_checksum,
+    queue_request,
 };
 use crate::directory::{DirectoryClient, Entry};
 use crate::{ActivityBinding, EventHub, Writer, call, take_handle};
 use alloc::{sync::Arc, vec::Vec};
 use device_model::network::{
-    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkReceiveFrame,
-    NetworkRssCapabilities, NetworkRssConfiguration, NetworkStatistics, NetworkTransmit,
-    RECEIVE_HASH_TYPES,
+    NetworkChecksum, NetworkCompletion, NetworkDevice, NetworkError, NetworkLink,
+    NetworkReceiveFrame, NetworkRssCapabilities, NetworkRssConfiguration, NetworkStatistics,
+    NetworkTransmit, RECEIVE_HASH_TYPES,
 };
 use device_model::{Activity, DeviceBacking};
 use native_runtime::native_abi::{self, Status, rights, signals};
@@ -110,10 +111,12 @@ struct RemoteQueue {
 }
 impl RemoteQueue {
     fn kick(&self) -> Result<(), NetworkError> {
-        if self.ring.needs_kick() {
-            self.ready
-                .signal(0, signals::SIGNALED)
-                .map_err(decode_error)?;
+        if self.ring.needs_kick()
+            && let Err(status) = self.ready.signal(0, signals::SIGNALED)
+        {
+            // 已发表的槽不能回滚复用；锁存终止，后续 poll/关闭驱动 stop 与最终归还。
+            self.ring.request_abort();
+            return Err(decode_error(status));
         }
         Ok(())
     }
@@ -137,7 +140,7 @@ impl RemoteQueue {
         if self.activity.disconnected() {
             return Err(NetworkError::Disconnected);
         }
-        let mut records = [[0; 3]; MAX_BATCH];
+        let mut records = [[0; 4]; MAX_BATCH];
         let mut completed = 0;
         while completed < budget {
             let limit = MAX_BATCH.min(budget - completed);
@@ -148,13 +151,14 @@ impl RemoteQueue {
             if count == 0 {
                 break;
             }
-            for [slot, ticket, status] in &records[..count] {
+            for [slot, ticket, status, reserved] in &records[..count] {
                 let slot = u16::try_from(*slot).map_err(|_| self.abort())?;
                 let owner = state
                     .transmit
                     .get_mut(slot as usize)
                     .ok_or_else(|| self.abort())?;
                 if *status != 0
+                    || *reserved != 0
                     || !matches!(*owner, TransmitOwner::Submitted { ticket: current } if current == *ticket)
                 {
                     return Err(self.abort());
@@ -186,6 +190,7 @@ pub struct RemoteNetwork {
     mac: [u8; 6],
     driver: alloc::string::String,
     rss: Option<NetworkRssCapabilities>,
+    transmit_checksum: bool,
 }
 /// 显式请求 queue_pairs 个队列，打开硬件会话并一次映射 DMA/共享环。
 /// directory 是已授权的网络设备目录，entry 的静态描述公布硬件上限；不自动截断请求。
@@ -207,6 +212,7 @@ pub fn connect(
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let count = queue_pairs;
+    let transmit_checksum = reader.bool()?;
     let rss = if reader.bool()? {
         let cap = NetworkRssCapabilities {
             maximum_key_bytes: reader.u8()?,
@@ -290,6 +296,7 @@ pub fn connect(
         mac,
         driver,
         rss,
+        transmit_checksum,
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
@@ -324,6 +331,9 @@ impl NetworkDevice for RemoteNetwork {
     fn queue_count(&self) -> u16 {
         self.queues.len() as u16
     }
+    fn transmit_checksum(&self) -> bool {
+        self.transmit_checksum
+    }
     fn bind_activity(&self, queue: u16, activity: Activity) {
         self.queues[queue as usize].activity.bind(activity);
     }
@@ -352,7 +362,7 @@ impl NetworkDevice for RemoteNetwork {
         let memory = &queue.memory;
         let mut state = queue.producer.lock();
         queue.check()?;
-        let mut records = [[0; 3]; 1];
+        let mut records = [[0; 4]; 1];
         if queue
             .ring
             .pop(Ring::Receive, &mut records)
@@ -361,7 +371,7 @@ impl NetworkDevice for RemoteNetwork {
         {
             return Err(NetworkError::WouldBlock);
         }
-        let [slot, ticket, length] = records[0];
+        let [slot, ticket, length, metadata] = records[0];
         let slot = u16::try_from(slot).map_err(|_| queue.abort())?;
         let owner = state
             .received
@@ -371,6 +381,7 @@ impl NetworkDevice for RemoteNetwork {
             return Err(queue.abort());
         };
         if ticket <= last_ticket
+            || metadata != 0
             || length == 0
             || length > (memory.receive_stride - memory.header) as u64
         {
@@ -413,6 +424,7 @@ impl NetworkDevice for RemoteNetwork {
             )
         })
     }
+    // SAFETY: 调用者消费唯一 RX token 并结束全部内容引用；本端再验证 Borrowed ticket，FILL 后不访问 payload。
     unsafe fn release_received(
         &self,
         queue_index: u16,
@@ -435,19 +447,21 @@ impl NetworkDevice for RemoteNetwork {
         // SAFETY 契约已结束全部 CPU 内容引用；FILL Release 后设备才可能重新取得该范围。
         queue
             .ring
-            .push(Ring::Fill, &[[u64::from(slot), ticket, 0]])
+            .push(Ring::Fill, &[[u64::from(slot), ticket, 0, 0]])
             .map_err(|_| queue.abort())?;
         *owner = ReceiveOwner::Available {
             last_ticket: ticket,
         };
         queue.kick()
     }
+    // SAFETY: 调用者消费唯一 TX token；本端验证 Reserved 身份/长度，Release 后没有任何 payload 引用。
     unsafe fn submit_transmit(
         &self,
         queue_index: u16,
         slot: u16,
         ticket: u64,
         length: usize,
+        checksum: Option<NetworkChecksum>,
     ) -> Result<(), NetworkError> {
         let queue = self
             .queues
@@ -457,6 +471,12 @@ impl NetworkDevice for RemoteNetwork {
         queue.check()?;
         if length == 0 || length > queue.memory.transmit_limit {
             return Err(NetworkError::FrameTooLarge);
+        }
+        if let Some(checksum) = checksum {
+            if !self.transmit_checksum {
+                return Err(NetworkError::InvalidConfiguration);
+            }
+            checksum.validate(length)?;
         }
         let owner = state
             .transmit
@@ -468,11 +488,20 @@ impl NetworkDevice for RemoteNetwork {
         // 调用者消费唯一 token，所有 payload 引用已结束；Release 同时交出初始化后的内容。
         queue
             .ring
-            .push(Ring::Transmit, &[[u64::from(slot), ticket, length as u64]])
+            .push(
+                Ring::Transmit,
+                &[[
+                    u64::from(slot),
+                    ticket,
+                    length as u64,
+                    encode_checksum(checksum),
+                ]],
+            )
             .map_err(|_| queue.abort())?;
         *owner = TransmitOwner::Submitted { ticket };
         queue.kick()
     }
+    // SAFETY: 调用者已结束 CPU 借用；只归还匹配的 Reserved ticket，Submitted 永不由此路径复用。
     unsafe fn cancel_transmit(&self, queue_index: u16, slot: u16, ticket: u64) {
         let Some(queue) = self.queues.get(queue_index as usize) else {
             return;

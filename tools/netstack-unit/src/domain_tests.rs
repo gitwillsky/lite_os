@@ -1208,7 +1208,9 @@ fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let net = crate::namespace::Namespace::create().unwrap();
-    let nic = Arc::new(WireDevice::new());
+    let mut hardware = WireDevice::new();
+    hardware.checksum = true;
+    let nic = Arc::new(hardware);
     net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
     let local = Ipv4Addr::new(10, 0, 2, 15);
     let peer = InetAddress { address: Ipv4Addr::new(10, 0, 2, 16), port: 0 };
@@ -1220,9 +1222,9 @@ fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     nic.wire.lock().unwrap().1.clear();
     let sender = scoped_endpoint(&net, InetProtocol::Icmp);
     sender.set_header_included(true).unwrap();
-    let mut packet = [0x45, 0x14, 0, 0, 0xab, 0xcd, 0x40, 0, 19, 253, 0, 0,
-        192, 0, 2, 1, 10, 0, 2, 16, 1, 2, 3, 4];
-    assert_eq!(sender.send_to(&packet, Some(peer), None), Ok(24));
+    let mut packet = [0x45, 0x14, 0, 0, 0xab, 0xcd, 0x40, 0, 19, 17, 0, 0,
+        192, 0, 2, 1, 10, 0, 2, 16, 1, 2, 3, 4, 0, 8, 0x12, 0x34];
+    assert_eq!(sender.send_to(&packet, Some(peer), None), Ok(28));
     sender.set_header_included(false).unwrap();
     advance_actual_domains();
     let frames = nic.wire.lock().unwrap();
@@ -1233,9 +1235,9 @@ fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     let eth = smoltcp::wire::EthernetFrame::new_checked(wire.as_slice()).unwrap();
     let ip = smoltcp::wire::Ipv4Packet::new_checked(eth.payload()).unwrap();
     assert!(ip.verify_checksum());
-    packet[2..4].copy_from_slice(&24u16.to_be_bytes());
+    packet[2..4].copy_from_slice(&28u16.to_be_bytes());
     packet[10..12].copy_from_slice(&eth.payload()[10..12]);
-    assert_eq!(&eth.payload()[..24], &packet);
+    assert_eq!(&eth.payload()[..28], &packet);
     drop(frames);
     // 普通 codec 使用 endpoint 的 protocol，不从上一条用户 header 继承。
     assert_eq!(sender.send_to(&[8, 0, 0xf7, 0xff, 0, 0, 0, 0], Some(peer), None), Ok(8));

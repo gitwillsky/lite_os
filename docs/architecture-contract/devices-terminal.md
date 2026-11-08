@@ -30,7 +30,7 @@ DRM/KMS、framebuffer、VirGL/PRIME 与图形资源退休的唯一细节 owner �
 1. 每个驱动宿主在自己的设备目录登记设备（类、静态描述与开会话函数）；driver-manager 向 component-manager 持有的汇聚目录登记条目（对应 Fuchsia devfs）：转发条目的 `OPEN` 原样交给所在宿主，独占与会话回收由宿主判定；宿主终止时撤下
    它的全部条目（`remove`），宿主重启后设备以新 ID 重新登记。目录 ID 单调不复用；使用者 `LIST` 枚举、`WATCH`
    取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN(id, options)` 建立新会话、`SCOPE` 派生只含指定类的目录。
-   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v6 使用两字节小端 pair 数，其他现有类只接受空 options。
+   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v7 使用两字节小端 pair 数，其他现有类只接受空 options。
    初始枚举按节点顺序并入（首个 GPU、PCI console/block/net、按 DTB 顺序的 VirtIO-MMIO、xHCI），使用者据登记顺序命名
    设备。component-manager 按类派生给各服务，宿主的监督查询和会话打开使用独立连接。
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
@@ -358,36 +358,44 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   Benchmark 决策：新增 Arc 只在构造/析构增减引用，稳定收发仅借用；额外 owner 间接访问与稠密元数据的综合成本留到目标机吞吐/时延诊断，
   不用 host 虚拟地址模拟设备/IOMMU 时延。现有 DMA fixture 覆盖线性槽、共享保活及跨非连续页的地址投影，不能代替实际 DMA 验收。
 - 网络队列由 `(device, queue pair, slot)` 标识；pair 数实例内固定、非零，槽号不能脱离队列寻址。
-  device-protocol 网络描述版本为 6，携带硬件最大 pair 数，不接受旧布局。客户端明确请求非零且不超过上限的 pair 数，
+  device-protocol 网络描述版本为 7，携带硬件最大 pair 数，不接受旧布局。客户端明确请求非零且不超过上限的 pair 数，
   驱动必须精确满足或失败，不能按 CPU 数替用户决定。目录独占 OPEN 的设备选项直接交给 NetworkController::open；
   MEMORY 授权 RX/TX 池与布局，
   QUEUE 一次授权四环 VMO、ready Event 与 progress Event，重复领取返回 ALREADY_BOUND。
   驱动名由设备提供，远端拥有可释放字符串，trait 按 self 借用，不把重连元数据泄漏成永久 static。
 - 四个 SPSC 环依次为 Receive、Fill、Transmit、Completion；本端每队列锁串行化 producer/consumer。
   容量为 `max(RX 槽数, TX 槽数, 32)` 向上取 2 的幂，上限 65536。头部 576 字节；每环 head/tail 分居 64-byte cache line，
-  closed/abort/kick 在偏移 512/516/520；记录为三个小端原子 u64：slot、非零 ticket、length/status（Fill 第三字为零）。
+  closed/abort/kick 在偏移 512/516/520；记录为四个小端原子 u64：slot、非零 ticket、length/status、checksum 元数据（Fill 后两字、RX/CQ 第四字为零）。
   单批至多 32 条，记录字 Relaxed 访问、整批 head Release/Acquire 交付，tail Release/Acquire 归还元数据空间；
   wrapping head-tail 超过容量即协议错误。记录使用原子字，畸形对端不能通过改写记录制造 Rust 非原子数据竞争。
   RX ticket 每队列递增，Fill 必须匹配仍持有的槽；TX 由客户端生成递增 ticket，服务端按槽保留上次 ticket，拒绝重复、过期和越界提交。
   未接受的 TX 后缀保留在固定窗口；硬件只接受前缀，不把队列暂满当故障。CQ 只在真实 used/recycle 后发表；客户端核对 Submitted ticket 后才复用。
-- 硬件只实现 `NetworkProvider` 的共享槽批量接口；`NetworkDevice` 是现有主机栈 CPU 视图，不在驱动保留复制帧入口。
+- 硬件只实现 `NetworkProvider` 的共享槽批量接口；`NetworkDevice` 向主机栈交出有寿命的共享帧借用，不在任何一端保留复制帧入口。
   正常数据面无逐包 channel RPC：TX/FILL 发表后仅 kick 的 0→1 转换 signal ready；服务端排空前 AcqRel 清 kick，
   并发发表要么被本轮消费，要么重新唤醒。ready/硬件使用服务 reactor 的 SIGNALED，progress 使用 EventHub 的 USER_0，不能混用。
   服务复用 service-rpc 弹性线程消费控制消息、ready 与硬件通知，不为每条队列增加桥接线程；每轮有界推进，有 backlog 再调度。
   客户端回收 CQ 也 kick，释放 CQ 背压；reserve/available 提前回收时把容量边沿留给下一 poll，不能吞掉等待发送者的通知。
   EventHub 在验证关联 peer 真正关闭后保留 disconnected 事实，队列 poll 读取该 owner，不逐包向内核查询 peer。
 - 客户端一次校验 VMO 大小、槽数、stride、header、TX 上限并映射；收发直接投影，不逐帧 VMO read/write。
-  RX 只在 Receive Acquire 到 Fill Release 之间读；TX 在 Reserved 锁内先验证身份，再写入与发表，matching CQ 前不可重写。
+  RX 的 Receive Acquire 取得 Borrowed ticket，`NetworkReceiveFrame` 借用 device 保活映射，显式 release 或 Drop 后才 Fill Release；不在返回帧前归还槽。
+  TX 的 `NetworkTransmit` 在 Reserved ticket 中直接构造 payload；消费 token 的 submit 结束全部 CPU 引用，再 Release 发表，matching CQ 前不可重写。
+  两类 token 不可复制，不逐包分配或增加 Arc 引用；安全访问只在 token 寿命内创建临时 &[u8]/&mut[u8]，不在交出所有权后保留 Rust 内容引用。
+  token 的 unsafe 构造者证明范围、初始化、非别名与 owner 寿命；底层 release/submit/cancel 也是 unsafe 接口，防止安全代码绕过 token 提前复用。
+  客户端本地短锁只保护票据和 ring，不跨协议回调或 payload 编码。TX 通知失败锁存 abort，已发表的槽不能按可恢复错误重新借出。
   池 VMO 大小固定，仅授予 READ/WRITE/MAP/INSPECT/DUPLICATE/TRANSFER；设备 header 不属于客户端 payload；端点只授权指定系统组件。
   句柄/映射不证明字节借用权；原始映射依赖双方槽协议，DmaBuffer::share_vmo 的 unsafe 契约覆盖对端 CPU，Arc 只证明存活。
-  现有主机栈 CPU 适配仍有一次帧拷贝；直接帧借用与最终每核引擎尚未完成，不能称完整零拷贝数据面。
+  现有主机栈已直接消费 RX 共享帧，并在预留 TX 槽中编码；AF_PACKET 直接写 header/payload，移除原临时 Vec 与 NIC 适配复制。
+  Codec 所需零初始化保留在实际 TX 范围；TX 拥塞时仅用丢弃缓冲推进协议，不发布替代 DMA 或阻塞 RX/ACK。
+  Socket/capture 自有 payload 语义仍需相应存储；最终每核路由引擎、跨网卡转发借用、RX 校验和与 TSO 尚未完成，不能称完整零拷贝路由数据面。
   所有权循环参考固定 Linux revision 的 [AF_XDP UMEM](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/networking/af_xdp.rst)，不导入 Linux UAPI 到内核。
 - 会话最后一个 handler/activity 退出后，析构有界排空已经接受的 TX，归还所有 CPU RX；未接受后缀不再发布。
   超时、协议损坏或硬件失败时同步 stop 全设备，不能把取消/超时当作 DMA 已结束。只有排空或确认 reset 后才发表 closed 并唤醒客户端。
   正常关闭也同步停止本次 RX DMA，随后才能 closed；未归还的 RX 仍由硬件 owner 保活至 stop。
   停止只废弃本次配置，controller 在旧租约彻底退休后允许重新配置另一数量的队列，本期不承诺故障后恢复运行时状态。
-  Benchmark 决策：每 pair 四环和固定 ticket 表换取无逐帧分配/无逐包 RPC，默认 32 容量的四环总计一页；
-  host codec 用例只覆盖容量、回绕、错误位置和 kick 重新武装，实际 DMA、跨核唤醒和批处理吞吐在最终来宾验收测量。
+  Benchmark 决策：每 pair 四环和固定 ticket 表换取无逐帧分配/无逐包 RPC，默认 32 容量的四环连同头部共两页；
+  host codec 用例覆盖容量、回绕、错误位置和 kick 重新武装；实际 device-model 的提交/取消用例与现有引擎 wire 用例覆盖帧寿命及直接写入。
+  Benchmark 决策：借用帧替代每包 Arc/CPU 帧复制，减少 RX 栈缓冲及 AF_PACKET 临时分配；保留 codec 零初始化，不以 host 假 DMA 代替真实设备吞吐。
+  实际 DMA、跨核唤醒和批处理吞吐在最终来宾验收测量。
 - VirtIO-net 的 MQ/RSS 都依赖 CTRL_VQ；只在控制队列可用且至少支持其一时协商它。max_virtqueue_pairs 从同代配置读取并校验 1..=0x8000。
   VirtIONetworkDevice 只拥有 transport、能力与冷配置租约；ActiveNetwork 拥有本次配置的 queues/control/pools/failed。
   发现设备时不创建数据队列或置 DRIVER_OK；OPEN 按请求重新协商 feature、准备精确数量的队列与 reset owner，再启用 DMA。
@@ -402,8 +410,8 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   控制命令为冷初始化，有界睡眠等待，不占数据队列锁、不忙等。共享 MMIO/INTx 中断通知全部 pair，尚未声称实现每队列 MSI-X。
 - RSS 按固定 [VirtIO 1.4 CS01 网络规范](https://github.com/oasis-tcs/virtio-spec/blob/917e900e0246b7fe21cdde795b0e566dd4f57d8d/device-types/net/description.tex)实现可配置 Toeplitz 分流。
   只协商 RSS，不协商 HASH_REPORT，收发 header 保持 12 字节。能力来自同代配置的 key/table/hash-types；key 上限至少 40、table 上限至少 128，
-  领域 hash bits 只涵盖 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6 与 IPv6 EX 三类；不公布未实现的隧道散列或校验和/TSO 能力。
-  v6 静态描述在 maximum-pairs 后依次编码 rss-present(bool)、若存在则 key-max(u8)/table-max(u16)/hash-types(u32)，之后才是 MAC/name。
+  领域 hash bits 只涵盖 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6 与 IPv6 EX 三类；不公布未实现的隧道散列、RX 校验和或 TSO 能力。
+  v7 静态描述在 maximum-pairs 后依次编码 tx-checksum(bool)、rss-present(bool)、若存在则 key-max(u8)/table-max(u16)/hash-types(u32)，之后才是 MAC/name。
   RSS_CONFIG 冷请求携带 length(u64) 和只读 VMO，VMO 格式是 hash-types(u32)、unclassified(u16)、key-length(u16)、table-count(u32)、
   table-count 个 u16 pair 下标、原始 key 字节。所有整数小端；服务先有界复制快照，再按同一领域校验检查权能/长度/队列，避免 TOCTOU 及 64 KiB channel 限制。
   表长为 2 的幂且不超过设备上限，所有下标在本次会话内；启用散列时 key 非空且不超过设备上限；40-byte key 是执行者策略，不作为拒绝合法短 key 的协议门禁。禁止硬编码设备不支持的 hash bits。
@@ -412,6 +420,16 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   串行控制锁拥有整个 command→ACK 生命周期；未确认、拒绝或畸形完成均 reset，不能假定失败时硬件保留旧表。
   Netstack 在多 worker 时选择均衡表和随机 40-byte key，单 worker 保留标准初始化、不额外计算散列。RSS 切换可能移动既有流，worker 切换职责仍属于协议引擎。
   Benchmark 决策：编码/VMO/连续控制页只在冷配置分配，不改变逐帧缓冲与复制路径；主机 codec 覆盖超 64 KiB 表及非法队列/hash，真实分流和吞吐在最终来宾验收。
+- TX partial checksum 仅在设备提供 `VIRTIO_NET_F_CSUM` 时协商并发布。TX 第四字为零表示逐字节发送；
+  非零字的 bit 48 是 presence，低 48 位依次为 start/offset/header-length 三个 u16，其余位必须为零。
+  提交前校验 `start + offset + 2 <= header-length <= length`，不从包内容猜测是否请求卸载。
+  VirtIO header 置 NEEDS_CSUM，写入 hdr_len/csum_start/csum_offset，gso_type 保持 NONE；发送者预填伪头 seed。
+  当前主机栈仅对实际 TCP/UDP/DHCP emitter 的明确 PacketMeta 请求启用，RAW 与 AF_PACKET 不请求、不重写其 transport 字节；
+  无能力或分片回退时由同一 emitter 计算完整软件校验和。IP/ICMP 仍软件校验，未协商 RX 校验和或 TSO。
+  `packet-wire::checksum` 拥有 RFC 1071 的无分配、分段奇偶保留的 64-bit one's-complement 累加；adapter 只组合伪头。
+  驱动物理租约/失败归 net.rs，pair 队列/DMA 收发归 net/queue_pair.rs，控制命令归 net/control.rs。
+  Benchmark 决策：每条环记录增加 8 字节，换取不逐包发送控制 RPC；伪头处理不扫描 payload，真实卸载吞吐留至统一硬件验收。
+  出口 tap 位于硬件之前，卸载包的 checksum 尚为 seed；AF_PACKET 的标准 AUXDATA 状态尚未接通，边界见 socket ABI 矩阵。
 - 设备失败原子状态为 Live(0)/StopRequested(1)/ResetOwner(2)/Quiescent(3)；先 0→1 拒绝新 DMA，再非阻塞锁过所有 pair/control，
   仅 1→2 的唯一 owner reset，最后 Release 发表 3。完成线程遇到忙队列/控制事务就重调度其他完成源，锁存保留到 DMA 已停止；
   同步 stop 才在无锁冷路径 sleep 等待。并发 stop 必须等到 Quiescent，不能看到已请求撤离就提前归还 DMA。
@@ -421,7 +439,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   TX 完成返回实际 completed 数，主机栈跨队列/网卡扣同一轮预算，零预算仍可观察 backlog；畸形完成数不得扩大预算。
   Benchmark 决策：每 pair 独立锁与预分配池换取并行，驱动队列热路径不分配；活动数量增加时存储按请求 pair 数线性增长。
   冷配置锁隔离重开/初始化，当前共享 INTx 的回调短锁/Arc 成本在最终目标机诊断，不用 host 模拟设备时延；
-  整机吞吐/内存及共享 IRQ 扇出成本在最终来宾诊断。当前直接帧借用、校验和/TSO 卸载和 MSI-X 仍待路由阶段补齐，不能据此宣称数据面完成。
+  整机吞吐/内存及共享 IRQ 扇出成本在最终来宾诊断。当前校验和/TSO 卸载和 MSI-X 仍待路由阶段补齐，不能据此宣称数据面完成。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。
 
 - 设备 OpenRequest 保留原始 status flags；PTS 的 O_NOCTTY 禁止自动接管。文件壳和 slave

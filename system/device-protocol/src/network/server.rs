@@ -1,5 +1,7 @@
 use super::queue::{MAX_BATCH, Queue, Record, Ring};
-use super::{LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, encode_error};
+use super::{
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_checksum, encode_error,
+};
 use crate::directory::{self, Class, Directory, Session, SessionState};
 use crate::{Reader, Writer, take_handle};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -75,7 +77,7 @@ impl NetworkSession {
                     received,
                     transmit,
                     next_receive: 1,
-                    pending: [[0; 3]; MAX_BATCH],
+                    pending: [[0; 4]; MAX_BATCH],
                     first: 0,
                     count: 0,
                 }),
@@ -202,7 +204,7 @@ impl SessionQueue {
         if self.ring.aborted() {
             return Err(native_abi::ERR_BAD_STATE);
         }
-        let mut records = [[0; 3]; MAX_BATCH];
+        let mut records = [[0; 4]; MAX_BATCH];
         let mut slots = [0; MAX_BATCH];
         let limit = MAX_BATCH.min(self.ring.free(Ring::Completion)?);
         let completed = device
@@ -219,7 +221,7 @@ impl SessionQueue {
             let TransmitOwner::InFlight { ticket } = *owner else {
                 return Err(native_abi::ERR_BAD_STATE);
             };
-            records[index] = [u64::from(*slot), ticket, 0];
+            records[index] = [u64::from(*slot), ticket, 0, 0];
             *owner = TransmitOwner::Free {
                 last_ticket: ticket,
             };
@@ -229,13 +231,13 @@ impl SessionQueue {
         let mut produced = completed.completed;
         let mut again = completed.backlog && limit != 0;
         let count = self.ring.pop(Ring::Fill, &mut records)?;
-        for [slot, ticket, reserved] in &records[..count] {
+        for [slot, ticket, reserved, extra] in &records[..count] {
             let slot = u16::try_from(*slot).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             let held = state
                 .received
                 .get_mut(slot as usize)
                 .ok_or(native_abi::ERR_INVALID_ARGS)?;
-            if *ticket == 0 || *held != *ticket || *reserved != 0 {
+            if *ticket == 0 || *held != *ticket || *reserved != 0 || *extra != 0 {
                 return Err(native_abi::ERR_BAD_STATE);
             }
             device.release_receive(queue, slot).map_err(encode_error)?;
@@ -247,7 +249,7 @@ impl SessionQueue {
         again |= count == MAX_BATCH;
         if state.first == state.count {
             let count = self.ring.pop(Ring::Transmit, &mut records)?;
-            for [slot, ticket, length] in &records[..count] {
+            for [slot, ticket, length, metadata] in &records[..count] {
                 let slot = u16::try_from(*slot).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                 let owner = state
                     .transmit
@@ -262,13 +264,20 @@ impl SessionQueue {
                 {
                     return Err(native_abi::ERR_BAD_STATE);
                 }
+                if let Some(checksum) = decode_checksum(*metadata)? {
+                    checksum.validate(*length as usize).map_err(encode_error)?;
+                }
                 *owner = TransmitOwner::Queued { ticket: *ticket };
             }
             state.pending[..count].copy_from_slice(&records[..count]);
             state.first = 0;
             state.count = count;
         }
-        let mut descriptors = [NetworkTransmitDescriptor { slot: 0, length: 0 }; MAX_BATCH];
+        let mut descriptors = [NetworkTransmitDescriptor {
+            slot: 0,
+            length: 0,
+            checksum: None,
+        }; MAX_BATCH];
         let remaining = state.count - state.first;
         for (descriptor, record) in descriptors[..remaining]
             .iter_mut()
@@ -277,6 +286,7 @@ impl SessionQueue {
             *descriptor = NetworkTransmitDescriptor {
                 slot: record[0] as u16,
                 length: record[2] as usize,
+                checksum: decode_checksum(record[3])?,
             };
         }
         if remaining != 0 {
@@ -287,7 +297,7 @@ impl SessionQueue {
                 return Err(native_abi::ERR_BAD_STATE);
             }
             for index in state.first..state.first + accepted {
-                let [slot, ticket, _] = state.pending[index];
+                let [slot, ticket, _, _] = state.pending[index];
                 let owner = &mut state.transmit[slot as usize];
                 if !matches!(*owner, TransmitOwner::Queued { ticket: current } if current == ticket)
                 {
@@ -320,7 +330,7 @@ impl SessionQueue {
             let ticket = state.next_receive;
             state.next_receive = ticket.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
             state.received[frame.slot as usize] = ticket;
-            records[index] = [u64::from(frame.slot), ticket, frame.length as u64];
+            records[index] = [u64::from(frame.slot), ticket, frame.length as u64, 0];
         }
         self.ring.push(Ring::Receive, &records[..count])?;
         produced += count;
@@ -421,7 +431,8 @@ pub fn publish(
     let mut description = directory::description();
     description
         .u16(NETWORK_VERSION)
-        .u16(controller.maximum_queue_pairs());
+        .u16(controller.maximum_queue_pairs())
+        .bool(controller.transmit_checksum());
     let rss = controller.receive_scaling();
     description.bool(rss.is_some());
     if let Some(cap) = rss {

@@ -9,6 +9,7 @@ test = false
 bench = false
 
 [dependencies]
+packet-wire = { path = "../../libraries/packet-wire" }
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 service-rpc = { path = "../service-rpc" }

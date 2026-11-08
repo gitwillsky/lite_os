@@ -1,6 +1,6 @@
 # LiteOS transport source
 
-此目录是 kernel、host 回归与 architecture benchmark 唯一使用的 smoltcp 0.13.1。
+此目录是 netstack、host 回归与 architecture benchmark 唯一使用的 smoltcp 0.13.1。
 来源为 upstream commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897` 的原 crate；许可证为
 原样保留的 [0BSD](LICENSE-0BSD.txt)。`UPSTREAM.sha256.json` 固定逐文件原始内容，
 `scripts/verify_smoltcp.py` 拒绝原 inventory、未授权文件或第二个 registry consumer 的漂移。
@@ -34,6 +34,14 @@ kernel socket owner 实现。库拥有实际 transport queue、tuple、sequence�
   local 配置不触发 unicast assertion，未开放的组播配置明确拒绝。
 - IP-medium 承载真实 lo，不伪造 Ethernet/ARP；MTU 刷新 derived DeviceCapabilities，
   medium 不可改变。范围、实际设备配置及 Linux ioctl 属于 kernel owner。
+
+## TX checksum intent
+
+`PacketMeta.tx_checksum` 只由实际 TCP/UDP/DHCP emitter 在跳过软件 transport checksum 时设置。
+Device capabilities 的 TX checksum 关闭不代表所有 RAW 字节都能重写：RAW metadata 保持 false，
+netstack 的设备 adapter 只为明确请求的帧构造伪头 seed，VirtIO 驱动依逐帧描述符执行 partial checksum。
+超出出口 MTU、将进入分片的包先强制完整软件 checksum，不把整包 seed 错当成分片 checksum。
+协议解析/队列行为仍使用此唯一库；`packet-wire` 当前仅提供校验和算法，尚未替代格式与传输引擎。
 
 ## 唯一 FIB 与 dispatch
 

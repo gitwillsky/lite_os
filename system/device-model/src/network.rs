@@ -1,3 +1,6 @@
+#[path = "network/checksum.rs"]
+mod checksum;
+pub use checksum::NetworkChecksum;
 #[path = "network/frame.rs"]
 mod frame;
 pub use frame::{NetworkReceiveFrame, NetworkTransmit};
@@ -89,6 +92,9 @@ pub trait NetworkDevice: Send + Sync {
     /// 当前活动 RX/TX queue pair 数；编号为 0..queue_count，实例寿命内固定且非零。
     fn queue_count(&self) -> u16;
 
+    /// 是否支持显式逐帧的 TX partial checksum 请求；普通帧仍按原内容发送。
+    fn transmit_checksum(&self) -> bool;
+
     /// 绑定接收/发送完成时调用的活动通知；绑定前到达的完成由绑定时的一次通知补偿。
     fn bind_activity(&self, queue: u16, activity: crate::Activity);
 
@@ -132,6 +138,7 @@ pub trait NetworkDevice: Send + Sync {
         slot: u16,
         ticket: u64,
         length: usize,
+        checksum: Option<NetworkChecksum>,
     ) -> Result<(), NetworkError>;
 
     /// 取消尚未提交的 TX token；已交出的 Submitted 不能提前归还。
@@ -221,12 +228,16 @@ pub struct NetworkTransmitDescriptor {
     pub slot: u16,
     /// 不含设备 header 的字节数。
     pub length: usize,
+    /// 显式的 partial checksum 意图；None 必须保持所有原始 payload 字节。
+    pub checksum: Option<NetworkChecksum>,
 }
 
 /// 物理网卡的创建能力；公布硬件上限，队列数由使用者而非 CPU 探测策略决定。
 pub trait NetworkController: Send + Sync {
     /// 设备可配置的最大 pair 数，非零。
     fn maximum_queue_pairs(&self) -> u16;
+    /// 可接受 TX partial checksum 元数据；并不允许省略普通帧的校验和。
+    fn transmit_checksum(&self) -> bool;
     /// RSS 硬件能力；不支持可配置散列时为 None。
     fn receive_scaling(&self) -> Option<NetworkRssCapabilities>;
     /// 六字节 MAC。
@@ -310,6 +321,9 @@ mod tests {
         fn queue_count(&self) -> u16 {
             1
         }
+        fn transmit_checksum(&self) -> bool {
+            false
+        }
         fn bind_activity(&self, _: u16, _: crate::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [0; 6]
@@ -336,15 +350,18 @@ mod tests {
             // SAFETY: fixture 的 Vec 独立分配且 device 保活，reserved 时不 resize；唯一 token 结束后才归还。
             Ok(unsafe { NetworkTransmit::new(self, queue, 7, 1, address, slot.0.len()) })
         }
+        // SAFETY: 本 fixture 不产生 RX token，路径不可达，不持有任何接收内存。
         unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), NetworkError> {
             unreachable!()
         }
+        // SAFETY: 实际 token 已结束内容引用；fixture 只更新其独占槽状态，没有异步 DMA。
         unsafe fn submit_transmit(
             &self,
             _: u16,
             _: u16,
             _: u64,
             _: usize,
+            _: Option<super::NetworkChecksum>,
         ) -> Result<(), NetworkError> {
             if self.submit_error {
                 Err(NetworkError::Device)
@@ -353,6 +370,7 @@ mod tests {
                 Ok(())
             }
         }
+        // SAFETY: 实际 token 的 Drop 恰好取消一次；此处只归还独占状态并记录次数。
         unsafe fn cancel_transmit(&self, _: u16, _: u16, _: u64) {
             self.slot.lock().1 = false;
             *self.cancellations.lock() += 1;
@@ -389,7 +407,7 @@ mod tests {
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
         assert_eq!(
-            device.reserve_transmit(0).unwrap().submit(1),
+            device.reserve_transmit(0).unwrap().submit(1, None),
             Err(NetworkError::Device)
         );
         assert_eq!(*adapter.cancellations.lock(), 1);
@@ -404,7 +422,10 @@ mod tests {
         });
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
-        assert_eq!(device.reserve_transmit(0).unwrap().submit(1), Ok(()));
+        let mut frame = device.reserve_transmit(0).unwrap();
+        frame.buffer_mut()[0] = 0xa5;
+        assert_eq!(frame.submit(1, None), Ok(()));
+        assert_eq!(adapter.slot.lock().0[0], 0xa5);
         assert_eq!(*adapter.cancellations.lock(), 0);
     }
 }

@@ -15,6 +15,7 @@ use device_model::network::{
 };
 
 const ETHERNET_MTU: usize = 1514;
+mod checksum;
 mod loopback;
 use loopback::{LoopbackDevice, LoopbackRxToken, LoopbackTxToken};
 
@@ -429,6 +430,8 @@ pub(super) struct EthernetTxToken<'a> {
     net_id: u64,
     interface_index: u32,
     reservation: Option<NetworkTransmit<'a>>,
+    // FLAG: 本次 emitter 已明确省略 transport checksum；缺失会把未完成的包误当普通帧发送。
+    checksum: bool,
     maximum_frame_length: usize,
     dropped_transmits: &'a Cell<u64>,
     transmitted_errors: &'a Cell<u64>,
@@ -436,6 +439,9 @@ pub(super) struct EthernetTxToken<'a> {
 }
 
 impl TxToken for EthernetTxToken<'_> {
+    fn set_meta(&mut self, meta: smoltcp::phy::PacketMeta) {
+        self.checksum = meta.tx_checksum;
+    }
     fn consume<R, F>(self, length: usize, operation: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -445,9 +451,12 @@ impl TxToken for EthernetTxToken<'_> {
             "smoltcp TX exceeds actual Ethernet MTU"
         );
         let render = |frame: &mut [u8]| {
-            // 保留现有 codec 的零初始化前提（如 reserved/padding），直接在预留槽写入，不另复制帧。
-            frame.fill(0);
             let result = operation(frame);
+            let checksum = if self.checksum {
+                checksum::prepare(frame)
+            } else {
+                Ok(None)
+            };
             if length >= 14 {
                 packet::deliver_outgoing(
                     self.net_id,
@@ -459,19 +468,27 @@ impl TxToken for EthernetTxToken<'_> {
                     None,
                 );
             }
-            result
+            (result, checksum)
         };
         let (result, error) = match self.reservation {
             Some(mut reservation) if length <= reservation.capacity() => {
-                let result = render(&mut reservation.buffer_mut()[..length]);
-                (result, reservation.submit(length).err())
+                let frame = &mut reservation.buffer_mut()[..length];
+                // 保留 codec 的 reserved/padding 零初始化前提，只清实际范围；直接写预留槽，不另复制帧。
+                frame.fill(0);
+                let (result, checksum) = render(frame);
+                (
+                    result,
+                    checksum
+                        .and_then(|checksum| reservation.submit(length, checksum))
+                        .err(),
+                )
             }
             reservation => {
                 let error = reservation.as_ref().map(|_| NetworkError::FrameTooLarge);
                 drop(reservation);
                 // 无发送槽也要执行同一协议推进（不能因 TX 拥塞停止 RX/ACK）；此帧只丢弃，不发布 DMA。
                 let mut discarded = [0u8; ETHERNET_MTU];
-                let result = render(&mut discarded[..length]);
+                let (result, _) = render(&mut discarded[..length]);
                 if error.is_none() {
                     self.dropped_transmits
                         .set(self.dropped_transmits.get().saturating_add(1));
@@ -536,6 +553,7 @@ impl Device for EthernetDevice {
                     net_id: self.net_id,
                     interface_index: self.interface_index,
                     reservation,
+                    checksum: false,
                     maximum_frame_length: self.mtu + 14,
                     dropped_transmits: &self.dropped_transmits,
                     transmitted_errors: &self.transmitted_errors,
@@ -554,6 +572,7 @@ impl Device for EthernetDevice {
                 net_id: self.net_id,
                 interface_index: self.interface_index,
                 reservation: Some(reservation),
+                checksum: false,
                 maximum_frame_length: self.mtu + 14,
                 dropped_transmits: &self.dropped_transmits,
                 transmitted_errors: &self.transmitted_errors,
@@ -570,6 +589,10 @@ impl Device for EthernetDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ethernet;
         capabilities.max_transmission_unit = self.mtu + 14;
+        if self.device.transmit_checksum() {
+            capabilities.checksum.tcp = smoltcp::phy::Checksum::Rx;
+            capabilities.checksum.udp = smoltcp::phy::Checksum::Rx;
+        }
         capabilities
     }
 }

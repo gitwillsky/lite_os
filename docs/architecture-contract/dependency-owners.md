@@ -79,6 +79,9 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
 FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。ext4 实例拥有普通文件的内容
 （每文件一个 pager VMO），linuxd 经挂载控制取得它做 mmap；PCM 设备与混音属于 audio-core，linuxd 只翻译 ALSA。
 
+`libraries/packet-wire` 只拥有无状态报文字节算法，当前为 RFC 1071 校验和；不依赖服务或原生对象。
+Netstack 的设备 adapter 消费它构造伪头 seed，硬件能力与缓冲寿命仍归设备 owner，路由/传输状态仍归 netstack。
+
 ## 验证职责
 
 结构检查只约束真实 owner、依赖、scoped interface、unsafe/全局状态、ABI 和静态硬件边界。

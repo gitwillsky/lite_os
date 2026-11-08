@@ -1,6 +1,10 @@
 // 载入实际 Inet/UDP transport/port namespace；只有标准 wire、NIC 和 scheduler 是输入边界。
 fn udp_endpoint() -> Arc<InetSocket> {
-    InetSocket::new(InetProtocol::Udp, Arc::new(crate::Event::default()), namespace().clone())
+    InetSocket::new(
+        InetProtocol::Udp,
+        Arc::new(crate::Event::default()),
+        namespace().clone(),
+    )
     .unwrap()
 }
 fn udp_peer(port: u16) -> InetAddress {
@@ -14,8 +18,7 @@ fn udp_read(
     peek: bool,
 ) -> Result<(Vec<u8>, Option<InetAddress>), SocketError> {
     let mut data = crate::receive::ReceiveBuffer::try_new(1500).unwrap(); // 包含 lo MTU 回归的完整 datagram，截断行为由专门用例验证。
-    let (copied, full, source, _) =
-        endpoint.receive(&mut data, peek)?;
+    let (copied, full, source, _) = endpoint.receive(&mut data, peek)?;
     assert_eq!(copied, full);
     Ok((data.into_bytes(), source))
 }
@@ -122,11 +125,17 @@ fn udp_shutdown_is_native_policy_and_read_eof_does_not_disable_new_ingress() {
     assert_eq!(udp_read(&endpoint, false).unwrap(), (Vec::new(), None));
     endpoint.shutdown(1).unwrap();
     assert!(endpoint.poll_state().hangup);
-    assert_eq!(endpoint.send_to(b"x", None, None), Err(SocketError::BrokenPipe));
+    assert_eq!(
+        endpoint.send_to(b"x", None, None),
+        Err(SocketError::BrokenPipe)
+    );
     endpoint.disconnect().unwrap();
     endpoint.connect(udp_peer(44000)).unwrap();
     assert!(endpoint.poll_state().read_closed && endpoint.poll_state().hangup);
-    assert_eq!(endpoint.send_to(b"x", None, None), Err(SocketError::BrokenPipe));
+    assert_eq!(
+        endpoint.send_to(b"x", None, None),
+        Err(SocketError::BrokenPipe)
+    );
     assert_eq!(endpoint.shutdown(3), Err(SocketError::Invalid));
     endpoint.close_description();
     assert_eq!(counts(), (0, 0, 0));
@@ -165,12 +174,7 @@ fn udp_already_enqueued_transmit_retains_source_and_ttl_after_policy_change_and_
     let original = endpoint.address().unwrap();
     assert_eq!(endpoint.send_to(b"frozen", None, None), Ok(6));
     endpoint.set_hop_limit(Some(55)).unwrap();
-    assert_eq!(
-        endpoint
-            .option(InternetOption::HopLimit)
-            .unwrap(),
-        55
-    );
+    assert_eq!(endpoint.option(InternetOption::HopLimit).unwrap(), 55);
     endpoint.disconnect().unwrap();
     assert_eq!(endpoint.address().unwrap().port, 0);
     initial_stack().unwrap().lock().unwrap().poll();
@@ -221,7 +225,6 @@ fn udp_broadcast_delivers_all_matching_sockets_without_creating_a_recipient_queu
     assert_eq!(counts(), (0, 0, 0));
 }
 
-
 #[test]
 fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
     let _serial = SERIAL.lock().unwrap();
@@ -229,7 +232,9 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
     let scope = crate::namespace::Namespace::create().unwrap();
     let mut nic = WireDevice::new();
     nic.queue_count = 2;
-    nic.receive_on.store(1, core::sync::atomic::Ordering::Relaxed);
+    nic.checksum = true;
+    nic.receive_on
+        .store(1, core::sync::atomic::Ordering::Relaxed);
     let nic = Arc::new(nic);
     let device: Arc<dyn device_model::network::NetworkDevice> = nic.clone();
     scope.install_protocol(prepare_network(&scope, core::slice::from_ref(&device), false).unwrap());
@@ -238,9 +243,44 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
     configure_up(&scope, 2, true).unwrap();
     let endpoint = scoped_endpoint(&scope, InetProtocol::Udp);
     endpoint.bind(address(43177)).unwrap();
-    nic.wire.lock().unwrap().0.push_back(peer_udp_frame(udp_peer(44017), 43177, b"queue-one"));
-    for _ in 0..4 { dispatch_network_work(); }
+    nic.wire
+        .lock()
+        .unwrap()
+        .0
+        .push_back(peer_udp_frame(udp_peer(44017), 43177, b"queue-one"));
+    for _ in 0..4 {
+        dispatch_network_work();
+    }
     assert_eq!(udp_read(&endpoint, false).unwrap().0, b"queue-one");
-    assert_eq!(nic.cancelled_queue.load(core::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        nic.cancelled_queue
+            .load(core::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    nic.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
+        Ipv4Addr::new(10, 0, 2, 15),
+        udp_peer(44017).address,
+    ));
+    advance_actual_domains();
+    endpoint
+        .send_to(b"offload-udp", Some(udp_peer(44017)), None)
+        .unwrap();
+    advance_actual_domains();
+    let wire = nic.wire.lock().unwrap();
+    let frame = wire
+        .1
+        .iter()
+        .find_map(|bytes| {
+            let eth = smoltcp::wire::EthernetFrame::new_checked(bytes.as_slice()).ok()?;
+            let ip = smoltcp::wire::Ipv4Packet::new_checked(eth.payload()).ok()?;
+            (ip.next_header() == smoltcp::wire::IpProtocol::Udp).then_some(bytes)
+        })
+        .unwrap();
+    let eth = smoltcp::wire::EthernetFrame::new_checked(frame.as_slice()).unwrap();
+    let ip = smoltcp::wire::Ipv4Packet::new_checked(eth.payload()).unwrap();
+    let udp = smoltcp::wire::UdpPacket::new_checked(ip.payload()).unwrap();
+    assert!(udp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
+    assert_eq!(udp.payload(), b"offload-udp");
+    drop(wire);
     endpoint.close_description();
 }

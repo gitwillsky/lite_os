@@ -394,6 +394,7 @@ dependencies = [
  "launch-protocol",
  "native-runtime",
  "network-protocol",
+ "packet-wire",
  "service-directory",
  "service-rpc",
  "service-sync",
@@ -408,6 +409,7 @@ dependencies = [
  "fallible-tree",
  "native-abi",
  "network-protocol",
+ "packet-wire",
  "smoltcp",
  "spin",
 ]
@@ -420,6 +422,10 @@ dependencies = [
  "native-runtime",
  "service-rpc",
 ]
+
+[[package]]
+name = "packet-wire"
+version = "0.1.0"
 
 [[package]]
 name = "pager-pool"
