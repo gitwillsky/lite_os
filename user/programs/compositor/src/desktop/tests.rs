@@ -211,14 +211,14 @@ fn minimized_windows_are_skipped_by_activation() {
         "already minimized"
     );
     assert_eq!(stack.active(), Some((ClientId(1), surface(5))));
-    assert!(stack.placement(ClientId(2), surface(5)).unwrap().minimized);
+    assert!(stack.placement(ClientId(2), surface(5)).unwrap().minimized());
     // 全部最小化后没有活动窗口。
     stack.minimize(ClientId(1), surface(5));
     assert_eq!(stack.active(), None);
     // 激活会恢复最小化并提到最上层，即使它本来就在栈顶。
     assert!(stack.raise(ClientId(2), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
-    assert!(!stack.placement(ClientId(2), surface(5)).unwrap().minimized);
+    assert!(!stack.placement(ClientId(2), surface(5)).unwrap().minimized());
     // 撤销批量最小化与主动激活不同：恢复后台窗口不能把它提到前台。
     assert!(stack.unminimize(ClientId(1), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
@@ -240,7 +240,7 @@ fn mode_and_minimized_state_survive_sync() {
         1,
     );
     let placed = stack.placement(ClientId(1), surface(5)).unwrap();
-    assert!(placed.minimized && placed.mode == Mode::Maximized);
+    assert!(placed.minimized() && placed.mode == Mode::Maximized);
     assert!(!stack.sync(
         &[
             (ClientId(1), surface(5), 1280, 800, Initial::Cascade),

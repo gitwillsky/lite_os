@@ -381,7 +381,7 @@ impl Client {
             },
             _ => return Err(Fail::implementation(toplevel)),
         };
-        self.requests.push((surface, request));
+        self.requests.push(super::WindowCommand::Toplevel(surface, request));
         Ok(())
     }
 
@@ -528,7 +528,7 @@ impl Client {
     }
 
     /// 取走自上次以来客户端提出的窗口请求；键是窗口的 `wl_surface`。
-    pub fn take_requests(&mut self) -> Vec<(ObjectId, WindowRequest)> {
+    pub fn take_requests(&mut self) -> Vec<super::WindowCommand> {
         std::mem::take(&mut self.requests)
     }
 

@@ -43,7 +43,7 @@ pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};
 pub use wayland::{
     Configuration, CursorShape, Display, Event, EventKind, ImageId, Key, KeyboardInteractivity,
-    Layer, LayerSettings, ShellConnection, ShellLease, Toplevel, ToplevelId, ToplevelRequest,
+    Layer, LayerSettings, ShellConnection, ShellLease, ShellCommand, Toplevel, ToplevelId, ToplevelRequest,
     WindowId, WindowRequest, layer_anchor,
 };
 

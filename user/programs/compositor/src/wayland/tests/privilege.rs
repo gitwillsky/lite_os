@@ -46,7 +46,7 @@ fn ordinary_clients_see_the_window_list_but_never_the_shell_globals() {
     assert!(
         !globals
             .iter()
-            .any(|name| name.contains("layer_shell") || name.contains("security_context")),
+            .any(|name| name.contains("layer_shell") || name.contains("security_context") || name == "liteos_shell_v1"),
         "{globals:?}"
     );
 }
@@ -82,5 +82,6 @@ fn a_delegated_shell_has_shell_globals_but_cannot_delegate_again() {
     assert!(globals.contains(&"zwlr_layer_shell_v1".to_owned()));
     assert!(globals.contains(&"zwlr_foreign_toplevel_manager_v1".to_owned()));
     assert!(!globals.contains(&"wp_security_context_manager_v1".to_owned()));
-    assert_eq!(globals.len(), 13);
+    assert!(globals.contains(&"liteos_shell_v1".to_owned()));
+    assert_eq!(globals.len(), 14);
 }

@@ -171,12 +171,12 @@ impl Client {
             // 保留已告知窗口的记录；对象表删除句柄后不再更新它，也不重复宣告同一窗口。
             R::Destroy => return Ok(()),
         };
-        self.foreign_requests.push(ForeignRequest {
+        self.requests.push(super::WindowCommand::Foreign(ForeignRequest {
             shell: ClientId(0),
             client,
             surface,
             action,
-        });
+        }));
         Ok(())
     }
 
@@ -299,8 +299,4 @@ impl Client {
         *sent = window.clone();
     }
 
-    /// 取走自上次以来外壳提出的窗口操作。
-    pub fn take_foreign_requests(&mut self) -> Vec<ForeignRequest> {
-        std::mem::take(&mut self.foreign_requests)
-    }
 }

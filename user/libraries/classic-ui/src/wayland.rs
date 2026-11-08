@@ -8,6 +8,8 @@ mod frame;
 pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
 mod layer;
 mod security;
+mod shell;
+pub use shell::ShellCommand;
 mod subsurface;
 pub use subsurface::ImageId;
 mod transport;
@@ -276,6 +278,8 @@ pub struct Display {
     shape: Option<CursorShape>,
     foreign: std::collections::BTreeMap<u32, foreign::Pending>,
     foreign_revision: u64,
+    /// 仅授权 Shell 可绑定；缓存完整 wire 状态只用于展示，不能决定切换或撤销成员。
+    shell: Option<(ObjectId, u32)>,
 }
 
 impl Display {
@@ -398,6 +402,9 @@ impl Display {
         {
             bind(Interface::ZwlrForeignToplevelManagerV1, 3)?;
         }
+        let shell = if globals.iter().any(|(_, name, _)| name == "liteos_shell_v1") {
+            Some((bind(Interface::LiteosShellV1, 1)?, 0))
+        } else { None };
         let dialog_manager = if globals
             .iter()
             .any(|(_, name, _)| name == "xdg_wm_dialog_v1")
@@ -448,6 +455,7 @@ impl Display {
             shape: None,
             foreign: Default::default(),
             foreign_revision: 0,
+            shell,
         };
         display.bind_data_device()?;
         // 3. 两轮 sync 分别收齐 output/seat，以及由 seat 能力请求产生的 keymap，之后才允许建窗口。

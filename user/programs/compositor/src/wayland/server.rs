@@ -17,8 +17,8 @@ use linux_uapi::unix::{PollEvents, PollFd, recv_fds, send_fd};
 use wayland_wire::wire::ObjectId;
 
 use super::{
-    Client, Content, CursorRequest, ForeignInfo, ForeignRequest, LayerView, Output, Window,
-    WindowRequest,
+    Client, Content, CursorRequest, ForeignInfo, LayerView, Output, Window,
+    WindowCommand,
 };
 
 /// 每次读取的上限；一条消息至多 4096 字节，所以一次读取至少能推进状态机。
@@ -311,7 +311,7 @@ impl Server {
     }
 
     /// 取走全部连接自上次以来提出的窗口请求。
-    pub fn take_requests(&mut self) -> Vec<(ClientId, ObjectId, WindowRequest)> {
+    pub fn take_requests(&mut self) -> Vec<(ClientId, WindowCommand)> {
         let mut all = Vec::new();
         for connection in &mut self.connections {
             let id = connection.id;
@@ -320,7 +320,7 @@ impl Server {
                     .client
                     .take_requests()
                     .into_iter()
-                    .map(|(surface, request)| (id, surface, request)),
+                    .map(|request| (id, request)),
             );
         }
         all
@@ -365,19 +365,19 @@ impl Server {
         }
     }
 
-    /// 取走外壳提出的窗口操作。
-    pub fn take_foreign_requests(&mut self) -> Vec<ForeignRequest> {
-        self.connections
-            .iter_mut()
-            .flat_map(|connection| {
-                let shell = connection.id;
-                connection
-                    .client
-                    .take_foreign_requests()
-                    .into_iter()
-                    .map(move |request| ForeignRequest { shell, ..request })
-            })
-            .collect()
+    /// 指定连接仍持有经委派的外壳控制对象。
+    pub fn has_shell_control(&self, owner: ClientId) -> bool {
+        self.connections.iter().any(|connection| connection.id == owner && !connection.closing && connection.client.has_shell_control())
+    }
+
+    /// 向当前授权外壳公布它能撤销的事务状态；回调只借用唯一窗口栈。
+    pub fn sync_shell(&mut self, state: impl Fn(ClientId) -> u32) {
+        for connection in &mut self.connections {
+            if connection.client.has_shell_control() {
+                connection.client.sync_shell(state(connection.id));
+                if connection.flush().is_err() { connection.closing = true; }
+            }
+        }
     }
 
     /// 处理剪贴板：采纳键盘焦点客户端的 `set_selection`，把读取请求转交持有者，并在持有者断开时清空选择。

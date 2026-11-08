@@ -66,7 +66,7 @@ impl Session {
             return Ok(());
         };
         match command {
-            Command::Restore if placement.minimized => self.restore_window(client, surface),
+            Command::Restore if placement.minimized() => self.restore_window(client, surface),
             Command::Restore => self.set_mode(client, surface, Mode::Normal),
             Command::Minimize => self.minimize_window(client, surface),
             Command::Maximize => self.set_mode(client, surface, Mode::Maximized),

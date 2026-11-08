@@ -1,7 +1,7 @@
 //! 显示会话主循环：输入、Wayland 连接、窗口栈、桌面外壳与整帧合成的唯一装配点。
 
 mod cursor_requests;
-mod foreign;
+mod window_requests;
 mod hit_testing;
 mod presentation;
 mod seat_input;
@@ -41,7 +41,7 @@ use crate::{
     shell_layout,
     wayland::{
         ClientId, ForeignAction, ForeignInfo, ForeignState, KeyboardInteractivity, Layer, Server,
-        WindowRequest,
+        WindowCommand, WindowRequest,
     },
 };
 
@@ -538,7 +538,7 @@ impl Session {
             self.sync_windows()?;
             self.sync_work_area();
             self.handle_requests()?;
-            self.handle_foreign_requests();
+            self.sync_shell();
             self.sync_selection();
             self.sync_foreign();
             self.sync_focus();
@@ -814,84 +814,6 @@ impl Session {
             .update_pointer(&mut self.server, hit, pointer, scale, time, false);
     }
 
-    /// 处理客户端的窗口请求：交互式移动/缩放、最大化、全屏与最小化。
-    fn handle_requests(&mut self) -> io::Result<()> {
-        for (client, surface, request) in self.server.take_requests() {
-            let Some(placement) = self.stack.placement(client, surface).copied() else {
-                continue;
-            };
-            match request {
-                WindowRequest::Move { serial } | WindowRequest::Resize { serial, .. } => {
-                    // 只接受由仍按住的按钮触发的请求，且窗口不能是最大化/全屏，也不能已有抓取。
-                    let pressed = self.pointer_grab.filter(|grab| {
-                        grab.serial == serial
-                            && self.root_target(grab.target) == Some((client, surface))
-                            && placement.mode == Mode::Normal
-                            && self.grab.is_none()
-                    });
-                    let kind = match request {
-                        WindowRequest::Resize { edges, .. } => {
-                            Edges::from_xdg(edges).map(Kind::Resize)
-                        }
-                        _ => Some(Kind::Move),
-                    };
-                    if let (Some(pressed), Some(kind)) = (pressed, kind) {
-                        let start = (placement.x, placement.y, placement.width, placement.height);
-                        let grab = Grab {
-                            client,
-                            surface,
-                            kind,
-                            pointer: pressed.position,
-                            start,
-                        };
-                        self.seat.begin_grab(&mut self.server);
-                        self.grab = Some(ActiveGrab {
-                            grab,
-                            last_size: None,
-                            sticky: false,
-                            origin: start,
-                        });
-                        // motion 可先于客户端请求到达；立即补上从按下锚点到当前位置的位移。
-                        self.drag(self.input.pointer().position());
-                        if let Kind::Resize(edges) = kind {
-                            self.shape = Shape::Named(cursor::resize_cursor_name(edges));
-                            self.apply_cursor()?;
-                        }
-                    }
-                }
-                WindowRequest::Maximize(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Maximized } else { Mode::Normal },
-                    );
-                }
-                WindowRequest::Fullscreen(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Fullscreen } else { Mode::Normal },
-                    );
-                }
-                WindowRequest::Minimize => self.minimize_window(client, surface),
-                WindowRequest::ShowMenu { serial, x, y } => {
-                    if self.pointer_grab.is_some_and(|grab| {
-                        grab.serial == serial
-                            && self.root_target(grab.target) == Some((client, surface))
-                    }) && self.window_menu.is_none()
-                    {
-                        let scale = self.scale as i32;
-                        self.open_menu(
-                            placement,
-                            (placement.x + x * scale, placement.y + y * scale),
-                            false,
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 
     fn set_mode(&mut self, client: ClientId, surface: ObjectId, mode: Mode) {
         let (work, full) = (self.work_area(), self.full_area());

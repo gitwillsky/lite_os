@@ -30,7 +30,7 @@ impl Session {
             .or_else(|| {
                 self.stack
                     .placement(target.0, root)
-                    .filter(|placed| !placed.minimized)
+                    .filter(|placed| self.stack.visible(placed))
                     .map(|placed| (placed.x, placed.y))
             })
             .or_else(|| {
@@ -44,7 +44,7 @@ impl Session {
                         let placed = self
                             .stack
                             .placement(client, popup.client_root)
-                            .filter(|placed| !placed.minimized)?;
+                            .filter(|placed| self.stack.visible(placed))?;
                         Some((
                             placed.x.saturating_add(popup.x.saturating_mul(scale)),
                             placed.y.saturating_add(popup.y.saturating_mul(scale)),
@@ -110,7 +110,7 @@ impl Session {
             .rev()
             .find_map(|(client, popup)| {
                 let root = windows.iter().find(|root| {
-                    root.client == client && root.surface == popup.client_root && !root.minimized
+                    root.client == client && root.surface == popup.client_root && self.stack.visible(root)
                 })?;
                 self.tree_hit(
                     client,
@@ -142,7 +142,7 @@ impl Session {
             windows
                 .iter()
                 .rev()
-                .filter(|placed| !placed.minimized)
+                .filter(|placed| self.stack.visible(placed))
                 .find_map(|placed| {
                     self.tree_hit(placed.client, placed.surface, (placed.x, placed.y), point)
                 })

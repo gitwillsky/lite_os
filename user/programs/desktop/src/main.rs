@@ -10,7 +10,7 @@ mod taskbar;
 mod tray;
 use classic_ui::{
     Display, Edit, Event, EventKind, ITEM_DOUBLE_CLICK, ItemClick, KeyboardInteractivity, Layer,
-    LayerSettings, ToplevelId, ToplevelRequest, WindowId,
+    LayerSettings, ToplevelRequest, WindowId,
 };
 use desktop_entry::file_uris;
 use dialogs::{Dialog, Kind};
@@ -104,8 +104,6 @@ struct Desktop {
     armed: Option<(WindowId, usize)>,
     /// 仅记录可在释放时打开开始菜单的 Win 键；其他按键、点击或失焦即撤销，避免组合键误开菜单。
     start_key: Option<u32>,
-    /// 本次批量最小化的命令历史，仅保存带代际的身份；窗口状态与栈序仍由 compositor 拥有。
-    minimized_windows: Vec<ToplevelId>,
     focused: Option<usize>,
     /// 唯一的选中集合，按条目索引排序且不重复；焦点允许独立于选择移动。
     selection: Vec<usize>,
@@ -185,7 +183,6 @@ impl Desktop {
             pointer: (background, 0., 0.),
             armed: None,
             start_key: None,
-            minimized_windows: Vec::new(),
             focused: None,
             selection: Vec::new(),
             selection_anchor: None,
@@ -370,8 +367,8 @@ impl Desktop {
     fn perform(&mut self, display: &mut Display, action: popups::Action) -> io::Result<()> {
         use popups::Action;
         match action {
-            Action::MinimizeAll => self.minimize_all(display)?,
-            Action::UndoMinimizeAll => self.undo_minimize_all(display)?,
+            Action::MinimizeAll => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
+            Action::UndoMinimizeAll => display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?,
             Action::TaskManager => self.launch_task_manager(),
             Action::TaskbarProperties => self.control_panel("taskbar"),
             Action::SystemProperties => self.control_panel("system"),
@@ -458,7 +455,7 @@ impl Desktop {
                 self.apps = installed_programs();
                 self.refresh_icons();
             }
-            Action::Window(id, request) => self.control_window(display, id, request)?,
+            Action::Window(id, request) => display.control_toplevel( id, request)?,
         }
         Ok(())
     }
@@ -583,10 +580,7 @@ impl Desktop {
         if self.shell_key(display, &event.kind)? {
             return Ok(());
         }
-        if matches!(event.kind, EventKind::ToplevelsChanged) {
-            self.minimized_windows
-                .retain(|id| display.toplevel(*id).is_some());
-        }
+
         if window == self.background
             && (matches!(event.kind, EventKind::Focus(false))
                 || matches!(event.kind, EventKind::Key(key) if key.pressed && key.code == 1))
@@ -993,7 +987,7 @@ impl Desktop {
                     if window == self.taskbar {
                         match index {
                             0 => self.toggle_menu(display)?,
-                            1 => self.minimize_all(display)?,
+                            1 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
                             2 => self.open_place(start::Place::Documents),
                             3 => self.task_page = self.task_page.saturating_sub(1),
                             4 => self.task_page += 1,
@@ -1030,8 +1024,7 @@ impl Desktop {
                                     let active = display
                                         .toplevel(*id)
                                         .is_some_and(|info| info.active && !info.minimized);
-                                    self.control_window(
-                                        display,
+                                    display.control_toplevel(
                                         *id,
                                         if active {
                                             ToplevelRequest::Minimize(true)
@@ -1238,7 +1231,7 @@ impl Desktop {
         let modifiers = key.modifiers;
         let control_escape =
             key.code == 1 && modifiers.control && !modifiers.alt && !modifiers.super_key;
-        let win_command = matches!(key.code, 18 | 19 | 50 | 119)
+        let win_command = matches!(key.code, 18 | 19 | 32 | 50 | 119)
             && modifiers.super_key
             && !modifiers.alt
             && !modifiers.control
@@ -1259,8 +1252,9 @@ impl Desktop {
                 1 => self.launch_task_manager(),
                 18 => self.open_place(start::Place::MyComputer),
                 19 => self.dialog(display, Kind::Run)?,
-                50 if modifiers.shift => self.undo_minimize_all(display)?,
-                50 => self.minimize_all(display)?,
+                32 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
+                50 if modifiers.shift => display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?,
+                50 => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
                 119 => self.control_panel("system"),
                 _ => unreachable!("matched shell shortcut"),
             }

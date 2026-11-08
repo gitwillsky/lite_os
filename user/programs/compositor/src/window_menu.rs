@@ -118,11 +118,11 @@ impl WindowMenu {
             at.1
         } / scale
             * scale;
-        let normal = placement.mode == Mode::Normal && !placement.minimized;
+        let normal = placement.mode == Mode::Normal && !placement.minimized();
         let enabled = ROWS.map(|row| match row.command {
-            Some(Command::Restore) => placement.mode == Mode::Maximized || placement.minimized,
+            Some(Command::Restore) => placement.mode == Mode::Maximized || placement.minimized(),
             Some(Command::Move | Command::Size | Command::Maximize) => normal,
-            Some(Command::Minimize) => !placement.minimized,
+            Some(Command::Minimize) => !placement.minimized(),
             Some(Command::Close) => true,
             None => false,
         });

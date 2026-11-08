@@ -118,7 +118,7 @@ pub fn window_configure(
         maximized: mode == Mode::Maximized,
         fullscreen: mode == Mode::Fullscreen,
         resizing,
-        suspended: placement.is_some_and(|placed| placed.minimized),
+        suspended: placement.is_some_and(|placed| placed.minimized()),
     };
     let physical = match (size, mode, placement) {
         (Some(size), ..) => size,
@@ -154,7 +154,7 @@ impl Seat {
             && !modifiers.alt
             && ((code == 1 && modifiers.control && !modifiers.super_key)
                 || (matches!(code, 125 | 126) && !modifiers.control && !modifiers.shift)
-                || (matches!(code, 18 | 19 | 50 | 119)
+                || (matches!(code, 18 | 19 | 32 | 50 | 119)
                     && modifiers.super_key
                     && !modifiers.control
                     && (!modifiers.shift || code == 50)))

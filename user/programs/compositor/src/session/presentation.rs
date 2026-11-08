@@ -72,7 +72,7 @@ impl Session {
                 &windows[..split]
             };
             for placed in group.iter().filter(|placed| {
-                !placed.minimized
+                self.stack.visible(placed)
                     && !self.animation.as_ref().is_some_and(|animation| {
                         animation.client == placed.client && animation.surface == placed.surface
                     })
@@ -95,7 +95,7 @@ impl Session {
             }
             for (client, popup) in &popup_views {
                 if let Some(root) = group.iter().find(|root| {
-                    root.client == *client && root.surface == popup.client_root && !root.minimized
+                    root.client == *client && root.surface == popup.client_root && self.stack.visible(root)
                 }) {
                     append(
                         *client,

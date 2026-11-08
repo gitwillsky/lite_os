@@ -579,7 +579,7 @@ impl Desktop {
                     window_items(*id, info)
                 }
                 Some(_) => return Ok(()),
-                None => taskbar_items(!self.minimized_windows.is_empty()),
+                None => taskbar_items(display.can_undo_minimize_all()),
             }
         } else if window == self.background {
             match hit {

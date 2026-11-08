@@ -57,7 +57,7 @@ impl Session {
         if self
             .stack
             .placement(client, surface)
-            .is_some_and(|placed| !placed.minimized)
+            .is_some_and(|placed| !placed.minimized())
         {
             self.animate(client, surface, true);
         }

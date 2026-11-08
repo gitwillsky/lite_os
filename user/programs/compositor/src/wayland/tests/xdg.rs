@@ -297,7 +297,7 @@ fn window_requests_are_queued_keyed_by_surface() {
         WindowRequest::Minimize,
         WindowRequest::Fullscreen(true),
     ];
-    assert_eq!(requests, expected.map(|request| (id(5), request)).to_vec());
+    assert_eq!(requests, expected.map(|request| crate::wayland::WindowCommand::Toplevel(id(5), request)).to_vec());
     assert!(harness.client.take_requests().is_empty());
     assert!(
         harness

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="liteos_shell_v1">
+  <interface name="liteos_shell_v1" version="1">
+    <description summary="authorized LiteOS desktop transactions">
+      This system-service interface is advertised only to Shell connections delegated by the
+      trusted session through wp_security_context_v1. It is not an ordinary application ABI.
+      Window snapshots are asynchronous; commands are applied atomically by the compositor,
+      in the same connection order as xdg and foreign-toplevel window requests. Only the latest
+      effective batch is undoable. Manual operations supersede that window's batch membership.
+      Destroying the last control object or disconnecting undoes the connection's batch.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <enum name="action">
+      <entry name="minimize_all" value="0"/>
+      <entry name="undo_minimize_all" value="1"/>
+      <entry name="toggle_desktop" value="2"/>
+    </enum>
+    <request name="perform">
+      <arg name="action" type="uint" enum="action"/>
+    </request>
+    <enum name="state" bitfield="true">
+      <entry name="can_undo" value="1"/>
+      <entry name="showing_desktop" value="2"/>
+    </enum>
+    <event name="state">
+      <description summary="complete state of this connection's desktop transaction">
+        Sent after binding and whenever the state changes. This is a snapshot, not an
+        acknowledgement of any particular command. Toggle decisions remain server-owned.
+      </description>
+      <arg name="flags" type="uint" enum="state"/>
+    </event>
+  </interface>
+</protocol>

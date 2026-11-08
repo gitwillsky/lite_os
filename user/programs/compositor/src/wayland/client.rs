@@ -16,12 +16,12 @@ use wayland_wire::{
 
 use super::{
     Output,
-    foreign::{ForeignHandle, ForeignManager, ForeignRequest, SERVER_ID_BASE},
+    foreign::{ForeignHandle, ForeignManager, SERVER_ID_BASE},
     layer::LayerSurface,
     seat::CursorRequest,
     shm::{BufferSpec, Pool},
     surface::{Buffer, Surface},
-    xdg::{Toplevel, WindowRequest, XdgSurface},
+    xdg::{Toplevel, XdgSurface},
 };
 
 /// 未消费的描述符上限：恶意客户端只发 fd 不发消息时，队列不能无限增长。
@@ -91,6 +91,8 @@ pub(super) enum Data {
     Toplevel(Toplevel),
     LayerSurface(LayerSurface),
     SecurityContext(super::security::Context),
+    /// 最近已发送的外壳事务状态；实际状态只属于窗口栈。
+    Shell(Option<u32>),
     DataSource(super::clipboard::DataSource),
     Offer(super::clipboard::Offer),
     Viewport(super::viewport::Viewport),
@@ -151,7 +153,7 @@ pub struct Client {
     pub(super) buffer_releases: super::dmabuf::Releases,
     /// 下一个 `xdg_surface.configure` 序号；每个连接独立。
     pub(super) next_serial: u32,
-    pub(super) requests: Vec<(ObjectId, WindowRequest)>,
+    pub(super) requests: Vec<super::WindowCommand>,
     pub(super) commits: u64,
     pub(super) output: Output,
     /// 来源决定 Application/Session/Shell 能力；不从 uid 或客户端提供的 metadata 推断。
@@ -159,7 +161,6 @@ pub struct Client {
     pub(super) security_contexts: Vec<super::security::Listener>,
     /// 外壳绑定的窗口管理器及其窗口列表（特权连接才会有）。
     pub(super) foreign: Vec<ForeignManager>,
-    pub(super) foreign_requests: Vec<ForeignRequest>,
     pub(super) cursor_requests: Vec<CursorRequest>,
     /// 本连接已投递且尚未 leave 的 enter 序号；用于修改 cursor role 前拒绝过期请求，不拥有全局焦点。
     pub(super) pointer_enter_serial: Option<u32>,
@@ -210,7 +211,6 @@ impl Client {
             privilege,
             security_contexts: Vec::new(),
             foreign: Vec::new(),
-            foreign_requests: Vec::new(),
             cursor_requests: Vec::new(),
             pointer_enter_serial: None,
             selection_set: None,
@@ -410,6 +410,7 @@ impl Client {
 
     fn handle(&mut self, object: ObjectId, version: u32, request: AnyRequest) -> Result<(), Fail> {
         match request {
+            AnyRequest::LiteosShellV1(request) => self.shell_control(object, request),
             AnyRequest::WlDisplay(request) => self.display(request),
             AnyRequest::WlRegistry(request) => self.registry(object, request),
             AnyRequest::WlCompositor(request) => self.compositor(version, request),
@@ -509,6 +510,7 @@ impl Client {
             .into_iter()
             .chain(privileged)
             .chain(session)
+            .chain((self.privilege == Privilege::Shell).then_some((16, Interface::LiteosShellV1, 1)))
             .chain(
                 self.gpu
                     .is_some()
@@ -532,7 +534,8 @@ impl Client {
                 id.interface, id.version
             )));
         }
-        self.create(id.id, interface, id.version, Data::None)?;
+        let data = if interface == Interface::LiteosShellV1 { Data::Shell(None) } else { Data::None };
+        self.create(id.id, interface, id.version, data)?;
         if interface == Interface::ZwpLinuxDmabufV1 {
             self.announce_dmabuf(id.id, id.version)?;
         }

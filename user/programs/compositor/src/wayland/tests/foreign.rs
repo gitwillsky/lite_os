@@ -175,13 +175,13 @@ fn handle_requests_become_actions_on_the_right_window() {
             height: 1,
         },
     );
-    let requests = harness.client.take_foreign_requests();
-    let request = |client, action| ForeignRequest {
+    let requests = harness.client.take_requests();
+    let request = |client, action| crate::wayland::WindowCommand::Foreign(ForeignRequest {
         shell: ClientId(0),
         client: ClientId(client),
         surface: id(5),
         action,
-    };
+    });
     assert_eq!(
         requests,
         [
@@ -339,7 +339,7 @@ fn a_closed_handle_cannot_control_a_new_window_reusing_the_surface_id() {
     harness
         .send(|w| handle::Request::Close.encode(id(old), w).unwrap())
         .unwrap();
-    assert!(harness.client.take_foreign_requests().is_empty());
+    assert!(harness.client.take_requests().is_empty());
     harness
         .send(|w| handle::Request::Destroy.encode(id(old), w).unwrap())
         .unwrap();

@@ -2,7 +2,7 @@
 //! 状态仍由 Desktop 唯一持有；本模块只是同一 owner 的任务栏方法。
 use super::{Desktop, TASKBAR_HEIGHT, paint};
 use classic_ui::{
-    Display, KeyboardInteractivity, Layer, LayerSettings, ToplevelId, ToplevelRequest, layer_anchor,
+    Display, KeyboardInteractivity, Layer, LayerSettings, layer_anchor,
 };
 use std::{io, time::Duration};
 
@@ -12,47 +12,6 @@ const HIDDEN_HEIGHT: i32 = 2;
 const HIDE_DELAY: Duration = Duration::from_millis(400);
 
 impl Desktop {
-    /// 批量最小化只记录此前可见的窗口；重复的空操作保留上一次有效命令，供撤销使用。
-    pub(super) fn minimize_all(&mut self, display: &mut Display) -> io::Result<()> {
-        let windows: Vec<_> = display
-            .toplevels()
-            .filter(|(_, window)| !window.minimized)
-            .map(|(id, _)| id)
-            .collect();
-        if windows.is_empty() {
-            return Ok(());
-        }
-        self.minimized_windows = windows;
-        for &id in &self.minimized_windows {
-            display.control_toplevel(id, ToplevelRequest::Minimize(true))?;
-        }
-        Ok(())
-    }
-
-    /// 撤销本次命令；已关闭或代际已过期的对象跳过，其他传输错误交给既有会话退出路径。
-    /// 不依赖可能尚未到达的 minimized 快照，标准 socket 顺序保证撤销在本次最小化请求之后执行。
-    pub(super) fn undo_minimize_all(&mut self, display: &mut Display) -> io::Result<()> {
-        for id in std::mem::take(&mut self.minimized_windows) {
-            match display.control_toplevel(id, ToplevelRequest::Minimize(false)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
-
-    /// 手动窗口操作替代该窗口的旧批量命令；之后撤销不能覆盖用户的新选择。
-    pub(super) fn control_window(
-        &mut self,
-        display: &mut Display,
-        id: ToplevelId,
-        request: ToplevelRequest,
-    ) -> io::Result<()> {
-        self.minimized_windows.retain(|target| *target != id);
-        display.control_toplevel(id, request)
-    }
-
     /// 任务栏图层的设置：层次（总在最前）、高度与独占区（自动隐藏时收起并释放独占区）。
     pub(super) fn taskbar_layer(
         settings: &desktop_settings::Settings,
