@@ -16,6 +16,7 @@ const FRAME: i32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
+    Search,
     Documents,
     MyComputer,
     NetworkPlaces,
@@ -113,6 +114,15 @@ pub fn rows(apps: &[Application]) -> Vec<Row> {
                     Action::Files(Place::NetworkConnections),
                 ),
             ],
+        ),
+        parent(
+            "search-32",
+            "搜索(C)",
+            vec![leaf(
+                "search-16",
+                "文件或文件夹(F)...",
+                Action::Files(Place::Search),
+            )],
         ),
         leaf("run-32", "运行(R)...", Action::Run),
         lock,

@@ -342,7 +342,12 @@ impl Browser {
         }
         let old_location = self.location.clone();
         self.location = listing.location;
-        if self.location != old_location {
+        if self.location != old_location
+            && !matches!(
+                (&self.location, &old_location),
+                (Location::Search(_), Location::Search(_))
+            )
+        {
             self.column_layout = self.location.column_layout(&[]);
         }
         self.truncated = listing.truncated;
@@ -370,11 +375,7 @@ impl Browser {
                 if !identities.insert(key.clone()) {
                     return None;
                 }
-                let id = previous.remove(&key).unwrap_or_else(|| {
-                    let id = self.next;
-                    self.next += 1;
-                    id
-                });
+                let id = previous.remove(&key).unwrap_or_else(|| self.allocate_row());
                 Some((id, item))
             })
             .collect();
@@ -387,6 +388,52 @@ impl Browser {
             .any(|(field, ..)| *field == self.sort.0)
         {
             self.sort = (Field::Name, false);
+        }
+        self.sort_items();
+    }
+
+    fn allocate_row(&mut self) -> u64 {
+        let id = self.next;
+        self.next = self
+            .next
+            .checked_add(1)
+            .expect("Explorer row identity exhausted");
+        id
+    }
+
+    /// 把一批搜索结果合入当前集合；路径身份复用已有行，选择与滚动不因增量结果被重建。
+    pub fn append(&mut self, items: Vec<Item>) {
+        let previous: HashMap<_, _> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, item))| Some((item.path.as_deref()?, index)))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        let pending: Vec<_> = items
+            .into_iter()
+            .filter(|item| {
+                item.path
+                    .as_ref()
+                    .is_some_and(|path| seen.insert(path.clone()))
+            })
+            .map(|item| {
+                (
+                    item.path
+                        .as_deref()
+                        .and_then(|path| previous.get(path))
+                        .copied(),
+                    item,
+                )
+            })
+            .collect();
+        for (index, item) in pending {
+            if let Some(index) = index {
+                self.items[index].1 = item;
+            } else {
+                let id = self.allocate_row();
+                self.items.push((id, item));
+            }
         }
         self.sort_items();
     }

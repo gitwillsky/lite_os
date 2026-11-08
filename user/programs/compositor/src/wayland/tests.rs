@@ -72,7 +72,21 @@ impl Harness {
     ) -> Result<(), Disconnected> {
         let mut writer = Writer::new();
         build(&mut writer);
-        self.client.receive(writer.bytes(), fds)
+        self.client.receive(writer.bytes(), fds)?;
+        let queued = self.client.take_requests();
+        for request in queued {
+            if let super::WindowCommand::Toplevel(surface, generation, WindowRequest::Initialize) =
+                request
+            {
+                if self.client.toplevel_state(surface, generation) == Some((false, false)) {
+                    self.client
+                        .configure(surface, 0, 0, super::ToplevelState::default());
+                }
+            } else {
+                self.client.requests.push(request);
+            }
+        }
+        Ok(())
     }
 
     /// 取走并解码客户端待收的全部事件；`interfaces` 给出各对象 id 的接口（display 固定为 id 1）。

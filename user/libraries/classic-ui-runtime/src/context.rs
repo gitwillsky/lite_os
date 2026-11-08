@@ -751,6 +751,8 @@ impl Context {
         command: u32,
         value: &str,
     ) -> io::Result<()> {
+        // 显式 focus 可请求滚入视口；编辑命令不能用旧 clip 拒绝随后紧接的全选/粘贴。
+        self.layout(window)?;
         let protocol = self.host(window)?.frame.window();
         let scale = self.display.configuration(protocol).map_or(1, |c| c.scale);
         let font = self.resources.fonts(scale)?;

@@ -71,6 +71,9 @@ pub struct Stack {
     /// 新窗口层叠放置的计数；每个新窗口比上一个右下偏移一个标题栏高度。
     cascaded: i32,
     batch: Option<ShellBatch>,
+    /// 尚无缓冲的模式意图；与 order 按映射阶段互斥，首次映射时移走，不是已映射状态的副本。
+    /// 没有它，窗口在初始握手等待缓冲期间会丢失最大化/全屏请求；普通启动不分配条目。
+    prepared: Vec<(ClientId, ObjectId, u64, Mode)>,
 }
 
 /// 层叠放置的步长，逻辑像素（标题栏高度）。
@@ -82,6 +85,40 @@ impl Stack {
     /// 自底向上的窗口。
     pub fn windows(&self) -> &[Placement] {
         &self.order
+    }
+
+    /// 记录 `client`/`surface`/`generation` 尚未映射时的模式意图；身份有效性由调用方按角色 owner 验证。
+    /// `mode` 为当前策略接受的模式，无返回值或错误；首次映射后条目转入 placement，不能同时持有两份状态。
+    pub fn prepare_mode(
+        &mut self,
+        client: ClientId,
+        surface: ObjectId,
+        generation: u64,
+        mode: Mode,
+    ) {
+        if let Some(entry) = self
+            .prepared
+            .iter_mut()
+            .find(|entry| (entry.0, entry.1, entry.2) == (client, surface, generation))
+        {
+            entry.3 = mode;
+        } else if mode != Mode::Normal {
+            self.prepared.push((client, surface, generation, mode));
+        }
+    }
+
+    /// 查询尚未映射身份的模式意图；`client`/`surface`/`generation` 无条目时返回普通模式，无错误。
+    pub fn prepared_mode(&self, client: ClientId, surface: ObjectId, generation: u64) -> Mode {
+        self.prepared
+            .iter()
+            .find(|entry| (entry.0, entry.1, entry.2) == (client, surface, generation))
+            .map_or(Mode::Normal, |entry| entry.3)
+    }
+
+    /// 退休角色已消失或换代的未映射意图；`alive` 只读查询角色 owner，无返回值或错误。
+    pub fn retain_prepared(&mut self, mut alive: impl FnMut(ClientId, ObjectId, u64) -> bool) {
+        self.prepared
+            .retain(|entry| alive(entry.0, entry.1, entry.2));
     }
 
     /// 与当前已映射的窗口集合对账：消失的移除，新出现的按层叠规则放在最上层，尺寸变化的更新。
@@ -158,6 +195,11 @@ impl Stack {
             {
                 continue;
             }
+            let mode = self
+                .prepared
+                .iter()
+                .position(|entry| (entry.0, entry.1, entry.2) == (client, surface, generation))
+                .map_or(Mode::Normal, |index| self.prepared.swap_remove(index).3);
             self.leave_desktop();
             let centered = match initial {
                 Initial::Cascade => None,
@@ -184,7 +226,7 @@ impl Stack {
                     y: at(y, h, height, screen.1),
                     width,
                     height,
-                    mode: Mode::Normal,
+                    mode,
                     visibility: Visibility::Visible,
                     restore: None,
                     parent: match initial {
@@ -210,7 +252,7 @@ impl Stack {
                 y: offset,
                 width,
                 height,
-                mode: Mode::Normal,
+                mode,
                 visibility: Visibility::Visible,
                 restore: None,
                 parent: None,
@@ -349,7 +391,11 @@ impl Stack {
         }
         match target {
             Mode::Normal => {
-                let (x, y, width, height) = placed.restore.take()?;
+                let Some((x, y, width, height)) = placed.restore.take() else {
+                    // 直接以最大化/全屏启动时没有普通窗口尺寸；0×0 按 xdg-shell 交由客户端选择。
+                    placed.mode = target;
+                    return Some((0, 0));
+                };
                 (placed.x, placed.y, placed.width, placed.height) = (x, y, width, height);
             }
             Mode::Maximized | Mode::Fullscreen => {

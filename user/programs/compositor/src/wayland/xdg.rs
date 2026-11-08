@@ -60,6 +60,8 @@ impl Toplevel {
 /// 客户端对窗口提出的、需要窗口管理器裁决的请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowRequest {
+    /// 首次无缓冲提交已到达；由窗口策略选择首个 configure，尚不激活或加入已映射栈。
+    Initialize,
     /// `serial` 必须是客户端收到的、触发这次拖动的按钮事件的序号。
     Move {
         serial: u32,
@@ -436,7 +438,7 @@ impl Client {
         ))
     }
 
-    /// commit 之后：窗口第一次提交（通常不带 buffer）时发送初始 configure，尺寸 0×0 表示由客户端决定。
+    /// commit 之后：发表约束，并把首次无缓冲提交按线序交给窗口策略；Client 不自行选择初始模式。
     pub(super) fn xdg_after_commit(&mut self, surface: ObjectId) -> Result<(), Fail> {
         let Some(xdg) = self.surface_mut(surface)?.xdg else {
             return Ok(());
@@ -468,8 +470,7 @@ impl Client {
         if !initial {
             return Ok(());
         }
-        self.xdg_surface_mut(xdg)?.initial_sent = true;
-        self.send_configure(xdg, toplevel, 0, 0, ToplevelState::default())
+        self.window_request(toplevel, WindowRequest::Initialize)
     }
 
     /// 已绑定的 xdg_toplevel 版本；它决定 configure 能携带哪些状态和事件。
@@ -513,7 +514,15 @@ impl Client {
         let target = self.toplevel_of(surface);
         if let Some((xdg, toplevel)) = target {
             // 序号只会因缓冲区超长而失败，configure 是定长消息。
-            let _ = self.send_configure(xdg, toplevel, width, height, state);
+            if self
+                .send_configure(xdg, toplevel, width, height, state)
+                .is_ok()
+            {
+                // initial_sent 是已写入 wire 的事实，不是收到空提交的事实；重复空提交排队也只初始化一次。
+                if let Ok(xdg) = self.xdg_surface_mut(xdg) {
+                    xdg.initial_sent = true;
+                }
+            }
         }
     }
 
@@ -562,6 +571,30 @@ impl Client {
             }) => Some(xdg.surface),
             _ => None,
         }
+    }
+
+    /// 查询指定映射身份的协议事实，不创建窗口或改变握手。
+    ///
+    /// `surface`/`generation` 必须仍指向同一 toplevel；返回 `(已有缓冲, 已发初始 configure)`，
+    /// 角色销毁、取消映射换代或连接对象失效返回 `None`，无错误返回。
+    pub fn toplevel_state(&self, surface: ObjectId, generation: u64) -> Option<(bool, bool)> {
+        if self.dead {
+            return None;
+        }
+        let (xdg, top) = self.toplevel_of(surface)?;
+        let Data::Toplevel(top) = &self.objects.get(&top.get())?.data else {
+            return None;
+        };
+        if top.generation != generation {
+            return None;
+        }
+        let Data::XdgSurface(xdg) = &self.objects.get(&xdg.get())?.data else {
+            return None;
+        };
+        let Data::Surface(state) = &self.objects.get(&surface.get())?.data else {
+            return None;
+        };
+        Some((state.current.content.is_some(), xdg.initial_sent))
     }
 
     /// 取走自上次以来客户端提出的窗口请求；键是窗口的 `wl_surface`。

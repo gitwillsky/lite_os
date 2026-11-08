@@ -302,6 +302,7 @@ pub(super) unsafe extern "C" fn focus(pointer: *mut c_void, window: u64, id: u64
                 parent = ancestor.parent;
             }
             tree.focus = Some(id);
+            tree.request_reveal(id);
             host.frame.invalidate();
             Ok(())
         })

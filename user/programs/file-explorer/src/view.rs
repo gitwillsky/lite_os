@@ -43,6 +43,8 @@ pub struct View {
     pub folders_pane: Widget,
     pub folders_close: Widget,
     pub folders: Widget,
+    sidebar_title: Widget,
+    pub search: RefCell<Option<crate::search::Pane>>,
     content: Widget,
     panel: Widget,
     panel_icon: Widget,
@@ -289,6 +291,8 @@ impl View {
             folders_pane,
             folders_close,
             folders,
+            sidebar_title: caption_text,
+            search: RefCell::new(None),
             content,
             panel,
             panel_icon,
@@ -302,7 +306,6 @@ impl View {
                 address_label,
                 body,
                 caption,
-                caption_text,
                 separator,
                 top,
                 corner,
@@ -317,10 +320,59 @@ impl View {
         })
     }
 
+    /// 既有浏览栏复用同一个标题、关闭按钮与占位；文件夹树和搜索表单不同时显示。
+    pub fn show_search(
+        &self,
+        location: &str,
+        query: Option<&crate::search::Query>,
+    ) -> liteos_ui::Result<()> {
+        // 新打开的浏览栏以当前文件夹为范围；已打开时保留尚未提交的用户草稿。
+        let opening = !self.search_visible()?;
+        if self.search.borrow().is_none() {
+            self.search.replace(Some(crate::search::Pane::new(
+                &self.folders_pane,
+                location,
+            )?));
+        }
+        self.folders.set_state(state::HIDDEN)?;
+        self.sidebar_title.set_text("搜索")?;
+        self.folders_pane.set_state(0)?;
+        if let Some(pane) = self.search.borrow().as_ref() {
+            pane.root.set_state(pane.root.state()? & !state::HIDDEN)?;
+            if let Some(query) = query {
+                pane.restore(query)?;
+            } else if opening {
+                pane.location.set_text(location)?;
+            }
+            pane.name.focus()?;
+            pane.name.edit(liteos_ui::EditCommand::SelectAll)?;
+        }
+        Ok(())
+    }
+    pub fn show_folders(&self) -> liteos_ui::Result<()> {
+        if let Some(pane) = self.search.borrow().as_ref() {
+            pane.root.set_state(pane.root.state()? | state::HIDDEN)?;
+        }
+        self.folders.set_state(0)?;
+        self.sidebar_title.set_text("文件夹")?;
+        self.folders_pane.set_state(0)?;
+        Ok(())
+    }
+    pub fn search_visible(&self) -> liteos_ui::Result<bool> {
+        if self.folders_pane.state()? & state::HIDDEN != 0 {
+            return Ok(false);
+        }
+        self.search.borrow().as_ref().map_or(Ok(false), |pane| {
+            Ok(pane.root.state()? & state::HIDDEN == 0)
+        })
+    }
+
     /// 按客户区宽度显示或隐藏 Web 视图面板。
-    pub fn fit_panel(&self) -> liteos_ui::Result<()> {
+    pub fn fit_panel(&self, browser: &Browser) -> liteos_ui::Result<()> {
         let width = self.content.geometry()?.width;
-        let hidden = width < PANEL_WIDTH * 2;
+        let hidden = width < PANEL_WIDTH * 2
+            || self.search_visible()?
+            || matches!(browser.location, Location::Search(_));
         let current = self.panel.state()? & state::HIDDEN != 0;
         if hidden != current {
             self.panel

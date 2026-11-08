@@ -167,6 +167,8 @@ pub mod state {
     pub const TRACK_NO_TICKS: u32 = 16384;
     /// 滑块为两侧对称的矩形凸起按钮（TBS_BOTH），而不是指向刻度的尖角。
     pub const TRACK_BOTH: u32 = 32768;
+    /// Column 的纵向滚动视口；内容超过可见高度才显示滚动条，避免展开项被永久裁掉。
+    pub const VSCROLL: u32 = 65536;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {

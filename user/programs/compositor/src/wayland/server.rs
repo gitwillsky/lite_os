@@ -291,6 +291,21 @@ impl Server {
         })
     }
 
+    /// 只读查询 `client` 的指定映射角色；返回 `(已有缓冲, 已发初始 configure)`，退休身份返回 `None`。
+    /// 无 I/O 或错误返回，用于窗口策略退休尚未映射的请求。
+    pub fn toplevel_state(
+        &self,
+        client: ClientId,
+        surface: ObjectId,
+        generation: u64,
+    ) -> Option<(bool, bool)> {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == client)?
+            .client
+            .toplevel_state(surface, generation)
+    }
+
     /// 全部连接的已映射 layer surface（桌面外壳）。
     pub fn layers(&self) -> impl Iterator<Item = (ClientId, LayerView<'_>)> {
         self.connections.iter().flat_map(|connection| {

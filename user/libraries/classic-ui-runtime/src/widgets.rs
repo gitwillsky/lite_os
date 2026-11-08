@@ -96,6 +96,9 @@ impl Node {
         }
         validate_layout(spec.layout)?;
         validate_state(spec.state)?;
+        if spec.state & state::VSCROLL != 0 && spec.kind != widget::COLUMN {
+            return Err(invalid("vertical viewport requires a column"));
+        }
         Ok(Self {
             revision: 1,
             painted: None,
@@ -260,7 +263,8 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::EDIT_LABELS
             | state::KEYBOARD_CONTEXT_MENU
             | state::TRACK_NO_TICKS
-            | state::TRACK_BOTH)
+            | state::TRACK_BOTH
+            | state::VSCROLL)
         != 0
     {
         return Err(invalid("unknown widget state"));
@@ -330,6 +334,8 @@ pub struct Tree {
     pub menubar: Option<u64>,
     pub popup: Option<u64>,
     pub focus: Option<u64>,
+    /// 显式焦点请求在下一次排版后滚入视口；消费后清空，普通滚轮不把旧焦点拉回。
+    pub reveal: Option<u64>,
     pub armed: Option<u64>,
     pub file_press: Option<super::interaction::FilePress>,
     /// 一次选中标签的单击（控件、行与等待双击的截止时刻）。
@@ -354,6 +360,7 @@ impl Tree {
             menubar: None,
             popup: None,
             focus: None,
+            reveal: None,
             armed: None,
             file_press: None,
             rename_click: None,
@@ -481,7 +488,7 @@ impl Tree {
     }
     fn focus_order(&self, id: u64, order: &mut Vec<u64>) {
         let node = &self.nodes[&id];
-        if !self.active(id) {
+        if !self.focus_available(id) {
             return;
         }
         if node.focusable() {
@@ -510,6 +517,7 @@ impl Tree {
             (None, false) => 0,
         };
         self.focus = Some(order[next]);
+        self.request_reveal(order[next]);
     }
     pub fn hit(&self) -> Option<u64> {
         self.root_order
@@ -529,7 +537,7 @@ impl Tree {
             .or_else(|| {
                 // 微调钮可点击但不是 Tab 停靠点（msctls_updown32 没有 WS_TABSTOP）。
                 let clickable = node.kind == widget::UPDOWN && node.enabled() && node.visible();
-                (node.focusable() || clickable).then_some(id)
+                (node.focusable() || clickable || node.scrolling()).then_some(id)
             })
     }
 }

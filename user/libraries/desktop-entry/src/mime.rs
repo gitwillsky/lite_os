@@ -31,6 +31,12 @@ pub(super) struct Database {
 }
 
 impl Database {
+    pub(super) fn registered_types(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.types
+            .iter()
+            .filter(|(_, value)| !value.name.is_empty())
+            .map(|(mime, value)| (mime.as_str(), value.name.as_str()))
+    }
     pub(super) fn load(directories: &[PathBuf]) -> Self {
         let mut result = Self::default();
         // 低优先级先合并；用户数据和同目录 Override.xml 最后覆盖名称、图标与 glob-deleteall。

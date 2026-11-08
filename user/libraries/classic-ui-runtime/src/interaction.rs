@@ -192,6 +192,9 @@ impl Tree {
         if self.range_input(window, input, &mut out) {
             return (out, true, true);
         }
+        if self.scroll_input(input, probe.line_height()) {
+            return (out, true, true);
+        }
         if self.file_drag_input(window, input, probe, &mut out) {
             return (out, true, true);
         }
@@ -217,7 +220,7 @@ impl Tree {
                 pressed: true,
                 ..
             } => {
-                self.armed = self.hit();
+                self.armed = self.hit().filter(|id| self.nodes[id].focusable());
                 if self.armed.is_some() {
                     self.focus = self.armed;
                 }

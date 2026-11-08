@@ -5,6 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+glob = "=0.3.3"
+libc = "=0.2.191"
 network-drive = { path = "../../libraries/network-drive" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 desktop-entry = { path = "../../libraries/desktop-entry" }

@@ -173,7 +173,7 @@ impl Desktop {
         let modifiers = key.modifiers;
         let control_escape =
             key.code == 1 && modifiers.control && !modifiers.alt && !modifiers.super_key;
-        let win_command = matches!(key.code, 15 | 18 | 19 | 32 | 50 | 119)
+        let win_command = matches!(key.code, 15 | 18 | 19 | 32 | 33 | 50 | 119)
             && modifiers.super_key
             && !modifiers.alt
             && !modifiers.control
@@ -202,6 +202,7 @@ impl Desktop {
                 }
                 1 => self.launch_task_manager(),
                 18 => self.open_place(start::Place::MyComputer),
+                33 => self.open_place(start::Place::Search),
                 19 => self.dialog(display, Kind::Run)?,
                 32 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
                 50 if modifiers.shift => {

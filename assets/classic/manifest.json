@@ -1091,6 +1091,28 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
+    "ui/search-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "943d1f8e2b609e9dacc460896a0a1bf4e048f52e795ea17a610941b8a31dba64",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 23,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/search-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "cb33aad0d41370df361a59195e491f3acee25deeb2d629d5a2067a0c0801ee4d",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 23,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
     "ui/settings-16.bmp": {
       "group": "ui",
       "bytes": 1146,

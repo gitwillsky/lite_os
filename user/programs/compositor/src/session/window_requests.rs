@@ -5,6 +5,10 @@ use super::*;
 impl Session {
     /// 与客户端的已映射窗口对账；窗口增减、尺寸变化与新的 commit 都会触发重绘。
     pub(super) fn sync_windows(&mut self) -> io::Result<bool> {
+        let server = &self.server;
+        self.stack.retain_prepared(|client, surface, generation| {
+            server.toplevel_state(client, surface, generation).is_some()
+        });
         let mapped: Vec<(ClientId, ObjectId, u64, i32, i32, Initial)> = self
             .server
             .windows()
@@ -187,9 +191,23 @@ impl Session {
                 .copied()
                 .filter(|placed| placed.generation == generation)
             else {
+                let areas = (self.work_area(), self.full_area());
+                let scale = self.scale as i32;
+                let stack = &mut self.stack;
+                self.server.with_client(client, |connection| {
+                    unmapped_request(
+                        connection,
+                        stack,
+                        (client, surface, generation),
+                        request,
+                        areas,
+                        scale,
+                    );
+                });
                 continue;
             };
             match request {
+                WindowRequest::Initialize => {}
                 WindowRequest::Move { serial } | WindowRequest::Resize { serial, .. } => {
                     // 只接受由仍按住的按钮触发的请求，且窗口不能是最大化/全屏，也不能已有抓取。
                     let pressed = self.pointer_grab.filter(|grab| {
@@ -230,19 +248,10 @@ impl Session {
                         }
                     }
                 }
-                WindowRequest::Maximize(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Maximized } else { Mode::Normal },
-                    );
-                }
-                WindowRequest::Fullscreen(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Fullscreen } else { Mode::Normal },
-                    );
+                WindowRequest::Maximize(_) | WindowRequest::Fullscreen(_) => {
+                    if let Some(mode) = requested_mode(placement.mode, request) {
+                        self.set_mode(client, surface, mode);
+                    }
                 }
                 WindowRequest::Minimize => self.minimize_window(client, surface),
                 WindowRequest::ShowMenu { serial, x, y } => {
@@ -467,5 +476,359 @@ impl Session {
             })
             .collect();
         self.server.sync_foreign(&snapshot);
+    }
+}
+
+/// 未映射窗口与已映射窗口共用模式选择；最大化请求不能直接打断全屏，撤销全屏也不撤销未全屏窗口的最大化。
+fn requested_mode(current: Mode, request: WindowRequest) -> Option<Mode> {
+    match request {
+        WindowRequest::Maximize(_) if current == Mode::Fullscreen => Some(current),
+        WindowRequest::Maximize(on) => Some(if on { Mode::Maximized } else { Mode::Normal }),
+        WindowRequest::Fullscreen(false) if current != Mode::Fullscreen => Some(current),
+        WindowRequest::Fullscreen(on) => Some(if on { Mode::Fullscreen } else { Mode::Normal }),
+        _ => None,
+    }
+}
+
+/// 此阶段没有 Placement；只保存有效角色的模式意图，首个空提交之后才允许配置，无缓冲时不抢活动窗口。
+/// geometry 与协议 flags 是 Stack 模式的短暂投影，不在 Client 保存第二份模式状态。
+fn unmapped_request(
+    connection: &mut crate::wayland::Client,
+    stack: &mut Stack,
+    (client, surface, generation): (ClientId, ObjectId, u64),
+    request: WindowRequest,
+    (work, full): (Geometry, Geometry),
+    scale: i32,
+) {
+    let Some((false, configured)) = connection.toplevel_state(surface, generation) else {
+        return;
+    };
+    let current = stack.prepared_mode(client, surface, generation);
+    let mode = if request == WindowRequest::Initialize {
+        if configured {
+            return;
+        }
+        current
+    } else if let Some(mode) = requested_mode(current, request) {
+        stack.prepare_mode(client, surface, generation, mode);
+        if !configured {
+            return;
+        }
+        mode
+    } else {
+        // Minimize 是可忽略提示；移动/缩放/菜单需要已映射窗口及真实按下授权。
+        return;
+    };
+    let area = match mode {
+        Mode::Normal => (0, 0, 0, 0),
+        Mode::Maximized => work,
+        Mode::Fullscreen => full,
+    };
+    let scale = scale.max(1);
+    connection.configure(
+        surface,
+        area.2 / scale,
+        area.3 / scale,
+        crate::wayland::ToplevelState {
+            maximized: mode == Mode::Maximized,
+            fullscreen: mode == Mode::Fullscreen,
+            ..crate::wayland::ToplevelState::default()
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wayland::{Client, Output};
+    use std::{
+        collections::VecDeque,
+        io::Write,
+        os::fd::{AsRawFd, OwnedFd},
+    };
+    use wayland_wire::{
+        protocol::{
+            self, AnyEvent, Interface, wl_compositor, wl_display, wl_registry, wl_shm, wl_shm_pool,
+            wl_surface, xdg_surface, xdg_toplevel, xdg_wm_base,
+        },
+        wire::{DynamicNewId, Framer, Reader, Writer},
+    };
+
+    fn id(value: u32) -> ObjectId {
+        ObjectId::new(value).unwrap()
+    }
+
+    fn send(client: &mut Client, build: impl FnOnce(&mut Writer), fds: Vec<OwnedFd>) {
+        let mut wire = Writer::new();
+        build(&mut wire);
+        client.receive(wire.bytes(), fds).unwrap();
+    }
+
+    type Configuration = (i32, i32, Vec<u32>);
+
+    /// 只解码本用例关心的顶层配置和握手序号，消费无关的 registry 与 buffer 事件。
+    fn configurations(client: &mut Client) -> (Vec<Configuration>, Vec<u32>) {
+        let (bytes, _) = client.output();
+        let mut frames = Framer::new();
+        frames.push(bytes);
+        let length = bytes.len();
+        client.consume_output(length);
+        let (mut configs, mut serials) = (Vec::new(), Vec::new());
+        while let Some(frame) = frames.next_frame().unwrap() {
+            let interface = match frame.object.get() {
+                22 => Interface::XdgToplevel,
+                21 => Interface::XdgSurface,
+                _ => continue,
+            };
+            let mut fds = VecDeque::new();
+            let event = protocol::decode_event(
+                interface,
+                frame.opcode,
+                &mut Reader::new(&frame.body, &mut fds),
+            )
+            .unwrap();
+            match event {
+                AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure {
+                    width,
+                    height,
+                    states,
+                }) => configs.push((
+                    width,
+                    height,
+                    states
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|raw| u32::from_ne_bytes(*raw))
+                        .collect(),
+                )),
+                AnyEvent::XdgSurface(xdg_surface::Event::Configure { serial }) => {
+                    serials.push(serial)
+                }
+                _ => {}
+            }
+        }
+        (configs, serials)
+    }
+
+    #[test]
+    fn initial_mode_reaches_the_wire_and_transfers_only_to_its_mapped_generation() {
+        let output = Output {
+            width: 1280,
+            height: 800,
+            scale: 2,
+        };
+        let areas = ((0, 0, 1280, 760), (0, 0, 1280, 800));
+        let target = (ClientId(1), id(5), 1);
+        let mut client = Client::new(output);
+        let mut stack = Stack::default();
+        send(
+            &mut client,
+            |wire| {
+                wl_display::Request::GetRegistry { registry: id(2) }
+                    .encode(ObjectId::DISPLAY, wire)
+                    .unwrap();
+                for (name, interface, object) in [
+                    (1, "wl_compositor", 3),
+                    (2, "wl_shm", 4),
+                    (3, "xdg_wm_base", 20),
+                ] {
+                    wl_registry::Request::Bind {
+                        name,
+                        id: DynamicNewId {
+                            interface: interface.into(),
+                            version: 1,
+                            id: id(object),
+                        },
+                    }
+                    .encode(id(2), wire)
+                    .unwrap();
+                }
+                wl_compositor::Request::CreateSurface { id: id(5) }
+                    .encode(id(3), wire)
+                    .unwrap();
+                xdg_wm_base::Request::GetXdgSurface {
+                    id: id(21),
+                    surface: id(5),
+                }
+                .encode(id(20), wire)
+                .unwrap();
+                xdg_surface::Request::GetToplevel { id: id(22) }
+                    .encode(id(21), wire)
+                    .unwrap();
+                xdg_toplevel::Request::SetMaximized
+                    .encode(id(22), wire)
+                    .unwrap();
+                wl_surface::Request::Commit.encode(id(5), wire).unwrap();
+            },
+            Vec::new(),
+        );
+        assert!(
+            configurations(&mut client).0.is_empty(),
+            "protocol owner must wait for window policy"
+        );
+        for command in client.take_requests() {
+            let WindowCommand::Toplevel(surface, generation, request) = command else {
+                panic!("unexpected command")
+            };
+            unmapped_request(
+                &mut client,
+                &mut stack,
+                (target.0, surface, generation),
+                request,
+                areas,
+                2,
+            );
+        }
+        let (configs, serials) = configurations(&mut client);
+        assert_eq!(
+            configs,
+            [(640, 380, vec![1])],
+            "initial maximize uses the work area, not the full output"
+        );
+        assert_eq!(serials.len(), 1);
+        assert!(
+            stack.active().is_none(),
+            "a window waiting for its first buffer cannot steal activation"
+        );
+        // configure/ack 与第一幅缓冲之间仍可改模式；同一配置不能被重复 initial commit 覆盖。
+        unmapped_request(
+            &mut client,
+            &mut stack,
+            target,
+            WindowRequest::Fullscreen(true),
+            areas,
+            2,
+        );
+        unmapped_request(
+            &mut client,
+            &mut stack,
+            target,
+            WindowRequest::Initialize,
+            areas,
+            2,
+        );
+        let (configs, serials) = configurations(&mut client);
+        assert_eq!(configs, [(640, 400, vec![2])]);
+        let serial = serials[0];
+        let path =
+            std::env::temp_dir().join(format!("liteos-initial-buffer-{}", std::process::id()));
+        let mut file = std::fs::File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        file.write_all(&[0xFF; 16]).unwrap();
+        let raw = file.as_raw_fd();
+        send(
+            &mut client,
+            |wire| {
+                xdg_surface::Request::AckConfigure { serial }
+                    .encode(id(21), wire)
+                    .unwrap();
+                wire.begin(id(4), 0);
+                wire.object(Some(id(10)));
+                wire.fd(raw);
+                wire.int(16);
+                wire.end().unwrap();
+                wl_shm_pool::Request::CreateBuffer {
+                    id: id(11),
+                    offset: 0,
+                    width: 2,
+                    height: 2,
+                    stride: 8,
+                    format: wl_shm::Format::Argb8888,
+                }
+                .encode(id(10), wire)
+                .unwrap();
+                wl_surface::Request::Attach {
+                    buffer: Some(id(11)),
+                    x: 0,
+                    y: 0,
+                }
+                .encode(id(5), wire)
+                .unwrap();
+                wl_surface::Request::Commit.encode(id(5), wire).unwrap();
+            },
+            vec![file.into()],
+        );
+        let mapped: Vec<_> = client
+            .windows()
+            .map(|window| {
+                (
+                    target.0,
+                    window.surface,
+                    window.generation,
+                    4,
+                    4,
+                    Initial::Cascade,
+                )
+            })
+            .collect();
+        assert!(stack.sync(&mapped, (1280, 800), 2));
+        stack.refit(areas.0, areas.1);
+        let placed = stack.placement(target.0, target.1).unwrap();
+        assert_eq!(
+            (placed.mode, placed.x, placed.y, placed.width, placed.height),
+            (Mode::Fullscreen, 0, 0, 1280, 800)
+        );
+        assert_eq!(
+            stack.prepared_mode(target.0, target.1, target.2),
+            Mode::Normal,
+            "mode has moved into Placement"
+        );
+        assert_eq!(
+            stack.set_mode(target.0, target.1, Mode::Normal, areas.0, areas.1),
+            Some((0, 0)),
+            "initial fullscreen has no invented normal-size restore record"
+        );
+        configurations(&mut client);
+        send(
+            &mut client,
+            |wire| {
+                wl_surface::Request::Attach {
+                    buffer: None,
+                    x: 0,
+                    y: 0,
+                }
+                .encode(id(5), wire)
+                .unwrap();
+                wl_surface::Request::Commit.encode(id(5), wire).unwrap();
+            },
+            Vec::new(),
+        );
+        stack.sync(&[], (1280, 800), 2);
+        unmapped_request(
+            &mut client,
+            &mut stack,
+            target,
+            WindowRequest::Maximize(true),
+            areas,
+            2,
+        );
+        assert!(
+            configurations(&mut client).0.is_empty(),
+            "old generation is inert even while a new mapping is being prepared"
+        );
+        send(
+            &mut client,
+            |wire| wl_surface::Request::Commit.encode(id(5), wire).unwrap(),
+            Vec::new(),
+        );
+        for command in client.take_requests() {
+            if let WindowCommand::Toplevel(surface, generation, request) = command {
+                unmapped_request(
+                    &mut client,
+                    &mut stack,
+                    (target.0, surface, generation),
+                    request,
+                    areas,
+                    2,
+                );
+            }
+        }
+        assert_eq!(configurations(&mut client).0, [(0, 0, Vec::new())]);
     }
 }

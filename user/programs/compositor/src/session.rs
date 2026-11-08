@@ -739,6 +739,9 @@ impl Session {
             // 回到普通模式时要带上还原尺寸：普通窗口默认的 0×0 会让客户端留在最大化时的大小。
             self.send_configure(client, surface, Some(size), false);
             self.dirty = true;
+        } else if before.is_some() {
+            // xdg-shell 即使请求的模式没有变化也要求响应 configure；否则等待确认的客户端会停住。
+            self.send_configure(client, surface, None, false);
         }
     }
 

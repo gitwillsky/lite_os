@@ -286,9 +286,10 @@ impl Art {
             .get(name)
             .or_else(|| self.bitmaps.get(name))
     }
-    /// 当前安装条目与桌面快捷方式共用图标加载入口；刷新时移除已卸载条目的像素。
+    /// 安装条目、桌面快捷方式与开始菜单声明共用加载入口；不另抄菜单图标清单。
     pub fn register(&mut self, entries: &[desktop_entry::Entry], icons: &[super::icons::Icon]) {
         self.entry_bitmaps.clear();
+        let menu = start::rows(entries);
         let applications = entries
             .iter()
             .filter_map(|entry| entry.icon.as_deref())
@@ -296,7 +297,21 @@ impl Art {
         let desktop = icons
             .iter()
             .filter_map(|icon| icon.art.strip_suffix("-32").map(|name| (name, 32)));
-        for (name, size) in applications.chain(desktop) {
+        let menu_icons = menu
+            .iter()
+            .flat_map(|row| std::iter::once(row).chain(&row.submenu))
+            .filter_map(|row| {
+                let (name, size) = row.icon.rsplit_once('-')?;
+                Some((
+                    name,
+                    match size {
+                        "16" => 16,
+                        "32" => 32,
+                        _ => return None,
+                    },
+                ))
+            });
+        for (name, size) in applications.chain(desktop).chain(menu_icons) {
             let key = format!("{name}-{size}");
             if self.bitmaps.contains_key(&key) || self.entry_bitmaps.contains_key(&key) {
                 continue;

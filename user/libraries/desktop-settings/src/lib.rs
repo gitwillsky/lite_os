@@ -160,13 +160,12 @@ impl Settings {
         }
     }
 
-    /// 读取 `location` 的查看方式。未设置时使用大图标。
-    pub fn folder_view(&self, location: &str) -> FolderView {
+    /// 读取 `location` 显式保存的查看方式；未设置返回 None，由对应位置选择默认样式。
+    pub fn folder_view(&self, location: &str) -> Option<FolderView> {
         self.folder_views
             .iter()
             .find(|(key, _)| key == location)
             .map(|(_, view)| *view)
-            .unwrap_or_default()
     }
 
     /// 更新 `location` 的查看方式；键是本地文件 URI 或外壳位置标识。
@@ -175,13 +174,12 @@ impl Settings {
             return;
         }
         self.folder_views.retain(|(key, _)| key != &location);
-        if view != FolderView::default() {
-            // 只保留最近设置过的 512 个位置，防止设置文件随历史浏览无限增长。
-            if self.folder_views.len() == 512 {
-                self.folder_views.remove(0);
-            }
-            self.folder_views.push((location, view));
+        // 显式的大图标也必须保留：搜索等位置可有不同的默认样式，不能把用户选择当作未设置。
+        // 只保留最近设置过的 512 个位置，防止设置文件随历史浏览无限增长。
+        if self.folder_views.len() == 512 {
+            self.folder_views.remove(0);
         }
+        self.folder_views.push((location, view));
     }
 
     /// 设置文件路径；没有 `HOME` 时为 `None`。

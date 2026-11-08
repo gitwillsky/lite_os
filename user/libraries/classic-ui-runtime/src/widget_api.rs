@@ -162,18 +162,32 @@ pub(super) unsafe extern "C" fn state(
             if old.state == value {
                 return Ok(());
             }
+            if value & abi::state::VSCROLL != 0 && old.kind != abi::widget::COLUMN {
+                return Err(invalid("vertical viewport requires a column"));
+            }
             // 布局还会修复不可用的焦点，因此 DISABLED 变化也必须重新布局。
             let geometry = abi::state::HIDDEN
                 | abi::state::DISABLED
                 | abi::state::WRAP
                 | abi::state::CLIENT_EDGE
-                | abi::state::BORDERLESS;
+                | abi::state::BORDERLESS
+                | abi::state::VSCROLL;
             let layout_changed = (old.state ^ value) & geometry != 0;
+            let viewport_changed = (old.state ^ value) & abi::state::VSCROLL != 0;
             host.controls_mut()?
                 .nodes
                 .get_mut(&id)
                 .expect("validated widget")
                 .state = value;
+            if viewport_changed {
+                let tree = host.controls_mut()?;
+                let node = tree.nodes.get_mut(&id).expect("validated viewport");
+                node.position.position = 0;
+                node.position.release();
+                if tree.armed == Some(id) {
+                    tree.armed = None;
+                }
+            }
             host.controls_mut()?.layout_dirty |= layout_changed;
             host.frame.invalidate();
             Ok(())
@@ -702,6 +716,16 @@ pub(super) unsafe extern "C" fn select(
             }
             if let Some(outline) = node.outline.as_mut() {
                 outline.reveal(value);
+            }
+            if node.kind == abi::widget::COMBO {
+                // 程序选择与键盘/指针选择共用文字 owner；仅改 selected 会让默认值和历史恢复显示空白。
+                if value == 0 {
+                    node.edit = Some(classic_ui::Edit::new(""));
+                } else if let Some(index) = (0..node.row_count())
+                    .find(|index| node.row_at(*index).is_some_and(|row| row.0 == value))
+                {
+                    node.combo_choose(index);
+                }
             }
             tree.layout_dirty |= matches!(node.kind, abi::widget::TABS | abi::widget::TREE);
             host.frame.invalidate();

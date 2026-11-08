@@ -769,6 +769,8 @@ dependencies = [
  "calendar",
  "desktop-entry",
  "desktop-settings",
+ "glob",
+ "libc",
  "linux-uapi",
  "liteos-ui",
  "network-config",

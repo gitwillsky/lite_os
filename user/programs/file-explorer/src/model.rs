@@ -28,11 +28,14 @@ pub enum Location {
     NetworkConnections,
     RecycleBin,
     Directory(PathBuf),
+    /// 已提交搜索条件；None 是尚未开始的搜索结果视图，编辑中的条件只属于浏览栏。
+    Search(Option<crate::search::Query>),
 }
 
 /// 条目图标；与 `/usr/share/liteos/ui/<name>-{16,32}.bmp` 一一对应。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    Search,
     Desktop,
     MyComputer,
     Folder,
@@ -62,6 +65,7 @@ pub enum Icon {
 impl Icon {
     pub fn file_stem(self) -> &'static str {
         match self {
+            Icon::Search => "search",
             Icon::Desktop => "desktop",
             Icon::MyComputer => "my-computer",
             Icon::Folder => "folder-closed",
@@ -132,6 +136,7 @@ pub enum Field {
     Owner,
     Created,
     Accessed,
+    Folder,
 }
 
 impl Field {
@@ -151,6 +156,7 @@ impl Field {
             Field::Owner,
             Field::Created,
             Field::Accessed,
+            Field::Folder,
         ]
         .into_iter()
         .find(|field| *field as u64 == id)
@@ -259,6 +265,11 @@ impl Item {
     pub fn cell(&self, field: Field) -> String {
         match (field, &self.details) {
             (Field::Name, _) => self.name.clone(),
+            (Field::Folder, _) => self
+                .path
+                .as_deref()
+                .and_then(Path::parent)
+                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
             (Field::Kind, _) => self.kind.clone(),
             (Field::Size, _) => self.size.map_or_else(String::new, size_text),
             (Field::Modified, _) => self.modified.map_or_else(String::new, date_text),
@@ -312,6 +323,7 @@ impl Location {
     /// 用规范目录的文件 URI 或固定的外壳位置标识保存查看方式。
     pub(super) fn view_key(&self) -> io::Result<String> {
         let key = match self {
+            Self::Search(_) => "::search",
             Self::Desktop => "::desktop",
             Self::MyComputer => "::my-computer",
             Self::ControlPanel => "::control-panel",
@@ -331,6 +343,7 @@ impl Location {
     /// 解析命令行参数或地址栏文字：`::` 开头的虚拟文件夹名、虚拟文件夹的显示名，否则为文件系统路径。
     pub fn parse(argument: &str) -> Self {
         match argument {
+            "::search" | "搜索结果" => Location::Search(None),
             "::desktop" | "桌面" => Location::Desktop,
             "::my-computer" | "我的电脑" => Location::MyComputer,
             "::recycle-bin" | "回收站" => Location::RecycleBin,
@@ -345,6 +358,7 @@ impl Location {
     /// 地址栏文本。
     pub fn address(&self) -> String {
         match self {
+            Location::Search(_) => "搜索结果".into(),
             Location::Desktop => "桌面".into(),
             Location::MyComputer => "我的电脑".into(),
             Location::RecycleBin => "回收站".into(),
@@ -374,6 +388,7 @@ impl Location {
     /// 位置本身的图标（Web 视图、地址栏与区域格）。
     pub fn icon(&self) -> Icon {
         match self {
+            Location::Search(_) => Icon::Search,
             Location::Desktop => Icon::Desktop,
             Location::MyComputer => Icon::MyComputer,
             Location::RecycleBin => Icon::RecycleBin,
@@ -404,6 +419,7 @@ impl Location {
     /// “整个网络”到“网上邻居”。“桌面”是根。
     pub fn parent(&self) -> Option<Location> {
         match self {
+            Location::Search(_) => Some(Location::Desktop),
             Location::Desktop => None,
             Location::MyComputer | Location::NetworkPlaces | Location::RecycleBin => {
                 Some(Location::Desktop)
@@ -422,6 +438,13 @@ impl Location {
     /// 详细资料的列（shell32 8976–8986、9386–9389，netshell 1000–1004）。
     pub fn columns(&self) -> &'static [ColumnSpec] {
         match self {
+            Location::Search(_) => &[
+                (Field::Name, "名称", 160),
+                (Field::Folder, "所在文件夹", 200),
+                (Field::Size, "大小", 75),
+                (Field::Kind, "类型", 120),
+                (Field::Modified, "修改时间", 160),
+            ],
             Location::MyComputer => &[
                 (Field::Name, "名称", 180),
                 (Field::Kind, "类型", 110),
@@ -514,6 +537,7 @@ impl Location {
         let associations = desktop_entry::Associations::load();
         let mut truncated = false;
         let mut items = match self {
+            Location::Search(_) => Vec::new(),
             Location::Desktop => {
                 let home =
                     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
@@ -789,7 +813,11 @@ pub(super) fn network_drives() -> io::Result<Vec<Item>> {
 }
 
 /// 描述一个文件系统条目；元数据读取失败时按普通文件处理，不让单个坏条目挡住整个目录。
-fn describe(path: &Path, named_path: &Path, associations: &desktop_entry::Associations) -> Item {
+pub(super) fn describe(
+    path: &Path,
+    named_path: &Path,
+    associations: &desktop_entry::Associations,
+) -> Item {
     let metadata = fs::metadata(path).ok();
     let timestamp = |time: io::Result<std::time::SystemTime>| {
         time.ok()

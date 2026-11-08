@@ -65,6 +65,109 @@ fn pending_or_cancelled_label_editor_restores_the_original_label() {
     }
 }
 
+// 原有列表滚动用例不经过普通容器的排版/裁剪/Tab 顺序；此生产树路径捕获不可见表单项失联和滚轮被焦点拉回。
+#[test]
+fn scrolling_container_reveals_keyboard_focus_without_undoing_wheel_scroll() {
+    for scale in [1, 2] {
+        let theme = Theme::classic();
+        let catalog = typeface::FontCatalog::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts"),
+        )
+        .unwrap();
+        let fonts = Fonts::new(Rc::new(catalog), &theme.fonts, scale as u32);
+        let mut scratch = [0];
+        let painter = Painter::new(
+            Surface::new(&mut scratch, 1, 1, 1).unwrap(),
+            &theme,
+            &fonts,
+            scale,
+        );
+        let mut tree = Tree::new();
+        let spec = |kind, state, layout| classic_ui_abi::Widget {
+            kind,
+            state,
+            layout,
+            group: 0,
+            text: classic_ui_abi::Text {
+                data: std::ptr::null(),
+                len: 0,
+            },
+        };
+        let root = tree
+            .insert(
+                0,
+                spec(
+                    widget::COLUMN,
+                    state::VSCROLL,
+                    classic_ui_abi::Layout {
+                        grow: 1,
+                        padding: 2,
+                        ..Default::default()
+                    },
+                ),
+                String::new(),
+            )
+            .unwrap();
+        let mut fields = Vec::new();
+        for name in ["first", "second", "last"] {
+            fields.push(
+                tree.insert(
+                    root,
+                    spec(
+                        widget::EDIT,
+                        0,
+                        classic_ui_abi::Layout {
+                            height: 40,
+                            ..Default::default()
+                        },
+                    ),
+                    name.into(),
+                )
+                .unwrap(),
+            );
+        }
+        let bounds = Rect::new(0, 0, 160, 70);
+        tree.layout(bounds, &painter);
+        assert!(tree.nodes[&root].scroll_bar().is_some());
+        assert!(tree.nodes[&fields[2]].clip.is_empty());
+        tree.focus_next(false);
+        tree.layout(bounds, &painter);
+        tree.focus_next(false);
+        tree.layout(bounds, &painter);
+        assert_eq!(tree.focus, Some(fields[2]));
+        let page = tree.nodes[&root].viewport();
+        let field = tree.nodes[&fields[2]].rect;
+        assert!(field.y >= page.y && field.bottom() <= page.bottom());
+        tree.pointer = (field.x + 1, field.y + 1);
+        assert!(tree.scroll_input(
+            &classic_ui::EventKind::Wheel {
+                vertical: -20,
+                horizontal: 0
+            },
+            painter.line_height()
+        ));
+        tree.layout(bounds, &painter);
+        assert_eq!(tree.nodes[&root].position.position, 0);
+        assert_eq!(tree.focus, Some(fields[2]));
+        assert!(tree.nodes[&fields[2]].clip.is_empty());
+        let bar = tree.nodes[&root].scroll_bar().unwrap();
+        tree.pointer = (bar.x + 1, bar.y + 1);
+        assert_eq!(
+            tree.hit(),
+            Some(root),
+            "children cannot hit through the scrollbar gutter"
+        );
+        for field in &fields[..2] {
+            tree.nodes.get_mut(field).unwrap().state = state::HIDDEN;
+        }
+        tree.layout_dirty = true;
+        tree.layout(bounds, &painter);
+        assert!(tree.nodes[&root].scroll_bar().is_none());
+        assert_eq!(tree.nodes[&root].position.position, 0);
+        assert!(tree.nodes[&fields[2]].clip.width > field.width);
+    }
+}
+
 // 原有标签用例只覆盖单次绘制；这里用生产 Tree 损伤与整帧光栅逐像素对账，
 // 捕获移除/移动控件或关闭覆盖层后残影，以及无变化定时推进导致全树失效的回归。
 #[test]

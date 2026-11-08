@@ -64,6 +64,7 @@ ICONS = {
     "programs": ("shell32.dll", 20),
     "documents": ("shell32.dll", 21),
     "settings": ("shell32.dll", 22),
+    "search": ("shell32.dll", 23),
     "help": ("shell32.dll", 24),
     "run": ("shell32.dll", 25),
     "shutdown": ("shell32.dll", 28),

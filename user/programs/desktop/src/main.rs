@@ -265,6 +265,7 @@ impl Desktop {
     fn place_location(&self, place: start::Place) -> std::ffi::OsString {
         use start::Place;
         match place {
+            start::Place::Search => "::search".into(),
             Place::Documents => self.home.clone().into_os_string(),
             Place::MyComputer => "::my-computer".into(),
             Place::ControlPanel => "::control-panel".into(),

@@ -64,6 +64,7 @@ pub enum Action {
     AboutWindows,
     ViewMenu,
     Search,
+    OpenContainingFolder,
     History,
     Address,
     /// 网络连接的启用、禁用与状态（netshell 菜单 11010/11012）。
@@ -73,7 +74,7 @@ pub enum Action {
     OpenWith,
 }
 
-const ACTIONS: [Action; 61] = [
+const ACTIONS: [Action; 62] = [
     Action::Open,
     Action::Close,
     Action::Cut,
@@ -129,6 +130,7 @@ const ACTIONS: [Action; 61] = [
     Action::AboutWindows,
     Action::ViewMenu,
     Action::Search,
+    Action::OpenContainingFolder,
     Action::History,
     Action::Address,
     Action::Enable,
@@ -187,6 +189,9 @@ pub struct Availability {
     pub file_selected: bool,
     /// 当前位置支持普通文件操作（真实目录或桌面）。
     pub editable: bool,
+    /// 文件源操作；搜索集合不是粘贴/新建的目标目录，不能与 editable 混用。
+    pub file_operations: bool,
+    pub search_results: bool,
     /// 选区至少包含一个实际文件系统条目。
     pub paths_selected: bool,
     /// 焦点项支持文件改名。
@@ -201,6 +206,7 @@ pub struct Availability {
     pub address_bar: bool,
     pub status: bool,
     pub folders: bool,
+    pub search: bool,
     pub style: ListStyle,
     pub busy: bool,
     pub back: bool,
@@ -381,8 +387,8 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     let enabled = !state.busy;
     let selected = state.selected && enabled;
     let modify = state.editable && enabled;
-    let transfer = modify && state.paths_selected;
-    let cut_or_delete = state.paths_selected && (modify || (state.trash && enabled));
+    let transfer = enabled && state.file_operations && state.paths_selected;
+    let cut_or_delete = enabled && state.paths_selected && (state.file_operations || state.trash);
     let mut file = Builder::new(HEADER);
     if let Some(connected) = state.connection {
         connection_verbs(&mut file, connected, enabled);
@@ -393,6 +399,14 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
             "",
             if enabled { DEFAULT } else { DISABLED },
         );
+        if state.search_results {
+            file.action(
+                Action::OpenContainingFolder,
+                "打开所在文件夹(I)",
+                "",
+                selected,
+            );
+        }
         if state.file_selected && !state.trash {
             file.action(Action::OpenWith, "打开方式(H)...", "", enabled);
         }
@@ -473,8 +487,8 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     });
     view.check(Action::ToggleStatus, "状态栏(B)", state.status, true);
     view.submenu("浏览栏(E)", true, |b| {
-        // 没有搜索助理、收藏夹与历史记录存储。
-        b.action(Action::BarSearch, "搜索(S)", "Ctrl+E", false);
+        // 收藏夹与历史记录尚无存储。
+        b.check(Action::BarSearch, "搜索(S)", state.search, true);
         b.action(Action::BarFavorites, "收藏夹(F)", "Ctrl+I", false);
         b.action(Action::BarHistory, "历史记录(H)", "Ctrl+H", false);
         b.check(Action::ToggleFolders, "文件夹(O)", state.folders, true);
@@ -562,8 +576,11 @@ pub fn context(state: &Availability, on_item: bool) -> Vec<Entry> {
         b.separator();
         b.action(Action::Properties, "属性(R)", "", true);
     } else if on_item {
-        let transfer = state.editable && state.paths_selected;
+        let transfer = state.file_operations && state.paths_selected;
         b.push(Action::Open as u64, "打开(O)", "", DEFAULT);
+        if state.search_results {
+            b.action(Action::OpenContainingFolder, "打开所在文件夹(I)", "", true);
+        }
         if state.file_selected {
             // 弹出菜单本身由 busy 事务持有；文件动作不能据此禁用自己。
             b.action(Action::OpenWith, "打开方式(H)...", "", true);
@@ -664,6 +681,16 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
         true,
     );
     folders.checked = state.folders;
+    let mut search = button(
+        Action::Search,
+        ToolbarKind::Check,
+        IE,
+        5,
+        "搜索",
+        true,
+        enabled,
+    );
+    search.checked = state.search;
     vec![
         button(
             Action::Back,
@@ -693,16 +720,8 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             enabled && state.up,
         ),
         separator(HEADER + 900),
-        // 没有搜索助理与历史记录存储。
-        button(
-            Action::Search,
-            ToolbarKind::Button,
-            IE,
-            5,
-            "搜索",
-            true,
-            false,
-        ),
+        // 历史记录尚无存储。
+        search,
         folders,
         button(
             Action::History,
@@ -721,7 +740,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             44,
             "移至",
             false,
-            enabled && state.paths_selected && state.editable,
+            enabled && state.paths_selected && state.file_operations,
         ),
         button(
             Action::CopyTo,
@@ -730,7 +749,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             45,
             "复制到",
             false,
-            enabled && state.paths_selected && state.editable,
+            enabled && state.paths_selected && state.file_operations,
         ),
         button(
             Action::Delete,
@@ -739,7 +758,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             10,
             "删除",
             false,
-            enabled && state.paths_selected && (state.editable || state.trash),
+            enabled && state.paths_selected && (state.file_operations || state.trash),
         ),
         button(
             Action::Undo,

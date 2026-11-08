@@ -47,6 +47,7 @@ pub(super) struct Session {
     pub(super) launches: Rc<RefCell<Launches>>,
     /// 首次发布列表前，后台刷新不能替换尚未打开的位置。
     pub(super) shown: Cell<bool>,
+    pub(super) search: crate::search::Control,
 }
 
 /// Bound the number of completed actions retained by each window.
@@ -58,6 +59,9 @@ pub(super) enum Job {
     DeletePermanently,
     Go(Location, Visit, bool),
     Expand(u64),
+    Search(crate::search::Query),
+    SearchBrowse,
+    SearchTypes,
     Rename(u64, String),
     Context {
         on_item: bool,
@@ -86,10 +90,13 @@ impl Session {
                         && item.drive.is_none()
                 }),
             editable,
+            file_operations: editable || matches!(browser.location, Location::Search(_)),
+            search_results: matches!(browser.location, Location::Search(_)),
             paths_selected: selected
                 .iter()
                 .any(|id| browser.item(*id).is_some_and(|item| item.path.is_some())),
-            rename_file: editable && focused.is_some_and(|item| item.path.is_some()),
+            rename_file: (editable || matches!(browser.location, Location::Search(_)))
+                && focused.is_some_and(|item| item.path.is_some()),
             paste: editable && self.file_selection()?.is_some(),
             undo: self.undo.borrow().last().map(fileops::Undo::label),
             trash,
@@ -97,7 +104,8 @@ impl Session {
             standard_buttons: !hidden(&self.view.toolbar)?,
             address_bar: !hidden(&self.view.address_band)?,
             status: !hidden(&self.view.status)?,
-            folders: !hidden(&self.view.folders_pane)?,
+            folders: !hidden(&self.view.folders_pane)? && !self.view.search_visible()?,
+            search: self.view.search_visible()?,
             style: self.view.list.list_style()?,
             busy: self.busy.get(),
             back: browser.history(-1).is_some(),
@@ -168,7 +176,9 @@ impl Session {
             browser
                 .item(row)
                 .filter(|item| match browser.location {
-                    Location::Directory(_) | Location::Desktop => item.path.is_some(),
+                    Location::Directory(_) | Location::Desktop | Location::Search(_) => {
+                        item.path.is_some()
+                    }
                     Location::NetworkConnections => {
                         matches!(item.details, model::Details::Connection { .. })
                     }
@@ -207,7 +217,10 @@ impl Session {
             return Ok(());
         }
         let browser = self.browser.borrow();
-        if !matches!(browser.location, Location::Directory(_) | Location::Desktop) {
+        if !matches!(
+            browser.location,
+            Location::Directory(_) | Location::Desktop | Location::Search(_)
+        ) {
             return Ok(());
         }
         drop(browser);
@@ -298,7 +311,12 @@ impl Session {
         // 品牌 logo 在读取期间转动（browseui 的 throbber）。
         self.view.rebar.set_busy(true)?;
         // F5 和目录变更通知保留当前窗口的样式。真正进入位置才读取已保存的值。
-        let read_view = !matches!(visit, Visit::Refresh) || !self.shown.get();
+        let read_view = !self.shown.get()
+            || (!matches!(visit, Visit::Refresh)
+                && !matches!(
+                    (&self.browser.borrow().location, &location),
+                    (Location::Search(_), Location::Search(_))
+                ));
         let previous = if self.shown.get() {
             self.watch_paths(&self.browser.borrow().location)
         } else {
@@ -324,7 +342,13 @@ impl Session {
                     .map(|key| {
                         let settings = Settings::load();
                         (
-                            settings.folder_view(&key),
+                            settings.folder_view(&key).unwrap_or(
+                                if matches!(listing.location, Location::Search(_)) {
+                                    FolderView::Details
+                                } else {
+                                    FolderView::LargeIcons
+                                },
+                            ),
                             settings.folder_columns(&key).to_vec(),
                         )
                     })
@@ -374,7 +398,15 @@ impl Session {
         if focus {
             self.view.list.focus()?;
         }
-        self.view.fit_panel()?;
+        let query = match &self.browser.borrow().location {
+            Location::Search(query) => {
+                self.view.show_search("我的电脑", query.as_ref())?;
+                query.clone()
+            }
+            _ => None,
+        };
+        self.search.request(query);
+        self.view.fit_panel(&self.browser.borrow())?;
         self.status()?;
         Ok(())
     }
@@ -627,7 +659,7 @@ impl Session {
         // “我的电脑”等虚拟位置也有带路径的行，但这些行代表磁盘或连接。
         if !matches!(
             self.browser.borrow().location,
-            Location::Directory(_) | Location::Desktop | Location::RecycleBin
+            Location::Directory(_) | Location::Desktop | Location::RecycleBin | Location::Search(_)
         ) {
             return Ok(());
         }
@@ -902,12 +934,13 @@ impl Session {
         } else {
             state | state::HIDDEN
         })?;
-        self.view.fit_panel()
+        self.view.fit_panel(&self.browser.borrow())
     }
 
     /// “资源管理器”打开方式（shell 的 explore 动词）：显示左侧文件夹树。
     pub(super) fn show_folders(&self) -> liteos_ui::Result<()> {
-        self.set_visible(&self.view.folders_pane, true)
+        self.view.show_folders()?;
+        self.view.fit_panel(&self.browser.borrow())
     }
     pub(super) async fn command(&self, command: Command) -> Result<()> {
         if let Some(style) = command.style() {
@@ -989,6 +1022,26 @@ impl Session {
                     }
                 }
             }
+            Action::OpenContainingFolder => {
+                if let Some(path) = self.selected()?.and_then(|item| item.path)
+                    && let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+                {
+                    let parent = parent.to_owned();
+                    let name = name.to_owned();
+                    let child = self
+                        .background
+                        .run(move || {
+                            std::process::Command::new("/bin/file-explorer")
+                                .arg("--select")
+                                .arg(name)
+                                .arg(parent)
+                                .env_remove("WAYLAND_SOCKET")
+                                .spawn()
+                        })?
+                        .await?;
+                    self.record(child);
+                }
+            }
             Action::OpenWith => {
                 if let Some(path) = self.selected()?.and_then(|item| item.path) {
                     self.open_with(path).await?;
@@ -1058,7 +1111,21 @@ impl Session {
             Action::ToggleStandardButtons => self.toggle(&self.view.toolbar)?,
             Action::ToggleAddressBar => self.toggle(&self.view.address_band)?,
             Action::ToggleStatus => self.toggle(&self.view.status)?,
-            Action::ToggleFolders => self.toggle(&self.view.folders_pane)?,
+            Action::ToggleFolders => {
+                if self.view.search_visible()? {
+                    self.show_folders()?;
+                } else {
+                    self.toggle(&self.view.folders_pane)?;
+                }
+            }
+            Action::Search | Action::BarSearch => {
+                if self.view.search_visible()? {
+                    self.set_visible(&self.view.folders_pane, false)?;
+                    self.view.list.focus()?;
+                } else {
+                    self.show_search()?;
+                }
+            }
             Action::Refresh => self.refresh().await?,
             Action::Back | Action::Forward => {
                 let target =
@@ -1130,6 +1197,12 @@ impl Session {
     }
     pub(super) async fn execute(&self, job: Job) -> Result<()> {
         match job {
+            Job::Search(query) => {
+                self.navigate(Location::Search(Some(query)), Visit::Push, false)
+                    .await
+            }
+            Job::SearchBrowse => self.search_browse().await,
+            Job::SearchTypes => self.search_types().await,
             Job::Command(command) => self.command(command).await,
             Job::DeletePermanently => self.delete(false, fileops::DeleteIntent::Permanent).await,
             Job::Go(location, visit, focus) => self.navigate(location, visit, focus).await,
@@ -1229,6 +1302,7 @@ pub(super) struct Busy(pub(super) Rc<Session>);
 impl Drop for Busy {
     fn drop(&mut self) {
         self.0.busy.set(false);
+        self.0.search.notify();
         if self.0.closing.get() {
             let _ = self.0.view.window.close();
         } else {

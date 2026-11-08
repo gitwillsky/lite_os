@@ -213,6 +213,12 @@ impl Associations {
         self.database.mime_for(path)
     }
 
+    /// 枚举 Shared MIME-info 注册的 MIME 名及本地化显示名；借用本快照，不进行额外文件读取。
+    /// 未注册或没有显示名的类型不返回，顺序不固定。
+    pub fn registered_types(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.database.registered_types()
+    }
+
     /// 返回注册的本地化类型名称；未知类型显示扩展名。
     pub fn type_name(&self, path: &Path) -> String {
         if let Some(record) = self

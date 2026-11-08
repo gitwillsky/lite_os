@@ -6,6 +6,7 @@ mod folder_dialog;
 mod model;
 mod network_dialog;
 mod open_with;
+mod search;
 mod session;
 mod view;
 mod webview;
@@ -232,6 +233,7 @@ fn run() -> Result<()> {
         one_shot: launch.verb.is_some(),
         launches: launches.clone(),
         shown: Cell::new(false),
+        search: search::Control::default(),
     });
     session.menus()?;
     let mut tasks = Vec::new();
@@ -272,6 +274,14 @@ fn run() -> Result<()> {
             guard.0.report("资源管理器", error).await;
         }
     })?;
+    let _search = {
+        let session = session.clone();
+        app.spawn_local(&window, async move {
+            if let Err(error) = search::run(session.clone()).await {
+                session.report("搜索", error).await;
+            }
+        })?
+    };
     let _reaper = {
         let clock = app.clock();
         app.spawn_local(&window, async move {
@@ -379,7 +389,7 @@ fn run() -> Result<()> {
         let mut job = None;
         match event.kind {
             EventKind::ClipboardChanged => session.menus()?,
-            EventKind::Configure { .. } => view.fit_panel()?,
+            EventKind::Configure { .. } => view.fit_panel(&session.browser.borrow())?,
             EventKind::Select { row }
                 if event.node == view.folders.id() || event.node == view.address.id() =>
             {
@@ -405,6 +415,11 @@ fn run() -> Result<()> {
             EventKind::Select { .. } if event.node == view.list.id() => {
                 session.status()?;
                 session.menus()?;
+            }
+            EventKind::Select { .. } => {
+                if let Some(pane) = view.search.borrow().as_ref() {
+                    pane.options.selected(event.node)?;
+                }
             }
             EventKind::Column { column } if event.node == view.list.id() => {
                 let Some(column) = model::Field::from_id(column) else {
@@ -443,7 +458,30 @@ fn run() -> Result<()> {
                 } else if event.node == view.address.id() {
                     Some(Command::Do(Action::Address))
                 } else if event.node == view.folders_close.id() {
-                    Some(Command::Do(Action::ToggleFolders))
+                    view.folders_pane.set_state(liteos_ui::state::HIDDEN)?;
+                    view.fit_panel(&session.browser.borrow())?;
+                    view.list.focus()?;
+                    session.menus()?;
+                    None
+                } else if let Some(pane) = view.search.borrow().as_ref()
+                    && pane.options.handles(event.node)
+                {
+                    if pane.options.activate(event.node)? {
+                        job = Some(Job::SearchTypes);
+                    }
+                    None
+                } else if let Some(pane) = view.search.borrow().as_ref()
+                    && ([pane.start.id(), pane.stop.id(), pane.browse.id()].contains(&event.node)
+                        || pane.editing(event.node))
+                {
+                    if event.node == pane.start.id() || pane.editing(event.node) {
+                        job = Some(Job::Search(pane.query()?));
+                    } else if event.node == pane.stop.id() {
+                        session.search.request(None);
+                    } else {
+                        job = Some(Job::SearchBrowse);
+                    }
+                    None
                 } else if let Some(target) = view.target(event.node) {
                     match target {
                         Target::Place(location) => {
@@ -492,17 +530,52 @@ fn run() -> Result<()> {
             } => {
                 let ctrl = modifiers & 2 != 0;
                 let alt = modifiers & 4 != 0;
+                if let Some(pane) = view.search.borrow().as_ref() {
+                    if code == 1 && pane.stop.state()? & liteos_ui::state::DISABLED == 0 {
+                        session.search.request(None);
+                        return Ok(ControlFlow::Continue);
+                    }
+                    if pane.editing(event.node) {
+                        if code == 28 {
+                            job = Some(Job::Search(pane.query()?));
+                        } else if !matches!(
+                            (code, ctrl, alt),
+                            (61, false, false)
+                                | (18, true, false)
+                                | (33, true, false)
+                                | (32, false, true)
+                                | (62, false, false)
+                                | (63, false, false)
+                                | (105, false, true)
+                                | (106, false, true)
+                        ) {
+                            return Ok(ControlFlow::Continue);
+                        }
+                    }
+                }
+                if matches!(
+                    (code, ctrl, alt),
+                    (61, false, false) | (18, true, false) | (33, true, false)
+                ) {
+                    session.show_search()?;
+                    session.menus()?;
+                    return Ok(ControlFlow::Continue);
+                }
                 // Alt+D 与 F4 转到地址栏（F4 在组合框内由控件展开下拉列表）。
                 if (alt && code == 32) || (code == 62 && event.node != view.address.id()) {
                     view.address.focus()?;
                     view.address.edit(EditCommand::SelectAll)?;
                 } else {
                     let address = event.node == view.address.id();
-                    job = match shortcut(code, ctrl, alt, address) {
-                        Some(Action::Delete) if repeat || modifiers & 8 != 0 => None,
-                        Some(Action::Delete) if modifiers & 1 != 0 => Some(Job::DeletePermanently),
-                        action => action.map(|action| Job::Command(Command::Do(action))),
-                    };
+                    if job.is_none() {
+                        job = match shortcut(code, ctrl, alt, address) {
+                            Some(Action::Delete) if repeat || modifiers & 8 != 0 => None,
+                            Some(Action::Delete) if modifiers & 1 != 0 => {
+                                Some(Job::DeletePermanently)
+                            }
+                            action => action.map(|action| Job::Command(Command::Do(action))),
+                        };
+                    }
                 }
             }
             _ => {}

@@ -93,6 +93,14 @@ impl Tree {
                     image.paint(p, area.x, area.y);
                 }
             }
+            if let Some(bar) = node.scroll_bar() {
+                p.scrollbar(
+                    bar,
+                    true,
+                    (node.range.maximum, node.range.page, node.position.position),
+                    node.position.pressed(),
+                );
+            }
             match node.kind {
                 widget::BUTTON => p.push_button(
                     rect,

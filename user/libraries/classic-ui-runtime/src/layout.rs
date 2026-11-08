@@ -19,11 +19,18 @@ impl Tree {
         self.place_children(&roots, bounds, bounds, false, 0, font);
         if !self
             .focus
-            .is_some_and(|id| self.active(id) && self.nodes[&id].focusable())
+            .is_some_and(|id| self.focus_available(id) && self.nodes[&id].focusable())
         {
             self.focus = None;
             self.focus_next(false);
         }
+        if self.reveal_focus() {
+            for node in self.nodes.values_mut() {
+                node.clip = Rect::default();
+            }
+            self.place_children(&roots, bounds, bounds, false, 0, font);
+        }
+        self.layout_dirty = false;
     }
     /// 按当前字体与可用宽度量出整棵可见树的首选尺寸；窗口与实际排版消费同一自然尺寸规则。
     pub(super) fn preferred_size(&self, width: i32, font: &Painter<'_>) -> (i32, i32) {
@@ -462,6 +469,34 @@ impl Tree {
                         font,
                     );
                 }
+            } else if self.nodes[&id].scrolling() {
+                // 1. 以未滚动的自然高度量内容；溢出时扣去滚动条，再量一次换行高度。
+                let height = |width| {
+                    let mut count = 0i32;
+                    let sum = nested
+                        .iter()
+                        .filter(|child| self.nodes[child].visible())
+                        .fold(0i32, |sum, child| {
+                            count += 1;
+                            sum.saturating_add(self.natural(*child, width, font, scale).1)
+                        });
+                    sum.saturating_add(rule.gap.saturating_mul(count.saturating_sub(1)))
+                };
+                let mut extent = height(inner.width);
+                if extent > inner.height {
+                    inner.width = (inner.width - classic_ui::SCROLLBAR_WIDTH).max(0);
+                    extent = height(inner.width);
+                }
+                // 2. range 只保存当前排版几何，position 在内容收缩/窗口变大时夹回合法范围。
+                let node = self.nodes.get_mut(&id).expect("viewport owner");
+                node.range.page = inner.height.max(1);
+                node.range.maximum = extent.max(node.range.page).saturating_sub(1);
+                node.position.clamp(extent - node.range.page);
+                let clip = intersect(inner, intersection);
+                inner.y = inner.y.saturating_sub(node.position.position);
+                inner.height = extent.max(inner.height);
+                // 3. 布局、命中与绘制使用同一份平移矩形和未平移视口裁剪。
+                self.place_children(&nested, inner, clip, false, rule.gap, font);
             } else {
                 self.place_children(
                     &nested,

@@ -18,6 +18,7 @@ mod property_sheet;
 mod range;
 mod rebar;
 mod render;
+mod scroll_container;
 mod tab_strip;
 mod table;
 mod text_document;

@@ -144,7 +144,7 @@ impl Node {
     }
 
     /// 选中第 `index` 项：文字替换为项目文字并全选，记录稳定标识。
-    fn combo_choose(&mut self, index: usize) -> Option<u64> {
+    pub(super) fn combo_choose(&mut self, index: usize) -> Option<u64> {
         let (id, text) = self.row_at(index)?.clone();
         let mut edit = classic_ui::Edit::new(&text);
         edit.select_position(0, false);

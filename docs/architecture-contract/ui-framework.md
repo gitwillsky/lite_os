@@ -103,12 +103,11 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 ## 布局、对话框与终端
 
-- Tree 独占布局失效和最近的 bounds/scale。该标记避免每次指针事件重排；影响几何的变更入口必须置位，否则保留旧几何。
-  可变借用本身不作废布局。结构、文本/字体、尺寸规则、边框/隐藏/可用状态、列表内容/图标/复选框占位、
-  列表视图模式、树展开与标签页选择等实际几何变化才置位；选区、颜色、Canvas 命令或视频帧、数值和动画只失效绘制。
-  相同列表、列定义、字体等更新保持已有布局和交互状态；configure 的 bounds/scale 变化仍独立强制重排。
-  区分几何更新与像素更新参照 Qt 6.8 的 updateGeometry/update 职责；不新增缓存、分配或绘制路径，
-  因而不另设 benchmark。逐项审查修改入口及其尺寸依赖，运行期只针对标签页、视图切换和缩放核对几何。
+- Tree 独占布局失效及最近 bounds/scale，避免每次指针事件重排；影响几何的入口必须置位。可变借用不作废布局；结构、文本/字体、尺寸、边框/隐藏/可用状态、列表内容/图标/复选框占位、视图模式、树展开与标签页选择改变几何。
+  选区、颜色、Canvas 命令、视频帧、数值与动画仅失效绘制；相同列表、列定义、字体保持布局/交互，configure 的 bounds/scale 独立强制重排。职责参照 Qt 6.8 updateGeometry/update；审查入口尺寸依赖，运行期核对标签页、视图和缩放。
+  Column 的 VSCROLL 启用纵向视口，避免展开内容永久裁掉；Node.position 独占像素偏移，range 仅存排版得到的内容/页高。溢出扣除滚动条再量换行，子树绘制与命中消费同一平移几何和视口裁剪，收缩夹回偏移。
+  Tree.reveal 是待消费的显式焦点请求；Tab/程序聚焦在排版后逐层滚入，屏幕外后代仍参与 Tab，隐藏/禁用/非当前页排除。滚轮不生成 reveal；编辑入口先排版再检查可用性，允许 focus 后紧接全选。移除滚动状态释放抓取与偏移。
+  Benchmark 决策：复用 Scroll 绘制/交互及现有 Tree 排版，不增加像素缓存、线程或应用采样；位移才失效布局。普通 motion 复用几何，定向控件树用例核对两种 scale 的焦点/裁剪/收缩，不外推帧率提升。
   布局独立于像素提交；等待 frame 或 release 期间也可处理最新 configure 和命中。
 - Display 的 mapped 只表示本连接已经成功提交首个 buffer；pending_parents 只保存尚不能发送的标准父关系。
   首次提交后发送并删除等待项，父/子销毁时撤销；缺少该阶段，未映射父窗口会被服务端按 xdg-shell 规范当作 null。
@@ -203,7 +202,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   应用用稳定行标识确认可编辑项，再走现有原位编辑与提交接口。控件不直接修改文件。
 - 设置 `KEYBOARD_CONTEXT_MENU` 的列表用自身选择和视口解析 Shift+F10 与菜单键，发出 `CONTEXT_MENU`。事件携带稳定行标识和逻辑锚点，命令及可用性由应用决定。声明此能力的列表才消费这些按键。
 - desktop-settings 通过标准 flock 串行化跨进程读改写，UI 必须在后台调用。属性页更新各自的字段，资源管理器只写当前文件夹的查看方式。
-  发布采用同目录 create_new 私有临时文件、sync 和 rename；正常错误清理临时文件，锁随 OFD 析构释放。
+  查看方式只返回显式设置，默认由位置定义；显式大图标也保存。发布用同目录 create_new、sync、rename，错误清临时文件，OFD 析构释放锁。
 
 - 文件对话框的 Filter 只拥有复制后的标签与扩展名；Tree 的“所有文件”勾选是唯一筛选模式状态。
   worker 先筛选普通文件再计入 4096 项额度，目录始终可导航；请求序号排除切换前的结果。
@@ -306,14 +305,14 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 窗口动画与合成几何
 
 - Session 的 Animation 只拥有目标窗口标识、起止矩形、开始时间与是否还原；实际像素与纹理仍由已提交 Content 拥有。
-  最小化/还原与最大化/全屏/还原模式切换共用同一过渡：模式切换立即改窗口栈几何并发 configure，画面从旧矩形缩放到新矩形，
-  客户端提交新尺寸后继续按插值矩形缩放；否则旧尺寸缓冲会先跳到新位置、等新缓冲才撑满。
-  还原期间窗口留在 minimized 输入状态，合成单独投影整窗；结束再 raise。切换目标先完成已有还原，同目标反向从当前矩形继续，
-  重复还原不重置计时，窗口销毁取消动画。没有每帧复制像素、重新排版标题或建立动画专用纹理。
+  最小化/还原与模式切换共用过渡：立即改栈几何并发 configure，旧矩形缩放到新矩形；客户端提交新尺寸后继续插值，否则会先跳位置、等新缓冲才撑满。
+  还原期间保持 minimized 输入，合成独立投影整窗，结束再 raise；换目标先完成旧还原，同目标反向从当前帧继续，重复还原不重置计时，销毁取消；不逐帧复制像素、重排标题或建专用纹理。
 - xdg_wm_base 公布 v6：v5+ toplevel 在首个 configure 前收到一次 wm_capabilities（窗口菜单、最大化、全屏、最小化）；
-  configure_bounds 为协议可选事件，不发送。`suspended` 只由 Stack 的 minimized 投影，`window_configure` 是唯一编码点，
+  configure_bounds 为协议可选事件，不发送。`suspended` 只由 Stack 的 minimized 经 `window_configure` 投影，
   低于 v6 的对象不编码该状态。最小化可能不改变键盘焦点（任务栏最小化后台窗口），由 `minimize_window` 发 configure；
   还原总会激活窗口，由焦点同步的 configure 解除。合成器保留已提交 Content，还原动画与首帧前仍显示最小化前的画面。
+- 初始空提交以 WindowRequest::Initialize 排入连接线序队列；Session 用当前工作区/输出选择 configure，XdgSurface.initial_sent 只表示已编码。
+  Stack.prepared 只存未映射身份的模式，首映射移入 Placement，销毁/换代/断连退休。普通启动不分配，无新帧循环锁/唤醒；初始特殊模式没有普通还原记录时发 0×0 由客户端决定。
 - Drawable 的 rect 是 CPU/GPU 共同使用的物理目标矩形；整窗和所有子 surface 从同一个根矩形映射，不能独立插值。
   GPU 借用 Content 的现有纹理，只改变顶点；CPU 的 blit_scaled 原地最近邻采样，整数等比尺寸保留既有快速复制路径。
   DRM flip 在途仍禁止覆盖 back，纹理由 GPU 采样视图保活到完成；不改变标准 Wayland commit/damage/frame/release 语义。
@@ -354,18 +353,19 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 应用条目与安装集成
 
 - `desktop-entry` 独占 Desktop Entry 解析、XDG 应用目录优先级和文件启动选择；desktop 与 file-explorer 共用。
-  类型来自 XDG `mime/packages/*.xml`，支持名称 glob 的权重/大小写、别名、继承、本地化名称和文件图标；
-  当前不实现内容 magic 或编译 MIME cache。一次目录读取共用安装/关联快照，不逐文件扫描注册目录或读取远端内容。
+  类型来自 XDG mime/packages/*.xml，支持名称 glob 权重/大小写、别名、继承、本地化与图标；无内容 magic/编译 cache。目录共用安装/关联快照，不逐文件扫描注册目录或读远端内容。
   `mimeapps.list` 按标准 config/data 与 desktop 优先级处理 Default/Added/Removed；缺失或卸载的处理器被跳过。
   “打开方式”只列可接收文件的已安装条目，临时选择不改配置；设置默认在用户配置锁内合并后原子发布。
   原生执行需执行位与 ELF/shebang 文件头同时成立，不能把 SMB 投影的执行位当成文件格式。
-  用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
-  Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
+  用户目录优先，递归 ID 把相对路径 / 换为 -，Hidden 遮蔽同 ID；Exec 解码 string/命令行双层转义、不经 shell，Path 是工作目录。NoDisplay 只排除菜单，仍用于 MIME/窗口图标。
 - 桌面的选择、刷新与重命名动作集中在 `desktop::icons`，交互状态仍由唯一 `Desktop` 持有，事件分派不复制状态。
   Icons 唯一持有由实际 layer Configure 与任务栏 exclusive_zone 推导的网格；首次配置前不提供交互布局。
   目录刷新、键盘导航和整组拖放复用同一列/行边界。配置或任务栏设置改变才重排，取消基于旧坐标的抓取；选择和编辑按原身份保留。
   保存坐标只在当前工作区内借用；越界或冲突项顺列补位，工作区缩小不写回首选坐标。容量足够时所有项目均可见。
   布局只访问已有条目及临时占用 HashSet，不重新扫描目录；没有逐帧分配或定时采样，不新增微基准。
+- Search.Query 持已提交条件，表单另持草稿；筛选用 Box 避免扩大普通 Item 的 Location。Cursor 持 DFS/当前文件/KMP/编译后筛选，Browser 只存已发表行，Background 分批移交；先筛元数据再读正文，筛选不剪掉遍历目录。
+  类型标签/判型来自 Associations 的 Shared MIME-info 快照，registered_types 借用现有记录。日期按本地日历，缺失时间不匹配；非法条件报错，历史恢复条件。UI 单接收者合并开始/停止，优先取消迟到批次；Busy 释放唤醒结果。
+  无新锁/定时器/全文缓存；每批 256 项/1 MiB，正文复用 64 KiB，增量合并保留行身份。分配/集合编译只在提交时；实测正确性、取消和内存，不宣称帧率提升；范围与验收见资源管理器设计及桌面验证。
 - 桌面与资源管理器通过 `desktop-entry` 共用文件剪贴板编解码与文件事务。界面线程按选择身份核对数据，后台执行磁盘操作。已完成部分才从仍有效的剪切选择移除。
 - `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
   文件类型图标沿用同一加载器的 `NxN/mimetypes` 上下文；原版资源由 ISO 导入器发布，生成素材由 `file_type_icons.py` 转换并登记摘要。
