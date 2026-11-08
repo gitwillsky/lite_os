@@ -2844,8 +2844,9 @@ system/ext4/src/content.rs :: pub (crate) impl Content :: fn writeback (& self) 
 system/ext4/src/content.rs :: pub (crate) struct Content
 system/ext4/src/ext4.rs :: pub (crate) struct Ext4FileSystem
 system/ext4/src/ext4.rs :: pub (crate) use inode :: Ext4Inode
-system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] , kind : BlockKind ,) -> Result < u64 , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block_number (& self , goal : u64) -> Result < u64 , FileSystemError >
 system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_inode (& self , preferred_group : usize , directory : bool ,) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_metadata_block (& self , goal : u64 , contents : & [u8] ,) -> Result < u64 , FileSystemError >
 system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
 system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn count_free (bitmap : & [u8] , limit : usize) -> usize
 system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn free_blocks (& self , start : u64 , count : u64) -> Result < () , FileSystemError >
@@ -2868,13 +2869,14 @@ system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :
 system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock (& self) -> Result < () , FileSystemError >
 system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock_home (& self) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn metadata_cached (& self , fs_block_id : u64) -> Option < Arc < Vec < u8 > > >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn note_ordered_data (& self) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_blocks (& self , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_blocks_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , first_block : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_runs (& self , runs : & mut [(u64 , & mut [u8])] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_metadata_block (& self , fs_block_id : u64 ,) -> Result < Arc < Vec < u8 > > , FileSystemError >
-system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_block (& self , fs_block_id : u64 , buf : & [u8] , kind : BlockKind ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_block (& self , fs_block_id : u64 , buf : & [u8]) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block_home (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
@@ -3029,10 +3031,11 @@ system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn copy_staged (&
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn is_uncommitted_free (& self , block : u64) -> bool
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext4FileSystem >) -> Result < Self , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn mark_allocation_dirty (& mut self , group : usize) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn note_ordered_data (& mut self , now_ns : u64) -> Result < bool , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn record_freed (& mut self , start : u64 , count : u64) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext4FileSystem) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn running_started_ns (& self) -> Option < u64 >
-system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize , kind : BlockKind ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext4FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
@@ -3043,7 +3046,6 @@ system/ext4/src/ext4/journal.rs :: pub (super) struct Journal
 system/ext4/src/ext4/journal.rs :: pub (super) struct MutationGuard < 'a >
 system/ext4/src/ext4/journal.rs :: pub (super) struct RunningTransaction
 system/ext4/src/ext4/journal.rs :: pub (super) use commit_owner :: JournalOwner
-system/ext4/src/ext4/journal.rs :: pub (super) use staged_blocks :: BlockKind
 system/ext4/src/ext4/journal/codec.rs :: pub (super) fn be32 (bytes : & [u8] , offset : usize) -> Result < u32 , FileSystemError >
 system/ext4/src/ext4/journal/codec.rs :: pub (super) fn put_be32 (bytes : & mut [u8] , offset : usize , value : u32) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal/codec.rs :: pub (super) fn put_header (bytes : & mut [u8] , kind : u32 , sequence : u32 ,) -> Result < () , FileSystemError >
@@ -3061,20 +3063,15 @@ system/ext4/src/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit <
 system/ext4/src/ext4/journal/commit_owner.rs :: pub (super) struct JournalCommit < 'a >
 system/ext4/src/ext4/journal/inode_mutation.rs :: pub (in crate :: ext4) struct InodeMutation < 'mutation , 'inode >
 system/ext4/src/ext4/journal/inode_mutation.rs :: pub (super) impl InodeMutation < 'mutation , 'inode > :: const fn new (inode : & 'inode Ext4Inode , disk : Ext4InodeDisk) -> Self
-system/ext4/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Data
-system/ext4/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Metadata
-system/ext4/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) enum BlockKind
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) struct StagedBlocks
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn all (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn combined_metadata_count (& self , overlay : & Self) -> usize
-system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
-system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data_count (& self) -> usize
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn get (& self , block : u64) -> Option < & Vec < u8 > >
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn is_empty (& self) -> bool
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn merge (& mut self , mut overlay : Self)
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_count (& self) -> usize
 system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_from (& self , start : u64) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
-system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn stage (& mut self , block : u64 , bytes : & [u8] , kind : BlockKind , capacity : usize ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn stage (& mut self , block : u64 , bytes : & [u8] , capacity : usize ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn new (journal_blocks : usize , block_size : usize) -> Option < Self >
 system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn tags_per_descriptor (self) -> usize
 system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn write_capacity (self) -> usize
@@ -3148,10 +3145,12 @@ system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn recover_
 system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn remove_orphan_locked (& self , target : u32) -> Result < () , FileSystemError >
 system/ext4/src/ext4/orphan.rs :: pub (super) impl OrphanFile :: const fn unavailable () -> Self
 system/ext4/src/ext4/orphan.rs :: pub (super) struct OrphanFile
-system/ext4/src/ext4/storage_mutation.rs :: pub (crate) impl Ext4Inode :: fn write_back_storage (& self , offset : u64 , buf : & [u8] ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/storage_io.rs :: pub (crate) impl Ext4Inode :: fn read_storage_vmo (& self , offset : u64 , length : u64 , target : & Vmo ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/storage_io.rs :: pub (crate) impl Ext4Inode :: fn write_back_vmo (& self , offset : u64 , length : u64 , source : & Vmo , begin_writeback : impl FnOnce () ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn finish_write_locked (& self , mutation : & mut MutationGuard < '_ > , end : usize ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn allocate_range (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u64 , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn map_block_for_write (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 , initialize : impl FnOnce (u64) -> Result < () , FileSystemError > ,) -> Result < (u64 , bool) , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn remove_write_privileges_locked (& self , mutation : & mut MutationGuard < '_ > , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_at_locked (& self , mutation : & mut MutationGuard < '_ > , offset : usize , buf : & [u8] ,) -> Result < usize , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_batch (& self , policy : Option < crate :: vfs :: WritePolicy > , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >

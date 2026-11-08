@@ -44,7 +44,7 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 ### 原生块 I/O
 
 - 登记 VMO、FIFO 请求/分组完成及会话寿命参照 Fuchsia 固定 revision `bb06fd0022e58d6c501367cd87f16e178498a1b7` 的
-  [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；当前完成度由性能计划与设备契约维护。
+  [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；实现与验收边界由性能覆盖文档及设备契约维护。
   非阻塞 provider/active request 生命周期也参照同一固定 block_server：已接受请求的缓冲与完成 owner 保持到终态，不以丢弃接收连接代替 DMA 退休。
 - 提交/完成双环的 producer/consumer Release/Acquire 发布顺序参照固定 Linux revision 的
   [io_uring ring publication](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/io_uring/io_uring.c)。块与 socket 会话只采用有界双环与通知语义，不声明 io_uring UAPI 或 Zircon FIFO 编码兼容。

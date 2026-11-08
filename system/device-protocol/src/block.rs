@@ -81,6 +81,9 @@ impl BlockDevice for BlockRange {
     fn attach_buffer(&self, vmo: Vmo) -> Result<Arc<dyn BlockBuffer>, BlockError> {
         self.device.attach_buffer(vmo)
     }
+    fn detach_buffer(&self, buffer: Arc<dyn BlockBuffer>) -> Result<(), BlockError> {
+        self.device.detach_buffer(buffer)
+    }
     fn transfer(
         &self,
         operation: BlockOperation,
@@ -274,7 +277,7 @@ impl RemoteSession {
 }
 struct RemoteBuffer {
     vmo: Vmo,
-    id: u64,
+    id: Option<u64>,
     session: Weak<RemoteSession>,
 }
 impl BlockBuffer for RemoteBuffer {
@@ -284,8 +287,8 @@ impl BlockBuffer for RemoteBuffer {
 }
 impl Drop for RemoteBuffer {
     fn drop(&mut self) {
-        if let Some(session) = self.session.upgrade() {
-            session.detach(self.id);
+        if let (Some(session), Some(id)) = (self.session.upgrade(), self.id.take()) {
+            session.detach(id);
         }
     }
 }
@@ -365,6 +368,7 @@ impl RemoteBlock {
             let owner: &dyn core::any::Any = request.buffer;
             owner.downcast_ref::<RemoteBuffer>().is_some_and(|buffer| {
                 buffer.session.as_ptr() == Arc::as_ptr(&self.session)
+                    && buffer.id.is_some()
                     && request.blocks != 0
                     && request.blocks <= self.max_transfer_blocks
                     && request
@@ -398,7 +402,7 @@ impl RemoteBlock {
                                     BlockOperation::Read => queue::READ,
                                     BlockOperation::Write => queue::WRITE,
                                 },
-                                buffer.id,
+                                buffer.id.expect("live registration validated above"),
                                 request.first_block,
                                 request.blocks as u64,
                                 request.buffer_offset,
@@ -445,13 +449,35 @@ impl BlockDevice for RemoteBlock {
         }
         let buffer = RemoteBuffer {
             vmo,
-            id,
+            id: Some(id),
             session: Arc::downgrade(&self.session),
         };
         // Arc::try_new 失败也会 Drop buffer，归还刚登记的 id。
         Arc::try_new(buffer)
             .map(|buffer| buffer as Arc<dyn BlockBuffer>)
             .map_err(|_| BlockError::OutOfMemory)
+    }
+    fn detach_buffer(&self, mut buffer: Arc<dyn BlockBuffer>) -> Result<(), BlockError> {
+        // 1. 唯一可变引用排除并发提交/Weak 升级；本次消费 id 后 Drop 不再重复释放，避免复用 ABA。
+        let owner: &mut dyn core::any::Any =
+            Arc::get_mut(&mut buffer).ok_or(BlockError::InvalidBlock)?;
+        let buffer = owner
+            .downcast_mut::<RemoteBuffer>()
+            .filter(|buffer| buffer.session.as_ptr() == Arc::as_ptr(&self.session))
+            .ok_or(BlockError::InvalidBlock)?;
+        let id = buffer.id.take().ok_or(BlockError::InvalidBlock)?;
+        // 2. transfer 完成后服务端已释放请求引用；DETACH 回复发生在最后 DMA pin 析构之后。
+        let result = self.session.channel().and_then(|channel| {
+            let mut request = Writer::request(DETACH);
+            request.u64(id);
+            call(&channel, &request, Vec::new()).map(drop)
+        });
+        if result.is_err() {
+            // 失联不能假定已解除固定；退休会话并让调用者保留原页，等待硬件隔离处理。
+            let retired = self.session.channel.lock().take();
+            drop(retired);
+        }
+        result.map_err(decode_error)
     }
     fn transfer(
         &self,

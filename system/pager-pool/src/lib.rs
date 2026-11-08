@@ -68,6 +68,11 @@ impl SupplyBuffer {
         Ok(Self { vmo, address })
     }
 
+    /// 供存储登记的暂存 VMO；DMA 完成并确认解除固定后才能调用 [`Self::supply`]。
+    pub fn vmo(&self) -> &Vmo {
+        &self.vmo
+    }
+
     /// 暂存区前 `length` 字节的可写视图；上一次使用的残留字节由调用者覆盖或清零。
     ///
     /// # Panics

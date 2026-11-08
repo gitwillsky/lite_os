@@ -118,7 +118,7 @@ impl Ext4FileSystem {
             block.fill(0);
             block[..chunk.len()].copy_from_slice(chunk);
             // EA value 是 metadata：不能走普通文件 data=ordered 路径留下未提交的新旧混合值。
-            let physical = self.allocate_block(tree.default_goal(), &block, BlockKind::Metadata)?;
+            let physical = self.allocate_metadata_block(tree.default_goal(), &block)?;
             tree.insert(extent::Extent {
                 logical: logical as u32,
                 length: 1,

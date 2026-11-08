@@ -35,7 +35,7 @@
   桌面继续使用 `wl_shm`；具备 VirGL2 的设备使用纹理合成与两块 GPU render target，纯 2D 设备使用 CPU/dumb buffer。
   Content 持有 SHM 像素（GPU 后端直接位于纹理）或 dma-buf 使用期；GPU 在途帧将 dma-buf 协议引用保活到 page-flip 完成。
   VirGL2 初始化成功才公布 linux-dmabuf v4，ARGB/XRGB 单平面隐式 modifier 直接 PRIME 导入，无 CPU 像素副本。
-  GPU 路径已接入代码，尚未执行画面/性能验收。SHM 的 `damage`/`damage_buffer` 决定重读与上传矩形；
+  GPU 路径已通过现有 600 帧 gate 与 Mesa/Weston 共享缓冲验收；具体边界见渲染验证文档。SHM 的 `damage`/`damage_buffer` 决定重读与上传矩形；
   输出增量绘制与遮挡规则见 [UI 框架](ui-framework.md#合成后端)，CPU 先 DIRTYFB 同步目标修复区，两个后端再以 atomic KMS damage clips 呈现。
   dma-buf 内容直接取样，不代表完整 OpenGL 兼容。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的

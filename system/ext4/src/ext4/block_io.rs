@@ -208,28 +208,37 @@ impl Ext4FileSystem {
         fs_block_id: u64,
         buf: &[u8],
     ) -> Result<(), FileSystemError> {
-        self.stage_block(fs_block_id, buf, BlockKind::Metadata)
+        self.stage_block(fs_block_id, buf)
     }
 
-    /// 暂存一个文件数据 block；提交时在 commit record 之前直接写回 home（`data=ordered`）。
+    /// 普通文件数据直接写 home；同一 mutation 的元数据只会在其后提交。
     pub(super) fn write_data_block(
         &self,
         fs_block_id: u64,
         buf: &[u8],
     ) -> Result<(), FileSystemError> {
-        self.stage_block(fs_block_id, buf, BlockKind::Data)
+        self.note_ordered_data()?;
+        self.write_fs_block_home(fs_block_id, buf)
     }
 
-    pub(super) fn stage_block(
-        &self,
-        fs_block_id: u64,
-        buf: &[u8],
-        kind: BlockKind,
-    ) -> Result<(), FileSystemError> {
+    /// 先登记持久化义务，再提交数据；部分失败也可能已经修改设备缓存。
+    pub(super) fn note_ordered_data(&self) -> Result<(), FileSystemError> {
+        let started = self
+            .journal
+            .lock()
+            .ready_mut()?
+            .note_ordered_data(crate::time::get_time_ns())?;
+        if started {
+            self.commit_event.signal();
+        }
+        Ok(())
+    }
+
+    pub(super) fn stage_block(&self, fs_block_id: u64, buf: &[u8]) -> Result<(), FileSystemError> {
         let mut owner = self.journal.lock();
         owner
             .ready_mut()?
-            .stage(fs_block_id, buf, self.block_size, kind)?;
+            .stage(fs_block_id, buf, self.block_size)?;
         self.metadata_cache
             .lock()
             .update_if_present(fs_block_id, buf);

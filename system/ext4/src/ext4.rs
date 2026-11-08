@@ -52,13 +52,14 @@ mod metadata_cache;
 mod metadata_csum;
 mod mount;
 mod orphan;
+mod storage_io;
 mod storage_mutation;
 mod xattr;
 mod xattr_inode;
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use dirhash::HashSignedness;
 pub(crate) use inode::Ext4Inode;
-use journal::{BlockKind, Journal, JournalOwner, MutationGuard};
+use journal::{Journal, JournalOwner, MutationGuard};
 use metadata_cache::MetadataBlockCache;
 use orphan::OrphanFile;
 

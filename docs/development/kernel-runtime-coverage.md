@@ -1,6 +1,6 @@
 # 内核运行时与服务覆盖
 
-内存机制由实际 VMO/ASID/translation owner 的 host fixture 与 musl guest 共同验证。没有 swap/pressure consumer 或已删除页回收账本的验证声明。host fixture 不执行硬件页表或设备 DMA。
+内存机制由实际 VMO/ASID/translation owner 的 host fixture 与 musl guest 共同验证。后台压力回收使用真实访问位与分代队列，前台/后台扫描和回收分别计数；不提供 swap。host fixture 不执行硬件页表或设备 DMA。
 
 `verify-architecture-benchmark` 同时运行原 architecture-bench 与实际 SCM owner 的
 unix-rights-bench、inotify-bench 与 realtime-signals-bench。共用原 2,000,000 次、5 个样本、200 ns hot-path policy；新增

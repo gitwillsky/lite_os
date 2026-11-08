@@ -12,7 +12,6 @@ use codec::*;
 mod commit_owner;
 mod staged_blocks;
 pub(super) use commit_owner::JournalOwner;
-pub(super) use staged_blocks::BlockKind;
 use staged_blocks::StagedBlocks;
 mod inode_mutation;
 use inode_mutation::InodeMutation;
@@ -78,21 +77,22 @@ pub(super) struct RunningTransaction {
     staged: StagedBlocks,
     /// 本事务累积的未提交释放 range；语义同 [`ActiveTransaction`] 的 `freed`。
     freed: FallibleMap<u64, u64>,
-    /// 首个 mutation 并入的 monotonic 时刻；空事务为 0。
+    /// OWNER: 已提交给设备的数据仍需持久化屏障；包括之后元数据 mutation 被回滚的覆盖写。
+    /// 缺失时纯数据覆盖的 fsync/定时提交会误判为空事务。由同一 mutation owner 读写。
+    ordered_data: bool,
+    /// 首个 mutation 或数据传输的 monotonic 时刻；空事务为 0。
     started_ns: u64,
 }
 
 impl RunningTransaction {
     fn is_empty(&self) -> bool {
-        self.staged.is_empty()
+        self.staged.is_empty() && !self.ordered_data
     }
 }
 
 /// running transaction 的最长年龄（Linux `commit=` 默认 5 秒）；超过即由提交线程或下一次
 /// mutation 提交，限定崩溃时丢失的已返回写入窗口。
 pub(super) const COMMIT_INTERVAL_NS: u64 = 5_000_000_000;
-/// running transaction 暂存数据的上限；超过即同步提交，限定 ordered data 占用的内核内存。
-const RUNNING_DATA_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Linux `jbd2_superblock_csum`：checksum 字段按零参与，覆盖完整 1024-byte superblock。
 fn superblock_checksum(superblock: &[u8]) -> u32 {
@@ -215,7 +215,6 @@ impl Journal {
         block: u64,
         bytes: &[u8],
         block_size: usize,
-        kind: BlockKind,
     ) -> Result<(), FileSystemError> {
         if self.failed || bytes.len() != block_size {
             return Err(FileSystemError::IoError);
@@ -226,7 +225,7 @@ impl Journal {
             .as_mut()
             .ok_or(FileSystemError::InvalidOperation)?
             .staged;
-        staged.stage(block, bytes, kind, capacity)
+        staged.stage(block, bytes, capacity)
     }
 
     /// 在当前 handle 记录一段释放的 block range。
@@ -336,11 +335,23 @@ impl Journal {
         false
     }
 
-    /// running transaction 是否已到达年龄或数据上限。
-    fn running_commit_due(&self, now_ns: u64, block_size: usize) -> bool {
+    /// 数据传输在 mutation owner 下完成；即使元数据随后 abort，也必须保留其刷盘义务。
+    pub(super) fn note_ordered_data(&mut self, now_ns: u64) -> Result<bool, FileSystemError> {
+        if self.failed || self.active.is_none() {
+            return Err(FileSystemError::IoError);
+        }
+        let started = self.running.is_empty();
+        self.running.ordered_data = true;
+        if started {
+            self.running.started_ns = now_ns;
+        }
+        Ok(started)
+    }
+
+    /// 数据不再暂存在 journal；脏页由内容 owner 限流，事务只按年龄提交。
+    fn running_commit_due(&self, now_ns: u64) -> bool {
         !self.running.is_empty()
-            && (now_ns.saturating_sub(self.running.started_ns) >= COMMIT_INTERVAL_NS
-                || self.running.staged.data_count() * block_size >= RUNNING_DATA_LIMIT_BYTES)
+            && now_ns.saturating_sub(self.running.started_ns) >= COMMIT_INTERVAL_NS
     }
 
     /// 非空 running transaction 的开始时刻。
@@ -498,18 +509,10 @@ impl Journal {
         staged: &StagedBlocks,
     ) -> Result<(), FileSystemError> {
         if staged.is_empty() {
-            return Ok(());
-        }
-        let metadata_count = staged.metadata_count();
-        if metadata_count == 0 {
-            // 纯覆盖已映射 block 的数据没有需要排序的 metadata：写回 home 后单次 barrier 即持久。
-            fs.write_fs_blocks_home(
-                staged
-                    .data()
-                    .map(|(block, bytes)| (*block, bytes.as_slice())),
-            )?;
+            // 纯数据事务没有 JBD2 映像，仍须确认此前完成的数据写入已持久。
             return fs.device.flush().map_err(block_error);
         }
+        let metadata_count = staged.metadata_count();
         record_test_transaction();
         let tag_capacity = self.layout.tags_per_descriptor();
         let descriptor_count = metadata_count.div_ceil(tag_capacity);
@@ -519,13 +522,7 @@ impl Journal {
         );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
-        // ordered data 与 descriptor/metadata image 共用 commit record 前的 durability barrier；
-        // 缺失它时崩溃可留下 durable commit 与旧 data，replay 后 metadata 指向未写入的 block。
-        fs.write_fs_blocks_home(
-            staged
-                .data()
-                .map(|(block, bytes)| (*block, bytes.as_slice())),
-        )?;
+        // 数据传输已在 mutation 返回前完成；下方 commit record 前的 barrier 同时排序数据与日志。
         let uuid = fs.superblock.lock().s_uuid;
         let tail = fs.block_size - JBD2_BLOCK_TAIL_SIZE;
         let mut cursor = 1;
@@ -840,7 +837,7 @@ impl<'a> MutationGuard<'a> {
     /// 1. 物化 allocation metadata 到 handle overlay；
     /// 2. running 无法再容纳该 handle 的 metadata 时，先提交 running（handle 仍可 abort）；
     /// 3. 无分配地并入 running，此后 mutation 对内存可见且不可回滚；
-    /// 4. running 达到年龄或数据上限时同步提交。
+    /// 4. running 达到年龄时同步提交。
     ///
     /// # Errors
     ///
@@ -862,7 +859,7 @@ impl<'a> MutationGuard<'a> {
             let mut owner = self.fs.journal.lock();
             let journal = owner.ready_mut()?;
             let started = journal.merge_active(now);
-            (started, journal.running_commit_due(now, self.fs.block_size))
+            (started, journal.running_commit_due(now))
         };
         self.committed = true;
         if started {

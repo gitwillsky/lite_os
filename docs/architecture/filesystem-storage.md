@@ -45,11 +45,11 @@
 - 所有类型的 open-unlinked inode（包括 rmdir/rename 覆盖的目录）记入同一 orphan file slot；目录逻辑长度立即清零，实际 extent 与 inode bitmap 保留至最后引用释放。已删除的 cwd/open directory 不允许创建新 entry。final Drop 只尝试
   非阻塞取得 mutation owner，竞争时由
   filesystem 合并 retry，下一次 task mutation 前回收一个已无 live Weak identity 的 orphan。
-- ext4 写路径是 Linux `data=ordered` + group commit：`write`/`create`/`rename` 等 mutation 只把
-  staged metadata 与文件数据并入内存中的 running transaction 后返回；metadata 经 JBD2 原子提交，
-  数据不进 journal、在 commit record 之前直接写回 home。running transaction 由 `fsync`/`execution::sync`、
-  journal 容量、16 MiB 数据上限或 5 秒年龄触发提交；每个 ext4 filesystem 在 ext4 内的写回线程负责空闲期的
-  5 秒上限。backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
+- ext4 写路径是 Linux `data=ordered` + delalloc + group commit：write 预留空间并修改唯一内容 VMO，
+  回写时分配 extent、直接 DMA 到 home；running transaction 仅保存元数据与待刷盘义务，没有数据副本。
+  commit record 前的屏障排序已完成的数据与 JBD2 映像；纯覆盖写也保留 fsync 刷盘义务。
+  fsync/sync、journal 容量、5 秒年龄或卸载触发提交，单文件脏数据达到 8 MiB 时写者同步回写。
+  backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - linuxd page cache 唯一拥有其缓存文件（tmpfs 以外的本地页缓存文件与 Linux FUSE 守护进程的文件）的 shared file page

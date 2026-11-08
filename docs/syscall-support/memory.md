@@ -62,4 +62,4 @@ Anonymous 不含 tmpfs/memfd、共享匿名与 SysV 内容，私有文件的 COW
 stat/statm/status 的 RSS 来自实际 RAM 用户翻译，包含继承的 COW 页，排除 MMIO、未触碰的 backing 与服务区镜像；
 statm shared 按文件/共享内存 RSS 投影，不再按 MAP_SHARED 标志估算。查询失败传播错误，不回退为零或整个映射。
 同一 open 的分段读取复用文本快照，offset 0 刷新；exec/退出的 MM 绑定规则与 maps 相同。
-当前实现仅经过 Clippy 与代码审查，运行时与双架构完整验收留待整个性能计划完成。
+VMO owner 用例、双架构 Clippy、AArch64 musl 与 RISC-V 启动/Rust std 门禁通过；压力回收诊断的负载与边界见性能覆盖文档。

@@ -204,7 +204,7 @@ impl Content {
             self.vmo
                 .write(&zeros[..(PAGE - tail) as usize], size)
                 .map_err(vmo_error)?;
-            pager_pool::mark_clean(&self.vmo, size - tail, PAGE);
+            // 保留该页有效前缀的脏状态；清洁整页会丢掉截断之前尚未回写的前缀。
         }
         Ok(())
     }
@@ -228,7 +228,6 @@ impl Content {
         let size = self.inode.size();
         let end = size.next_multiple_of(PAGE);
         let mut cursor = 0;
-        let mut data = Vec::new();
         self.dirty.store(0, Ordering::Relaxed);
         while cursor < end {
             let Some((start, dirty)) = pager_pool::first_dirty(&self.vmo, cursor, end - cursor)
@@ -237,12 +236,12 @@ impl Content {
             };
             let chunk = dirty.min(BATCH_PAGES * PAGE);
             let valid = size.saturating_sub(start).min(chunk) as usize;
-            data.clear();
-            data.try_reserve_exact(valid)
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-            data.resize(valid, 0);
-            pager_pool::begin_writeback(&self.vmo, start, chunk);
-            self.vmo.read(&mut data, start).map_err(vmo_error)?;
+            // EOF 尾字节不属于文件；在 BEGIN 前补零，避免把 mmap 的越界页尾落盘。
+            if valid < chunk as usize {
+                self.vmo
+                    .op_range(native_abi::vmo::OP_ZERO, size, end - size)
+                    .map_err(vmo_error)?;
+            }
             // 回写即将分配这些 block：先归还它们的预留；分配失败则补回（数据仍是脏的，下次再写）。
             // 数据已经读出，之后不再有会遗漏预留的提前返回。
             let block_size = self.inode.block_size() as u64;
@@ -259,12 +258,14 @@ impl Content {
             };
             self.inode
                 .release_buffered_reservation(converted.len() as u64);
-            let written = self.inode.write_back_storage(start, &data);
-            if !matches!(written, Ok(count) if count == data.len()) {
+            let written = self.inode.write_back_vmo(start, chunk, &self.vmo, || {
+                pager_pool::begin_writeback(&self.vmo, start, chunk);
+            });
+            if let Err(error) = written {
                 self.inode
                     .restore_buffered_reservation(converted.len() as u64);
                 reserved.extend(converted);
-                return Err(written.err().unwrap_or(FileSystemError::IoError));
+                return Err(error);
             }
             pager_pool::end_writeback(&self.vmo, start, chunk);
             cursor = start + chunk;
@@ -324,18 +325,16 @@ impl Content {
     ) -> Result<(), FileSystemError> {
         let length = length as usize;
         let buffer = SupplyBuffer::acquire(buffer).map_err(vmo_error)?;
-        let bytes = buffer.bytes(length);
         let size = self.inode.size();
         let valid = if offset < size {
             ((size - offset) as usize).min(length)
         } else {
             0
         };
-        if valid != 0 && self.inode.read_storage(offset, &mut bytes[..valid])? != valid {
-            return Err(FileSystemError::IoError);
-        }
+        self.inode
+            .read_storage_vmo(offset, length as u64, buffer.vmo())?;
         // 暂存区复用：EOF 之后的字节必须显式清零，不能留下上一次请求的内容。
-        bytes[valid..].fill(0);
+        buffer.bytes(length)[valid..].fill(0);
         buffer
             .supply(pager, &self.vmo, offset, length as u64)
             .map_err(vmo_error)

@@ -46,6 +46,7 @@ DRM/KMS、framebuffer、VirGL/PRIME 与图形资源退休的唯一细节 owner �
    peer-close 的复用槽 packet 必须复查真实 PEER_CLOSED 及关联身份；迟到 packet 不得断开新会话。
    退休不等待已经领取的回调结束；回调须沿既有幂等通知路径重新检查实际 owner 状态。
 5. 块设备会话（`LBLOCK04`）参照 Fuchsia block FIFO：控制 channel 只执行 INFO、ATTACH、DETACH、CONNECT、QUEUE。
+   detach_buffer 消费唯一引用并同步等待现有 DETACH 回复；服务端在 PMT 析构后回复，失联禁止移交页。普通 Drop 仍为非阻塞释放。
    QUEUE 一次性交出提交/完成共享 VMO、请求 Event、完成 Event；重复领取返回 ALREADY_BOUND，不能产生两个不协调的 producer。
    数据与 flush 只走共享环；旧 TRANSFER/TRANSFER_BATCH RPC 已删除，未引入应用 ABI 或新增内核调用。
    两端必须同时更新协议版本，不保留旧 codec 或在线混用路径。

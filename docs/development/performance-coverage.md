@@ -195,10 +195,9 @@ PLIC level mask 不增加 benchmark：以一次 priority 写入替代逐 CPU ena
 unmask 保留原 affinity 装配并写回有效 priority。MMIO 时序不由 host 数值模拟；实际寄存器 owner
 回归固定 mask/complete 的 enable 不变量，RISC-V 混合 DMA 冷启动与持续 I/O 裁决活性。
 
-受限硬件视图使成员创建及私有区 first-touch 多分配一份页表，normal/private 的叶项在同一事务内更新；
-返回只从已有 ThreadOwner 安全点移交 transient view，最终 token 获取不加锁、不分配、不新增 runtime dispatch。
-两根具有独立 ASID，已有全 ASID fence 同时覆盖，撤销不增加第二轮 IPI。成本由原双架构 trap/release
-门禁、完整 65536-root churn 与实际桌面帧门禁裁决，不放宽阈值；host fixture 只验证映射和 OOM 退休。
+受限硬件视图的 normal/private 根具有独立 ASID，私有区共用唯一 owner 的下级页表，共享区只由共享地址空间装入一次。
+成员根只借用对应子树；已有全 ASID fence 覆盖所有别名，退休先完成 fence 再释放 owner。
+成本由双架构 trap/release 门禁、65536-root churn 与实际桌面诊断裁决；host fixture 验证映射、隔离与 OOM 退休。
 
 
 maps 是显式诊断读取，不进入缺页、read/write 数据面或任务管理器既有采样路径：MM 锁内一次有序元数据快照，
@@ -398,3 +397,22 @@ SSH 新连接执行命令为 0.220 s。该结果不是跨设备通用延迟保�
 桌面与任务管理器打开时，`MemTotal - MemFree`（含可回收页）约 78–80 MiB，
 `MemTotal - MemAvailable` 约 61–67 MiB；两种口径均低于 100 MB。compositor/desktop/taskmgr 的 RSS 约 9.2/5.6/8.1 MiB，
 包含共享文件与窗口缓冲，不能跨行相加。截图通过原 SSH/RFB 通道取得，无 CUA 注入或独立开发虚拟机。
+
+登记 VMO 的 ext4 数据路径以现有 BusyBox 块/分区/文件/重启持久化 gate 验证；host ext4 用例继续验证
+metadata-only journal、崩溃恢复、delalloc 准入与设备写入次数，但不冒充 DMA 运行验收。
+预读与回写只固定当前批 slice；读取等待 DETACH 后移交页，写入在 pin 后 BEGIN、DMA 完成及 DETACH 后 END。
+普通文件内容不再复制进堆暂存或 journal。ATTACH/DETACH 是物理页代次的寿命开销，I/O 延迟作实际 guest 诊断，
+不新增脱离设备的 host 微秒阈值，也不由删除复制推断整个链路已经提速。
+
+最终压力诊断（同一 11 CPU/2 GiB/3008×1692 产品实例，USB 直通关闭）：2.3 GiB 稀疏文件映射，
+64 个热页写入已知字节并 msync/fsync，每 256 个冷页重读热集，两轮扫描均验证冷页为零、热页内容一致。
+两轮分别为 32.918/3.973 s，major faults 为 31861/27408；这是压力诊断，不与无回收的读盘吞吐混比。
+累计前台扫描/释放 1372268/526037 页，后台 330665/174905 页，前台压力尝试 495 次；未出现 OOM、会话退出或 SSH 失联。
+此前相同负载在约 1.8 GiB 后耗尽内存；补齐前台高水位节流与关中断调度安全点的远端确认后通过。
+清理后桌面及任务管理器仍存活，Dirty/Writeback 为零；物理已分配 67.75 MiB，扣除可回收缓存后 61.54 MiB。
+linuxd 服务真实专用内存 10.3 MiB，不再以零掩盖共享服务区归属。视觉通过 SSH/RFB 取帧确认，任务管理器显示 61.6 MiB。
+该负载验证压力活性、数据保留及回收计数，不保证任意访问模式下的工作集最优性或跨设备延迟。
+
+性能计划各项实现已迁入上述 owner；最终统一验证已覆盖主机单元、阻塞基准、双架构静态检查及现有来宾门禁。
+最后数据路径修改另通过双架构 Clippy、VMO 19 项、ext4 70 项、BusyBox 块/分区/重启持久化与同一产品压力诊断。
+保留 32 KiB 内核栈的测量依据、硬件/协议能力限制与未覆盖的独立 SDK 验收，不据此宣称整套系统无待办。

@@ -17,13 +17,16 @@ fn before(text: &str, first: &str, second: &str) -> bool {
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let value = normalized(source(sources, "system/ext4/src/ext4/xattr_inode.rs"));
     let xattr = normalized(source(sources, "system/ext4/src/ext4/xattr.rs"));
+    let allocation = normalized(source(sources, "system/ext4/src/ext4/allocation.rs"));
     let inode = normalized(source(sources, "system/ext4/src/ext4/inode.rs"));
     if !value.contains("u64::from(disk.i_ctime)<<32")
         || !value.contains("u64::from(disk.i_version_lo)")
         || !value.contains("crc32c(self.checksum_seed,&value)")
         || !value.contains("hash!=disk.i_atime")
         || !value.contains("ExtentTree::new(self,inode,&disk)")
-        || !value.contains("allocate_block(tree.default_goal(),&block,BlockKind::Metadata)")
+        || !value.contains("allocate_metadata_block(tree.default_goal(),&block)")
+        || !allocation.contains("self.write_fs_block(block,contents)?")
+        || allocation.contains("write_data_block")
         || !value.contains("previous.checked_add(")
         || !value.contains("previous.checked_sub(")
         || !before(
@@ -105,9 +108,9 @@ mod tests {
     #[test]
     fn rejects_ordered_value_data() {
         reject(
-            "system/ext4/src/ext4/xattr_inode.rs",
-            "BlockKind::Metadata",
-            "BlockKind::Data",
+            "system/ext4/src/ext4/allocation.rs",
+            "self.write_fs_block(block, contents)?",
+            "self.write_data_block(block, contents)?",
             "metadata journal",
         );
     }

@@ -16,7 +16,7 @@
 
 ## 中断与等待
 
-- hardirq 只确认硬件并发布有界内核工作；software IRQ 先 ack，再完成 barrier/TLB rendezvous。kernel trap 不重入普通领域锁。
+- hardirq 只确认硬件并发布有界内核工作；software IRQ 先 ack，再完成 barrier/TLB rendezvous；关中断的调度/协作式 yield 安全点也推进同一 pending 请求，避免无新 trap 时互等。kernel trap 不重入普通领域锁。
 - `execution::deferred` 的 per-CPU bitmap 只在空→非空时发一个软件中断；重复发布合并 bit。内核 consumer 在 user-return/IRQ-closed idle safe point 执行。
 - 截止时间等待由每 CPU 定时队列持有（`DeadlineIndex`：按（截止时间, 序号）有序，队首变化时发布；等待者入队到当前 CPU，
   令牌记录所属 CPU 供跨 CPU 取消）。每个 CPU 的硬件 deadline 是三个来源的最小值：当前线程的时间片截止（10 ms，

@@ -100,6 +100,7 @@ struct Sweep {
     nonempty: bool,
     blocked: bool,
     changed: bool,
+    observed: bool,
 }
 
 /// 同一 owner 的页号升序样本；映射层以物理身份过滤 COW 遮盖，合并所有别名的访问位。
@@ -121,6 +122,7 @@ pub(super) struct Reclaimed {
 struct Step {
     finished: bool,
     changed: bool,
+    observed: bool,
 }
 
 /// 读取前台/后台扫描和释放的累计页数，不等待扫描器，不触发回收。
@@ -244,6 +246,7 @@ impl Scanner {
             nonempty: false,
             blocked: false,
             changed: false,
+            observed: false,
         });
     }
 
@@ -267,6 +270,7 @@ impl Scanner {
         Step {
             finished: true,
             changed: sweep.changed,
+            observed: sweep.observed,
         }
     }
 
@@ -301,6 +305,7 @@ impl Scanner {
                 sweep.nonempty |= result.nonempty;
                 sweep.blocked |= result.blocked;
                 sweep.changed |= result.evicted != 0 || result.promoted != 0;
+                sweep.observed |= result.examined != 0;
             }
             if pages < SAMPLE_PAGES || !frame_allocator::under_pressure() {
                 break;
@@ -312,19 +317,32 @@ impl Scanner {
 
 fn reclaim_step(counters: &Counters) -> Step {
     let Some(mut scanner) = SCANNER.try_lock() else {
-        return Step {
-            finished: true,
-            changed: false,
-        };
+        // 协调器忙不代表完成一轮无候选扫描；调用者让出 CPU 后继续，不能据此判定内存耗尽。
+        return Step::default();
     };
     scanner.step(counters)
 }
 
-/// 用户缺页入口的有界兜底；不等待并发扫描协调器，一次最多 256 个页样本、64 个 VMO。
+/// 用户缺页入口的直接回收；无内核锁的 task context 才能进入。
+///
+/// 每批最多 256 个页样本、64 个 VMO，批间让出 CPU；持续压力下把分配者节流到高水位，
+/// 不能把一次老化样本当作“已经回收”就继续分配，否则大工作集尚未扫到冷页就会耗尽 reserve。
+/// 八个代次均没有采到候选时返回，让不可回收内存的正常分配失败语义继续生效。
 pub(crate) fn relieve_memory_pressure() -> bool {
-    if frame_allocator::under_pressure() {
-        FOREGROUND_RUNS.fetch_add(1, Ordering::Relaxed);
-        reclaim_step(&FOREGROUND);
+    if !frame_allocator::under_pressure() {
+        return false;
+    }
+    FOREGROUND_RUNS.fetch_add(1, Ordering::Relaxed);
+    let mut empty_sweeps = 0;
+    while frame_allocator::under_pressure() {
+        let step = reclaim_step(&FOREGROUND);
+        if step.finished {
+            empty_sweeps = if step.observed { 0 } else { empty_sweeps + 1 };
+            if empty_sweeps == 8 {
+                break;
+            }
+        }
+        crate::execution::sync::yield_current_task();
     }
     frame_allocator::under_pressure()
 }

@@ -16,6 +16,7 @@ mod id {
 )]
 mod execution {
     pub(crate) mod sync {
+        pub(crate) use std::thread::yield_now as yield_current_task;
         pub(crate) struct IrqMutex<T>(std::sync::Mutex<T>);
         impl<T> IrqMutex<T> {
             pub(crate) const fn new(value: T) -> Self {

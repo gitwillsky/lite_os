@@ -165,15 +165,21 @@ impl Ext4FileSystem {
     /// # Errors
     ///
     /// 无空闲 block、bitmap checksum 不匹配或 I/O 失败。
-    pub(super) fn allocate_block(
+    pub(super) fn allocate_metadata_block(
         &self,
         goal: u64,
         contents: &[u8],
-        kind: BlockKind,
     ) -> Result<u64, FileSystemError> {
         if contents.len() != self.block_size {
             return Err(FileSystemError::IoError);
         }
+        let block = self.allocate_block_number(goal)?;
+        self.write_fs_block(block, contents)?;
+        Ok(block)
+    }
+
+    /// 只分配 bitmap；调用者必须在本 mutation 提交前初始化块，失败由 guard 回滚映射与分配。
+    pub(super) fn allocate_block_number(&self, goal: u64) -> Result<u64, FileSystemError> {
         // 已向写者承诺的延迟分配 block 不能被别的分配占用；回写在分配前先归还自己的预留。
         if self.superblock.lock().free_blocks_count()
             <= self.delalloc_reserved.load(Ordering::Relaxed)
@@ -221,10 +227,6 @@ impl Ext4FileSystem {
                 superblock.set_free_blocks_count(free - 1);
             }
             let block = first_block + local as u64;
-            match kind {
-                BlockKind::Metadata => self.write_fs_block(block, contents)?,
-                BlockKind::Data => self.write_data_block(block, contents)?,
-            }
             return Ok(block);
         }
         Err(FileSystemError::NoSpace)

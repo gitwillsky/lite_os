@@ -277,22 +277,19 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   block cache 独占 directory/htree/extent/orphan block identity 与 LRU reclaim；JBD2 journal 独占
   transaction/commit/replay；page cache 独占 cached page lifecycle。
 - ext4 写路径固定为 Linux `data=ordered` + group commit：每次 mutation 的 handle overlay 独占本次
-  staged metadata/data、释放的 block range 与 allocation dirty-group bitset；bitset 必须在 handle 发布前
+  staged metadata、释放的 block range 与 allocation dirty-group bitset；bitset 必须在 handle 发布前
   按 group count fallible reserve，OOM 不得开始 mutation。`MutationGuard::commit` 一次性物化 primary
   superblock 与每个 dirty descriptor block 后，以只移动 tree node 的方式把 overlay 原子并入唯一
-  running transaction；并入后 mutation 对内存可见且不可回滚，并入前的任何失败都只丢弃 overlay。
+  running transaction；并入后 mutation 对内存可见且不可回滚，并入前失败回滚元数据；已写入既有数据块的字节不承诺事务回滚。
 - ext4 首次挂载和 remount 共用固定 profile 的选项解析，接受自身报告的 `data=ordered`，拒绝
   未支持的 data 模式与未知 key。`FileSystem::remount` 在后端内先校验再进行 ro → rw 准备；
   `Ext4FileSystem.writable` 仅在 superblock flush、orphan 回收及一致性验证全部成功后发布，
   I/O 失败保留未完成状态，重试不能跳过实际准备；VFS admission 串行该转换。
-- 每层 `StagedBlocks.entries` 对同一物理块只保存一个 image/classification；metadata credit aggregate
-  与节点由同一 owner 更新。目录块的初始化本身就是 metadata，不能另存 ordered-data 零副本；
-  换型、跨层合并和 OOM/credit 失败均保持单个 image。
-- running transaction 独占全部未提交 metadata、ordered data 与未提交释放 range。metadata 经 JBD2
-  原子提交；data 不进 journal，必须在 commit record 之前写回 home 并共用同一 durability barrier。
-  未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向新文件已写回的数据。
-- running transaction 只在以下时机提交：handle 并入后 metadata 超过单个 journal transaction 容量
-  （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`execution::sync`。
+- 每层 `StagedBlocks.entries` 只保存元数据映像，节点数就是 journal credits；同块覆盖与跨层合并不重复计费。
+  目录、extent 与 xattr 块从初始化起进入日志；普通数据不进入暂存集合。
+- 数据在 mutation owner 下直接写 home；running transaction 只记录待持久化义务，失败或 abort 也不丢弃已提交数据的屏障。
+  commit record 前的 flush 排序已完成的数据 DMA 与日志映像；纯数据事务仍执行 flush。未提交释放的 block 不能重新分配。
+- running transaction 在 metadata 容量不足（先提交 running，再并入）、年龄超过 5 秒、fsync/fdatasync/sync 或 shutdown 时提交。
   每个 ext4 filesystem 在 mount 时由 ext4 创建原生写回服务线程（对应 Linux jbd2）：running transaction
   由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
   mutation 时线程无限期阻塞，不产生周期唤醒。mount 发布前预备唯一 shutdown waiter；
@@ -449,21 +446,20 @@ writable_mappings 是 MemoryFile 唯一的 AtomicUsize lease count；递增与 s
 MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不保留第二份 seal 状态。
 失败 mmap、范围校验、安装或分配都通过候选 Arc Drop 回滚；新增开销仅在 mmap/最终 unmap，不进入每像素路径。
 
-- ext4 读写块 I/O 以区间为单位：读路径把一次 `read_storage` 里所有 extent 的连续块合成一批（`read_fs_runs`，journal staged
-  覆盖与 cache generation 重试语义不变）；journal 的 ordered 数据、metadata checkpoint 与 replay 写回 home 时，块号连续的映像
-  合并为至多 64 块的区间写（`write_fs_blocks_home`，每块仍计一次 home 写，区间缓冲分配失败按设备写失败处理）。
-  提交点之后不得再因合并而新增分配失败路径：缓冲在写入前一次性预留，失败即提交失败。
+- ext4 普通文件补页把 extent 区间直接 DMA 到 pager 工作线程的登记 VMO；hole/unwritten 补零，EOF 尾部清零。
+  传输全部完成后同步 DETACH，确认 PMT 解除固定才 supply（移交页）。登记随该批物理页，而非随可复用的虚拟地址存活。
+  元数据与 CPU 字节读取仍保留 journal overlay/cache generation 一致性；metadata checkpoint/replay 连续映像合并为至多 64 块的区间写。
 - ext4 普通文件的缓冲写入是延迟分配（data=ordered + delalloc）：`Content::write` 只做三件事——为尚未分配的 hole block 向文件系统
   预留空间（`reserve_buffered_write`，ENOSPC 在 write 返回前同步报告）、提交文件大小与修改时间（`note_buffered_write`，
   大小增长或 mtime 秒数变化才开一次 journal mutation）、把数据写入内容 VMO 并留下脏标记。块分配与落盘发生在回写
   （fsync、syncfs、5 秒周期、节点释放、单文件脏数据超过 8 MiB 时由写者同步回写，即脏页限流）。预留是精确块数
   （`delalloc_reserved`），准入检查另给总预留留出每 128 块一个 extent 节点的余量；其他分配（metadata、fallocate、直接写）
-  只能使用预留之外的空闲 block（`allocate_block` 检查），`statfs` 的可用块已扣除预留。回写（`write_back_storage`）
+  只能使用预留之外的空闲 block（`allocate_block_number` 检查），`statfs` 的可用块已扣除预留。回写（`write_back_vmo`）
   先归还本区间的预留再分配，分配失败则补回预留并把数据留作脏页；它只映射 block，不改大小也不改时间戳，
   所以不会覆盖使用者随后用 `utimensat` 设置的 mtime。截断后越过新 EOF 的预留作废，内容被丢弃时剩余预留一并归还。
   缓冲写入、预留转换和回写确认复用 Content 的预留锁串行；准备失败仅撤销本次新增预留，不移除已有脏数据的块。
   VMO 复制失败可能已修改前缀，保守保留预留到回写/截断/内容退休，不能撤销已修改数据的空间保证。
-  ext4 与 linuxd 页缓存均在 BEGIN 前准备缓冲；失败仍待确认的页可查询重试，不把旧快照重新写入 VMO。
+  ext4 在 BEGIN 前登记本批 VMO slice，linuxd CPU 缓冲在 BEGIN 前准备；失败的待确认页可重试，不把旧快照重新写入 VMO。
   映射并发写由内核写保护/重新置脏保留，回写确认由各内容 owner 的原有操作锁串行。
   最后 FORGET 退休且链接数为零时直接丢弃内容与预留，不为马上回收的脏数据分配磁盘块；未知链接状态保守写回。
   这取代了此前“先直写存储再写 VMO”的 write：数据不再同时存在于 journal staged 副本与内容 VMO 两份。
@@ -474,3 +470,7 @@ ext4 的 FUSE channel 沿 `service-rpc::serve_messages` 的既有弹性线程池
 `FuseSession` 只拥有该连接的寿命凭据，独立于控制端点与回写线程持有的 Mount；线程池停止接收并排空在途处理后，
 最后一个 handler Drop 才调用原有幂等 finish/shutdown，随后释放 UUID claim。不能以某个空闲 worker 退休代替整个会话退出。
 创建失败同样由该凭据清理，不新增全局表、锁、回收线程或两套挂载状态。
+
+普通文件回写只登记本批内容 VMO 的 slice，避免固定整个大文件；登记的写解析完成后再 BEGIN，
+以免固定动作把 AwaitingClean 重新标脏。extent 分配后直接批量 DMA，完成并解除固定后才 END；无堆数据快照或 journal 数据副本。
+截断清零页尾保留有效前缀的脏状态，失败页保持可查询；重叠 mmap 写保留较新的 Dirty，不以旧快照覆盖。

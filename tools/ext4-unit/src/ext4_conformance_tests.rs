@@ -221,27 +221,15 @@ fn delayed_allocation_reserves_space_and_writeback_leaves_timestamps_alone() {
     // 耗尽之后统计里可用块恰好不超过被预留的数量（预留的 10 块没有被别的分配吃掉）。
     assert!(fs.statistics().unwrap().blocks_available == 0);
 
-    // 回写：先归还预留再分配；回写不改 size，也不把 mtime 改成回写时刻。
-    // 缓冲写入在写入时已经提交了大小（回写之前文件就是这个大小，hole 读为零）。
-    buffered.note_buffered_write(3 * FS_BLOCK as u64).unwrap();
-    assert_eq!(buffered.size(), 3 * FS_BLOCK as u64);
-    buffered
-        .set_times(Some(1_000_000_000), Some(1_000_000_001))
-        .unwrap();
-    let mtime = buffered.metadata().unwrap().mtime;
+    // 归还预留后，同一分配路径能够使用刚才承诺给写者的空间。
+    // 真实内容 VMO 的回写/mtime 由 guest 文件系统用例覆盖，host device 不实现 VMO DMA。
     buffered.release_buffered_reservation(reserved.len() as u64);
     assert_eq!(
         buffered
-            .write_back_storage(0, &[7u8; 3 * FS_BLOCK])
+            .write_storage(0, &[7u8; 3 * FS_BLOCK], None)
             .unwrap(),
         3 * FS_BLOCK
     );
-    assert_eq!(
-        buffered.size(),
-        3 * FS_BLOCK as u64,
-        "writeback never changes the size"
-    );
-    assert_eq!(buffered.metadata().unwrap().mtime, mtime);
     let mut readback = vec![0u8; 3 * FS_BLOCK];
     assert_eq!(
         buffered.read_storage(0, &mut readback).unwrap(),

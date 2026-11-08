@@ -56,31 +56,42 @@ impl Ext4Inode {
         if initial_contents.is_some_and(|contents| contents.len() != self.fs.block_size) {
             return Err(FileSystemError::IoError);
         }
-        // 目录/htree block 从首次初始化起就是 journal metadata；先登记为 ordered
-        // data 会在 metadata checkpoint 前把零 image 写回并污染 readonly cache。
-        let kind = if self.inode_type() == InodeType::Directory {
-            BlockKind::Metadata
-        } else {
-            BlockKind::Data
-        };
+        let metadata = self.inode_type() == InodeType::Directory;
+        self.map_block_for_write(mutation, file_block, |block| {
+            let zeroed;
+            let contents = match initial_contents {
+                Some(contents) => contents,
+                None => {
+                    zeroed = try_zeroed(self.fs.block_size)?;
+                    &zeroed
+                }
+            };
+            if metadata {
+                self.fs.write_fs_block(block, contents)
+            } else {
+                self.fs.write_data_block(block, contents)
+            }
+        })
+    }
+
+    /// 在唯一 mutation 中建立映射；首次初始化由调用者提供，失败时映射与 bitmap 一并回滚。
+    /// 登记 VMO 回写可延后到批量 DMA 初始化，但必须在 mutation.commit 前完成。
+    pub(super) fn map_block_for_write(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        file_block: u32,
+        initialize: impl FnOnce(u64) -> Result<(), FileSystemError>,
+    ) -> Result<(u64, bool), FileSystemError> {
         let mut inode = mutation.inode(self)?;
         let mut tree = ExtentTree::new(&self.fs, self.inode_num, &inode)?;
-        let zeroed;
-        let contents = match initial_contents {
-            Some(contents) => contents,
-            None => {
-                zeroed = try_zeroed(self.fs.block_size)?;
-                &zeroed
-            }
-        };
         let block = match tree.lookup(file_block)? {
             Mapping::Mapped(extent) => {
                 let block = extent.physical + u64::from(file_block - extent.logical);
                 if !extent.unwritten {
                     return Ok((block, false));
                 }
-                // unwritten block 先 staged 完整新内容，再把映射转为 initialized。
-                self.fs.stage_block(block, contents, kind)?;
+                // unwritten block 先初始化完整新内容，再把映射转为 initialized。
+                initialize(block)?;
                 tree.mark_written(file_block)?;
                 block
             }
@@ -89,7 +100,8 @@ impl Ext4Inode {
                     || tree.default_goal(),
                     |left| left.physical + u64::from(file_block - left.logical),
                 );
-                let block = self.fs.allocate_block(goal, contents, kind)?;
+                let block = self.fs.allocate_block_number(goal)?;
+                initialize(block)?;
                 tree.insert(Extent {
                     logical: file_block,
                     length: 1,
@@ -123,33 +135,6 @@ impl Ext4Inode {
             written = writer.write(offset as u64, buf)?;
             Ok(())
         })?;
-        Ok(written)
-    }
-
-    /// 回写：把内容缓存里已经确认的数据落到存储，只分配/映射 block，不改文件大小与时间戳。
-    ///
-    /// 写入时已经提交了大小与 mtime（缓冲写入），回写若再走普通写路径会把 mtime 改成回写时刻，
-    /// 并覆盖使用者随后用 utimensat 设置的时间。
-    pub(crate) fn write_back_storage(
-        &self,
-        offset: u64,
-        buf: &[u8],
-    ) -> Result<usize, FileSystemError> {
-        if self.inode_type() == InodeType::Directory {
-            return Err(FileSystemError::IsDirectory);
-        }
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let offset = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        let mut mutation = self.fs.begin_mutation()?;
-        let written = self.write_data_locked(&mut mutation, offset, buf)?;
-        // 新映射的 extent 与 sector 数在 inode 工作副本里：必须持久化，但不改大小与时间戳。
-        {
-            let inode = mutation.inode(self)?;
-            self.fs.write_inode_disk(self.inode_num, &inode)?;
-        }
-        mutation.commit()?;
         Ok(written)
     }
 
@@ -191,8 +176,8 @@ impl Ext4Inode {
             let block_offset = position % self.fs.block_size;
             let count = cmp::min(self.fs.block_size - block_offset, buf.len() - done);
             if block_offset == 0 && count == self.fs.block_size {
-                // 新 data block 直接以 caller image 初始化；既有 block 直接覆盖 journal
-                // image。两条路径都不分配、清零第二个 block-sized RMW scratch。
+                // 新 data block 直接以 caller image 初始化；既有 block 直接写入 home
+                // 区间。两条路径都不分配、清零第二个 block-sized RMW scratch。
                 let bytes = &buf[done..done + count];
                 let (block, initialized) =
                     self.ensure_block_mapped_with_contents(mutation, file_block, Some(bytes))?;

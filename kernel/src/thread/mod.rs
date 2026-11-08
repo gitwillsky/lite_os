@@ -481,6 +481,10 @@ pub(crate) fn sleep_until(deadline_ns: u64) -> crate::execution::sync::WaitResul
 
 /// 处理当前 CPU 已发布的 deferred work。只在关中断的调度安全点或用户态返回汇合点调用。
 pub(crate) fn dispatch_deferred() {
+    // 关中断的协作式等待也必须推进远端 rendezvous；只靠 IPI trap 会让回收者等待
+    // 正在反复 yield、却从未返回用户态开中断的 CPU，导致全核 TLB/内存屏障互等。
+    crate::platform::complete_pending_ipi();
+    crate::execution::barrier::complete_pending();
     let work = deferred::take();
     if work.is_empty() {
         return;

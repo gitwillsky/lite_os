@@ -54,6 +54,9 @@ impl BlockDevice for PartitionDevice {
     fn attach_buffer(&self, vmo: Vmo) -> Result<Arc<dyn BlockBuffer>, BlockError> {
         self.parent.attach_buffer(vmo)
     }
+    fn detach_buffer(&self, buffer: Arc<dyn BlockBuffer>) -> Result<(), BlockError> {
+        self.parent.detach_buffer(buffer)
+    }
     fn transfer(
         &self,
         operation: BlockOperation,

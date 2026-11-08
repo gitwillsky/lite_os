@@ -63,6 +63,16 @@ pub trait BlockDevice: Send + Sync {
     /// VMO 权限、大小或 DMA 固定失败；分配失败返回 OutOfMemory。
     fn attach_buffer(&self, vmo: Vmo) -> Result<Arc<dyn BlockBuffer>, BlockError>;
 
+    /// 消费唯一登记引用，等待设备释放 DMA 固定后返回；用于随后移交或回收 VMO 页。
+    ///
+    /// # Errors
+    /// 仍有其他引用、登记属于另一设备，或远端释放确认失败。失败时不得移交其页。
+    fn detach_buffer(&self, mut buffer: Arc<dyn BlockBuffer>) -> Result<(), BlockError> {
+        Arc::get_mut(&mut buffer).ok_or(BlockError::InvalidBlock)?;
+        drop(buffer);
+        Ok(())
+    }
+
     /// 直接在登记 VMO 的 `buffer_offset` 字节处传输 `blocks` 个逻辑块，成功返回前 DMA 已完成。
     ///
     /// # Parameters

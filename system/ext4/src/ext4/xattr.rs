@@ -542,7 +542,7 @@ impl Ext4FileSystem {
                 } else {
                     old_block
                 };
-                self.allocate_block(goal, bytes, BlockKind::Metadata)?
+                self.allocate_metadata_block(goal, bytes)?
             };
             let checksum = xattr_block_checksum(self.checksum_seed, block, bytes);
             bytes[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4].copy_from_slice(&checksum.to_le_bytes());

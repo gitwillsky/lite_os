@@ -33,7 +33,7 @@ DEADLINE 的 runtime 至少 1024 ns，0 < runtime <= deadline <= period，period
 原生采用分区 EDF 和 95% 的逐 CPU 密度上限，较 Linux 利用率准入保守；支持约束截止的 revised wakeup，不声明 GRUB 带宽回收或动态 overruns 通知。
 显式 yield 放弃剩余周期预算。未设置 RESET_ON_FORK 的 DEADLINE fork/clone 返回 EAGAIN，设置后的子执行体恢复 OTHER；rr interval 为零。
 proc stat 的 priority/policy 来自同一 Linux 配置快照；DEADLINE 显示 priority=-101、policy=6，不继续伪装为 OTHER。
-当前只有源码/Clippy 验证；实时负载、调度公平性与完整 syscall 运行验收留到性能计划全部源码完成后统一执行。
+scheduler-unit 的 CBS 准入/预算/唤醒用例、双架构 Clippy、musl syscall 与 2/4 CPU 公平性门禁通过；这些结果不等同于任意硬件的实时延迟保证。
 
 get_robust_list 按当前 PID namespace 查找实际 Thread，在目标已有 Process credential_guard 下以 killable acquisition 与 exec 串行化；使用 caller real UID/GID 和 permitted capability 子集规则，FS 读取仍用 fsids/effective。授权后只复制 registration
 scalar，先写 len 再写 head；不访问 head 指向的用户页。self/null/未映射 head、copyout 错误顺序以及跨进程 REAL/FS 区别的 guest 回归已补源码。此路径是冷查询，不增加调度或 futex 热路径锁。

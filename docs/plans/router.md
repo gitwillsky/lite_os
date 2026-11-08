@@ -29,7 +29,7 @@ NAT 与有状态防火墙、网桥/VLAN、OSPFv2/v3、BGP，以及实时刷新�
 | R11 | 路由进程：`routing-rib` 负责选路、下一跳解析与策略并下发 FIB；`bgp`、`ospf` 各自独立进程，崩溃只影响自身并由 component-manager 重启 | FRR zebra + bgpd/ospfd |
 | R12 | 不中断转发：FIB、接口表与连接跟踪放在可跨进程保留的 VMO，netstack 重启后由 component-manager 交还；BGP/OSPF 支持 Graceful Restart | Zircon VMO 交接、RFC 4724、RFC 3623/5187 |
 | R13 | 防火墙与 NAT 规则对用户呈现为有序规则链（匹配条件 + 动作，支持跳转链、地址集、连接状态、命中计数）；提交时编译为决策树加哈希集合的分类器，原子替换；已建立连接走流表快路径 | nftables flowtable、DPDK ACL |
-| R14 | 本计划与[性能计划](performance-hotpaths.md)分开；该计划先完成 | — |
+| R14 | 本计划与已落地的[热路径优化](../development/performance-coverage.md)分开 | — |
 | R15 | 第一个里程碑包含 RSTP（802.1D-2004），不做 MSTP；网桥端口状态（discarding/learning/forwarding）与 BPDU 上送从数据面设计之初就具备 | IEEE 802.1D-2004；RouterOS 网桥默认 RSTP |
 | R16 | 报文格式库 `libraries/packet-wire`：批处理（整批校验后直接读字段）、前部预留空间原地加头、对接网卡卸载标志、覆盖 TCP-MD5/AO 等选项；netstack、dhcp-client、dhcp-server 统一使用，彻底移除 smoltcp 依赖 | Fuchsia netstack3 `packet`/`packet-formats` |
 
@@ -80,8 +80,8 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 
 ### 0. 前置能力（内核与驱动）
 
-- 依赖性能计划：高精度定时器（第 3 项）、块/DMA 直写服务 VMO 的模式（第 1 项）、截止时间调度类（P2 第 1 项）、
-  socket 共享环（P2 第 5 项已接通源码，运行验收归性能计划）。
+- 已有前置：高精度定时器、登记 VMO 块/DMA 数据面、截止时间调度类与 socket 共享环；
+  owner 与验收边界见[性能覆盖](../development/performance-coverage.md)。
 - 新增：CPU 隔离（独占核不调度普通线程）与中断亲和设置的原生接口；virtio-net 多队列与每队列 MSI-X；
   驱动 trait 改为多队列批量收发（RSS 配置、队列数协商、校验和/TSO 等卸载能力位）。
 - **契约**：执行域契约（CPU 隔离、IRQ 亲和）、设备契约（网络驱动 trait）。
@@ -169,4 +169,4 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 
 ## 进度
 
-- 路由专属阶段未开始；先完成[性能计划](performance-hotpaths.md)。前置 socket 共享环已接通源码，其运行与性能验收仍归性能计划。
+- 路由专属阶段未开始；前置热路径优化已落地，socket 共享环的运行与性能边界见[性能覆盖](../development/performance-coverage.md)。
