@@ -216,7 +216,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   清掉读空之后的新通知。不得用输入分段、延时或提高预算掩盖中断丢失。
 
 - init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
-- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与driver-host 的 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
+- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与driver-host 的 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS2` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
 - 指针焦点跟随光标下的窗口，键盘焦点跟随栈顶（活动）窗口；带描述符的消息（`wl_keyboard.keymap`）按段发送，fd 总先于引用它的消息到达。
 - `input::Decoder` 先累积原始相对位移并映射、钳制绝对坐标；会话仅原地合并同批相邻的语义指针位置，
   保留最新位置。按钮、按键和滚轮均为顺序屏障，不跨越屏障合并，不增加队列或分配。

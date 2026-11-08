@@ -356,7 +356,7 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let boot_scene = fs::read(root.join("assets/classic/boot-scene.lbs")).unwrap_or_default();
-    if boot_scene.get(..4) != Some(b"LBS1") || boot_scene.len() != 30_638 {
+    if boot_scene.get(..4) != Some(b"LBS2") || boot_scene.len() != 30_642 {
         errors
             .push("assets/classic/boot-scene.lbs: checked boot scene identity changed".to_owned());
     }

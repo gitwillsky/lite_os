@@ -47,6 +47,9 @@ pub struct Scanout {
     sequence: u64,
     // OWNER: 与同一对扫描目标同寿命，只存几何/损伤，不保留客户端像素。
     history: crate::compose::damage::History,
+    // OWNER: 每个扫描目标是否已画过完整的启动画面静态位图。启动动画每帧只重画动画带与进度条，
+    // 缺少它，第一次用到的后缓冲只会得到这两块而其余保持黑屏。
+    boot_ready: [bool; 2],
 }
 
 impl Scanout {
@@ -98,6 +101,7 @@ impl Scanout {
             pending: None,
             sequence: 0,
             history: crate::compose::damage::History::default(),
+            boot_ready: [false; 2],
         })
     }
 
@@ -148,24 +152,37 @@ impl Scanout {
     }
 
     /// 在可写后缓冲绘制启动画面；flip 在途返回 WouldBlock，画面或设备错误直接传播。
-    pub fn paint_boot(&mut self, scene: &[u8], permille: u16) -> io::Result<()> {
+    pub fn paint_boot(
+        &mut self,
+        scene: &crate::boot::Scene,
+        frame: crate::boot::Frame,
+    ) -> io::Result<()> {
         if self.pending.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         self.history.invalidate();
-        self.kms.damage(&[canvas::Rect::new(
-            0,
-            0,
-            self.width() as i32,
-            self.height() as i32,
-        )]);
-        match &mut self.backend {
+        let full = !self.boot_ready[self.back];
+        let damage = match &mut self.backend {
             Backend::Cpu(targets) => {
-                crate::boot::paint(&mut targets[self.back].buffer, scene, permille)
-                    .map_err(io::Error::other)
+                crate::boot::paint(&mut targets[self.back].buffer, scene, frame, full)
+                    .map_err(io::Error::other)?
             }
-            Backend::Gpu(gpu) => gpu.paint_boot(self.back, scene, permille),
-        }
+            Backend::Gpu(gpu) => gpu.paint_boot(self.back, scene, frame, full)?,
+        };
+        self.boot_ready[self.back] = true;
+        let damage: Vec<_> = damage
+            .iter()
+            .map(|rect| {
+                canvas::Rect::new(
+                    rect.x as i32,
+                    rect.y as i32,
+                    rect.width as i32,
+                    rect.height as i32,
+                )
+            })
+            .collect();
+        self.kms.damage(&damage);
+        Ok(())
     }
 
     /// 首次把后缓冲设为 CRTC 的扫描对象（modeset），并交换前后缓冲。

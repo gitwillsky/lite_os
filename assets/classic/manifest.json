@@ -14,12 +14,12 @@
   "files": {
     "boot-scene.lbs": {
       "group": "boot",
-      "bytes": 30638,
-      "sha256": "89494df1cf4a481fdd94f5e9d9c4a19a1447e3cfbc00f5bc813ef6b5bd8f5dd2",
+      "bytes": 30642,
+      "sha256": "641ddcc49410e98fa620336cb6202d653d31c87d6a0d9637a97d5cbe9ae8b680",
       "origin": {
         "source": "ntoskrnl.exe",
         "resource": 1,
-        "conversion": "LBS1 lossless RLE"
+        "conversion": "LBS2 lossless RLE"
       }
     },
     "cursors.lcs": {

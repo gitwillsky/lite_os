@@ -45,7 +45,7 @@ def _files(group: str) -> tuple[Path, ...]:
 
 
 def boot_scene() -> Path:
-    """返回 Git 中唯一的 LBS1 启动画面；资源缺失或损坏时失败。"""
+    """返回 Git 中唯一的 LBS2 启动画面；资源缺失或损坏时失败。"""
     return _files("boot")[0]
 
 

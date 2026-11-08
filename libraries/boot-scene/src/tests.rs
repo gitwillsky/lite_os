@@ -7,10 +7,10 @@ use super::*;
 /// 仓库提交的默认画面，用来保证打包器与解码器对真实数据达成一致。
 const DEFAULT_SCENE: &[u8] = include_bytes!("../../../assets/classic/boot-scene.lbs");
 
-/// 按 `LBS1` 规则手工编码：整幅 `index` 色，可附加额外 RLE 对与自定义文件头字段。
+/// 按 `LBS2` 规则手工编码：整幅 `index` 色，可附加额外 RLE 对与自定义文件头字段；动画带为第 416 行起 10 行。
 fn encode(colors: u16, fill: [u16; 4], rle: &[(u8, u8)]) -> Vec<u8> {
     let mut data = Vec::new();
-    data.extend_from_slice(b"LBS1");
+    data.extend_from_slice(b"LBS2");
     for field in [640u16, 480, colors, 0] {
         data.extend_from_slice(&field.to_le_bytes());
     }
@@ -18,6 +18,9 @@ fn encode(colors: u16, fill: [u16; 4], rle: &[(u8, u8)]) -> Vec<u8> {
         data.extend_from_slice(&field.to_le_bytes());
     }
     data.extend_from_slice(&0x0000_299Cu32.to_le_bytes());
+    for field in [416u16, 10] {
+        data.extend_from_slice(&field.to_le_bytes());
+    }
     for index in 0..colors {
         data.extend_from_slice(&u32::from(index).to_le_bytes());
     }
@@ -81,6 +84,31 @@ fn committed_default_scene_has_the_sunken_progress_slot_where_the_header_says() 
 }
 
 #[test]
+fn committed_default_scene_band_is_the_two_colour_blue_strip() {
+    let scene = Scene::parse(DEFAULT_SCENE).unwrap();
+    let band = scene.band_rect();
+    assert_eq!((band.y, band.height), (416, 10));
+    let mut indices = std::vec![0u8; WIDTH * band.height];
+    assert!(scene.band_indices(&mut indices));
+    let mut colors: Vec<u32> = indices.iter().map(|&index| scene.color(index)).collect();
+    colors.sort_unstable();
+    colors.dedup();
+    assert_eq!(colors, [0x0000_299C, 0x0000_73DE]);
+    assert!(
+        !scene.band_indices(&mut indices[1..]),
+        "wrong length is refused"
+    );
+}
+
+#[test]
+fn band_offset_steps_once_per_interval_and_wraps_at_the_bitmap_width() {
+    assert_eq!(band_offset(0), 0);
+    assert_eq!(band_offset(BAND_STEP_MS - 1), 0);
+    assert_eq!(band_offset(BAND_STEP_MS), 1);
+    assert_eq!(band_offset(BAND_STEP_MS * WIDTH as u64), 0);
+}
+
+#[test]
 fn rows_stop_after_the_last_row() {
     let data = encode(1, [274, 437, 163, 8], &solid());
     let scene = Scene::parse(&data).unwrap();
@@ -109,7 +137,7 @@ fn malformed_inputs_are_rejected_with_the_matching_reason() {
         ParseError::Truncated
     );
     assert_eq!(
-        Scene::parse(&good[..24]).unwrap_err(),
+        Scene::parse(&good[..28]).unwrap_err(),
         ParseError::Truncated
     ); // 缺调色板
     let mut bad_magic = good.clone();

@@ -160,10 +160,13 @@ impl Gpu {
     pub(crate) fn paint_boot(
         &mut self,
         back: usize,
-        scene: &[u8],
-        permille: u16,
-    ) -> io::Result<()> {
+        scene: &crate::boot::Scene,
+        frame: crate::boot::Frame,
+        full: bool,
+    ) -> io::Result<Vec<boot_scene::Rect>> {
         let target = &self.targets[back].resource;
+        // 暂存资源始终保存最新的完整一帧：首次创建时画静态位图，之后只改写动画带与进度条。
+        let fresh = self.boot_staging.is_none();
         let staging = match &mut self.boot_staging {
             Some(staging) => staging,
             slot => slot.insert(
@@ -171,13 +174,32 @@ impl Gpu {
                     .create_render_target(target.width(), target.height())?,
             ),
         };
-        crate::boot::paint(staging, scene, permille).map_err(io::Error::other)?;
-        self.context.staged_transfer(
-            target,
-            staging,
-            [0, 0, target.width(), target.height()],
-            false,
-        )
+        let damage = crate::boot::paint(staging, scene, frame, fresh).map_err(io::Error::other)?;
+        // 目标还没有静态位图时整屏上传；否则只上传本帧改写的矩形。
+        let uploads = if full {
+            vec![boot_scene::Rect {
+                x: 0,
+                y: 0,
+                width: target.width_usize(),
+                height: target.height_usize(),
+            }]
+        } else {
+            damage
+        };
+        for rect in &uploads {
+            self.context.staged_transfer(
+                target,
+                staging,
+                [
+                    rect.x as u32,
+                    rect.y as u32,
+                    rect.width as u32,
+                    rect.height as u32,
+                ],
+                false,
+            )?;
+        }
+        Ok(uploads)
     }
     /// 合成一帧，纹理由采样视图保活到后续 render 淘汰；调用方保证没有上一帧 flip 在途。
     /// 主机声明支持 VirGL2 后发生的错误直接返回，不悄悄切换到另一条显示路径。

@@ -68,7 +68,7 @@ impl<'a> BootScreen<'a> {
     /// # Parameters
     ///
     /// - `framebuffer`: 启动期同步帧缓冲；`None` 表示没有显示设备。
-    /// - `scene`: 完整的 `LBS1` 位图字节，由装配层按构建选择的素材提供。
+    /// - `scene`: 完整的 `LBS2` 位图字节，由装配层按构建选择的素材提供。
     pub(crate) fn start(
         framebuffer: Option<&'a dyn BootFramebuffer>,
         scene: &'static [u8],

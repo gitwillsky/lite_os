@@ -5,6 +5,7 @@ use linux_uapi::drm::{DumbBuffer, VirglResource};
 
 mod paint;
 pub(crate) use paint::{BootSurface, paint};
+pub use paint::{Frame, Scene};
 
 impl BootSurface for DumbBuffer {
     fn width(&self) -> usize {

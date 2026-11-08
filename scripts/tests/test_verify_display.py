@@ -8,17 +8,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pack_boot_scene import HEIGHT, WIDTH, pack  # noqa: E402
-from test_boot_scene import FakeImage  # noqa: E402
+from pack_boot_scene import BAND_ROWS, pack  # noqa: E402
+from test_boot_scene import scene as boot_scene  # noqa: E402
 from display_gate import read_ppm  # noqa: E402
-from verify_display import HANDOFF_PERMILLE, expected_frame, first_difference  # noqa: E402
+from verify_display import HANDOFF_PERMILLE, band_offset, expected_frame, first_difference  # noqa: E402
 
 WHITE, BLUE = (255, 255, 255), (0, 41, 156)
 
 
 def scene() -> bytes:
-    pixels = [BLUE if y >= 426 else WHITE for y in range(HEIGHT) for _ in range(WIDTH)]
-    return pack(FakeImage(pixels))
+    return pack(boot_scene(lambda x, y: BLUE if y >= 426 else WHITE))
 
 
 class ExpectedFrameTests(unittest.TestCase):
@@ -37,19 +36,30 @@ class ExpectedFrameTests(unittest.TestCase):
         width = 1280 + 40
         left, top = 20, 10
         self.assertEqual(frame[top * width + left], WHITE)
-        self.assertEqual(frame[(top + 2 * 426) * width + left + 5], BLUE)
-        self.assertEqual(frame[(top + 2 * 426 - 1) * width + left + 5], WHITE)
+        # 第 416 行起是动画带（左半深蓝），其上一行仍是白色：每个源像素放大成 2×2。
+        self.assertEqual(frame[(top + 2 * 416) * width + left + 5], BLUE)
+        self.assertEqual(frame[(top + 2 * 416 - 1) * width + left + 5], WHITE)
 
     def test_progress_fill_covers_the_documented_share_of_the_slot(self) -> None:
         fill = (0, 41, 156)
         # 槽内部 (274,437) 起、宽 163；400‰ → 65 像素。底栏本身也是蓝色，所以用整幅白色场景才能分辨填充。
-        white = pack(FakeImage([WHITE] * (WIDTH * HEIGHT)))
+        white = pack(boot_scene())
         frame = expected_frame(white, 640, 480)
         row = frame[437 * 640:438 * 640]
         filled = [x for x, pixel in enumerate(row) if pixel == fill]
         self.assertEqual((filled[0], len(filled)), (274, 163 * HANDOFF_PERMILLE // 1000))
         self.assertEqual(frame[436 * 640 + 274], WHITE)
         self.assertEqual(frame[445 * 640 + 274], WHITE)
+
+    def test_band_rotation_is_recovered_and_applied_to_every_band_row(self) -> None:
+        # 两色带左半深蓝、右半亮蓝；向右平移 100 后，第 100 列起才是深蓝。
+        frame = expected_frame(scene(), 640, 480, 100)
+        top, rows = BAND_ROWS
+        for y in (top, top + rows - 1):
+            self.assertEqual(frame[y * 640 + 99], (0x00, 0x73, 0xDE))
+            self.assertEqual(frame[y * 640 + 100], (0x00, 0x29, 0x9C))
+        self.assertEqual(band_offset(scene(), frame, 640, 480), 100)
+        self.assertEqual(frame, expected_frame(scene(), 640, 480, 100 + 640))
 
     def test_screen_smaller_than_the_scene_is_an_error(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "smaller"):

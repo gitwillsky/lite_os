@@ -128,12 +128,14 @@ enum Shape {
     },
 }
 
-/// 启动画面阶段的状态：画面数据、进度，以及上一次计时与最后一次画出的值。
+/// 启动画面阶段的状态：画面数据、进度、动画带的起始时刻，以及上一次计时与最后一次画出的帧。
 struct BootScreen {
-    scene: Vec<u8>,
+    scene: boot::Scene,
     progress: Progress,
+    /// 动画带从交接时刻起转动；平移量只由经过的时间决定，丢帧不会让动画变慢。
+    band_start: Instant,
     last_tick: Instant,
-    painted: u16,
+    painted: boot::Frame,
 }
 
 /// 建立会话所需的全部已就绪部件。
@@ -145,8 +147,8 @@ pub struct Parts {
     pub scale: u32,
     pub cursors: CursorSet,
     pub hardware_cursor: DumbBuffer,
-    /// `LBS1` 启动画面数据。
-    pub boot_scene: Vec<u8>,
+    /// 已校验的 `LBS2` 启动画面。
+    pub boot_scene: boot::Scene,
 }
 
 /// 一次隐式抓取的唯一事实：实际接收按下事件的 leaf、serial 与事件时的位置。
@@ -252,8 +254,12 @@ impl Session {
             boot: Some(BootScreen {
                 scene: parts.boot_scene,
                 progress: Progress::new(boot::HANDOFF_PERMILLE),
+                band_start: Instant::now(),
                 last_tick: Instant::now(),
-                painted: boot::HANDOFF_PERMILLE,
+                painted: boot::Frame {
+                    offset: 0,
+                    permille: boot::HANDOFF_PERMILLE,
+                },
             }),
             dirty: false,
             commits_seen: 0,
@@ -304,21 +310,35 @@ impl Session {
         let now = Instant::now();
         let elapsed = now.duration_since(std::mem::replace(&mut boot.last_tick, now));
         boot.progress.advance(elapsed.as_secs_f32());
+        let since = now.duration_since(boot.band_start).as_millis() as u64;
+        let frame = boot::Frame {
+            offset: boot_scene::band_offset(since),
+            permille: boot.progress.permille(),
+        };
         let flip_busy = self.scanout.flip_pending();
-        if boot.progress.permille() != boot.painted && !flip_busy {
-            self.scanout
-                .paint_boot(&boot.scene, boot.progress.permille())?;
-            boot.painted = boot.progress.permille();
+        if frame != boot.painted && !flip_busy {
+            self.scanout.paint_boot(&boot.scene, frame)?;
+            boot.painted = frame;
             self.scanout.request_flip()?;
-        } else if boot.progress.complete() && boot.painted == 1000 && !flip_busy && shell_visible {
+        } else if boot.progress.complete()
+            && boot.painted.permille == 1000
+            && !flip_busy
+            && shell_visible
+        {
             // 外壳已经有内容、进度条也走满并已上屏：交给桌面合成。
             self.boot = None;
             self.dirty = true;
             println!("compositor: boot complete");
             return Ok(None);
         }
-        let waiting = boot.progress.animating() || boot.progress.permille() != boot.painted;
-        Ok(waiting.then_some(Duration::from_millis(16)))
+        // 动画带一直在转：下一次唤醒取进度追赶的 16 毫秒与下一次平移时刻中较早者。
+        let next_step = boot_scene::BAND_STEP_MS - since % boot_scene::BAND_STEP_MS;
+        let wake = Duration::from_millis(next_step);
+        Ok(Some(if boot.progress.animating() {
+            wake.min(Duration::from_millis(16))
+        } else {
+            wake
+        }))
     }
 
     pub fn input_devices(&self) -> usize {

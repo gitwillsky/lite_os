@@ -36,14 +36,21 @@ fn output_scale(height: usize) -> u32 {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let read = |path: &str| fs::read(path).map_err(|error| format!("{path}: {error}"));
-    let boot_scene = read(BOOT_SCENE)?;
+    let boot_scene = boot::Scene::load(read(BOOT_SCENE)?)?;
     let cursors = cursor::CursorSet::parse(&read(CURSORS)?)?;
     let runtime = env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is not set")?;
     let theme = classic_theme::Theme::load(&[Path::new(THEME_OVERRIDE)])?;
 
     let mut scanout =
         scanout::Scanout::open(DRM_DEVICE).map_err(|error| format!("{DRM_DEVICE}: {error}"))?;
-    scanout.paint_boot(&boot_scene, boot::HANDOFF_PERMILLE)?;
+    // 交接帧：动画带停在原图位置（平移 0），与 driver-host 最后一帧一致。
+    scanout.paint_boot(
+        &boot_scene,
+        boot::Frame {
+            offset: 0,
+            permille: boot::HANDOFF_PERMILLE,
+        },
+    )?;
     scanout.show_first()?;
     println!(
         "compositor: first frame presented {}x{}",

@@ -1,4 +1,4 @@
-//! `LBS1` 启动画面位图的唯一解码与布局 owner，driver-host 与 compositor 共用。
+//! `LBS2` 启动画面位图的唯一解码与布局 owner，driver-host 与 compositor 共用。
 //!
 //! driver-host 在文件系统挂载之前就要画启动画面，compositor 随后接着画同一张图；两端必须对缩放、居中与进度槽
 //! 位置给出完全相同的答案，否则接管瞬间画面会跳动。因此解码、整数缩放居中和进度填充矩形只在这里实现。
@@ -17,17 +17,29 @@ pub const HEIGHT: usize = 480;
 /// 接管瞬间进度条会倒退或跳变。
 pub const KERNEL_PROGRESS_PERMILLE: u16 = 400;
 
-const MAGIC: &[u8; 4] = b"LBS1";
-const HEADER_LEN: usize = 24;
+const MAGIC: &[u8; 4] = b"LBS2";
+const HEADER_LEN: usize = 28;
 
-/// 位图校验失败的原因；任何一种都表示数据不是合法的 `LBS1`，调用方应放弃显示而不是猜测内容。
+/// 动画带每平移一个位图像素的间隔（毫秒），转一整圈约 12.8 秒。
+///
+/// 原版内核在第一阶段初始化后启动旋转线程，把标志下方的蓝色带整行水平循环平移；此前画面静止。
+/// driver-host 只在里程碑同步绘制、没有计时线程，所以静止显示原图（偏移 0），compositor 接管后从偏移 0 起开始转动，
+/// 交接瞬间画面一致。间隔按原版观感取值，没有可引用的公开常量。
+pub const BAND_STEP_MS: u64 = 20;
+
+/// 动画开始 `elapsed_ms` 毫秒后的带平移量（位图像素，0..WIDTH）。
+pub fn band_offset(elapsed_ms: u64) -> usize {
+    ((elapsed_ms / BAND_STEP_MS) % WIDTH as u64) as usize
+}
+
+/// 位图校验失败的原因；任何一种都表示数据不是合法的 `LBS2`，调用方应放弃显示而不是猜测内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
     /// 数据短于文件头或调色板。
     Truncated,
-    /// 开头不是 `LBS1`。
+    /// 开头不是 `LBS2`。
     BadMagic,
-    /// 尺寸不是 640×480、调色板项数不在 1..=256、保留字段非零，或进度槽矩形为空/越界。
+    /// 尺寸不是 640×480、调色板项数不在 1..=256、保留字段非零，或进度槽矩形、动画带行为空/越界。
     BadHeader,
     /// RLE 长度为奇数、游程为 0、索引超出调色板，或像素总数不等于 640×480。
     BadPixels,
@@ -46,13 +58,14 @@ pub struct Rect {
     pub height: usize,
 }
 
-/// 已校验的 `LBS1` 位图借用；解析成功后逐行解码不会失败。
+/// 已校验的 `LBS2` 位图借用；解析成功后逐行解码不会失败。
 #[derive(Debug, Clone, Copy)]
 pub struct Scene<'a> {
     palette: &'a [u8],
     rle: &'a [u8],
     fill: Rect,
     fill_color: u32,
+    band: Rect,
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> usize {
@@ -60,7 +73,7 @@ fn u16_at(bytes: &[u8], offset: usize) -> usize {
 }
 
 impl<'a> Scene<'a> {
-    /// 解析并完整校验一份 `LBS1` 数据。
+    /// 解析并完整校验一份 `LBS2` 数据。
     ///
     /// # Parameters
     ///
@@ -99,6 +112,15 @@ impl<'a> Scene<'a> {
             return Err(ParseError::BadHeader);
         }
         let fill_color = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        let band = Rect {
+            x: 0,
+            y: u16_at(bytes, 24),
+            width: WIDTH,
+            height: u16_at(bytes, 26),
+        };
+        if band.height == 0 || band.y + band.height > HEIGHT {
+            return Err(ParseError::BadHeader);
+        }
         let palette_end = HEADER_LEN + colors * 4;
         let palette = bytes
             .get(HEADER_LEN..palette_end)
@@ -123,6 +145,7 @@ impl<'a> Scene<'a> {
             rle,
             fill,
             fill_color,
+            band,
         })
     }
 
@@ -145,6 +168,35 @@ impl<'a> Scene<'a> {
     /// 进度填充色，格式 `0x00RRGGBB`。
     pub fn fill_color(&self) -> u32 {
         self.fill_color
+    }
+
+    /// 动画带的位图行（整行宽）；带内各行一起水平循环平移。
+    pub fn band_rect(&self) -> Rect {
+        self.band
+    }
+
+    /// 解出动画带各行的调色板索引，行主序写入 `out`。
+    ///
+    /// # Parameters
+    ///
+    /// - `out`: 长度必须恰为 `WIDTH * band_rect().height`。
+    ///
+    /// # Returns
+    ///
+    /// 长度不符时返回 `false` 且不写入；否则写满并返回 `true`。只在动画开始前调用一次，之后每帧按偏移取列。
+    pub fn band_indices(&self, out: &mut [u8]) -> bool {
+        if out.len() != WIDTH * self.band.height {
+            return false;
+        }
+        let mut row = [0u8; WIDTH];
+        let mut rows = self.rows();
+        for _ in 0..self.band.y {
+            rows.next_row(&mut row);
+        }
+        for line in out.as_chunks_mut::<WIDTH>().0 {
+            rows.next_row(line);
+        }
+        true
     }
 
     /// 从第一行开始的逐行解码器。
@@ -222,6 +274,17 @@ impl Layout {
             y: self.y,
             width: WIDTH * self.scale,
             height: HEIGHT * self.scale,
+        }
+    }
+
+    /// 动画带在屏幕上的矩形（整行宽，按整数倍放大）。
+    pub fn band_rect(&self, scene: &Scene<'_>) -> Rect {
+        let band = scene.band_rect();
+        Rect {
+            x: self.x,
+            y: self.y + band.y * self.scale,
+            width: WIDTH * self.scale,
+            height: band.height * self.scale,
         }
     }
 

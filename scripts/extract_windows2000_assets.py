@@ -435,7 +435,7 @@ def publish(directory: Path) -> dict:
         # 2. 启动画面、光标、字体和声音由同一份 ISO 提供，不保留原创或替代来源。
         with Image.open(directory / "bitmaps-src/boot-scene-1x.png") as image:
             (result / "boot-scene.lbs").write_bytes(pack_boot(image))
-        record(result / "boot-scene.lbs", "boot", {"source": "ntoskrnl.exe", "resource": 1, "conversion": "LBS1 lossless RLE"})
+        record(result / "boot-scene.lbs", "boot", {"source": "ntoskrnl.exe", "resource": 1, "conversion": "LBS2 lossless RLE"})
         link = directory / source["logical"]["cursors"]["link"]["paths"][0]
         (result / "cursors.lcs").write_bytes(pack_sources(directory / "sources", link))
         record(result / "cursors.lcs", "cursors", {

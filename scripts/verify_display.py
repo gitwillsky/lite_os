@@ -4,8 +4,9 @@
 在 QEMU（virtio-gpu、键盘、平板，无窗口）的私有产品镜像中，让 logon fixture 保持存活且尚不绘制，以固定交接观察点：
 
 1. 串口出现 compositor 的首帧与输入就绪标记。
-2. 经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的帧逐像素比对；
+2. 经 QMP `screendump` 取回 scanout，与 `LBS2` 参考解码器按同一整数缩放居中规则算出的帧逐像素比对；
    两端（driver-host `boot_screen` 与 compositor）任何一方的缩放、居中或填充规则漂移，这里都会失败。
+   动画带随时间水平循环平移：先从带子首个屏幕行求出唯一的平移量，再用该平移量的参考帧逐像素比对整屏。
 3. 经 QMP 注入一次平板移动与一次按键，要求 compositor 报告各自的首个事件。
 """
 
@@ -50,12 +51,21 @@ def gate_inputs(target: BuildTarget, image: Path) -> tuple[Path, ...]:
     )
 
 
-def expected_frame(scene: bytes, width: int, height: int) -> list[tuple[int, int, int]]:
+def expected_frame(
+    scene: bytes, width: int, height: int, offset: int = 0,
+) -> list[tuple[int, int, int]]:
     """按 driver-host 与 compositor 共同的规则算出接管后的整屏 RGB。
 
-    整数倍 `min(W/640, H/480)` 放大并居中，位图外为黑；进度条从槽内部左端涂到 `HANDOFF_PERMILLE`。
+    整数倍 `min(W/640, H/480)` 放大并居中，位图外为黑；动画带各行向右循环平移 `offset` 个位图像素；
+    进度条从槽内部左端涂到 `HANDOFF_PERMILLE`。
     """
     _, _, pixels = unpack(scene)
+    band_y, band_height = struct.unpack_from("<HH", scene, 24)
+    pixels = list(pixels)
+    for y in range(band_y, band_y + band_height):
+        row = pixels[y * WIDTH:(y + 1) * WIDTH]
+        shift = offset % WIDTH
+        pixels[y * WIDTH:(y + 1) * WIDTH] = row[WIDTH - shift:] + row[:WIDTH - shift]
     scale = min(width // WIDTH, height // HEIGHT)
     if scale == 0:
         raise RuntimeError("screen is smaller than the boot scene")
@@ -76,6 +86,21 @@ def expected_frame(scene: bytes, width: int, height: int) -> list[tuple[int, int
     return frame
 
 
+def band_offset(scene: bytes, actual: list, width: int, height: int) -> int:
+    """从截图里动画带的首个屏幕行求平移量；没有任何平移量吻合时返回 0，由整屏比对报告差异。"""
+    _, _, pixels = unpack(scene)
+    band_y = struct.unpack_from("<HH", scene, 24)[0]
+    scale = min(width // WIDTH, height // HEIGHT)
+    left, top = (width - WIDTH * scale) // 2, (height - HEIGHT * scale) // 2
+    start = (top + band_y * scale) * width + left
+    observed = [actual[start + x * scale] for x in range(WIDTH)]
+    reference = pixels[band_y * WIDTH:(band_y + 1) * WIDTH]
+    for shift in range(WIDTH):
+        if observed == reference[WIDTH - shift:] + reference[:WIDTH - shift]:
+            return shift
+    return 0
+
+
 def first_difference(actual: list, expected: list, width: int) -> str:
     """返回第一个不同像素的坐标与两侧颜色，便于定位缩放/居中/填充漂移。"""
     for index, (a, b) in enumerate(zip(actual, expected)):
@@ -89,7 +114,7 @@ def run_gate(image: Path) -> None:
     with display_session(image) as session:
         session.console.wait_for(STARTUP_MARKERS)
         width, height, actual = session.screendump()
-        expected = expected_frame(scene, width, height)
+        expected = expected_frame(scene, width, height, band_offset(scene, actual, width, height))
         if actual != expected:
             raise RuntimeError(f"handoff frame differs from the reference: {first_difference(actual, expected, width)}")
         session.qmp.execute(
