@@ -507,7 +507,7 @@ impl Desktop {
             Action::Lock => self.control.write_all(&[2])?,
             Action::Logoff => {
                 // 注销音效播完再退出，否则进程退出会截断声音。
-                let _ = sound::play("logoff.wav").join();
+                let _ = sound::Event::Logoff.play().join();
                 std::process::exit(0)
             }
             Action::Shutdown => self.control.write_all(&[4])?,
@@ -1488,7 +1488,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state.control.write_all(&[1])?;
             ready = true;
             eprintln!("desktop: ready");
-            let _ = sound::play("logon.wav");
+            let _ = sound::Event::Logon.play();
         }
     }
 }

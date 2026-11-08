@@ -12,7 +12,7 @@ mod winver;
 mod zones;
 use liteos_ui::{
     Application, Background, Clock, ControlFlow, Event, EventKind, Layout, MessageButtons,
-    PropertySheet, ValidationError, Widget, WidgetKind as Kind, WidgetSpec,
+    MessageIcon, PropertySheet, ValidationError, Widget, WidgetKind as Kind, WidgetSpec,
 };
 use std::{
     cell::RefCell,
@@ -329,9 +329,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let dialogs = dialogs.clone();
                         let window = window.clone();
                         async move {
-                            if let Ok(dialog) =
-                                dialogs.message(&window, "控制面板", &message, MessageButtons::Ok)
-                            {
+                            if let Ok(dialog) = dialogs.message(
+                                &window,
+                                "控制面板",
+                                &message,
+                                MessageButtons::Ok,
+                                MessageIcon::Error,
+                            ) {
                                 let _ = dialog.await;
                             }
                         }

@@ -2,8 +2,8 @@
 
 use crate::{child, ip_address::IpAddress, label};
 use liteos_ui::{
-    Dialogs, Event, EventKind, EventStream, Layout, MessageButtons, SheetStyle, ValidationError,
-    Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
+    Dialogs, Event, EventKind, EventStream, Layout, MessageButtons, MessageIcon, SheetStyle,
+    ValidationError, Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
 };
 use network_config::{DNS_MAX, normalize_dns_suffix, valid_search_list};
 use std::{fmt::Display, net::Ipv4Addr};
@@ -379,7 +379,13 @@ async fn edit_domain(
                     Ok(value) => return Ok(Some(value.to_owned())),
                     Err(message) => {
                         let _ = dialogs
-                            .message(&dialog.window, TITLE, message, MessageButtons::Ok)?
+                            .message(
+                                &dialog.window,
+                                TITLE,
+                                message,
+                                MessageButtons::Ok,
+                                MessageIcon::Warning,
+                            )?
                             .await?;
                         field.focus()?;
                     }
@@ -426,7 +432,13 @@ async fn edit_address(
                         Ok(_) => ("请输入有效的 DNS 服务器地址。", None),
                     };
                 let _ = dialogs
-                    .message(&dialog.window, TITLE, message, MessageButtons::Ok)?
+                    .message(
+                        &dialog.window,
+                        TITLE,
+                        message,
+                        MessageButtons::Ok,
+                        MessageIcon::Warning,
+                    )?
                     .await?;
                 if let Some(control) = control {
                     control.focus()?;

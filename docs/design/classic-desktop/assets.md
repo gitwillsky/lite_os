@@ -135,7 +135,10 @@ classic-ui 的 Bitmap 保活只读 MAP_PRIVATE 视图；每进程 Weak 目录只
   手形来自 `user32.dll:114`，保留其 CUR 热点 (10,10)，不混用原创光标。
   默认方案全部为静态帧；LCS1/硬件 ARGB 光标不能表达背景反色，导入遇到反色像素即失败，不静默改变掩码语义。
   其他方案和 ANI 没有消费者，留在 `.local/`，不进入产品资源。
-- `sounds/`：`logon.wav`、`logoff.wav`、`chord.wav`、`recycle.wav`，保持 ISO 的原始 PCM 字节与参数。
+- `sounds/`：默认声音方案实际引用的 `logon.wav`、`logoff.wav`、`chord.wav`、`ding.wav`（HIVEDEF.INF AppEvents）与
+  `start.wav`（ieuinit.inf 的“启动导航”），保持 ISO 原始字节；`start.wav` 是 Microsoft ADPCM，由 `sound` 解码，帧数以 fact 块为准。
+  `recycle.wav` 只属于 mmopt.inf 的 Utopia 方案，默认方案的“清空回收站”是 `ding.wav`，因此不导入。
+- 消息框图标：`message-warning/question/error/information` 取 user32.dll 101/102/103/104（MB_ICON*），只发布 32 像素。
 - `fonts/`：原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf`、`marlett.ttf` 与唯一的 `fontmap.ini` 配置。
   SimSun/NSimSun 两个 face 和 12/13/14/15/16/18 ppem 内嵌点阵全部保留。Tahoma 中文经标准 FontLink 进入宋体；
   只安装 manifest 登记的原版字体。`fontmap.ini` 是 LiteOS 配置，不冒充 ISO 文件。

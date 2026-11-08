@@ -13,7 +13,8 @@ use browser::{Browser, Visit};
 use chrome::{Action, Command};
 use desktop_entry::{file_uris, fileops};
 use liteos_ui::{
-    Application, ControlFlow, EditCommand, EventKind, MessageButtons, MessageResult, WindowOptions,
+    Application, ControlFlow, EditCommand, EventKind, MessageButtons, MessageIcon, MessageResult,
+    WindowOptions,
 };
 use model::Location;
 use session::{Busy, Job, Launches, Session};
@@ -93,9 +94,14 @@ fn shortcut(code: u32, ctrl: bool, alt: bool, address: bool) -> Option<Action> {
     })
 }
 /// 通过同一消息框入口显示文件操作的独立确认。
-fn shell_message(title: &str, text: &str, buttons: MessageButtons) -> Result<MessageResult> {
+fn shell_message(
+    title: &str,
+    text: &str,
+    buttons: MessageButtons,
+    icon: MessageIcon,
+) -> Result<MessageResult> {
     let mut app = Application::new()?;
-    let dialog = app.standalone_message_box(title, text, buttons)?;
+    let dialog = app.standalone_message_box(title, text, buttons, icon)?;
     let result = Rc::new(RefCell::new(None));
     let output = result.clone();
     let _task = app.spawn(async move { *output.borrow_mut() = Some(dialog.await) })?;
@@ -131,8 +137,14 @@ fn delete_from_shell(home: &Path, request: ShellDelete) -> Result<()> {
             return Ok(());
         }
         let (title, text) = session::delete_prompt(&entries, permanent, empty);
-        if shell_message(title, &text, MessageButtons::YesNo)? == MessageResult::Yes {
+        if shell_message(title, &text, MessageButtons::YesNo, MessageIcon::Question)?
+            == MessageResult::Yes
+        {
             fileops::Deletion::commit(home, entries, |_| {})?;
+            if empty {
+                // 桌面“清空回收站”经此执行；sndplay 是独立进程，退出本进程不会截断声音。
+                sound::Event::EmptyRecycleBin.play();
+            }
         }
         Ok(())
     })();
@@ -141,6 +153,7 @@ fn delete_from_shell(home: &Path, request: ShellDelete) -> Result<()> {
             "删除文件或文件夹时出错",
             &error.to_string(),
             MessageButtons::Ok,
+            MessageIcon::Error,
         )?;
     }
     Ok(())

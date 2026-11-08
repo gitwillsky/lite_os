@@ -98,6 +98,15 @@
         "conversion": "original bytes"
       }
     },
+    "sounds/ding.wav": {
+      "group": "sounds",
+      "bytes": 80856,
+      "sha256": "47a423798ff67d9c00f1607f470573d80653b7581475fa850a557c46b06a104a",
+      "origin": {
+        "source": "ding.wav",
+        "conversion": "original bytes"
+      }
+    },
     "sounds/logoff.wav": {
       "group": "sounds",
       "bytes": 344108,
@@ -116,12 +125,12 @@
         "conversion": "original bytes"
       }
     },
-    "sounds/recycle.wav": {
+    "sounds/start.wav": {
       "group": "sounds",
-      "bytes": 25434,
-      "sha256": "94b978244f9184b6792271c48fb3372dcc35f11c3d826c663c5973336acae010",
+      "bytes": 1192,
+      "sha256": "eff8f5a74d7499b0991ff42e7963927ad37a17d63ef13ee784b849cae2808ada",
       "origin": {
-        "source": "recycle.wav",
+        "source": "start.wav",
         "conversion": "original bytes"
       }
     },
@@ -803,6 +812,50 @@
       "origin": {
         "source": "msdxm.ocx",
         "resource": 5212,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/message-error-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "8a92b49c97f2f934df9840e6ada36cb4aeb43ed37327ec186a4b786fc979e30e",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 103,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/message-information-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "e070019e26e5f84024efa15502d084945c873720fe17c5be846889b37aa5307d",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 104,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/message-question-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a9c647d1ecef3570d44d64c3ec6e50c18976efe83b50987578a719718c724320",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 102,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/message-warning-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "3732cc045b610466e8ad5cdef2348531bddc54f7d83a18ec11151334b81d3561",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 101,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }

@@ -5,8 +5,8 @@ mod view;
 
 use engine::{Changes, Engine};
 use liteos_ui::{
-    Application, ControlFlow, Dialogs, EventKind, FileDialogMode, FileFilter, MessageButtons, Task,
-    WindowOptions,
+    Application, ControlFlow, Dialogs, EventKind, FileDialogMode, FileFilter, MessageButtons,
+    MessageIcon, Task, WindowOptions,
 };
 use std::{
     cell::RefCell,
@@ -238,7 +238,7 @@ fn perform(
             let target = shell.clone();
             let task = app.spawn_local(&shell.window, async move {
                 let message = "LiteOS 媒体播放机\n\n播放引擎：mpv（libmpv）与 FFmpeg，支持常见视频、音频、字幕与网络流。";
-                if let Ok(box_) = dialogs.message(&target.window, "关于媒体播放机", message, MessageButtons::Ok) {
+                if let Ok(box_) = dialogs.message(&target.window, "关于媒体播放机", message, MessageButtons::Ok, MessageIcon::Information) {
                     let _ = box_.await;
                 }
             })?;
@@ -410,9 +410,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let target = window.clone();
             let message = format!("无法载入播放引擎 libmpv：{error}");
             let _task = app.spawn_local(&window, async move {
-                if let Ok(box_) =
-                    dialogs.message(&target, "媒体播放机", &message, MessageButtons::Ok)
-                {
+                if let Ok(box_) = dialogs.message(
+                    &target,
+                    "媒体播放机",
+                    &message,
+                    MessageButtons::Ok,
+                    MessageIcon::Error,
+                ) {
                     let _ = box_.await;
                 }
                 let _ = target.close();

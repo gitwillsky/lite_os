@@ -1,7 +1,7 @@
 //! 可跨 await 使用的 UI 线程对话框入口；与 Application 共用唯一窗口路由和订阅 owner。
 use crate::{
-    Error, FileDialogFuture, FileDialogMode, FileFilter, MessageBoxFuture, MessageButtons, Result,
-    WeakWindow, Window,
+    Error, FileDialogFuture, FileDialogMode, FileFilter, MessageBoxFuture, MessageButtons,
+    MessageIcon, Result, WeakWindow, Window,
     connection::{Connection, text},
     events::Subscriptions,
 };
@@ -70,14 +70,16 @@ impl Dialogs {
         Ok((window, events))
     }
     /// 打开共享消息框；父窗口关闭、Escape 或标题栏关闭返回 Cancel。
+    /// `icon` 决定标准图标与弹出时的系统声音（MessageBeep）。
     pub fn message(
         &self,
         parent: &Window,
         title: &str,
         message: &str,
         buttons: MessageButtons,
+        icon: MessageIcon,
     ) -> Result<MessageBoxFuture> {
-        self.message_window(Some(parent), title, message, buttons)
+        self.message_window(Some(parent), title, message, buttons, icon)
     }
 
     pub(crate) fn message_window(
@@ -86,6 +88,7 @@ impl Dialogs {
         title: &str,
         message: &str,
         buttons: MessageButtons,
+        icon: MessageIcon,
     ) -> Result<MessageBoxFuture> {
         if let Some(parent) = parent {
             self.check(parent)?;
@@ -98,7 +101,7 @@ impl Dialogs {
                 parent.map_or(0, Window::id),
                 text(title),
                 text(message),
-                buttons as u32,
+                buttons as u32 | icon.style(),
                 &mut handles,
             )
         })?;

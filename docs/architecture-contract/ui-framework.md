@@ -230,6 +230,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - MenuBar 唯一持有弹出层栈、等待展开的子菜单（含预先算好的几何）与客户区边界；子菜单路径由条目索引表示，
   菜单数据替换即整体关闭。缺少 pending 只能悬停即开或丢失延时；缺少 bounds 子菜单会越出窗口。嵌套上限
   `MENU_DEPTH` 由 ABI 声明，运行库静态断言与共享状态机一致，并在复制菜单时校验父条目先于子条目。
+- `message_box` 的 style 低 4 位是按钮、高 4 位是 MB_ICON*（数值同 Win32，未知值 INVALID）；运行库是图标与声音的唯一 owner：
+  图标经 icon_asset 读取 user32 原版图标，窗口建立后按 `sound::Event` 播放（独立 sndplay 进程，不阻塞界面）。
+  `sound::Event` 是默认声音方案唯一的事件到文件表，消息框、资源管理器、桌面与控制面板共用，调用处不写文件名。
 - MenuBar 的命令在鼠标松开时执行（USER32 语义）：press 只高亮普通条目、展开子菜单父条目，release 在可用普通条目上
   交出命令，松开在菜单外不关闭（打开上下文菜单的那次松开不会立即关掉它）；运行库与桌面外壳都把松开交给 release。
   show_popup 按 TrackPopupMenu 定位：右侧/下方放不下先翻到指针另一侧，仍越界才平移。桌面外壳的右键菜单只用这一状态机，

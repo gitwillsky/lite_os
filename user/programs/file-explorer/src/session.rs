@@ -11,7 +11,9 @@ use crate::{
 use desktop_entry::file_uris::{self, SELECTION_TYPES};
 use desktop_entry::trash;
 use desktop_settings::{FolderView, Settings};
-use liteos_ui::{Background, Clipboard, Dialogs, ListStyle, MessageButtons, MessageResult, state};
+use liteos_ui::{
+    Background, Clipboard, Dialogs, ListStyle, MessageButtons, MessageIcon, MessageResult, state,
+};
 use std::{
     cell::{Cell, RefCell},
     path::{Path, PathBuf},
@@ -288,6 +290,10 @@ impl Session {
         visit: Visit,
         focus: bool,
     ) -> Result<()> {
+        // “启动导航”：进入新位置（含窗口首次打开）时播放；目录变更与 F5 刷新、不显示窗口的单次动词调用不播放。
+        if !self.one_shot && (!matches!(visit, Visit::Refresh) || !self.shown.get()) {
+            sound::Event::Navigating.play();
+        }
         self.view.status.set_text("正在读取…\t\t")?;
         // 品牌 logo 在读取期间转动（browseui 的 throbber）。
         self.view.rebar.set_busy(true)?;
@@ -653,7 +659,13 @@ impl Session {
         let (title, message) = delete_prompt(&entries, permanent, empty);
         if self
             .dialogs
-            .message(&self.view.window, title, &message, MessageButtons::YesNo)?
+            .message(
+                &self.view.window,
+                title,
+                &message,
+                MessageButtons::YesNo,
+                MessageIcon::Question,
+            )?
             .await?
             != MessageResult::Yes
         {
@@ -684,6 +696,9 @@ impl Session {
         }
         self.refresh().await?;
         result?;
+        if empty {
+            sound::Event::EmptyRecycleBin.play();
+        }
         Ok(())
     }
     /// 复制或移动并选中最后完成的目标；粘贴剪切项时只更新本次使用的选择。
@@ -1139,10 +1154,13 @@ impl Session {
     pub(super) async fn report(&self, title: &str, error: impl std::fmt::Display) {
         let message = error.to_string();
         let _ = self.view.status.set_text(&format!("{message}\t\t"));
-        if let Ok(dialog) =
-            self.dialogs
-                .message(&self.view.window, title, &message, MessageButtons::Ok)
-        {
+        if let Ok(dialog) = self.dialogs.message(
+            &self.view.window,
+            title,
+            &message,
+            MessageButtons::Ok,
+            MessageIcon::Error,
+        ) {
             let _ = dialog.await;
         }
     }

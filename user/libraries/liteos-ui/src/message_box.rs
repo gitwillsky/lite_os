@@ -14,6 +14,32 @@ pub enum MessageButtons {
     YesNoCancel,
     YesNo,
 }
+/// 消息框图标（Win32 MB_ICON*）：决定左侧的标准图标与弹出时的系统声音。
+/// `None` 只播放“默认声音”；其余按严重程度选择，不要用图标表达与内容无关的情绪。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageIcon {
+    None,
+    /// 操作失败、无法继续（MB_ICONHAND，“严重停止信息”）。
+    Error,
+    /// 需要用户作出选择的询问（MB_ICONQUESTION，“疑问信息”）。
+    Question,
+    /// 可能造成损失或需要注意的情况（MB_ICONEXCLAMATION，“提示信息”）。
+    Warning,
+    /// 一般性通知（MB_ICONASTERISK，“警告信息”）。
+    Information,
+}
+impl MessageIcon {
+    pub(crate) fn style(self) -> u32 {
+        use classic_ui_abi::message_style as style;
+        match self {
+            Self::None => 0,
+            Self::Error => style::ICON_HAND,
+            Self::Question => style::ICON_QUESTION,
+            Self::Warning => style::ICON_EXCLAMATION,
+            Self::Information => style::ICON_ASTERISK,
+        }
+    }
+}
 /// 用户选择；标题栏关闭和 Escape 都返回 Cancel。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageResult {
@@ -54,8 +80,10 @@ impl Application {
         title: &str,
         message: &str,
         buttons: MessageButtons,
+        icon: MessageIcon,
     ) -> Result<MessageBoxFuture> {
-        self.dialogs().message(parent, title, message, buttons)
+        self.dialogs()
+            .message(parent, title, message, buttons, icon)
     }
 
     /// 显示没有父窗口的消息框，可作为进程的唯一窗口由 `run` 调度。
@@ -68,10 +96,11 @@ impl Application {
         title: &str,
         message: &str,
         buttons: MessageButtons,
+        icon: MessageIcon,
     ) -> Result<MessageBoxFuture> {
         let dialog = self
             .dialogs()
-            .message_window(None, title, message, buttons)?;
+            .message_window(None, title, message, buttons, icon)?;
         self.windows
             .borrow_mut()
             .insert(dialog.window.id(), dialog.window.downgrade());

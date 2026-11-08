@@ -7,7 +7,7 @@ pub use popup::PopupMenuFuture;
 mod file_dialog;
 mod message_box;
 pub use dialogs::Dialogs;
-pub use message_box::{MessageBoxFuture, MessageButtons, MessageResult};
+pub use message_box::{MessageBoxFuture, MessageButtons, MessageIcon, MessageResult};
 mod property_sheet;
 pub use file_dialog::{FileDialogFuture, FileDialogMode, FileFilter};
 pub use property_sheet::{

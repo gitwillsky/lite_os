@@ -598,6 +598,7 @@ async fn tcpip_dialog(dialogs: Dialogs, parent: liteos_ui::Window, draft: Rc<Ref
                         "Internet 协议 (TCP/IP) 属性",
                         &error.message,
                         liteos_ui::MessageButtons::Ok,
+                        liteos_ui::MessageIcon::Error,
                     ) {
                         let _ = message.await;
                     }

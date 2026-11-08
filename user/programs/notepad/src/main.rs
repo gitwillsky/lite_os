@@ -1,8 +1,8 @@
 //! 记事本只管理文件和保存决策；多行编辑与通用对话框由共享运行库提供。
 use liteos_ui::{
     Application, Background, ControlFlow, Dialogs, EditCommand, EventKind, FileDialogMode, Layout,
-    Menu, MenuItem, MessageButtons, MessageResult, Widget, WidgetKind as Kind, WidgetSpec, Window,
-    WindowOptions,
+    Menu, MenuItem, MessageButtons, MessageIcon, MessageResult, Widget, WidgetKind as Kind,
+    WidgetSpec, Window, WindowOptions,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -126,6 +126,7 @@ impl Session {
                     "记事本",
                     "文件内容已修改。是否保存更改？",
                     MessageButtons::YesNoCancel,
+                    MessageIcon::Warning,
                 )?
                 .await?
             {
@@ -210,6 +211,7 @@ impl Session {
                         "关于记事本",
                         "LiteOS 记事本\n纯文本编辑器。",
                         MessageButtons::Ok,
+                        MessageIcon::Information,
                     )?
                     .await?;
             }
@@ -220,10 +222,13 @@ impl Session {
     async fn report(&self, error: &dyn std::fmt::Display) {
         let text = error.to_string();
         let _ = self.status.set_text(&text);
-        if let Ok(dialog) = self
-            .dialogs
-            .message(&self.window, "记事本", &text, MessageButtons::Ok)
-        {
+        if let Ok(dialog) = self.dialogs.message(
+            &self.window,
+            "记事本",
+            &text,
+            MessageButtons::Ok,
+            MessageIcon::Error,
+        ) {
             let _ = dialog.await;
         }
     }

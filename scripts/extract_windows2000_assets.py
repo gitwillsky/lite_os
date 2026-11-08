@@ -15,7 +15,6 @@ import shutil
 import struct
 import subprocess
 import tempfile
-import wave
 from pathlib import Path
 
 from local_inputs import INPUTS
@@ -93,12 +92,19 @@ ICONS = {
     "tray-volume-muted": ("stobject.dll", 231),
     "tray-usb": ("hotplug.dll", 100),
     "ctrl-alt-del": ("msgina.dll", 109),
+    # MessageBox 的 MB_ICON* 标准图标（user32 IDI_EXCLAMATION/QUESTION/HAND/ASTERISK）。
+    "message-warning": ("user32.dll", 101),
+    "message-question": ("user32.dll", 102),
+    "message-error": ("user32.dll", 103),
+    "message-information": ("user32.dll", 104),
 }
 # 资源管理器和应用图标同时用于 16/32 像素；这些外壳专用图标只发布调用者需要的尺寸。
 ICON_SIZES = {
     "programs": (32,), "documents": (32,), "help": (16,),
     "shutdown": (32,), "logoff": (32,), "lock": (32,),
     "show-desktop": (16,), "ctrl-alt-del": (32,),
+    "message-warning": (32,), "message-question": (32,), "message-error": (32,),
+    "message-information": (32,),
 }
 
 CURSORS = {
@@ -150,11 +156,35 @@ INDEXED = {"worldmap"}
 WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
 # 桌面墙纸由附件组件 INF 安装：[DeskpaperCopyFilesSys] 列出复制到 %windir% 的 BMP，
 # [Strings] 给出安装后的长文件名；只认这一节，不枚举 I386 里其他用途的位图。
-# HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
+# 默认声音方案实际引用的文件：HIVEDEF.INF 的 AppEvents（chord 给星号/感叹号/关键性停止/问题，ding 给默认声音与
+# 清空回收站，logon 给启动 Windows）与 ieuinit.inf 的 Explorer\Navigating（start）；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
-    "chord": "chord.wav", "recycle": "recycle.wav",
+    "chord": "chord.wav", "ding": "ding.wav", "start": "start.wav",
 }
+
+
+def wave_info(data: bytes) -> dict:
+    """读取 RIFF/WAVE 的编码、采样率、声道、位深与帧数；PCM 与 Microsoft ADPCM（帧数取自 fact 块）都按原字节保留。"""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("not a RIFF/WAVE file")
+    chunks, offset = {}, 12
+    while offset + 8 <= len(data):
+        tag, length = data[offset:offset + 4], struct.unpack_from("<I", data, offset + 4)[0]
+        chunks[tag] = data[offset + 8:offset + 8 + length]
+        offset += 8 + length + (length & 1)
+    fmt = chunks.get(b"fmt ")
+    if fmt is None or b"data" not in chunks:
+        raise ValueError("WAVE file lacks fmt or data")
+    encoding, channels, rate, _, align, bits = struct.unpack_from("<HHIIHH", fmt)
+    if encoding == 1:
+        frames = len(chunks[b"data"]) // align
+    elif encoding == 2 and b"fact" in chunks:
+        frames = struct.unpack_from("<I", chunks[b"fact"])[0]
+    else:
+        raise ValueError(f"unsupported WAVE encoding {encoding}")
+    return {"encoding": {1: "pcm", 2: "ms-adpcm"}[encoding], "rate": rate, "channels": channels,
+            "sample_bits": bits, "frames": frames}
 
 
 def digest(path: Path) -> str:
@@ -352,10 +382,7 @@ def extract(iso: Path, output: Path) -> dict:
             record("bitmaps", name, [path, dest], size=size, source="webvw.dll", resource=resource_name)
         for name, filename in SOUNDS.items():
             path = expanded / filename
-            with wave.open(str(path)) as sound:
-                record("sounds", name, [path], rate=sound.getframerate(),
-                       channels=sound.getnchannels(), sample_bits=sound.getsampwidth() * 8,
-                       frames=sound.getnframes())
+            record("sounds", name, [path], **wave_info(path.read_bytes()))
         for name in FONTS:
             path = expanded / name
             if path.read_bytes()[:4] not in (b"ttcf", b"\0\1\0\0", b"OTTO"):

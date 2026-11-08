@@ -471,7 +471,9 @@ pub struct Api {
     pub tree_rows: unsafe extern "C" fn(*mut c_void, u64, u64, *const TreeRow, usize) -> i32,
     /// 编辑命令：1 剪切、2 复制、3 异步粘贴、4 删除、5 全选、6 插入 UTF-8。
     pub edit_command: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
-    /// 标准消息对话框；parent=0 表示独立窗口。buttons=0 确定、1 确定/取消、2 是/否/取消、3 是/否。
+    /// 标准消息对话框；parent=0 表示独立窗口。style 低 4 位为按钮：0 确定、1 确定/取消、2 是/否/取消、3 是/否；
+    /// 高 4 位为 [`message_style`] 的 MB_ICON* 图标（数值同 Win32），决定左侧图标与弹出时的系统声音。
+    /// 未知按钮或图标返回 INVALID。
     pub message_box:
         unsafe extern "C" fn(*mut c_void, u64, Text, Text, u32, *mut MessageBox) -> i32,
     /// 设置/读取 Calendar；日期按公历验证。
@@ -563,6 +565,22 @@ pub struct Api {
     /// 文本以系统字体用途（编号同 [`Api::set_font`]）在窗口当前 scale 下的逻辑像素宽度（GetTextExtentPoint32）；
     /// 用于按实际字体决定状态栏分格等固定宽度。未知用途或空输出返回 INVALID，未知窗口返回 NOT_FOUND。
     pub text_width: unsafe extern "C" fn(*mut c_void, u64, u32, Text, *mut i32) -> i32,
+}
+
+/// [`Api::message_box`] 的 style 位（Win32 MessageBox 的 uType 布局）。
+pub mod message_style {
+    /// 低 4 位：按钮组合。
+    pub const BUTTONS: u32 = 0x0F;
+    /// 高 4 位：图标；0 为无图标（播放“默认声音”）。
+    pub const ICON: u32 = 0xF0;
+    /// MB_ICONHAND：严重停止，播放“严重停止信息”。
+    pub const ICON_HAND: u32 = 0x10;
+    /// MB_ICONQUESTION：询问，播放“疑问信息”。
+    pub const ICON_QUESTION: u32 = 0x20;
+    /// MB_ICONEXCLAMATION：警告，播放“提示信息”。
+    pub const ICON_EXCLAMATION: u32 = 0x30;
+    /// MB_ICONASTERISK：信息，播放“警告信息”。
+    pub const ICON_ASTERISK: u32 = 0x40;
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

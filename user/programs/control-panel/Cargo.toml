@@ -9,6 +9,7 @@ liteos-ui = { path = "../../libraries/liteos-ui" }
 calendar = { path = "../../libraries/calendar" }
 desktop-settings = { path = "../../libraries/desktop-settings" }
 network-config = { path = "../../libraries/network-config" }
+sound = { path = "../../libraries/sound" }
 linux-uapi.workspace = true
 
 [lints]

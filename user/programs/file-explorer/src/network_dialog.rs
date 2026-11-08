@@ -1,8 +1,8 @@
 //! Windows 外壳的映射/断开流程；耗时认证和挂载只在 Background 执行。
 use crate::Result;
 use liteos_ui::{
-    Background, Dialogs, EventKind, Layout, ListOptions, ListStyle, MessageButtons, TreeRow,
-    Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
+    Background, Dialogs, EventKind, Layout, ListOptions, ListStyle, MessageButtons, MessageIcon,
+    TreeRow, Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
 };
 use network_drive::{Credentials, Mapping, Store};
 
@@ -101,9 +101,16 @@ fn anchor(text: &str) -> (&str, &str, &str) {
         _ => (text, "", ""),
     }
 }
-async fn notify(dialogs: &Dialogs, parent: &Window, title: &str, message: &str) -> Result<()> {
+/// 向导内的提示：输入校验用 [`MessageIcon::Warning`]，连接或断开失败用 [`MessageIcon::Error`]。
+async fn notify(
+    dialogs: &Dialogs,
+    parent: &Window,
+    title: &str,
+    message: &str,
+    icon: MessageIcon,
+) -> Result<()> {
     dialogs
-        .message(parent, title, message, MessageButtons::Ok)?
+        .message(parent, title, message, MessageButtons::Ok, icon)?
         .await?;
     Ok(())
 }
@@ -394,7 +401,14 @@ async fn disconnect(
                 match failure {
                     None => return Ok(()),
                     Some(message) => {
-                        notify(dialogs, &window, text::DISCONNECT_TITLE, &message).await?
+                        notify(
+                            dialogs,
+                            &window,
+                            text::DISCONNECT_TITLE,
+                            &message,
+                            MessageIcon::Error,
+                        )
+                        .await?
                     }
                 }
             }
@@ -558,6 +572,7 @@ pub async fn show(
                         &window,
                         text::MAP_TITLE,
                         "请输入 D: 到 Z: 之间的盘符。",
+                        MessageIcon::Warning,
                     )
                     .await?;
                     continue;
@@ -576,6 +591,7 @@ pub async fn show(
                             &window,
                             text::MAP_TITLE,
                             &format!("共享路径无效：{error}"),
+                            MessageIcon::Warning,
                         )
                         .await?;
                         continue;
@@ -601,7 +617,14 @@ pub async fn show(
                 match result {
                     Ok(()) => return Ok(()),
                     Err(error) => {
-                        notify(dialogs, &window, text::MAP_TITLE, &error.to_string()).await?
+                        notify(
+                            dialogs,
+                            &window,
+                            text::MAP_TITLE,
+                            &error.to_string(),
+                            MessageIcon::Error,
+                        )
+                        .await?
                     }
                 }
             }

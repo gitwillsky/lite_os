@@ -24,7 +24,8 @@ class ProductAssetTests(unittest.TestCase):
         self.assertEqual({path.name for path in classic_assets.fonts()},
                          {'simsun.ttc', 'tahoma.ttf', 'tahomabd.ttf', 'marlett.ttf', 'fontmap.ini'})
         self.assertIn('network-places-32.bmp', {path.name for path in classic_assets.shell_bitmaps()})
-        self.assertIn('recycle.wav', dict(classic_assets.sounds()))
+        self.assertEqual(set(dict(classic_assets.sounds())),
+                         {'logon.wav', 'logoff.wav', 'chord.wav', 'ding.wav', 'start.wav'})
 
     def test_ui_assets_have_consumers_and_fixed_requests_are_installed(self) -> None:
         root = classic_assets.ROOT

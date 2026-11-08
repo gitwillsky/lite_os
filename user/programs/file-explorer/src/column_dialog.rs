@@ -2,8 +2,8 @@
 use crate::model::Location;
 use desktop_settings::FolderColumn;
 use liteos_ui::{
-    Dialogs, EventKind, Layout, MessageButtons, Widget, WidgetKind, WidgetSpec, Window,
-    WindowOptions, state,
+    Dialogs, EventKind, Layout, MessageButtons, MessageIcon, Widget, WidgetKind, WidgetSpec,
+    Window, WindowOptions, state,
 };
 
 fn child(
@@ -163,6 +163,7 @@ pub(super) async fn edit(
                         TITLE,
                         "请输入 24 到 32768 之间的列宽。",
                         MessageButtons::Ok,
+                        MessageIcon::Warning,
                     )?
                     .await?;
                 width.focus()?;

@@ -1,8 +1,8 @@
 //! “拔出或弹出硬件”窗口；后台发现与移除，UI 只持有这次连接的标准 sysfs 句柄。
 use linux_uapi::usb::{self, Device};
 use liteos_ui::{
-    Application, ControlFlow, EventKind, Layout, MessageButtons, MessageResult, Widget, WidgetKind,
-    WidgetSpec, WindowOptions, state,
+    Application, ControlFlow, EventKind, Layout, MessageButtons, MessageIcon, MessageResult,
+    Widget, WidgetKind, WidgetSpec, WindowOptions, state,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -192,9 +192,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             stop.set_state(state::DISABLED)?;
             removal = Some(app.spawn_local(&window.clone(), async move {
                 let message = format!("确实要停止 {} 吗？正在使用它的程序将中断。", device.name);
-                if let Ok(question) =
-                    dialogs.message(&window, "停止硬件设备", &message, MessageButtons::YesNo)
-                    && matches!(question.await, Ok(MessageResult::Yes))
+                if let Ok(question) = dialogs.message(
+                    &window,
+                    "停止硬件设备",
+                    &message,
+                    MessageButtons::YesNo,
+                    MessageIcon::Question,
+                ) && matches!(question.await, Ok(MessageResult::Yes))
                 {
                     let _ = status.set_text("正在停止设备…");
                     match background.run(move || device.remove()) {

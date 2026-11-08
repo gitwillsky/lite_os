@@ -352,6 +352,7 @@ dependencies = [
  "classic-ui-abi",
  "keyboard",
  "linux-uapi",
+ "sound",
  "terminal-font",
  "typeface",
 ]
@@ -403,6 +404,7 @@ dependencies = [
  "linux-uapi",
  "liteos-ui",
  "network-config",
+ "sound",
 ]
 
 [[package]]
@@ -771,6 +773,7 @@ dependencies = [
  "liteos-ui",
  "network-config",
  "network-drive",
+ "sound",
 ]
 
 [[package]]

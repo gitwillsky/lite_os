@@ -12,6 +12,7 @@ desktop-settings = { path = "../../libraries/desktop-settings" }
 calendar = { path = "../../libraries/calendar" }
 linux-uapi = { path = "../../libraries/linux-uapi" }
 network-config = { path = "../../libraries/network-config" }
+sound = { path = "../../libraries/sound" }
 
 [lints]
 workspace = true

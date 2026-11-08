@@ -4,47 +4,8 @@ use linux_uapi::alsa::{NativeOutput, preferred};
 use liteos_ui::{
     Event, EventKind, Layout, PropertySheet, TreeRow, Widget, WidgetKind as Kind, state,
 };
-struct SoundEvent {
-    name: &'static str,
-    file: &'static str,
-}
-
-/// 与桌面、资源管理器实际播放的事件一致；"默认声音"系列都映射到同一个提示音。
-const EVENTS: [SoundEvent; 8] = [
-    SoundEvent {
-        name: "默认声音",
-        file: "chord.wav",
-    },
-    SoundEvent {
-        name: "严重错误",
-        file: "chord.wav",
-    },
-    SoundEvent {
-        name: "感叹号",
-        file: "chord.wav",
-    },
-    SoundEvent {
-        name: "星号",
-        file: "chord.wav",
-    },
-    SoundEvent {
-        name: "询问",
-        file: "chord.wav",
-    },
-    SoundEvent {
-        name: "登录 LiteOS",
-        file: "logon.wav",
-    },
-    SoundEvent {
-        name: "注销 LiteOS",
-        file: "logoff.wav",
-    },
-    SoundEvent {
-        name: "清空回收站",
-        file: "recycle.wav",
-    },
-];
-const SOUND_DIRECTORY: &str = "/usr/share/liteos/sounds";
+// 事件名与声音文件只由 `sound::Event` 的默认方案表给出，桌面与资源管理器播放同一张表。
+use sound::Event as SoundEvent;
 
 pub struct Sounds {
     _controls: Vec<Widget>,
@@ -78,14 +39,14 @@ impl Sounds {
             },
         )?;
         list.set_rows(
-            &EVENTS
+            &SoundEvent::ALL
                 .iter()
                 .enumerate()
-                .map(|(index, event)| (index as u64 + 1, event.name))
+                .map(|(index, event)| (index as u64 + 1, event.label()))
                 .collect::<Vec<_>>(),
         )?;
         list.select(Some(1))?;
-        let (a, file) = pair(&sounds, "声音文件：", EVENTS[0].file)?;
+        let (a, file) = pair(&sounds, "声音文件：", SoundEvent::ALL[0].file())?;
         controls.push(a);
         let preview = child(
             &sounds,
@@ -197,18 +158,18 @@ impl Page for Sounds {
             return Ok(Some(crate::Response::Launch(vec!["/bin/sndvol".into()])));
         }
         let selected = self.list.selection()?.unwrap_or(1).saturating_sub(1) as usize;
-        let Some(sound) = EVENTS.get(selected) else {
+        let Some(sound) = SoundEvent::ALL.get(selected) else {
             return Ok(None);
         };
         if event.node == self.list.id() && matches!(event.kind, EventKind::Select { .. }) {
-            self.file.set_text(sound.file)?;
+            self.file.set_text(sound.file())?;
         }
         if matches!(event.kind, EventKind::Activate { .. })
             && (event.node == self.preview.id() || event.node == self.list.id())
         {
             return Ok(Some(crate::Response::Launch(vec![
                 "/bin/sndplay".into(),
-                format!("{SOUND_DIRECTORY}/{}", sound.file),
+                format!("{}/{}", sound::DIRECTORY, sound.file()),
             ])));
         }
         Ok(None)

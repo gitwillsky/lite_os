@@ -18,6 +18,7 @@ linux-uapi.workspace = true
 terminal-font.workspace = true
 calendar = { path = "../calendar" }
 keyboard.workspace = true
+sound = { path = "../sound" }
 
 [lints]
 workspace = true
