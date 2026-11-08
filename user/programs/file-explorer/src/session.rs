@@ -877,8 +877,22 @@ impl Session {
         Ok(())
     }
     fn toggle(&self, widget: &liteos_ui::Widget) -> liteos_ui::Result<()> {
-        widget.set_state(widget.state()? ^ state::HIDDEN)?;
+        self.set_visible(widget, widget.state()? & state::HIDDEN != 0)
+    }
+
+    fn set_visible(&self, widget: &liteos_ui::Widget, visible: bool) -> liteos_ui::Result<()> {
+        let state = widget.state()?;
+        widget.set_state(if visible {
+            state & !state::HIDDEN
+        } else {
+            state | state::HIDDEN
+        })?;
         self.view.fit_panel()
+    }
+
+    /// “资源管理器”打开方式（shell 的 explore 动词）：显示左侧文件夹树。
+    pub(super) fn show_folders(&self) -> liteos_ui::Result<()> {
+        self.set_visible(&self.view.folders_pane, true)
     }
     pub(super) async fn command(&self, command: Command) -> Result<()> {
         if let Some(style) = command.style() {

@@ -54,6 +54,12 @@ impl Tree {
             } => menu
                 .state
                 .press(probe, node.rect, &menu.entries, self.pointer),
+            // 菜单命令在松开时执行（USER32 语义）；菜单未打开时松开与菜单无关。
+            EventKind::Button {
+                code: 0x110,
+                pressed: false,
+                ..
+            } if menu.state.active() => menu.state.release(probe, &menu.entries, self.pointer),
             EventKind::PointerEnter { .. } | EventKind::PointerMove { .. } => {
                 if menu.state.active() {
                     menu.state

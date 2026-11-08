@@ -32,20 +32,28 @@ struct Launch {
     location: Location,
     select: Option<OsString>,
     verb: Option<Action>,
+    /// shell 的 explore 动词（桌面“资源管理器(&X)”）：打开时显示左侧文件夹树。
+    explore: bool,
 }
 fn parse_launch(home: &Path) -> Result<Launch> {
     let mut location = None;
     let mut select = None;
     let mut verb = None;
+    let mut explore = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(argument) = args.next() {
-        if argument == "--select" {
+        if argument == "--explore" {
+            explore = true;
+        } else if argument == "--select" {
             select = Some(args.next().ok_or("--select needs a name")?);
         } else if argument == "--verb" {
             verb = Some(
                 match args.next().as_deref().and_then(|value| value.to_str()) {
                     Some("properties") => Action::Properties,
                     Some("open-with") => Action::OpenWith,
+                    // 桌面“我的电脑/网上邻居”右键菜单的网络驱动器命令，与“工具”菜单共用同一向导。
+                    Some("map-drive") => Action::MapDrive,
+                    Some("disconnect-drive") => Action::DisconnectDrive,
                     _ => return Err("unknown --verb".into()),
                 },
             );
@@ -62,6 +70,7 @@ fn parse_launch(home: &Path) -> Result<Launch> {
         location: location.unwrap_or_else(|| Location::Directory(home.to_owned())),
         select,
         verb,
+        explore,
     })
 }
 /// 键盘快捷键（Windows 2000 资源管理器）。
@@ -220,6 +229,9 @@ fn run() -> Result<()> {
                 .0
                 .navigate(launch.location, Visit::Refresh, true)
                 .await?;
+            if launch.explore {
+                guard.0.show_folders()?;
+            }
             if let Some(name) = launch.select {
                 let id = guard
                     .0

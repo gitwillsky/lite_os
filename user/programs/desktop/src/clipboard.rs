@@ -46,6 +46,8 @@ pub(super) enum Paste {
     Reading {
         mime: &'static str,
         revision: u64,
+        /// 目标文件夹：桌面文件夹，或右键的桌面文件夹图标。
+        destination: PathBuf,
         stream: UnixStream,
         bytes: Vec<u8>,
         deadline: Instant,
@@ -57,7 +59,7 @@ pub(super) enum Paste {
 }
 
 impl Paste {
-    pub(super) fn begin(display: &mut Display) -> io::Result<Option<Self>> {
+    pub(super) fn begin(display: &mut Display, destination: PathBuf) -> io::Result<Option<Self>> {
         let Some((mime, revision)) = selection(display) else {
             return Ok(None);
         };
@@ -66,6 +68,7 @@ impl Paste {
             .map(|stream| Self::Reading {
                 mime,
                 revision,
+                destination,
                 stream,
                 bytes: Vec::new(),
                 deadline: Instant::now() + Duration::from_secs(2),
@@ -84,6 +87,7 @@ impl Paste {
             Self::Reading {
                 mime,
                 revision,
+                destination,
                 mut stream,
                 mut bytes,
                 deadline,
@@ -116,6 +120,7 @@ impl Paste {
                             return Ok(Some(Self::Reading {
                                 mime,
                                 revision,
+                                destination,
                                 stream,
                                 bytes,
                                 deadline,
@@ -128,7 +133,7 @@ impl Paste {
                 let home = home.to_owned();
                 let job = thread::Builder::new()
                     .name("desktop-paste".into())
-                    .spawn(move || fileops::transfer(&home, paths, &home.join("Desktop"), cut))?;
+                    .spawn(move || fileops::transfer(&home, paths, &destination, cut))?;
                 Ok(Some(Self::Transferring {
                     cut_revision: cut.then_some(revision),
                     job,

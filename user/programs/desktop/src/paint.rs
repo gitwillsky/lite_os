@@ -125,23 +125,22 @@ impl Art {
         let fonts = self.resources.fonts(scale)?;
         Ok((fonts.role(FontRole::Message).measure(text, false) + scale - 1) / scale)
     }
-    /// 右键菜单尺寸：共享 `MenuMetrics` 按系统主题与菜单字体计算。
-    pub fn menu_size(
+    /// 用 `scale` 下的系统主题与字体建立只度量、不落像素的 Painter 交给 `f`；
+    /// 共享菜单状态机的定位、命中与助记键都按它度量，与随后真正绘制用同一份字体。
+    pub fn with_probe<R>(
         &mut self,
-        items: &[popups::Item],
         scale: i32,
-    ) -> io::Result<popups::MenuSize> {
+        f: impl FnOnce(&mut Painter<'_>) -> R,
+    ) -> io::Result<R> {
         let fonts = self.resources.fonts(scale)?;
-        let metrics = classic_ui::MenuMetrics::new(self.resources.theme(), &fonts, scale);
-        Ok(popups::MenuSize {
-            width: metrics.width(
-                items
-                    .iter()
-                    .map(|item| (item.label, item.shortcut, item.default)),
-            ),
-            item_height: metrics.item_height(),
-            separator_height: metrics.separator_height(),
-        })
+        let mut scratch = [0; 1];
+        let surface = Surface::new(&mut scratch, 1, 1, 1).expect("one pixel surface");
+        Ok(f(&mut Painter::new(
+            surface,
+            self.resources.theme(),
+            &fonts,
+            scale,
+        )))
     }
     /// 原位编辑框的鼠标命中，字体和滚动位置与实际绘制一致。
     pub fn icon_edit_hit(
@@ -277,11 +276,9 @@ impl Art {
         scale: i32,
         measure: impl FnOnce(&Painter<'_>) -> T,
     ) -> io::Result<T> {
-        let mut pixel = [0u32; 1];
-        let surface = Surface::new(&mut pixel, 1, 1, 1).expect("one pixel surface");
-        let fonts = self.resources.fonts(scale)?;
-        let mut painter = Painter::new(surface, self.resources.theme(), &fonts, scale);
-        Ok(painter.with_role(FontRole::Icon, |p| measure(p)))
+        self.with_probe(scale, |painter| {
+            painter.with_role(FontRole::Icon, |p| measure(p))
+        })
     }
 
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {

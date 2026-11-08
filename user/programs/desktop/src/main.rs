@@ -283,17 +283,35 @@ impl Desktop {
             .map_or((1280, 800), |c| (c.width, c.height))
     }
 
-    /// 在资源管理器里打开桌面图标或菜单对应的位置。
-    fn open_place(&mut self, place: start::Place) {
+    /// 外壳位置在资源管理器里的地址参数；打开与“资源管理器”方式共用。
+    fn place_location(&self, place: start::Place) -> std::ffi::OsString {
         use start::Place;
         match place {
-            Place::Documents => self.files(self.home.clone()),
-            Place::MyComputer => self.files("::my-computer"),
-            Place::ControlPanel => self.files("::control-panel"),
-            Place::NetworkPlaces => self.files("::network-places"),
-            Place::NetworkConnections => self.files("::network-connections"),
-            Place::RecycleBin => self.files("::recycle-bin"),
+            Place::Documents => self.home.clone().into_os_string(),
+            Place::MyComputer => "::my-computer".into(),
+            Place::ControlPanel => "::control-panel".into(),
+            Place::NetworkPlaces => "::network-places".into(),
+            Place::NetworkConnections => "::network-connections".into(),
+            Place::RecycleBin => "::recycle-bin".into(),
         }
+    }
+
+    /// 在资源管理器里打开桌面图标或菜单对应的位置。
+    fn open_place(&mut self, place: start::Place) {
+        let location = self.place_location(place);
+        self.files(location);
+    }
+
+    /// “资源管理器(&X)”：以带文件夹树的资源管理器打开系统图标或桌面文件夹（shell 的 explore 动词）。
+    fn explore_icon(&mut self, index: usize) {
+        let location = match self.icons.items.get(index).map(|icon| icon.target.clone()) {
+            Some(icons::Target::Place(place)) => self.place_location(place),
+            Some(icons::Target::Path(path)) if path.is_dir() => path.into_os_string(),
+            _ => return,
+        };
+        let mut command = Command::new("/bin/file-explorer");
+        command.arg("--explore").arg(location);
+        self.launch(command);
     }
 
     /// 打开桌面图标：系统图标进入对应位置，文件夹在资源管理器中打开，可执行文件启动，其余提示没有关联程序。
@@ -337,9 +355,10 @@ impl Desktop {
         }
     }
 
-    fn begin_paste(&mut self, display: &mut Display) {
+    /// 粘贴剪贴板文件到 `destination`（桌面文件夹或桌面上的文件夹图标）。
+    fn begin_paste(&mut self, display: &mut Display, destination: PathBuf) {
         if self.paste.is_none() {
-            match clipboard::Paste::begin(display) {
+            match clipboard::Paste::begin(display, destination) {
                 Ok(Some(paste)) => {
                     self.paste = Some(paste);
                     self.message = "正在粘贴…".into();
@@ -397,7 +416,31 @@ impl Desktop {
             Action::RenameIcon(index) => self.rename_icon(index),
             Action::DeleteSelection => self.delete_selected("--delete"),
             Action::FileSelection { cut } => self.offer_selected(display, cut),
-            Action::PasteFiles => self.begin_paste(display),
+            Action::PasteFiles { into } => {
+                let destination = match into.and_then(|index| self.icons.items.get(index)) {
+                    Some(icon) => match &icon.target {
+                        icons::Target::Path(path) if path.is_dir() => path.clone(),
+                        _ => return Ok(()),
+                    },
+                    None => self.home.join("Desktop"),
+                };
+                self.begin_paste(display, destination);
+            }
+            Action::ExploreIcon(index) => self.explore_icon(index),
+            Action::NetworkDrive { disconnect } => {
+                let mut command = Command::new("/bin/file-explorer");
+                command.args([
+                    "--verb",
+                    if disconnect {
+                        "disconnect-drive"
+                    } else {
+                        "map-drive"
+                    },
+                ]);
+                self.launch(command);
+            }
+            // 子菜单父条目由共享状态机展开，不会作为命令交出。
+            Action::Submenu => {}
             Action::EmptyRecycleBin => {
                 let mut command = Command::new("/bin/file-explorer");
                 command.arg("--empty-recycle-bin");
@@ -417,10 +460,22 @@ impl Desktop {
                 }
                 Err(error) => self.message = error.to_string(),
             },
-            Action::ArrangeIcons => match self.icons.auto_arrange() {
-                Ok(()) => self.refresh_icons(),
-                Err(error) => self.message = error.to_string(),
-            },
+            Action::Arrange(arrange) => {
+                self.icons.arrange_by(arrange);
+                self.refresh_icons();
+                if let Err(error) = self.icons.remember() {
+                    self.message = format!("无法保存图标排列：{error}");
+                }
+            }
+            Action::AutoArrange => {
+                let auto = !self.icons.auto;
+                self.cancel_drag();
+                if let Err(error) = self.icons.set_auto(auto) {
+                    self.message = format!("无法保存图标排列：{error}");
+                }
+            }
+            // 图标只落在网格单元上，已经对齐；保留命令以与原版菜单一致。
+            Action::LineUpIcons => {}
             Action::Refresh => {
                 self.apps = installed_programs();
                 self.refresh_icons();
@@ -618,7 +673,7 @@ impl Desktop {
             if motion {
                 pending.insert(window);
             }
-            return self.overlay_event(display, event);
+            return self.overlay_event(display, art, event);
         }
         if window == self.taskbar {
             match event.kind {
@@ -1128,7 +1183,7 @@ impl Desktop {
                                 && !key.modifiers.super_key =>
                         {
                             if key.code == 47 {
-                                self.begin_paste(display);
+                                self.begin_paste(display, self.home.join("Desktop"));
                             } else {
                                 self.offer_selected(display, key.code == 45);
                             }
@@ -1257,9 +1312,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // 2. 每轮至多处理 64 项，持续输入时仍给绘制、外部状态和会话回收执行机会。
         for index in 0..64 {
             let timeout = if index == 0 {
+                // 慢速点击改名与右键子菜单的延时展开（SPI_GETMENUSHOWDELAY）都按各自截止时刻唤醒。
+                let menu = match &state.overlay {
+                    Some((_, popups::Overlay::Menu(menu))) => menu.deadline(),
+                    _ => None,
+                };
                 state
                     .rename_click
-                    .map_or(Duration::from_millis(100), |(_, deadline)| {
+                    .map(|(_, deadline)| deadline)
+                    .into_iter()
+                    .chain(menu)
+                    .min()
+                    .map_or(Duration::from_millis(100), |deadline| {
                         deadline
                             .saturating_duration_since(Instant::now())
                             .min(Duration::from_millis(100))
@@ -1298,15 +1362,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dirty |= state.volume.poll();
         dirty |= state.poll_paste(&mut display);
         // 菜单映射、键盘 enter 和剪贴板 offer 可分批到达，按本轮处理后的状态更新可用性。
-        if let Some((window, popups::Overlay::Menu(menu))) = &mut state.overlay
-            && let Some(item) = menu
-                .items
-                .iter_mut()
-                .find(|item| matches!(item.action, popups::Action::PasteFiles))
-        {
-            let disabled = state.paste.is_some() || !clipboard::can_paste(&display);
-            if item.disabled != disabled {
-                item.disabled = disabled;
+        if let Some((window, popups::Overlay::Menu(menu))) = &mut state.overlay {
+            let enabled = state.paste.is_none() && clipboard::can_paste(&display);
+            // 到期展开等待中的子菜单；粘贴可用性随剪贴板变化同步到所有“粘贴”条目。
+            if menu.state.tick(Instant::now()) | menu.set_paste_enabled(enabled) {
                 pending.insert(*window);
             }
         }

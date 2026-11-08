@@ -17,6 +17,61 @@ const ORIGIN: (i32, i32) = (6, 12);
 /// 桌面文件夹里最多显示的条目数。
 const MAX_ENTRIES: usize = 256;
 
+/// 桌面“排列图标”的依据（shell32.dll 菜单 221：按名称、按类型、按大小、按日期）。
+/// 系统图标始终按原版顺序排在最前，文件夹排在文件之前。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrange {
+    Name,
+    Type,
+    Size,
+    /// 按修改时间，最新的在前。
+    Date,
+}
+
+impl Arrange {
+    const ALL: [(Self, &'static str); 4] = [
+        (Self::Name, "name"),
+        (Self::Type, "type"),
+        (Self::Size, "size"),
+        (Self::Date, "date"),
+    ];
+
+    fn key(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(arrange, _)| *arrange == self)
+            .map_or("name", |(_, key)| key)
+    }
+
+    fn parse(key: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(_, name)| *name == key)
+            .map(|(arrange, _)| *arrange)
+    }
+}
+
+/// 一个桌面文件夹条目排序所需的属性；只在刷新时读取一次元数据。
+struct Entry {
+    directory: bool,
+    name: String,
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+    type_name: String,
+}
+
+/// 按排列依据比较：文件夹在前；同一依据相等时按名称（不区分大小写）稳定排序。
+fn compare(arrange: Arrange, a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    let name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+    b.directory.cmp(&a.directory).then_with(|| match arrange {
+        Arrange::Name => name(),
+        Arrange::Type => a.type_name.cmp(&b.type_name).then_with(name),
+        Arrange::Size => a.size.cmp(&b.size).then_with(name),
+        Arrange::Date => b.modified.cmp(&a.modified).then_with(name),
+    })
+}
+
 /// 点击图标的目标。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -43,8 +98,13 @@ pub struct Icons {
     // 刷新和抓取复用它，否则各自计算边界会把新项目或整组拖放排到任务栏下；无逐帧重排。
     grid: Option<(i32, i32)>,
     saved: HashMap<String, (i32, i32)>,
+    // OWNER: 桌面排列依据与“自动排列”只由 Icons 持有并写入 arrange_file；刷新按它排序条目，
+    // 自动排列时 place 把保存的位置当作先后次序紧密排列。缺少它，刷新会丢掉用户选择的依据。
+    pub arrange: Arrange,
+    pub auto: bool,
     directory: PathBuf,
     layout_file: PathBuf,
+    arrange_file: PathBuf,
     stamp: Option<SystemTime>,
     home: PathBuf,
     // Bound the mount-table scan independently of pointer and frame activity.
@@ -119,17 +179,29 @@ impl Icons {
         let directory = home.join("Desktop");
         let _ = fs::create_dir_all(&directory);
         let layout_file = home.join(".config/liteos/desktop-icons");
+        let arrange_file = home.join(".config/liteos/desktop-arrange");
         let saved = fs::read_to_string(&layout_file)
             .map(|text| parse_layout(&text))
             .unwrap_or_default();
+        // 格式：一行“依据 [auto]”；缺失或无法识别时按名称、不自动排列。
+        let text = fs::read_to_string(&arrange_file).unwrap_or_default();
+        let mut words = text.split_whitespace();
+        let arrange = words
+            .next()
+            .and_then(Arrange::parse)
+            .unwrap_or(Arrange::Name);
+        let auto = words.next() == Some("auto");
         let mut icons = Self {
             cell: (cell.0.max(1), cell.1.max(1)),
             items: Vec::new(),
             cells: Vec::new(),
             grid: None,
             saved,
+            arrange,
+            auto,
             directory,
             layout_file,
+            arrange_file,
             stamp: None,
             home: home.to_owned(),
             next_trash_check: Instant::now(),
@@ -169,7 +241,8 @@ impl Icons {
         self.stamp = self.modified();
         let associations = desktop_entry::Associations::load();
         let mut items = system_icons();
-        let mut entries: Vec<(bool, String, PathBuf)> = fs::read_dir(&self.directory)
+        // 每个条目只读一次元数据（跟随符号链接，与打开时看到的目标一致），排序比较不再访问文件系统。
+        let mut entries: Vec<Entry> = fs::read_dir(&self.directory)
             .into_iter()
             .flatten()
             .flatten()
@@ -177,18 +250,31 @@ impl Icons {
             .take(MAX_ENTRIES)
             .map(|e| {
                 let path = e.path();
-                (
-                    path.is_dir(),
-                    e.file_name().to_string_lossy().into_owned(),
+                let metadata = fs::metadata(&path).ok();
+                let directory = metadata.as_ref().is_some_and(fs::Metadata::is_dir);
+                Entry {
+                    directory,
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    size: metadata.as_ref().map_or(0, fs::Metadata::len),
+                    modified: metadata.and_then(|metadata| metadata.modified().ok()),
+                    type_name: if self.arrange == Arrange::Type && !directory {
+                        associations.type_name(&path)
+                    } else {
+                        String::new()
+                    },
                     path,
-                )
+                }
             })
             .collect();
-        entries.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
-        });
-        for (directory, name, path) in entries {
+        let arrange = self.arrange;
+        entries.sort_by(|a, b| compare(arrange, a, b));
+        for Entry {
+            directory,
+            name,
+            path,
+            ..
+        } in entries
+        {
             let entry = (path
                 .extension()
                 .is_some_and(|extension| extension == "desktop"))
@@ -239,6 +325,23 @@ impl Icons {
             self.cells = vec![(0, 0); self.items.len()];
             return;
         };
+        if self.auto {
+            // 自动排列：保存的位置只决定先后（按列优先的格序），没有保存位置的条目按排列依据接在后面，
+            // 然后从左上角起紧密排满，不留空格。O(n log n)，不做文件 I/O。
+            let slot = |icon: &Icon| {
+                self.saved.get(&icon.key).map_or(i64::MAX, |(column, row)| {
+                    i64::from(*column) * i64::from(rows) + i64::from(*row)
+                })
+            };
+            let mut order: Vec<usize> = (0..self.items.len()).collect();
+            order.sort_by_key(|index| (slot(&self.items[*index]), *index));
+            self.cells = vec![(0, 0); self.items.len()];
+            for (position, index) in order.into_iter().enumerate() {
+                let position = position as i32;
+                self.cells[index] = (position / rows, position % rows);
+            }
+            return;
+        }
         let mut cells = vec![None; self.items.len()];
         let mut taken = HashSet::with_capacity(self.items.len());
         for (index, icon) in self.items.iter().enumerate() {
@@ -346,6 +449,29 @@ impl Icons {
         let (columns, rows) = self
             .grid
             .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "桌面尚未完成布局"))?;
+        if self.auto {
+            // 自动排列时拖动只改变先后：整组按原相对次序插到落点所在格序之前，其余条目保持次序，再紧密排满。
+            let linear = |(column, row): (i32, i32)| column * rows + row;
+            let target = linear((
+                ((center.0 - ORIGIN.0) / self.cell.0).clamp(0, columns - 1),
+                ((center.1 - ORIGIN.1) / self.cell.1).clamp(0, rows - 1),
+            ));
+            let mut order: Vec<usize> = (0..self.cells.len()).collect();
+            order.sort_by_key(|i| linear(self.cells[*i]));
+            let (moved, mut rest): (Vec<usize>, Vec<usize>) = order
+                .into_iter()
+                .partition(|i| selection.binary_search(i).is_ok());
+            let at = rest
+                .iter()
+                .take_while(|i| linear(self.cells[**i]) < target)
+                .count();
+            rest.splice(at..at, moved);
+            for (position, index) in rest.into_iter().enumerate() {
+                let position = position as i32;
+                self.cells[index] = (position / rows, position % rows);
+            }
+            return self.remember();
+        }
         let origin = self.cells[index];
         let wanted = (
             (center.0 - ORIGIN.0) / self.cell.0 - origin.0,
@@ -433,14 +559,30 @@ impl Icons {
         Ok(target)
     }
 
-    /// 忘记所有保存的位置，图标按名称顺序重新排列。
-    pub fn auto_arrange(&mut self) -> io::Result<()> {
-        match fs::remove_file(&self.layout_file) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+    /// “排列图标”按 `arrange`：忘记保存的位置；调用者随后刷新，条目按新依据从左上角排满。
+    pub fn arrange_by(&mut self, arrange: Arrange) {
+        self.arrange = arrange;
         self.saved.clear();
-        Ok(())
+    }
+
+    /// 切换“自动排列”：开启时立即紧密排列；关闭时保留当前位置作为之后的保存位置。
+    pub fn set_auto(&mut self, auto: bool) -> io::Result<()> {
+        self.auto = auto;
+        self.place();
+        self.remember()
+    }
+
+    /// 把当前网格位置作为保存位置，与排列依据、自动排列一并写盘。
+    pub fn remember(&mut self) -> io::Result<()> {
+        for (icon, cell) in self.items.iter().zip(&self.cells) {
+            self.saved.insert(icon.key.clone(), *cell);
+        }
+        self.save()?;
+        let auto = if self.auto { " auto" } else { "" };
+        fs::write(
+            &self.arrange_file,
+            format!("{}{auto}\n", self.arrange.key()),
+        )
     }
 
     /// 在桌面文件夹里新建"新建文件夹"（重名加序号）。

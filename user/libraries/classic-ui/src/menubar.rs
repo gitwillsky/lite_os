@@ -97,7 +97,10 @@ impl MenuBar {
         self.bounds = Some(bounds);
     }
 
-    /// 在客户区指定点显示共享上下文菜单；超出边界时向内平移，不新建协议 surface。
+    /// 在客户区指定点显示共享上下文菜单，不新建协议 surface。
+    ///
+    /// 定位按 TrackPopupMenu：左上角对齐指针；右侧或下方放不下时翻到指针另一侧（右缘或底边对齐指针），
+    /// 翻转后仍越界才向内平移。
     pub fn show_popup<T, S: AsRef<str>>(
         &mut self,
         p: &Painter<'_>,
@@ -109,16 +112,16 @@ impl MenuBar {
             return;
         }
         let mut popup = Popup::open(p, menus, 0, Rect::new(point.0, point.1, 0, 0));
-        popup.rect.x = popup
-            .rect
-            .x
-            .min(bounds.right() - popup.rect.width)
-            .max(bounds.x);
-        popup.rect.y = popup
-            .rect
-            .y
-            .min(bounds.bottom() - popup.rect.height)
-            .max(bounds.y);
+        let place = |origin: i32, size: i32, low: i32, high: i32| {
+            let flipped = if origin + size > high {
+                origin - size
+            } else {
+                origin
+            };
+            flipped.min(high - size).max(low)
+        };
+        popup.rect.x = place(point.0, popup.rect.width, bounds.x, bounds.right());
+        popup.rect.y = place(point.1, popup.rect.height, bounds.y, bounds.bottom());
         self.bounds = Some(bounds);
         self.popups = vec![popup];
         self.pending = None;
@@ -237,7 +240,10 @@ impl MenuBar {
         MenuEvent::Command(command)
     }
 
-    /// 左键按下：打开或切换菜单、执行点中的条目、点在菜单外则关闭（这次点击被消费）。
+    /// 左键按下：打开或切换菜单、点在菜单外则关闭（这次点击被消费）。
+    ///
+    /// 按 USER32 菜单语义，按下普通条目只高亮，命令在 [`Self::release`] 时执行；按住拖到别的条目再松开
+    /// 选中的是松开处的条目。子菜单父条目按下即展开。
     pub fn press<T: Copy, S: AsRef<str>>(
         &mut self,
         p: &Painter<'_>,
@@ -256,7 +262,11 @@ impl MenuBar {
                         return MenuEvent::Handled;
                     }
                     self.popups.truncate(layer + 1);
-                    return self.activate(p, menus, index, false);
+                    if item.has_submenu() {
+                        return self.activate(p, menus, index, false);
+                    }
+                    self.pending = None;
+                    self.popups[layer].hover = Some(index);
                 }
                 return MenuEvent::Handled;
             }
@@ -276,6 +286,30 @@ impl MenuBar {
             }
             None => MenuEvent::Ignored,
         }
+    }
+
+    /// 鼠标键松开：指针在可用的普通条目上则执行该命令（TrackPopupMenu 在松开时选择，
+    /// 从标题或上下文菜单原点按住拖到条目上松开同样生效）。松开在菜单外不关闭菜单，
+    /// 这样打开上下文菜单的那次右键松开不会立刻把它关掉。
+    pub fn release<T: Copy, S: AsRef<str>>(
+        &mut self,
+        p: &Painter<'_>,
+        menus: &[DropMenu<T, S>],
+        point: (i32, i32),
+    ) -> MenuEvent<T> {
+        let Some(layer) = self.layer_at(point) else {
+            return MenuEvent::Ignored;
+        };
+        let popup = &self.popups[layer];
+        let Some(index) = popup.item_at(popup.items(menus), point) else {
+            return MenuEvent::Handled;
+        };
+        let item = self.item(menus, layer, index);
+        if item.disabled || item.has_submenu() {
+            return MenuEvent::Handled;
+        }
+        self.popups.truncate(layer + 1);
+        self.activate(p, menus, index, false)
     }
 
     /// 指针移动：菜单打开时在标题间切换、更新高亮，并在子菜单父条目上排定延时展开。返回是否需要重画。
