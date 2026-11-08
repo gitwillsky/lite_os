@@ -13,6 +13,18 @@ impl Session {
                     self.handle_foreign_request(request);
                     continue;
                 }
+                WindowCommand::Arrange(layout) => {
+                    if self.server.has_shell_control(client) {
+                        self.arrange_windows(client, Some(layout))?;
+                    }
+                    continue;
+                }
+                WindowCommand::UndoArrange => {
+                    if self.server.has_shell_control(client) {
+                        self.arrange_windows(client, None)?;
+                    }
+                    continue;
+                }
                 WindowCommand::Shell(action) => {
                     if self.server.has_shell_control(client) {
                         self.shell_command(client, action);
@@ -47,6 +59,7 @@ impl Session {
                             pointer: pressed.position,
                             start,
                         };
+                        self.stack.forget_arranged(client, surface);
                         self.seat.begin_grab(&mut self.server);
                         self.grab = Some(ActiveGrab {
                             grab,
@@ -157,12 +170,13 @@ impl Session {
         }
     }
 
-    fn publish_batch(&mut self) {
-        // 批量变化不逐窗口重排，也不保留第二套位置/焦点快照；configure 只投影最终状态。
+    fn publish_batch(&mut self, geometry: bool) {
+        // 批量变化不逐窗口重排；只投影最终状态，排列必须显式给出 normal 窗口的新尺寸。
         self.animation = None;
         for index in 0..self.stack.windows().len() {
             let placed = &self.stack.windows()[index];
-            self.send_configure(placed.client, placed.surface, None, false);
+            let size = geometry.then_some((placed.width, placed.height));
+            self.send_configure(placed.client, placed.surface, size, false);
         }
         if !self.secure_pending {
             self.keyboard_layer = None;
@@ -176,30 +190,86 @@ impl Session {
         action: wayland_wire::protocol::liteos_shell_v1::Action,
     ) {
         use wayland_wire::protocol::liteos_shell_v1::Action;
+        let active_before = self.stack.active();
+        let restoring = action == Action::UndoMinimizeAll
+            || (action == Action::ToggleDesktop && self.stack.showing_desktop());
         let changed = match action {
             Action::MinimizeAll => self.stack.minimize_all(owner),
             Action::UndoMinimizeAll => self.stack.undo_minimize_all(owner),
             Action::ToggleDesktop => self.stack.toggle_desktop(owner),
         };
         if changed {
-            self.publish_batch();
+            self.publish_batch(false);
+            // 状态先原子生效，沿已有单一过渡 owner 动画化前台窗口；不能逐项执行批量操作。
+            // 撤销期间新窗口仍在前台时不对它播放还原动画，它从未属于旧批次。
+            let target = if restoring {
+                self.stack
+                    .active()
+                    .filter(|active| Some(*active) != active_before)
+            } else {
+                active_before
+            };
+            if let Some((client, surface)) = target {
+                self.animate(client, surface, !restoring);
+            }
         }
+    }
+
+    fn arrange_windows(
+        &mut self,
+        owner: ClientId,
+        layout: Option<wayland_wire::protocol::liteos_shell_v1::Arrangement>,
+    ) -> io::Result<()> {
+        self.end_grab()?;
+        let area = self.work_area();
+        let changed = if let Some(layout) = layout {
+            let server = &self.server;
+            self.stack
+                .arrange(owner, layout, area, self.scale as i32, |client, surface| {
+                    // 模态窗口禁用其 owner；固定/owned/fullscreen 的筛选仍由窗口栈统一执行。
+                    if server.windows().any(|(child_client, window)| {
+                        child_client == client && window.modal && window.parent == Some(surface)
+                    }) {
+                        return None;
+                    }
+                    server
+                        .windows()
+                        .find(|(id, window)| *id == client && window.surface == surface)
+                        .map(|(_, window)| (window.min_size, window.max_size))
+                })
+        } else {
+            self.stack.undo_arrangement(owner)
+        };
+        if changed {
+            let full = self.full_area();
+            self.stack.refit(area, full);
+            self.publish_batch(true);
+        }
+        Ok(())
     }
 
     /// 最后一个授权对象关闭时先撤销，不能遗留无人能恢复的批量隐藏窗口。
     pub(super) fn sync_shell(&mut self) {
         if let Some(owner) = self.stack.batch_owner()
             && !self.server.has_shell_control(owner)
-            && self.stack.undo_minimize_all(owner)
+            && (self.stack.undo_minimize_all(owner) || self.stack.undo_arrangement(owner))
         {
-            self.publish_batch();
+            let (work, full) = (self.work_area(), self.full_area());
+            self.stack.refit(work, full);
+            self.publish_batch(true);
         }
-        use wayland_wire::protocol::liteos_shell_v1::state;
+        use wayland_wire::protocol::liteos_shell_v1::{Arrangement, state};
         let stack = &self.stack;
         self.server.sync_shell(|owner| {
             (u32::from(stack.can_undo(owner)) * state::CANUNDO)
                 | (u32::from(stack.batch_owner() == Some(owner) && stack.showing_desktop())
                     * state::SHOWINGDESKTOP)
+                | match stack.undo_arrangement_kind(owner) {
+                    Some(Arrangement::Cascade) => state::UNDOCASCADE,
+                    Some(Arrangement::Horizontal) => state::UNDOHORIZONTAL,
+                    Some(Arrangement::Vertical) => state::UNDOVERTICAL,
+                    None => 0,
+                }
         });
     }
 

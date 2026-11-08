@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="liteos_shell_v1">
-  <interface name="liteos_shell_v1" version="1">
+  <interface name="liteos_shell_v1" version="2">
     <description summary="authorized LiteOS desktop transactions">
       This system-service interface is advertised only to Shell connections delegated by the
       trusted session through wp_security_context_v1. It is not an ordinary application ABI.
@@ -8,6 +8,8 @@
       in the same connection order as xdg and foreign-toplevel window requests. Only the latest
       effective batch is undoable. Manual operations supersede that window's batch membership.
       Destroying the last control object or disconnecting undoes the connection's batch.
+      Version 2 adds arrangements of visible, resizable, non-fullscreen root windows.
+      Maximized windows become normal; z-order is preserved. Size constraints remain binding.
     </description>
     <request name="destroy" type="destructor"/>
     <enum name="action">
@@ -21,7 +23,19 @@
     <enum name="state" bitfield="true">
       <entry name="can_undo" value="1"/>
       <entry name="showing_desktop" value="2"/>
+      <entry name="undo_cascade" value="4" since="2"/>
+      <entry name="undo_horizontal" value="8" since="2"/>
+      <entry name="undo_vertical" value="16" since="2"/>
     </enum>
+    <enum name="arrangement" since="2">
+      <entry name="cascade" value="0"/>
+      <entry name="horizontal" value="1"/>
+      <entry name="vertical" value="2"/>
+    </enum>
+    <request name="arrange" since="2">
+      <arg name="layout" type="uint" enum="arrangement"/>
+    </request>
+    <request name="undo_arrange" since="2"/>
     <event name="state">
       <description summary="complete state of this connection's desktop transaction">
         Sent after binding and whenever the state changes. This is a snapshot, not an

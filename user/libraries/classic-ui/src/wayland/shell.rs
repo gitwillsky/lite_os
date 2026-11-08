@@ -1,7 +1,7 @@
 //! 仅给可信会话委派的 LiteOS 外壳使用的批量窗口事务，不暴露普通应用能力。
 use super::Display;
 /// 版本化系统外壳命令；只经已授权的标准 Wayland socket 发送。
-pub use liteos_shell_v1::Action as ShellCommand;
+pub use liteos_shell_v1::{Action as ShellCommand, Arrangement as ShellArrangement};
 use std::io;
 use wayland_wire::{
     protocol::{AnyEvent, liteos_shell_v1},
@@ -23,6 +23,41 @@ impl Display {
     pub fn can_undo_minimize_all(&self) -> bool {
         self.shell
             .is_some_and(|(_, flags)| flags & liteos_shell_v1::state::CANUNDO != 0)
+    }
+
+    /// 排列当前可见窗口；`layout` 决定层叠或平铺方向。成员与约束由服务端裁决。
+    /// Ok 表示已发送；未授权返回 PermissionDenied，编码/传输错误原样返回。
+    pub fn arrange_windows(&mut self, layout: ShellArrangement) -> io::Result<()> {
+        let (object, _) = self.shell.ok_or(io::ErrorKind::PermissionDenied)?;
+        liteos_shell_v1::Request::Arrange { layout }
+            .encode(object, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
+    /// 撤销该连接最近的排列；无可撤销批次时服务端不作改动。
+    /// 未授权返回 PermissionDenied，编码/传输错误原样返回。
+    pub fn undo_arrangement(&mut self) -> io::Result<()> {
+        let (object, _) = self.shell.ok_or(io::ErrorKind::PermissionDenied)?;
+        liteos_shell_v1::Request::UndoArrange
+            .encode(object, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
+    /// 最近快照的可撤销排列；未授权、无批次或成员全部失效时为 None，无错误返回。
+    pub fn undo_arrangement_kind(&self) -> Option<ShellArrangement> {
+        use liteos_shell_v1::state;
+        let (_, flags) = self.shell?;
+        if flags & state::UNDOCASCADE != 0 {
+            Some(ShellArrangement::Cascade)
+        } else if flags & state::UNDOHORIZONTAL != 0 {
+            Some(ShellArrangement::Horizontal)
+        } else if flags & state::UNDOVERTICAL != 0 {
+            Some(ShellArrangement::Vertical)
+        } else {
+            None
+        }
     }
 
     pub(super) fn shell_event(&mut self, object: ObjectId, event: &AnyEvent) -> bool {

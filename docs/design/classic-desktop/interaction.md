@@ -85,4 +85,4 @@
 | S6 | 问题消息框 | `question` |
 | S7 | 菜单命令 | 无（Windows 2000 默认无声，确定） |
 
-声音素材为自制，不使用 Windows 的声音文件；清单见 [assets.md](assets.md)。
+系统声音素材及来源以[资源清单](assets.md)为准。

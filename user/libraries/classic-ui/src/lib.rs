@@ -43,8 +43,8 @@ pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};
 pub use wayland::{
     Configuration, CursorShape, Display, Event, EventKind, ImageId, Key, KeyboardInteractivity,
-    Layer, LayerSettings, ShellCommand, ShellConnection, ShellLease, Toplevel, ToplevelId,
-    ToplevelRequest, WindowId, WindowRequest, layer_anchor,
+    Layer, LayerSettings, ShellArrangement, ShellCommand, ShellConnection, ShellLease, Toplevel,
+    ToplevelId, ToplevelRequest, WindowId, WindowRequest, layer_anchor,
 };
 
 pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, StatusLayout, thumb_span};

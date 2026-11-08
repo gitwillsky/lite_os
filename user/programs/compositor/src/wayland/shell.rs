@@ -11,6 +11,8 @@ pub enum WindowCommand {
     Toplevel(ObjectId, WindowRequest),
     Foreign(ForeignRequest),
     Shell(liteos_shell_v1::Action),
+    Arrange(liteos_shell_v1::Arrangement),
+    UndoArrange,
 }
 
 impl Client {
@@ -24,6 +26,10 @@ impl Client {
         }
         match request {
             liteos_shell_v1::Request::Destroy => {}
+            liteos_shell_v1::Request::Arrange { layout } => {
+                self.requests.push(WindowCommand::Arrange(layout))
+            }
+            liteos_shell_v1::Request::UndoArrange => self.requests.push(WindowCommand::UndoArrange),
             liteos_shell_v1::Request::Perform { action } => {
                 self.requests.push(WindowCommand::Shell(action))
             }
@@ -44,6 +50,11 @@ impl Client {
     /// 只保存最近发送的 wire 状态，不能用该缓存决定批量操作或撤销成员。
     pub fn sync_shell(&mut self, flags: u32) {
         for (id, entry) in &mut self.objects {
+            let flags = if entry.version < 2 {
+                flags & (liteos_shell_v1::state::CANUNDO | liteos_shell_v1::state::SHOWINGDESKTOP)
+            } else {
+                flags
+            };
             if let Data::Shell(sent) = &mut entry.data
                 && *sent != Some(flags)
             {

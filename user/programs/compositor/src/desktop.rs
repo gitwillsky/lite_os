@@ -4,6 +4,9 @@ use wayland_wire::wire::ObjectId;
 
 use crate::wayland::ClientId;
 
+mod transactions;
+use transactions::ShellBatch;
+
 /// 窗口的显示模式；最小化与模式正交（最小化的最大化窗口恢复后仍是最大化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -48,12 +51,6 @@ impl Placement {
     }
 }
 
-/// 同一窗口栈只保留最近一次有效的批量操作；没有窗口 ID/几何的第二份快照。
-struct ShellBatch {
-    owner: ClientId,
-    showing_desktop: bool,
-}
-
 /// 新窗口的初始位置策略（合成器自己的窗口管理策略；Wayland 客户端不能指定位置）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Initial {
@@ -80,83 +77,6 @@ const CASCADE_STEP: i32 = 19;
 const CASCADE_ORIGIN: i32 = 40;
 
 impl Stack {
-    /// 最近批量操作的授权连接；连接或最后一个控制对象退出时必须撤销。
-    pub fn batch_owner(&self) -> Option<ClientId> {
-        self.batch.as_ref().map(|batch| batch.owner)
-    }
-
-    /// 桌面是否已提升至普通窗口之上；Top/Overlay 外壳不受影响。
-    pub fn showing_desktop(&self) -> bool {
-        self.batch
-            .as_ref()
-            .is_some_and(|batch| batch.showing_desktop)
-    }
-
-    /// 指定连接能否撤销它最近一次批量最小化。
-    pub fn can_undo(&self, owner: ClientId) -> bool {
-        self.batch_owner() == Some(owner)
-            && self
-                .order
-                .iter()
-                .any(|placed| placed.visibility == Visibility::BatchMinimized)
-    }
-
-    /// 普通窗口是否位于当前桌面之上；绘制和输入共用此判定。
-    pub fn visible(&self, placed: &Placement) -> bool {
-        !placed.minimized() && !self.showing_desktop()
-    }
-
-    /// 原子最小化本次可见的窗口；重复空操作保留撤销来源，不分配 ID 快照。
-    pub fn minimize_all(&mut self, owner: ClientId) -> bool {
-        self.begin_batch(owner, false)
-    }
-
-    fn begin_batch(&mut self, owner: ClientId, showing_desktop: bool) -> bool {
-        if !showing_desktop && !self.order.iter().any(|placed| !placed.minimized()) {
-            return false;
-        }
-        for placed in &mut self.order {
-            placed.visibility = match placed.visibility {
-                Visibility::Visible => Visibility::BatchMinimized,
-                Visibility::BatchMinimized | Visibility::Minimized => Visibility::Minimized,
-            };
-        }
-        self.batch = Some(ShellBatch {
-            owner,
-            showing_desktop,
-        });
-        true
-    }
-
-    /// 只还原仍属于本连接批量操作的窗口，保留原栈序、模式和后来的手动最小化。
-    pub fn undo_minimize_all(&mut self, owner: ClientId) -> bool {
-        if self.batch_owner() != Some(owner) {
-            return false;
-        }
-        self.batch = None;
-        for placed in &mut self.order {
-            if placed.visibility == Visibility::BatchMinimized {
-                placed.visibility = Visibility::Visible;
-            }
-        }
-        true
-    }
-
-    /// 切换显示桌面；切换决定发生在栈 owner，不读取异步客户端快照。
-    pub fn toggle_desktop(&mut self, owner: ClientId) -> bool {
-        if self.batch_owner() == Some(owner) && self.showing_desktop() {
-            self.undo_minimize_all(owner)
-        } else {
-            self.begin_batch(owner, true)
-        }
-    }
-
-    fn leave_desktop(&mut self) -> bool {
-        self.batch
-            .as_mut()
-            .is_some_and(|batch| std::mem::replace(&mut batch.showing_desktop, false))
-    }
-
     /// 自底向上的窗口。
     pub fn windows(&self) -> &[Placement] {
         &self.order
@@ -207,6 +127,9 @@ impl Stack {
                 None
             });
         self.order.retain(is_mapped);
+        if self.order.len() != before.len() {
+            self.retain_arranged();
+        }
         if let Some((client, surface)) = restore {
             self.raise(client, surface);
         }
@@ -375,6 +298,7 @@ impl Stack {
 
     /// 最小化窗口：不再绘制、不参与命中与激活。
     pub fn minimize(&mut self, client: ClientId, surface: ObjectId) -> bool {
+        self.forget_arranged(client, surface);
         match self.find(client, surface) {
             Some(placed) if placed.visibility != Visibility::Minimized => {
                 placed.visibility = Visibility::Minimized;
@@ -412,6 +336,7 @@ impl Stack {
         work: Geometry,
         full: Geometry,
     ) -> Option<(i32, i32)> {
+        self.forget_arranged(client, surface);
         let placed = self.find(client, surface)?;
         if placed.mode == target {
             return None;
@@ -467,6 +392,7 @@ impl Stack {
         match self.find(client, surface) {
             Some(placed) if placed.mode == Mode::Normal && (placed.x, placed.y) != (x, y) => {
                 (placed.x, placed.y) = (x, y);
+                self.forget_arranged(client, surface);
                 true
             }
             _ => false,

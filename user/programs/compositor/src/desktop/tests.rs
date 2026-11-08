@@ -388,3 +388,118 @@ fn show_desktop_toggles_and_new_windows_end_elevation_without_reordering_undo() 
     assert_eq!(&stack.windows()[..2], before);
     assert_eq!(stack.active(), Some((ClientId(3), surface(5))));
 }
+
+#[test]
+fn arrangements_preserve_order_and_undo_normal_and_maximized_geometry() {
+    use wayland_wire::protocol::liteos_shell_v1::Arrangement;
+    let owner = ClientId(10);
+    for layout in [
+        Arrangement::Cascade,
+        Arrangement::Horizontal,
+        Arrangement::Vertical,
+    ] {
+        let mut stack = two_windows();
+        stack.set_mode(ClientId(1), surface(5), Mode::Maximized, FULL, FULL);
+        let before = stack.windows().to_vec();
+        assert!(
+            stack.arrange(owner, layout, (0, 0, 1280, 772), 2, |_, _| Some((
+                (0, 0),
+                (0, 0)
+            )))
+        );
+        assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
+        assert!(
+            stack
+                .windows()
+                .iter()
+                .all(|p| p.mode == Mode::Normal && p.restore.is_none())
+        );
+        let geometries: Vec<_> = stack
+            .windows()
+            .iter()
+            .map(|p| (p.x, p.y, p.width, p.height))
+            .collect();
+        match layout {
+            Arrangement::Horizontal => {
+                assert_eq!(geometries, [(0, 0, 1280, 386), (0, 386, 1280, 386)])
+            }
+            Arrangement::Vertical => assert_eq!(geometries, [(0, 0, 640, 772), (640, 0, 640, 772)]),
+            Arrangement::Cascade => assert_eq!(geometries, [(0, 0, 960, 578), (38, 38, 960, 578)]),
+        }
+        assert!(
+            !stack.arrange(owner, layout, (0, 0, 1280, 772), 2, |_, _| Some((
+                (0, 0),
+                (0, 0)
+            )))
+        );
+        assert_eq!(stack.undo_arrangement_kind(owner), Some(layout));
+        assert!(!stack.undo_arrangement(ClientId(11)));
+        assert!(stack.undo_arrangement(owner));
+        assert_eq!(stack.windows(), before);
+    }
+}
+
+#[test]
+fn arrangement_constraints_and_undo_follow_live_members_and_manual_changes() {
+    use wayland_wire::protocol::liteos_shell_v1::Arrangement;
+    let owner = ClientId(10);
+    let mut stack = two_windows();
+    stack.minimize(ClientId(2), surface(5));
+    let minimized = stack.windows()[1];
+    assert!(
+        stack.arrange(owner, Arrangement::Vertical, FULL, 2, |_, _| Some((
+            (700, 300),
+            (0, 320)
+        )))
+    );
+    assert_eq!(
+        (stack.windows()[0].width, stack.windows()[0].height),
+        (1400, 640)
+    );
+    assert_eq!(stack.windows()[1], minimized);
+    stack.move_to(ClientId(1), surface(5), 10, 20);
+    assert_eq!(stack.undo_arrangement_kind(owner), None);
+    assert!(!stack.undo_arrangement(owner));
+    stack.unminimize(ClientId(2), surface(5));
+    let before = stack.windows().to_vec();
+    assert!(
+        !stack.arrange(owner, Arrangement::Horizontal, FULL, 1, |_, _| Some((
+            (300, 200),
+            (300, 200)
+        )))
+    );
+    assert!(
+        stack.arrange(owner, Arrangement::Horizontal, FULL, 1, |_, _| Some((
+            (0, 0),
+            (0, 0)
+        )))
+    );
+    stack.minimize(ClientId(1), surface(5));
+    let after_manual = stack.windows()[0];
+    assert!(stack.undo_arrangement(owner));
+    assert_eq!(stack.windows()[0], after_manual);
+    assert_eq!(stack.windows()[1], before[1]);
+    stack.unminimize(ClientId(1), surface(5));
+    assert!(
+        stack.arrange(owner, Arrangement::Cascade, FULL, 1, |_, _| Some((
+            (0, 0),
+            (0, 0)
+        )))
+    );
+    stack.sync(
+        &[(ClientId(2), surface(5), 300, 200, Initial::Cascade)],
+        SCREEN,
+        1,
+    );
+    stack.sync(
+        &[
+            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+        ],
+        SCREEN,
+        1,
+    );
+    let reopened = *stack.placement(ClientId(1), surface(5)).unwrap();
+    assert!(stack.undo_arrangement(owner));
+    assert_eq!(*stack.placement(ClientId(1), surface(5)).unwrap(), reopened);
+}

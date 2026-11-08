@@ -96,7 +96,9 @@ fn shell_control_lifetime_and_state_are_bound_to_the_authorized_object() {
     };
     bind(&mut harness, 16, "liteos_shell_v1").unwrap();
     assert!(harness.client.has_shell_control());
-    harness.client.sync_shell(shell::state::CANUNDO);
+    harness
+        .client
+        .sync_shell(shell::state::CANUNDO | shell::state::UNDOCASCADE);
     let events = harness.events(&[(50, Interface::LiteosShellV1)]);
     assert!(
         matches!(&events[..], [Event { object: 50, event: AnyEvent::LiteosShellV1(shell::Event::State { flags }) }] if *flags == shell::state::CANUNDO)
@@ -107,4 +109,24 @@ fn shell_control_lifetime_and_state_are_bound_to_the_authorized_object() {
         .send(|w| shell::Request::Destroy.encode(id(50), w).unwrap())
         .unwrap();
     assert!(!harness.client.has_shell_control());
+}
+
+#[test]
+fn a_v1_shell_binding_cannot_issue_v2_arrangements() {
+    use wayland_wire::protocol::liteos_shell_v1 as shell;
+    let mut harness = Harness {
+        client: Client::shell(OUTPUT),
+    };
+    bind(&mut harness, 16, "liteos_shell_v1").unwrap();
+    assert!(
+        harness
+            .send(|w| shell::Request::Arrange {
+                layout: shell::Arrangement::Cascade,
+            }
+            .encode(id(50), w)
+            .unwrap())
+            .is_err()
+    );
+    harness.expect_error(wl_display::Error::InvalidMethod as u32);
+    assert!(harness.client.take_requests().is_empty());
 }

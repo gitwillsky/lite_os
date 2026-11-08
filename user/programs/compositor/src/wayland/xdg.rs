@@ -32,6 +32,9 @@ pub struct Toplevel {
     /// 合成器据此把对话框类窗口放在屏幕中央而不是层叠。
     pub min_size: (i32, i32),
     pub max_size: (i32, i32),
+    /// xdg-shell 的双缓冲约束：只在 wl_surface.commit 发表，不能让未提交的请求影响排列。
+    pending_min_size: Option<(i32, i32)>,
+    pending_max_size: Option<(i32, i32)>,
     /// `set_parent` 指定的父 toplevel；子窗口居中于父窗口。
     pub parent: Option<ObjectId>,
 }
@@ -107,6 +110,9 @@ pub struct Window<'a> {
     pub content: &'a Content,
     /// 客户端声明了固定尺寸（最小等于最大且非零）：对话框类窗口。
     pub fixed: bool,
+    /// xdg_toplevel 声明的逻辑尺寸约束；0 表示该维度不限，不复制到窗口栈。
+    pub min_size: (i32, i32),
+    pub max_size: (i32, i32),
     /// 父窗口的 `wl_surface`（`set_parent`）；父窗口不是本连接已映射的 toplevel 时为 `None`。
     pub parent: Option<ObjectId>,
     /// 标准 xdg-dialog 的提示，仅父窗口有效时生效；输入筛选仍必须由客户端实施。
@@ -210,6 +216,8 @@ impl Client {
                     app_id: String::new(),
                     min_size: (0, 0),
                     max_size: (0, 0),
+                    pending_min_size: None,
+                    pending_max_size: None,
                     parent: None,
                 };
                 self.create(
@@ -333,14 +341,14 @@ impl Client {
                 if width < 0 || height < 0 {
                     return Err(invalid_size("size limits must not be negative"));
                 }
-                toplevel.max_size = (width, height);
+                toplevel.pending_max_size = Some((width, height));
                 Ok(())
             }
             R::SetMinSize { width, height } => {
                 if width < 0 || height < 0 {
                     return Err(invalid_size("size limits must not be negative"));
                 }
-                toplevel.min_size = (width, height);
+                toplevel.pending_min_size = Some((width, height));
                 Ok(())
             }
             R::Move { serial, .. } => self.window_request(object, WindowRequest::Move { serial }),
@@ -412,10 +420,30 @@ impl Client {
             return self.popup_after_commit(xdg);
         }
         let xdg_state = self.xdg_surface_mut(xdg)?;
-        let Some(toplevel) = xdg_state.toplevel.filter(|_| !xdg_state.initial_sent) else {
+        let (toplevel, initial) = (xdg_state.toplevel, !xdg_state.initial_sent);
+        let Some(toplevel) = toplevel else {
             return Ok(());
         };
-        xdg_state.initial_sent = true;
+        if let Some(Entry {
+            data: Data::Toplevel(top),
+            ..
+        }) = self.objects.get_mut(&toplevel.get())
+        {
+            let min = top.pending_min_size.take().unwrap_or(top.min_size);
+            let max = top.pending_max_size.take().unwrap_or(top.max_size);
+            if (max.0 != 0 && min.0 > max.0) || (max.1 != 0 && min.1 > max.1) {
+                return Err(Fail::new(
+                    toplevel,
+                    xdg_toplevel::Error::InvalidSize as u32,
+                    "minimum size exceeds maximum size",
+                ));
+            }
+            (top.min_size, top.max_size) = (min, max);
+        }
+        if !initial {
+            return Ok(());
+        }
+        self.xdg_surface_mut(xdg)?.initial_sent = true;
         // 协议要求 v5 起在第一次 xdg_surface.configure 之前公布一次窗口管理能力；
         // 本合成器支持全部四项，能力不会变化，因此只发这一次。
         if self.toplevel_version(toplevel)? >= WM_CAPABILITIES_SINCE {
@@ -558,6 +586,8 @@ impl Client {
                 title: &toplevel.title,
                 app_id: &toplevel.app_id,
                 content: surface.current.content.as_ref()?,
+                min_size: toplevel.min_size,
+                max_size: toplevel.max_size,
                 fixed: toplevel.min_size != (0, 0) && toplevel.min_size == toplevel.max_size,
                 parent: toplevel
                     .parent

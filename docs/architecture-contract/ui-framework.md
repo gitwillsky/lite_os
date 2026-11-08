@@ -8,8 +8,7 @@
 - classic-ui-abi 是无运行期状态的 no_std 布局声明；classic-ui-runtime 依赖该声明与 classic-ui，实现共享控件。
 - liteos-ui 只依赖 ABI 声明，提供安全 Rust 生命周期、事件、Future 与回调适配，不静态复制控件实现。
 - Display 唯一拥有协议对象、configure、callback、缓冲与释放；WindowHost 不复制这些状态。
-  `paint_frame` 只借出已释放缓冲的像素。回调获知内容是否为上一帧，内容不保留时完整重绘；
-  局部绘制返回物理像素损伤，初始映射强制声明全幅损伤。失败使该缓冲的比较基线失效。
+  `paint_frame` 只借出已释放缓冲的像素。回调获知内容是否为上一帧，内容不保留时完整重绘； 局部绘制返回物理像素损伤，初始映射强制声明全幅损伤。失败使该缓冲的比较基线失效。
   首次直接绘制前预分配完整 memfd 存储，使限额和内存不足在绘制前返回；借用期间缓冲移出 Display 表。
 - Context 唯一拥有窗口表、控件树、资源与 FD interest；对象标识单调递增不复用，迟到事件不能命中新对象。
 - Display 的 ImageId 拥有原尺寸 SHM pool/buffer 与只读映射；发布前核验 F_SEAL_WRITE/GROW/SHRINK，失败不建立映射或发表 FD。
@@ -29,8 +28,7 @@
    已关闭句柄返回错误，禁止重用对象编号或把无效整数强转 Rust enum。
 5. panic 不跨 ABI 展开。运行库采用 abort profile；取消不是事务回滚，Drop 不等待后台线程。
 6. 同主版本兼容更新保留旧符号、布局与语义；应用重启后消费新实现，不热替换存活对象。
-   安装以原子替换发布共享库，禁止原地覆盖已映射文件。字体、主题、图标等资源保持旧 schema 可读，
-   或保留旧进程所需版本；仅替换 .so 而使旧进程资源失效不满足兼容契约。
+   安装以原子替换发布共享库，禁止原地覆盖已映射文件。字体、主题、图标等资源保持旧 schema 可读， 或保留旧进程所需版本；仅替换 .so 而使旧进程资源失效不满足兼容契约。
 
 SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导出没有 libc/设备 foreign import。
 原始 OS/设备 FFI 仍只允许位于 linux-uapi，不能借公开 SDK 边界扩大到其他目录。
@@ -79,13 +77,15 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Seat 只识别并路由受支持的外壳组合键，desktop 经标准键盘事件执行开始、运行、我的电脑、系统属性与任务管理器命令。
   Desktop.start_key 仅表示尚未被其他输入打断的 Win 单键候选；释放时消费，其他按键、点击与失焦撤销，缺少它会让组合键误开开始菜单。
   开始菜单关闭后从现有 foreign-toplevel 快照选择活动窗口并请求 Activate，窗口栈与键盘目标仍由 compositor 拥有。
-- Win+M、Shift+Win+M 与任务栏批量命令共用 Desktop.minimized_windows；它只记录本次命令涉及的带代际句柄，
-  不包含之前已最小化的窗口，也不保存窗口模式、位置或第二份栈序。没有该历史，撤销会误恢复用户原先已最小化的窗口。
-  手动操作某窗口即移除其旧命令记录，closed 更新裁掉过期句柄；空批次保留前次有效命令，撤销消费并释放整份记录。
-  标准 foreign-toplevel 的 UnsetMinimized 只清除最小化状态并通知 suspended，不改变栈序；Activate 明确激活并置顶。
-  活动窗口仍由 compositor 栈的最上层可见窗口决定，批量恢复不按句柄枚举顺序重新排列，也不抢走后创建窗口的前台位置。
-  传输失败沿既有会话退出路径清理；只忽略已失效句柄的 NotFound，不吞掉其他错误。成本为命令触发时的 O(窗口数) 空间与请求，
-  无逐帧副本、全局缓存或轮询，保留现有动画与 canvas 基线；窗口栈现有用例覆盖恢复后台窗口不能意外置顶的回归。
+- 批量最小化、排列、撤销和显示桌面由 compositor::Stack 唯一拥有：Visibility 区分手动/批量最小化，ShellBatch 只保留最近有效事务。
+  最小化不复制几何；排列记录成员的历史位置、尺寸、模式及 normal 还原矩形。桌面不保存窗口列表副本，空命令保留前次撤销，unmap 清除历史成员。
+  `wayland-wire/protocols/liteos-shell-v1.xml` v2：perform 保留三种最小化/桌面动作，arrange/undo_arrange 自 v2 起提供排列，state 公布撤销种类和桌面状态。
+  系统扩展仅授予 security-context 委派的 Shell，公开 socket/初始 Session 不能绑定；按绑定版本验证请求并投影状态，产品外壳要求 v2，不新增私有 syscall/ioctl。
+  xdg、foreign 和 shell 命令共用连接唯一线序队列，异步快照不能决定成员/toggle；最后一个控制对象销毁或断连先撤销所属事务，再按当前工作区适配最大化/全屏几何。
+  排列保持 Z 序，仅纳入可见、可缩放、非全屏根窗口，模态 owner 不参与；从 xdg owner 读取已提交 min/max 约束，在逻辑像素网格分割后投影物理坐标并显式 configure 尺寸。
+  手动移动/缩放/模式切换/最小化清除该排列成员；撤销不抢新窗口焦点、不复活关闭窗口。xdg min/max 双缓冲至 commit，一并校验非零 max 不低于 min。
+  显示桌面隐藏普通窗口绘制/输入并交还键盘，Top/Overlay 不变；切换恢复，新窗口/激活只降低桌面。UnsetMinimized 不置顶，Activate 才激活；最小化撤销保留位置、模式及 Z 序。
+  最小化额外存储 O(1)，排列历史 O(n)，成员约束投影及撤销最坏 O(n²)；仅命令时分配历史，unmap 时裁减，无新定时器/逐帧分配。沿用定向交互与 Client 编解码用例验证。
 - 外部 PollFd 带 fd owner 的类型借用；批量等待后只投影 readiness，不延长其他描述符的生命周期。
   PollBuffer 只持有不可自行轮询的 raw 存储；每轮 PollSet 重新建立有效借用，析构清空旧编号并保留容量。
   唯一切片转换位于 linux-uapi，依据 repr(transparent) 与 push 借用前置条件；不建立 static FD 或从旧轮次复活编号。

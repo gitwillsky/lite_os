@@ -320,7 +320,7 @@ fn window_requests_are_queued_keyed_by_surface() {
         .send(|w| {
             for (name, interface, object, version) in [
                 (7, "zwlr_foreign_toplevel_manager_v1", 52, 3),
-                (16, "liteos_shell_v1", 60, 1),
+                (16, "liteos_shell_v1", 60, 2),
             ] {
                 wl_registry::Request::Bind {
                     name,
@@ -365,7 +365,13 @@ fn window_requests_are_queued_keyed_by_surface() {
             }
             .encode(id(60), w)
             .unwrap();
+            shell::Request::Arrange {
+                layout: shell::Arrangement::Vertical,
+            }
+            .encode(id(60), w)
+            .unwrap();
             handle::Request::UnsetMinimized.encode(target, w).unwrap();
+            shell::Request::UndoArrange.encode(id(60), w).unwrap();
             shell::Request::Perform {
                 action: shell::Action::UndoMinimizeAll,
             }
@@ -387,7 +393,9 @@ fn window_requests_are_queued_keyed_by_surface() {
             WindowCommand::Toplevel(id(5), WindowRequest::Minimize),
             foreign(ForeignAction::Minimize(true)),
             WindowCommand::Shell(shell::Action::MinimizeAll),
+            WindowCommand::Arrange(shell::Arrangement::Vertical),
             foreign(ForeignAction::Minimize(false)),
+            WindowCommand::UndoArrange,
             WindowCommand::Shell(shell::Action::UndoMinimizeAll),
         ]
     );
@@ -549,4 +557,72 @@ fn v6_toplevel_gets_capabilities_before_first_configure_and_suspended_state() {
         }
         _ => panic!("expected a toplevel configure"),
     }
+}
+
+#[test]
+fn size_limits_are_committed_together_before_window_arrangement_can_use_them() {
+    let mut harness = Harness::bound();
+    let serial = window(&mut harness);
+    ack(&mut harness, serial).unwrap();
+    map(&mut harness);
+    harness.events(&[(11, Interface::WlBuffer)]);
+    harness
+        .send(|w| {
+            xdg_toplevel::Request::SetMinSize {
+                width: 300,
+                height: 200,
+            }
+            .encode(id(22), w)
+            .unwrap();
+            xdg_toplevel::Request::SetMaxSize {
+                width: 500,
+                height: 400,
+            }
+            .encode(id(22), w)
+            .unwrap();
+        })
+        .unwrap();
+    let window = harness.client.windows().next().unwrap();
+    assert_eq!((window.min_size, window.max_size), ((0, 0), (0, 0)));
+    harness
+        .send(|w| wl_surface::Request::Commit.encode(id(5), w).unwrap())
+        .unwrap();
+    let window = harness.client.windows().next().unwrap();
+    assert_eq!((window.min_size, window.max_size), ((300, 200), (500, 400)));
+    // 同一提交可以同时改变两端；约束之间的瞬时不一致不能使合法的最终状态失败。
+    harness
+        .send(|w| {
+            xdg_toplevel::Request::SetMinSize {
+                width: 600,
+                height: 200,
+            }
+            .encode(id(22), w)
+            .unwrap();
+            xdg_toplevel::Request::SetMaxSize {
+                width: 700,
+                height: 400,
+            }
+            .encode(id(22), w)
+            .unwrap();
+            wl_surface::Request::Commit.encode(id(5), w).unwrap();
+        })
+        .unwrap();
+    assert_eq!(
+        harness.client.windows().next().unwrap().min_size,
+        (600, 200)
+    );
+    assert!(
+        harness
+            .send(|w| {
+                xdg_toplevel::Request::SetMaxSize {
+                    width: 500,
+                    height: 400,
+                }
+                .encode(id(22), w)
+                .unwrap();
+                wl_surface::Request::Commit.encode(id(5), w).unwrap();
+            })
+            .is_err()
+    );
+    harness.expect_error(xdg_toplevel::Error::InvalidSize as u32);
 }

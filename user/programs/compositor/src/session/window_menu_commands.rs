@@ -85,6 +85,7 @@ impl Session {
                     })
                 };
                 let start = (placement.x, placement.y, placement.width, placement.height);
+                self.stack.forget_arranged(client, surface);
                 self.seat.begin_grab(&mut self.server);
                 self.grab = Some(ActiveGrab {
                     grab: Grab {

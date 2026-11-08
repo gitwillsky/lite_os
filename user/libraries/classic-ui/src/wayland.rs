@@ -9,7 +9,7 @@ pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
 mod layer;
 mod security;
 mod shell;
-pub use shell::ShellCommand;
+pub use shell::{ShellArrangement, ShellCommand};
 mod subsurface;
 pub use subsurface::ImageId;
 mod transport;
@@ -402,8 +402,17 @@ impl Display {
         {
             bind(Interface::ZwlrForeignToplevelManagerV1, 3)?;
         }
-        let shell = if globals.iter().any(|(_, name, _)| name == "liteos_shell_v1") {
-            Some((bind(Interface::LiteosShellV1, 1)?, 0))
+        let shell = if let Some((_, _, version)) = globals
+            .iter()
+            .find(|(_, name, _)| name == "liteos_shell_v1")
+        {
+            if *version < 2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "LiteOS shell requires v2 window arrangements",
+                ));
+            }
+            Some((bind(Interface::LiteosShellV1, 2)?, 0))
         } else {
             None
         };

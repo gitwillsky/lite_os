@@ -513,7 +513,7 @@ impl Client {
             .chain((self.privilege == Privilege::Shell).then_some((
                 16,
                 Interface::LiteosShellV1,
-                1,
+                2,
             )))
             .chain(
                 self.gpu

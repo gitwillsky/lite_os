@@ -371,6 +371,8 @@ impl Desktop {
             Action::UndoMinimizeAll => {
                 display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?
             }
+            Action::ArrangeWindows(layout) => display.arrange_windows(layout)?,
+            Action::UndoArrangement => display.undo_arrangement()?,
             Action::TaskManager => self.launch_task_manager(),
             Action::TaskbarProperties => self.control_panel("taskbar"),
             Action::SystemProperties => self.control_panel("system"),

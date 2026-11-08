@@ -20,6 +20,8 @@ pub enum Action {
     UsbDevices,
     MinimizeAll,
     UndoMinimizeAll,
+    ArrangeWindows(classic_ui::ShellArrangement),
+    UndoArrangement,
     TaskManager,
     /// 打开完整的"音量控制"窗口。
     VolumeProperties,
@@ -156,16 +158,36 @@ pub enum Overlay {
     Menu(ContextMenu),
 }
 
-/// 任务栏空白处。层叠/平铺窗口需要 compositor 提供窗口摆放协议，尚未实现，不显示灰色占位项。
-pub fn taskbar_items(can_undo: bool) -> Vec<Item> {
+/// 任务栏空白处：命令和撤销种类来自合成器的已授权外壳状态。
+pub fn taskbar_items(display: &Display) -> Vec<Item> {
+    use classic_ui::ShellArrangement;
     let mut items = vec![
-        item("最小化所有窗口(&M)", Action::MinimizeAll),
-        item("任务管理器(&K)", Action::TaskManager).separated(),
-        item("属性(&R)", Action::TaskbarProperties).separated(),
+        item(
+            "层叠窗口(S)",
+            Action::ArrangeWindows(ShellArrangement::Cascade),
+        ),
+        item(
+            "横向平铺窗口(H)",
+            Action::ArrangeWindows(ShellArrangement::Horizontal),
+        ),
+        item(
+            "纵向平铺窗口(E)",
+            Action::ArrangeWindows(ShellArrangement::Vertical),
+        ),
+        item("最小化所有窗口(M)", Action::MinimizeAll),
     ];
-    if can_undo {
-        items.insert(1, item("撤销最小化所有窗口(&U)", Action::UndoMinimizeAll));
+    if display.can_undo_minimize_all() {
+        items.push(item("撤销最小化所有窗口(U)", Action::UndoMinimizeAll));
+    } else if let Some(layout) = display.undo_arrangement_kind() {
+        let label = if layout == ShellArrangement::Cascade {
+            "撤销层叠(U)"
+        } else {
+            "撤销平铺(U)"
+        };
+        items.push(item(label, Action::UndoArrangement));
     }
+    items.push(item("任务管理器(K)", Action::TaskManager).separated());
+    items.push(item("属性(R)", Action::TaskbarProperties).separated());
     items
 }
 
@@ -174,30 +196,30 @@ pub fn window_items(id: ToplevelId, info: &Toplevel) -> Vec<Item> {
     let mut items = Vec::new();
     if info.minimized {
         items.push(item(
-            "还原(&R)",
+            "还原(R)",
             Action::Window(id, ToplevelRequest::Activate),
         ));
     } else if info.maximized {
         items.push(item(
-            "还原(&R)",
+            "还原(R)",
             Action::Window(id, ToplevelRequest::Maximize(false)),
         ));
     }
     if !info.minimized {
         items.push(item(
-            "最小化(&N)",
+            "最小化(N)",
             Action::Window(id, ToplevelRequest::Minimize(true)),
         ));
     }
     if !info.maximized {
         items.push(item(
-            "最大化(&X)",
+            "最大化(X)",
             Action::Window(id, ToplevelRequest::Maximize(true)),
         ));
     }
     items.push(
         DropItem::new(
-            "关闭(&C)".to_owned(),
+            "关闭(C)".to_owned(),
             "Alt+F4".to_owned(),
             Action::Window(id, ToplevelRequest::Close),
         )
@@ -207,26 +229,26 @@ pub fn window_items(id: ToplevelId, info: &Toplevel) -> Vec<Item> {
 }
 
 pub fn tray_volume_items() -> Vec<Item> {
-    vec![item("调整音频属性(&A)", Action::VolumeProperties)]
+    vec![item("调整音频属性(A)", Action::VolumeProperties)]
 }
 /// netshell.dll 15101/15102 的以太网通知菜单。`index` 是打开菜单时已选中的可用链路。
 pub fn tray_network_items(index: Option<u32>, disabling: bool) -> Vec<Item> {
     let open = item(
-        "打开网络和拨号连接(&O)",
+        "打开网络和拨号连接(O)",
         Action::OpenPlace(crate::start::Place::NetworkConnections),
     );
     let Some(index) = index else {
         return vec![open];
     };
     vec![
-        disabled(item("禁用(&D)", Action::DisableNetwork(index)), disabling),
-        default("状态(&S)", Action::NetworkStatus(index)),
+        disabled(item("禁用(D)", Action::DisableNetwork(index)), disabling),
+        default("状态(S)", Action::NetworkStatus(index)),
         open.separated(),
     ]
 }
 /// USB 设备通知图标的菜单。
 pub fn tray_usb_items() -> Vec<Item> {
-    vec![item("拔出或弹出硬件(&O)", Action::UsbDevices)]
+    vec![item("拔出或弹出硬件(O)", Action::UsbDevices)]
 }
 
 /// 桌面图标的种类，决定右键菜单里有哪些项。
@@ -248,18 +270,18 @@ pub enum IconKind {
 /// 默认动词粗体在最前；文件/文件夹有剪切、复制（文件夹另有粘贴）、删除、重命名与属性；
 /// “我的电脑”“网上邻居”带网络驱动器命令（菜单 225）；回收站带“清空回收站”（菜单 227）。
 pub fn icon_items(index: usize, kind: IconKind, can_paste: bool) -> Vec<Item> {
-    let open = default("打开(&O)", Action::OpenIcon(index));
-    let explore = item("资源管理器(&X)", Action::ExploreIcon(index));
-    let properties = |action| item("属性(&R)", action).separated();
+    let open = default("打开(O)", Action::OpenIcon(index));
+    let explore = item("资源管理器(X)", Action::ExploreIcon(index));
+    let properties = |action| item("属性(R)", action).separated();
     let network = || {
         [
             item(
-                "映射网络驱动器(&N)...",
+                "映射网络驱动器(N)...",
                 Action::NetworkDrive { disconnect: false },
             )
             .separated(),
             item(
-                "断开网络驱动器(&I)...",
+                "断开网络驱动器(I)...",
                 Action::NetworkDrive { disconnect: true },
             ),
         ]
@@ -267,24 +289,24 @@ pub fn icon_items(index: usize, kind: IconKind, can_paste: bool) -> Vec<Item> {
     match kind {
         IconKind::File => vec![
             open,
-            item("打开方式(&H)...", Action::IconVerb(index, "open-with")),
-            item("剪切(&T)", Action::FileSelection { cut: true }).separated(),
-            item("复制(&C)", Action::FileSelection { cut: false }),
-            item("删除(&D)", Action::DeleteSelection).separated(),
-            item("重命名(&M)", Action::RenameIcon(index)),
+            item("打开方式(H)...", Action::IconVerb(index, "open-with")),
+            item("剪切(T)", Action::FileSelection { cut: true }).separated(),
+            item("复制(C)", Action::FileSelection { cut: false }),
+            item("删除(D)", Action::DeleteSelection).separated(),
+            item("重命名(M)", Action::RenameIcon(index)),
             properties(Action::IconVerb(index, "properties")),
         ],
         IconKind::Path => vec![
             open,
             explore,
-            item("剪切(&T)", Action::FileSelection { cut: true }).separated(),
-            item("复制(&C)", Action::FileSelection { cut: false }),
+            item("剪切(T)", Action::FileSelection { cut: true }).separated(),
+            item("复制(C)", Action::FileSelection { cut: false }),
             disabled(
-                item("粘贴(&P)", Action::PasteFiles { into: Some(index) }),
+                item("粘贴(P)", Action::PasteFiles { into: Some(index) }),
                 !can_paste,
             ),
-            item("删除(&D)", Action::DeleteSelection).separated(),
-            item("重命名(&M)", Action::RenameIcon(index)),
+            item("删除(D)", Action::DeleteSelection).separated(),
+            item("重命名(M)", Action::RenameIcon(index)),
             properties(Action::IconVerb(index, "properties")),
         ],
         IconKind::MyComputer => {
@@ -304,7 +326,7 @@ pub fn icon_items(index: usize, kind: IconKind, can_paste: bool) -> Vec<Item> {
         IconKind::RecycleBin { full } => vec![
             open,
             explore,
-            disabled(item("清空回收站(&B)", Action::EmptyRecycleBin), !full).separated(),
+            disabled(item("清空回收站(B)", Action::EmptyRecycleBin), !full).separated(),
         ],
         IconKind::Other => vec![open, explore],
     }
@@ -316,26 +338,26 @@ pub fn desktop_items(can_paste: bool, arrange: Arrange, auto: bool) -> Vec<Item>
     let by = |label: &str, value| item(label, Action::Arrange(value)).checked(arrange == value);
     vec![
         submenu(
-            "排列图标(&I)",
+            "排列图标(I)",
             vec![
-                by("按名称(&N)", Arrange::Name),
-                by("按类型(&T)", Arrange::Type),
-                by("按大小(&Z)", Arrange::Size),
-                by("按日期(&D)", Arrange::Date),
-                item("自动排列(&A)", Action::AutoArrange)
+                by("按名称(N)", Arrange::Name),
+                by("按类型(T)", Arrange::Type),
+                by("按大小(Z)", Arrange::Size),
+                by("按日期(D)", Arrange::Date),
+                item("自动排列(A)", Action::AutoArrange)
                     .separated()
                     .checked(auto),
             ],
         ),
-        disabled(item("对齐图标(&L)", Action::LineUpIcons), auto),
-        item("刷新(&E)", Action::Refresh),
+        disabled(item("对齐图标(L)", Action::LineUpIcons), auto),
+        item("刷新(E)", Action::Refresh),
         disabled(
-            item("粘贴(&P)", Action::PasteFiles { into: None }),
+            item("粘贴(P)", Action::PasteFiles { into: None }),
             !can_paste,
         )
         .separated(),
-        submenu("新建(&W)", vec![item("文件夹(&F)", Action::NewFolder)]).separated(),
-        item("属性(&R)", Action::DisplayProperties).separated(),
+        submenu("新建(W)", vec![item("文件夹(F)", Action::NewFolder)]).separated(),
+        item("属性(R)", Action::DisplayProperties).separated(),
     ]
 }
 
@@ -579,7 +601,7 @@ impl Desktop {
                     window_items(*id, info)
                 }
                 Some(_) => return Ok(()),
-                None => taskbar_items(display.can_undo_minimize_all()),
+                None => taskbar_items(display),
             }
         } else if window == self.background {
             match hit {
