@@ -27,7 +27,7 @@ endif
 FS_IMAGE_SIZE_MIB ?= 8192
 AGENT_FS_IMAGE_SIZE_MIB ?= 32768
 QEMU_MEMORY ?= 2G
-USB_PASSTHROUGH ?= 1
+USB_PASSTHROUGH ?= 0
 AGENT_QEMU_MEMORY ?= 6G
 GDB ?= $(if $(filter aarch64,$(ARCH)),aarch64-none-elf-gdb,riscv64-elf-gdb)
 ADDR2LINE ?= $(if $(filter aarch64,$(ARCH)),aarch64-none-elf-addr2line,riscv64-unknown-elf-addr2line)
