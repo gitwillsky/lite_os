@@ -1,6 +1,7 @@
-//! 以太网卡 v5：OPEN 显式协商 pair 数；一次授权 VMO，四条共享环传递收发，事件合并通知。
+//! 以太网卡 v6：OPEN 显式协商 pair 数；一次授权 VMO，四条共享环传递收发，事件合并通知。
 mod client;
 mod queue;
+mod rss;
 mod server;
 
 use crate::Writer;
@@ -9,11 +10,12 @@ use device_model::network::NetworkError;
 use native_runtime::native_abi::{self, Status};
 pub use server::publish;
 
-const NETWORK_VERSION: u16 = 5;
+const NETWORK_VERSION: u16 = 6;
 const STATISTICS: u32 = 8;
 const LINK: u32 = 9;
 const MEMORY: u32 = 12;
 const QUEUE: u32 = 13;
+const RSS_CONFIG: u32 = 14;
 
 fn encode_error(error: NetworkError) -> Status {
     match error {

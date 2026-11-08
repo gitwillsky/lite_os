@@ -2522,7 +2522,8 @@ system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDe
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) struct VirtIONetworkDevice
 system/driver-host/src/drivers/virtio/net.rs :: pub (super) impl VirtIONetworkDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_pairs (& mut self , device : & VirtIODevice , pairs : u16) -> Result < () , () >
-system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32) -> Option < Self >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_rss (& mut self , device : & VirtIODevice , pairs : u16 , config : & NetworkRssConfiguration ,) -> Result < () , NetworkError >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32 , rss : Option < NetworkRssCapabilities > ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) struct ControlQueue
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: length : usize
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: slot : u16

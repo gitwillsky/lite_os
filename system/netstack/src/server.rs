@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
-use device_model::network::NetworkDevice;
+use device_model::network::{NetworkDevice, NetworkRssConfiguration};
 use device_protocol::EventHub;
 use device_protocol::directory::Class;
 use native_runtime::native_abi::{self, Status, rights};
@@ -105,6 +105,42 @@ impl InstallerService for Network {
             1,
             &self.hub,
         )?;
+        // 单 worker 无须逐包计算 RSS 散列；多队列时由使用者选择稳定表与随机密钥。
+        if let Some(cap) = device.receive_scaling()
+            && device.queue_count() > 1
+        {
+            let count = device.queue_count();
+            let entries = usize::from(count).next_power_of_two().max(128);
+            if entries > usize::from(cap.maximum_table_entries) {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            let mut indirection = Vec::new();
+            indirection
+                .try_reserve_exact(entries)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            for index in 0..entries {
+                indirection.push((index % usize::from(count)) as u16);
+            }
+            let mut key = Vec::new();
+            key.try_reserve_exact(40)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            key.resize(40, 0);
+            native_runtime::system::cprng_draw(&mut key);
+            device
+                .set_receive_scaling(&NetworkRssConfiguration {
+                    hash_types: cap.hash_types,
+                    unclassified_queue: 0,
+                    indirection,
+                    key,
+                })
+                .map_err(|error| match error {
+                    device_model::network::NetworkError::NoMemory => native_abi::ERR_NO_MEMORY,
+                    device_model::network::NetworkError::InvalidConfiguration => {
+                        native_abi::ERR_INVALID_ARGS
+                    }
+                    _ => native_abi::ERR_IO,
+                })?;
+        }
         let activity = crate::worker::device_activity()?;
         for queue in 0..device.queue_count() {
             device.bind_activity(queue, activity.clone());

@@ -15,13 +15,41 @@ fn initialize() {
     configure_netmask(scope, 2, Ipv4Addr::new(255,255,255,0)).unwrap();
     configure_up(scope, 2, true).unwrap();
 }
-    type WireQueues = (std::collections::VecDeque<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>);
+    type WireQueues = (std::collections::VecDeque<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, FrameLoans);
     // 唯一边界 NIC 保存 wire frames；协议解析、握手和继承全部执行 production owners。
-    pub(crate) static WIRE: std::sync::Mutex<WireQueues> = std::sync::Mutex::new((std::collections::VecDeque::new(), alloc::vec::Vec::new()));
+    pub(crate) static WIRE: std::sync::Mutex<WireQueues> = std::sync::Mutex::new((std::collections::VecDeque::new(), alloc::vec::Vec::new(), FrameLoans::new()));
     // NIC capacity 是边界输入；RST 重试和实际 handle 退休仍由 production owner 决定。
     pub(crate) static TRANSMIT_AVAILABLE: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(true);
     use alloc::sync::Arc;
+    // 仅保活边界帧，token/Drop/提交走实际 device-model；无协议状态机的副本。
+    pub(crate) struct FrameLoans {
+        received: Option<alloc::vec::Vec<u8>>,
+        transmit: alloc::vec::Vec<u8>,
+        reserved: bool,
+    }
+    impl FrameLoans {
+        const fn new() -> Self { Self { received: None, transmit: alloc::vec::Vec::new(), reserved: false } }
+        fn receive<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16, frame: alloc::vec::Vec<u8>) -> device_model::network::NetworkReceiveFrame<'a> {
+            assert!(self.received.is_none());
+            self.received = Some(frame);
+            let frame = self.received.as_ref().unwrap();
+            // SAFETY: Vec 的独立存储由 owner（或全局串行 fixture）保活，不 resize；只有 token 释放后才 take。
+            unsafe { device_model::network::NetworkReceiveFrame::new(owner, queue, 0, 1, frame.as_ptr() as usize, frame.len()) }
+        }
+        fn reserve<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16) -> Result<device_model::network::NetworkTransmit<'a>, device_model::network::NetworkError> {
+            if self.reserved { return Err(device_model::network::NetworkError::WouldBlock); }
+            if self.transmit.is_empty() { self.transmit.resize(1514, 0); }
+            self.reserved = true;
+            // SAFETY: 唯一 reservation，Vec 存储由 owner 保活；提交/取消前不 resize 或访问字节。
+            Ok(unsafe { device_model::network::NetworkTransmit::new(owner, queue, 0, 1, self.transmit.as_mut_ptr() as usize, self.transmit.len()) })
+        }
+        fn complete(&mut self, length: usize) -> alloc::vec::Vec<u8> {
+            assert!(self.reserved);
+            self.reserved = false;
+            self.transmit[..length].to_vec()
+        }
+    }
     struct Device;
     impl device_model::network::NetworkDevice for Device {
         fn queue_count(&self) -> u16 { 1 }
@@ -37,26 +65,30 @@ fn initialize() {
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkLink::default())
         }
-        fn receive(&self, _queue: u16, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
-            let Some(frame) = WIRE.lock().unwrap().0.pop_front() else {
-                return Err(device_model::network::NetworkError::WouldBlock);
-            };
-            assert!(frame.len() <= output.len());
-            output[..frame.len()].copy_from_slice(&frame);
-            Ok(frame.len())
+        fn receive(&self, queue: u16) -> Result<device_model::network::NetworkReceiveFrame<'_>, device_model::network::NetworkError> {
+            let mut wire = WIRE.lock().unwrap();
+            if wire.2.received.is_some() { return Err(device_model::network::NetworkError::WouldBlock); }
+            let Some(frame) = wire.0.pop_front() else { return Err(device_model::network::NetworkError::WouldBlock); };
+            Ok(wire.2.receive(self, queue, frame))
         }
-        fn reserve_transmit(&self, _queue: u16) -> Result<u16, device_model::network::NetworkError> {
-            if self.transmit_available(0) {
-                Ok(0)
-            } else {
-                Err(device_model::network::NetworkError::WouldBlock)
-            }
+        fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
+            if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
+            WIRE.lock().unwrap().2.reserve(self, queue)
         }
-        fn submit_transmit(&self, _: u16, _: u16, bytes: &[u8]) -> Result<(), device_model::network::NetworkError> {
-            WIRE.lock().unwrap().1.push(bytes.to_vec());
+        unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
+            assert!(WIRE.lock().unwrap().2.received.take().is_some());
             Ok(())
         }
-        fn cancel_transmit(&self, _: u16, _: u16) {}
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize) -> Result<(), device_model::network::NetworkError> {
+            let mut wire = WIRE.lock().unwrap();
+            let frame = wire.2.complete(length);
+            wire.1.push(frame);
+            Ok(())
+        }
+        unsafe fn cancel_transmit(&self, queue: u16, _: u16, _: u64) {
+            WIRE.lock().unwrap().2.reserved = false;
+            let _ = queue;
+        }
         fn transmit_available(&self, _queue: u16) -> bool {
             TRANSMIT_AVAILABLE.load(core::sync::atomic::Ordering::Relaxed)
         }
@@ -319,6 +351,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
                 wire: std::sync::Mutex::new((
                     std::collections::VecDeque::new(),
                     alloc::vec::Vec::new(),
+                    FrameLoans::new(),
                 )),
                 error: core::sync::atomic::AtomicBool::new(false),
                 transmit_available: core::sync::atomic::AtomicBool::new(true),
@@ -340,38 +373,30 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
             Ok(device_model::network::NetworkLink::default())
         }
-        fn receive(&self, queue: u16, output: &mut [u8]) -> Result<usize, device_model::network::NetworkError> {
-            if queue != self.receive_on.load(core::sync::atomic::Ordering::Relaxed) {
-                return Err(device_model::network::NetworkError::WouldBlock);
-            }
-            if self
-                .error
-                .swap(false, core::sync::atomic::Ordering::Relaxed)
-            {
-                return Err(device_model::network::NetworkError::Device);
-            }
-            let Some(frame) = self.wire.lock().unwrap().0.pop_front() else {
-                return Err(device_model::network::NetworkError::WouldBlock);
-            };
-            assert!(frame.len() <= output.len());
-            output[..frame.len()].copy_from_slice(&frame);
-            Ok(frame.len())
+        fn receive(&self, queue: u16) -> Result<device_model::network::NetworkReceiveFrame<'_>, device_model::network::NetworkError> {
+            if queue != self.receive_on.load(core::sync::atomic::Ordering::Relaxed) { return Err(device_model::network::NetworkError::WouldBlock); }
+            if self.error.swap(false, core::sync::atomic::Ordering::Relaxed) { return Err(device_model::network::NetworkError::Device); }
+            let mut wire = self.wire.lock().unwrap();
+            if wire.2.received.is_some() { return Err(device_model::network::NetworkError::WouldBlock); }
+            let Some(frame) = wire.0.pop_front() else { return Err(device_model::network::NetworkError::WouldBlock); };
+            Ok(wire.2.receive(self, queue, frame))
         }
-        fn reserve_transmit(&self, _queue: u16) -> Result<u16, device_model::network::NetworkError> {
-            if self
-                .transmit_available
-                .load(core::sync::atomic::Ordering::Relaxed)
-            {
-                Ok(0)
-            } else {
-                Err(device_model::network::NetworkError::WouldBlock)
-            }
+        fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
+            if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
+            self.wire.lock().unwrap().2.reserve(self, queue)
         }
-        fn submit_transmit(&self, _: u16, _: u16, frame: &[u8]) -> Result<(), device_model::network::NetworkError> {
-            self.wire.lock().unwrap().1.push(frame.to_vec());
+        unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
+            assert!(self.wire.lock().unwrap().2.received.take().is_some());
             Ok(())
         }
-        fn cancel_transmit(&self, queue: u16, _: u16) {
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize) -> Result<(), device_model::network::NetworkError> {
+            let mut wire = self.wire.lock().unwrap();
+            let frame = wire.2.complete(length);
+            wire.1.push(frame);
+            Ok(())
+        }
+        unsafe fn cancel_transmit(&self, queue: u16, _: u16, _: u64) {
+            self.wire.lock().unwrap().2.reserved = false;
             self.cancelled_queue.store(queue, core::sync::atomic::Ordering::Relaxed);
         }
         fn transmit_available(&self, _queue: u16) -> bool {

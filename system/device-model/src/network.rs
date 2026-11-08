@@ -1,4 +1,13 @@
-use alloc::sync::Arc;
+#[path = "network/frame.rs"]
+mod frame;
+pub use frame::{NetworkReceiveFrame, NetworkTransmit};
+#[path = "network/rss.rs"]
+mod rss;
+pub use rss::{NetworkRssCapabilities, NetworkRssConfiguration};
+
+/// 按位依次为 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6、IPv6-EX/TCPv6-EX/UDPv6-EX。
+/// 不含隧道内层散列；其他网卡驱动须从自身硬件位映射到这些语义。
+pub const RECEIVE_HASH_TYPES: u32 = 0x1ff;
 
 /// network device seam 的错误分类；协议栈不得感知具体 VirtIO adapter。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,77 +81,6 @@ pub struct NetworkCompletion {
     pub transmit_became_available: bool,
 }
 
-/// 不可复制的 Ethernet TX slot reservation。
-///
-/// token 在提交前丢弃会归还 slot；成功提交后 descriptor 只能由 used-ring
-/// completion 归还。这使 smoltcp 获得 TxToken 到填充 frame 的窗口内不会被
-/// AF_PACKET sender 抢走最后一个 slot。
-pub struct NetworkTransmit {
-    device: Arc<dyn NetworkDevice>,
-    reservation: Option<u16>,
-    queue: u16,
-}
-
-impl NetworkTransmit {
-    /// 从适配器的固定 TX pool 中预留一个 slot。
-    ///
-    /// # Parameters
-    ///
-    /// - `device`: 选中的唯一 Ethernet adapter。
-    /// - `queue`: 活动 queue pair 编号；槽号只在该队列内唯一，Drop 归还同一队列。
-    ///
-    /// # Returns
-    ///
-    /// 拥有唯一 reservation 的 token。
-    ///
-    /// # Errors
-    ///
-    /// pool 已满返回 `WouldBlock`；设备状态损坏返回 `Device`。
-    pub fn reserve(device: Arc<dyn NetworkDevice>, queue: u16) -> Result<Self, NetworkError> {
-        let reservation = device.reserve_transmit(queue)?;
-        Ok(Self {
-            device,
-            queue,
-            reservation: Some(reservation),
-        })
-    }
-
-    /// 把完整 Ethernet frame 复制到预留 DMA slot 并发布 descriptor。
-    ///
-    /// # Parameters
-    ///
-    /// - `frame`: 不含 VirtIO header 的 Ethernet frame。
-    ///
-    /// # Returns
-    ///
-    /// descriptor 成功发布返回 unit；实际 DMA 完成由 softirq 回收。
-    ///
-    /// # Errors
-    ///
-    /// frame 过大或 transport 失败返回对应错误。
-    pub fn submit(mut self, frame: &[u8]) -> Result<(), NetworkError> {
-        let reservation = self
-            .reservation
-            .as_ref()
-            .copied()
-            .expect("network transmit reservation consumed twice");
-        self.device
-            .submit_transmit(self.queue, reservation, frame)?;
-        // 只有 adapter 已成功把 reservation 转为 in-flight owner 后才解除 Drop rollback。
-        // 若提前 take，任一可恢复构造错误都会泄漏固定 TX slot 并最终永久 EAGAIN。
-        self.reservation.take();
-        Ok(())
-    }
-}
-
-impl Drop for NetworkTransmit {
-    fn drop(&mut self) {
-        if let Some(reservation) = self.reservation.take() {
-            self.device.cancel_transmit(self.queue, reservation);
-        }
-    }
-}
-
 /// 面向 Ethernet 协议栈的唯一 network device seam。
 ///
 /// 收发方法的 `queue` 必须位于 `0..queue_count()`；同一设备的队列可并发调用。
@@ -167,60 +105,39 @@ pub trait NetworkDevice: Send + Sync {
     /// 读取驱动拥有的链路状态，不访问数据队列。设备无法读取时返回错误。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
 
-    /// 非阻塞取出一个完整 Ethernet frame。
-    ///
-    /// # Parameters
-    ///
-    /// - `frame`: 使用者拥有的接收缓冲区。
-    ///
-    /// # Returns
-    ///
-    /// 帧长度；当前无包返回 `WouldBlock`，损坏或过长返回对应错误。
-    fn receive(&self, queue: u16, frame: &mut [u8]) -> Result<usize, NetworkError>;
+    /// 非阻塞领取一个 RX 帧的只读 CPU 借用；无包返回 WouldBlock，协议/设备失败返回错误。
+    fn receive(&self, queue: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError>;
 
-    /// 从固定 TX pool 中预留一个 slot。
-    ///
-    /// # Returns
-    ///
-    /// adapter-private slot ID。
-    ///
-    /// # Errors
-    ///
-    /// pool 已满返回 `WouldBlock`；owner 状态损坏返回 `Device`。
-    fn reserve_transmit(&self, queue: u16) -> Result<u16, NetworkError>;
+    /// 预留并返回唯一的可写 payload；无容量返回 WouldBlock，设备失败返回错误。
+    fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError>;
 
-    /// 把已预留 slot 转换为唯一 in-flight descriptor membership。
-    ///
-    /// # Parameters
-    ///
-    /// - `reservation`: `reserve_transmit` 返回且尚未消费的 slot ID。
-    /// - `frame`: 不含 VirtIO header 的 Ethernet frame。
-    ///
-    /// # Returns
-    ///
-    /// descriptor 已发布返回 unit。
-    ///
-    /// # Errors
-    ///
-    /// frame 过长或 publication 前 transport 失败返回对应错误；返回错误时
-    /// reservation 仍由 caller 持有，随后必须且只能取消一次。
-    fn submit_transmit(
+    /// 消费 RX token 的身份并归还槽；错误必须终止本次会话。
+    /// # Safety
+    /// 只能由持有对应 token 的 owner 调用，所有 payload 引用必须已结束，不得重复调用。
+    unsafe fn release_received(
         &self,
         queue: u16,
-        reservation: u16,
-        frame: &[u8],
+        slot: u16,
+        ticket: u64,
     ) -> Result<(), NetworkError>;
 
-    /// 取消尚未发布的 TX reservation。
-    ///
-    /// # Parameters
-    ///
-    /// - `reservation`: 由同一 adapter 发布的 slot ID。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；重复取消或取消 in-flight slot 会 fail-stop。
-    fn cancel_transmit(&self, queue: u16, reservation: u16);
+    /// 把对应 TX reservation 交给 DMA；成功后不能取消或访问 payload。
+    /// # Safety
+    /// 只能由唯一 TX token 消费该身份，所有 CPU 内容引用必须已结束，length 不超过容量。
+    /// # Errors
+    /// 设备、格式或传输失败；实现须保留尚未发表的 reservation，或在终止后拒绝复用。
+    unsafe fn submit_transmit(
+        &self,
+        queue: u16,
+        slot: u16,
+        ticket: u64,
+        length: usize,
+    ) -> Result<(), NetworkError>;
+
+    /// 取消尚未提交的 TX token；已交出的 Submitted 不能提前归还。
+    /// # Safety
+    /// 只能消费唯一 token，且所有 payload 引用必须已结束；不可取消其他 token 的身份。
+    unsafe fn cancel_transmit(&self, queue: u16, slot: u16, ticket: u64);
 
     /// 读取当前是否可以立即预留 TX slot。
     ///
@@ -310,6 +227,8 @@ pub struct NetworkTransmitDescriptor {
 pub trait NetworkController: Send + Sync {
     /// 设备可配置的最大 pair 数，非零。
     fn maximum_queue_pairs(&self) -> u16;
+    /// RSS 硬件能力；不支持可配置散列时为 None。
+    fn receive_scaling(&self) -> Option<NetworkRssCapabilities>;
     /// 六字节 MAC。
     fn mac_address(&self) -> [u8; 6];
     /// 驱动自行提供的名称。
@@ -336,6 +255,10 @@ pub trait NetworkProvider: Send + Sync {
     fn driver(&self) -> &str;
     /// 当前链路；读取失败返回设备错误。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
+    /// 同步替换 RSS 参数；只在实际硬件 ACK 后成功，失败不得继续访问未完成的控制 DMA。
+    /// # Errors
+    /// 不支持或配置无效时返回 InvalidConfiguration；控制/硬件失败返回 Device，分配失败返回 NoMemory。
+    fn set_receive_scaling(&self, config: &NetworkRssConfiguration) -> Result<(), NetworkError>;
     /// 授权共享 VMO 与真实布局；无效队列、句柄复制或分配失败返回错误。
     fn memory(&self, queue: u16) -> Result<NetworkQueueMemory, NetworkError>;
     /// 有界领取 RX 完成，返回写入 output 的数量；已交出的槽在 release_receive 前归 CPU。
@@ -371,8 +294,8 @@ pub trait NetworkProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics,
-        NetworkTransmit,
+        NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkReceiveFrame,
+        NetworkStatistics, NetworkTransmit,
     };
     use alloc::sync::Arc;
     use native_runtime::sync::Mutex;
@@ -380,6 +303,7 @@ mod tests {
     struct InjectedDevice {
         submit_error: bool,
         cancellations: Mutex<usize>,
+        slot: Mutex<(alloc::vec::Vec<u8>, bool)>,
     }
 
     impl NetworkDevice for InjectedDevice {
@@ -399,28 +323,38 @@ mod tests {
             Ok(NetworkLink::default())
         }
 
-        fn receive(&self, _queue: u16, _frame: &mut [u8]) -> Result<usize, NetworkError> {
+        fn receive(&self, _queue: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError> {
             Err(NetworkError::WouldBlock)
         }
-
-        fn reserve_transmit(&self, _queue: u16) -> Result<u16, NetworkError> {
-            Ok(7)
+        fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
+            let mut slot = self.slot.lock();
+            if slot.1 {
+                return Err(NetworkError::WouldBlock);
+            }
+            slot.1 = true;
+            let address = slot.0.as_mut_ptr() as usize;
+            // SAFETY: fixture 的 Vec 独立分配且 device 保活，reserved 时不 resize；唯一 token 结束后才归还。
+            Ok(unsafe { NetworkTransmit::new(self, queue, 7, 1, address, slot.0.len()) })
         }
-
-        fn submit_transmit(
+        unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), NetworkError> {
+            unreachable!()
+        }
+        unsafe fn submit_transmit(
             &self,
-            _queue: u16,
-            _reservation: u16,
-            _frame: &[u8],
+            _: u16,
+            _: u16,
+            _: u64,
+            _: usize,
         ) -> Result<(), NetworkError> {
             if self.submit_error {
                 Err(NetworkError::Device)
             } else {
+                self.slot.lock().1 = false;
                 Ok(())
             }
         }
-
-        fn cancel_transmit(&self, _queue: u16, _reservation: u16) {
+        unsafe fn cancel_transmit(&self, _: u16, _: u16, _: u64) {
+            self.slot.lock().1 = false;
             *self.cancellations.lock() += 1;
         }
 
@@ -450,11 +384,12 @@ mod tests {
         let adapter = Arc::new(InjectedDevice {
             submit_error: true,
             cancellations: Mutex::new(0),
+            slot: Mutex::new((alloc::vec![0], false)),
         });
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
         assert_eq!(
-            NetworkTransmit::reserve(device, 0).unwrap().submit(&[]),
+            device.reserve_transmit(0).unwrap().submit(1),
             Err(NetworkError::Device)
         );
         assert_eq!(*adapter.cancellations.lock(), 1);
@@ -465,13 +400,11 @@ mod tests {
         let adapter = Arc::new(InjectedDevice {
             submit_error: false,
             cancellations: Mutex::new(0),
+            slot: Mutex::new((alloc::vec![0], false)),
         });
         let device: Arc<dyn NetworkDevice> = adapter.clone();
 
-        assert_eq!(
-            NetworkTransmit::reserve(device, 0).unwrap().submit(&[]),
-            Ok(())
-        );
+        assert_eq!(device.reserve_transmit(0).unwrap().submit(1), Ok(()));
         assert_eq!(*adapter.cancellations.lock(), 0);
     }
 }

@@ -20,11 +20,16 @@ use super::{
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::network::{
     NetworkController, NetworkError, NetworkLink, NetworkProvider, NetworkQueueMemory,
-    NetworkReceive, NetworkStatistics, NetworkTransmitDescriptor,
+    NetworkReceive, NetworkRssCapabilities, NetworkRssConfiguration, NetworkStatistics,
+    NetworkTransmitDescriptor, RECEIVE_HASH_TYPES,
 };
 
 const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
 const VIRTIO_NET_F_MQ: u64 = 1 << 22;
+const VIRTIO_NET_F_RSS: u64 = 1 << 60;
+const RSS_KEY_OFFSET: usize = 17;
+const RSS_TABLE_OFFSET: usize = 18;
+const RSS_TYPES_OFFSET: usize = 20;
 const MAX_PAIRS_OFFSET: usize = 8;
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
@@ -125,6 +130,7 @@ pub(crate) struct VirtIONetworkDevice {
     mac: [u8; 6],
     features: u64,
     maximum_pairs: u16,
+    rss: Option<NetworkRssCapabilities>,
     completion_irq: VirtIOCompletionIrq,
     // OWNER: 冷配置租约与 IRQ 回调；Some(Weak) 即使已不能 upgrade，也要等旧 Drop 撤销 DMA 后清空。
     // 否则新 OPEN 可能在旧队列正在析构时重新启用设备。IRQ 不持有活动队列强引用。
@@ -142,7 +148,7 @@ struct ActiveNetwork {
     // FLAG: true 表示已发布到 lease，Drop 必须回收租约；构造失败时仍持配置锁，只 reset 不重入锁。
     lease_published: bool,
     queues: Vec<Mutex<QueueState>>,
-    // OWNER: 0=运行，1=唯一 reset owner 正在撤离，2=DMA 已停止；并发 stop 必须等到 2。
+    // OWNER: 0=运行，1=请求撤离，2=唯一 reset owner，3=DMA 已停止；stop 必须等到 3。
     failed: AtomicU8,
     control: Option<Mutex<ControlQueue>>,
 }
@@ -172,15 +178,15 @@ impl VirtIONetworkDevice {
         if features & required_features != required_features {
             return None;
         }
-        let multiqueue = if features & (VIRTIO_NET_F_MQ | VIRTIO_NET_F_CTRL_VQ)
-            == VIRTIO_NET_F_MQ | VIRTIO_NET_F_CTRL_VQ
+        let queue_features = if features & VIRTIO_NET_F_CTRL_VQ != 0
+            && features & (VIRTIO_NET_F_MQ | VIRTIO_NET_F_RSS) != 0
         {
-            VIRTIO_NET_F_MQ | VIRTIO_NET_F_CTRL_VQ
+            features & (VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_MQ | VIRTIO_NET_F_RSS)
         } else {
             0
         };
         let features = required_features
-            | multiqueue
+            | queue_features
             | features & (VIRTIO_NET_F_STATUS | VIRTIO_NET_F_SPEED_DUPLEX);
         device.set_driver_features(features).ok()?;
         let status = device.get_status().ok()?;
@@ -190,7 +196,7 @@ impl VirtIONetworkDevice {
         if device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
-        let maximum_pairs = if features & VIRTIO_NET_F_MQ != 0 {
+        let maximum_pairs = if features & (VIRTIO_NET_F_MQ | VIRTIO_NET_F_RSS) != 0 {
             device
                 .read_config_consistent(|device| device.read_config_u16(MAX_PAIRS_OFFSET))
                 .ok()?
@@ -201,6 +207,23 @@ impl VirtIONetworkDevice {
             return None;
         }
 
+        let rss = if features & VIRTIO_NET_F_RSS != 0 {
+            let cap = device
+                .read_config_consistent(|device| {
+                    Ok(NetworkRssCapabilities {
+                        maximum_key_bytes: device.read_config_u8(RSS_KEY_OFFSET)?,
+                        maximum_table_entries: device.read_config_u16(RSS_TABLE_OFFSET)?,
+                        hash_types: device.read_config_u32(RSS_TYPES_OFFSET)? & RECEIVE_HASH_TYPES,
+                    })
+                })
+                .ok()?;
+            if cap.maximum_key_bytes < 40 || cap.maximum_table_entries < 128 {
+                return None;
+            }
+            Some(cap)
+        } else {
+            None
+        };
         let mac = device
             .read_config_consistent(|device| {
                 let mut mac = [0; 6];
@@ -215,6 +238,7 @@ impl VirtIONetworkDevice {
             mac,
             features,
             maximum_pairs,
+            rss,
             completion_irq: VirtIOCompletionIrq::new(),
             lease: Mutex::new(Lease {
                 active: None,
@@ -267,6 +291,9 @@ impl NetworkController for VirtIONetworkDevice {
     fn maximum_queue_pairs(&self) -> u16 {
         self.maximum_pairs
     }
+    fn receive_scaling(&self) -> Option<NetworkRssCapabilities> {
+        self.rss
+    }
     fn mac_address(&self) -> [u8; 6] {
         self.mac
     }
@@ -286,9 +313,9 @@ impl NetworkController for VirtIONetworkDevice {
             // 目录会话已关闭，但错误完成线程可能仍临时保活已 stop 的队列。
             // Weak 失效也可能只是 Drop 正在 reset/撤销 pin，必须等实际退休事件。
             let current = lease.active.as_ref().and_then(Weak::upgrade);
-            let retiring = current
-                .as_ref()
-                .is_none_or(|active| active.failed.load(Ordering::Acquire) == 2);
+            let retiring = current.as_ref().is_none_or(|active| {
+                active.failed.load(Ordering::Acquire) == ActiveNetwork::QUIESCENT
+            });
             // 可能在此归还最后一个强引用；不能持 lease 锁触发 ActiveNetwork::drop。
             drop(lease);
             drop(current);
@@ -333,7 +360,7 @@ impl NetworkController for VirtIONetworkDevice {
         }
         let control = if self.features & VIRTIO_NET_F_CTRL_VQ != 0 {
             Some(Mutex::new(
-                ControlQueue::try_new(&self.device, u32::from(self.maximum_pairs) * 2)
+                ControlQueue::try_new(&self.device, u32::from(self.maximum_pairs) * 2, self.rss)
                     .ok_or(NetworkError::NoMemory)?,
             ))
         } else {
@@ -344,7 +371,7 @@ impl NetworkController for VirtIONetworkDevice {
             owner: self.clone(),
             lease_published: false,
             queues,
-            failed: AtomicU8::new(0),
+            failed: AtomicU8::new(ActiveNetwork::LIVE),
             control,
         })
         .map_err(|_| NetworkError::NoMemory)?;
@@ -353,10 +380,29 @@ impl NetworkController for VirtIONetworkDevice {
             .set_status(status | VIRTIO_CONFIG_S_DRIVER_OK)
             .map_err(|_| NetworkError::Device)?;
         if let Some(control) = &active.control {
-            control
-                .lock()
-                .set_pairs(&self.device, count)
-                .map_err(|_| NetworkError::Device)?;
+            if self.features & VIRTIO_NET_F_MQ != 0 {
+                control
+                    .lock()
+                    .set_pairs(&self.device, count)
+                    .map_err(|_| NetworkError::Device)?;
+            } else if self.rss.is_some() {
+                // RSS-only 硬件没有 PAIRS_SET。客户端安装前提交实际策略；bootstrap 只指定 TX 数和未分类队列。
+                let mut indirection = Vec::new();
+                indirection
+                    .try_reserve_exact(1)
+                    .map_err(|_| NetworkError::NoMemory)?;
+                indirection.push(0);
+                control.lock().set_rss(
+                    &self.device,
+                    count,
+                    &NetworkRssConfiguration {
+                        hash_types: 0,
+                        unclassified_queue: 0,
+                        indirection,
+                        key: Vec::new(),
+                    },
+                )?;
+            }
         }
         for index in 0..count {
             self.device
@@ -376,34 +422,69 @@ impl NetworkController for VirtIONetworkDevice {
     }
 }
 impl ActiveNetwork {
+    const LIVE: u8 = 0;
+    const STOP_REQUESTED: u8 = 1;
+    const RESET_OWNER: u8 = 2;
+    const QUIESCENT: u8 = 3;
     fn queue(&self, queue: u16) -> Result<&Mutex<QueueState>, NetworkError> {
         self.queues.get(queue as usize).ok_or(NetworkError::Device)
     }
-    fn fail_device(&self) -> NetworkError {
+    /// 非阻塞撤离：先阻止新 DMA，再观察各临界区退出；只有一个调用者执行 reset。
+    /// 完成线程竞争时重调度，不能等控制 ACK 而停住其他设备的完成来源。
+    fn try_quiesce(&self) -> bool {
+        if self.failed.load(Ordering::Acquire) == Self::QUIESCENT {
+            return true;
+        }
+        let _ = self.failed.compare_exchange(
+            Self::LIVE,
+            Self::STOP_REQUESTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if self.failed.load(Ordering::Acquire) == Self::RESET_OWNER {
+            return false;
+        }
+        for queue in &self.queues {
+            let Some(guard) = queue.try_lock() else {
+                return false;
+            };
+            drop(guard);
+        }
+        if let Some(control) = &self.control {
+            let Some(guard) = control.try_lock() else {
+                return false;
+            };
+            drop(guard);
+        }
         if self
             .failed
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                Self::STOP_REQUESTED,
+                Self::RESET_OWNER,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_ok()
         {
-            // failed 先发表；之后取得 queue lock 的操作不再访问设备。逐个锁过即构成无分配的撤离屏障。
-            // doorbell 必须也在 queue lock 内完成，否则晚到的通知可能跨过 reset。
-            for queue in &self.queues {
-                drop(queue.lock());
-            }
-            if let Some(control) = &self.control {
-                drop(control.lock());
-            }
+            // failed 已阻止临界区重新提交；顺序锁过各队列后，旧描述符 publication/doorbell 都已退出。
             self.device
                 .reset()
                 .expect("VirtIO net must stop DMA before retiring ownership");
-            self.failed.store(2, Ordering::Release);
+            self.failed.store(Self::QUIESCENT, Ordering::Release);
             self.notify_all_activity();
+            true
         } else {
-            while self.failed.load(Ordering::Acquire) == 1 {
-                native_runtime::system::sleep_until(native_runtime::system::deadline_after(50_000))
-                    .expect("wait for network DMA revocation");
-            }
+            self.failed.load(Ordering::Acquire) == Self::QUIESCENT
         }
+    }
+    fn quiesce(&self) {
+        while !self.try_quiesce() {
+            native_runtime::system::sleep_until(native_runtime::system::deadline_after(50_000))
+                .expect("wait for network DMA revocation");
+        }
+    }
+    fn fail_device(&self) -> NetworkError {
+        self.quiesce();
         NetworkError::Device
     }
 }
@@ -452,9 +533,28 @@ impl NetworkProvider for ActiveNetwork {
             .map_err(|_| NetworkError::Device)
     }
 
+    fn set_receive_scaling(&self, config: &NetworkRssConfiguration) -> Result<(), NetworkError> {
+        let cap = self.rss.ok_or(NetworkError::InvalidConfiguration)?;
+        config.validate(self.queue_count(), cap)?;
+        let control = self
+            .control
+            .as_ref()
+            .ok_or(NetworkError::InvalidConfiguration)?;
+        let mut control = control.lock();
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
+            return Err(NetworkError::Device);
+        }
+        let result = control.set_rss(&self.device, self.queue_count(), config);
+        drop(control);
+        match result {
+            Err(NetworkError::Device) => Err(self.fail_device()),
+            other => other,
+        }
+    }
+
     fn memory(&self, queue: u16) -> Result<NetworkQueueMemory, NetworkError> {
         let queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         // SAFETY: RX 在 claim→release 之间归 CPU；TX 在 matching CQ 后至下次 batch
@@ -495,7 +595,7 @@ impl NetworkProvider for ActiveNetwork {
         output: &mut [NetworkReceive],
     ) -> Result<usize, NetworkError> {
         let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         let mut count = 0;
@@ -542,7 +642,7 @@ impl NetworkProvider for ActiveNetwork {
 
     fn release_receive(&self, queue: u16, slot: u16) -> Result<(), NetworkError> {
         let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         let QueueState {
@@ -564,7 +664,7 @@ impl NetworkProvider for ActiveNetwork {
         input: &[NetworkTransmitDescriptor],
     ) -> Result<usize, NetworkError> {
         let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         let mut seen = [0u64; (QUEUE_SIZE as usize).div_ceil(64)];
@@ -640,7 +740,7 @@ impl NetworkProvider for ActiveNetwork {
         output: &mut [u16],
     ) -> Result<device_model::network::NetworkCompletion, NetworkError> {
         let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         let mut corrupt = false;
@@ -696,12 +796,12 @@ impl NetworkProvider for ActiveNetwork {
     }
 
     fn stop(&self) {
-        self.fail_device();
+        self.quiesce();
     }
 
     fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError> {
         let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != 0 {
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
         if core::mem::take(&mut queues.receive_reposted)
@@ -739,7 +839,7 @@ impl ReceiveQueue<DmaBuffer<RX_BUFFER_SIZE>> for VirtQueue {
 
 impl Drop for ActiveNetwork {
     fn drop(&mut self) {
-        if self.failed.load(Ordering::Acquire) != 2 {
+        if self.failed.load(Ordering::Acquire) != Self::QUIESCENT {
             self.device
                 .reset()
                 .expect("VirtIO net must stop DMA before retiring ownership");
@@ -776,19 +876,23 @@ impl crate::io_completion::CompletionSource for VirtIONetworkDevice {
             return false;
         }
         let active = {
-            // 完成线程服务其他设备，不能因本 NIC 的冷控制 ACK 等待而停住全部来源。
             let Some(lease) = self.lease.try_lock() else {
                 return true;
             };
-            if self.completion_irq.take_transport_error() {
-                lease.active.as_ref().and_then(Weak::upgrade)
-            } else {
-                None
+            let active = lease.active.as_ref().and_then(Weak::upgrade);
+            if active.is_none() {
+                self.completion_irq.take_transport_error();
             }
+            active
         };
-        if let Some(active) = active {
-            active.fail_device();
+        let Some(active) = active else {
+            return false;
+        };
+        if !active.try_quiesce() {
+            return true;
         }
+        // 本强引用仍保活旧租约，下一 OPEN 不可能先于此处清除本代锁存。
+        self.completion_irq.take_transport_error();
         false
     }
 }

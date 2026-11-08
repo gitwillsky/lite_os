@@ -30,7 +30,7 @@ DRM/KMS、framebuffer、VirGL/PRIME 与图形资源退休的唯一细节 owner �
 1. 每个驱动宿主在自己的设备目录登记设备（类、静态描述与开会话函数）；driver-manager 向 component-manager 持有的汇聚目录登记条目（对应 Fuchsia devfs）：转发条目的 `OPEN` 原样交给所在宿主，独占与会话回收由宿主判定；宿主终止时撤下
    它的全部条目（`remove`），宿主重启后设备以新 ID 重新登记。目录 ID 单调不复用；使用者 `LIST` 枚举、`WATCH`
    取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN(id, options)` 建立新会话、`SCOPE` 派生只含指定类的目录。
-   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v5 使用两字节小端 pair 数，其他现有类只接受空 options。
+   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v6 使用两字节小端 pair 数，其他现有类只接受空 options。
    初始枚举按节点顺序并入（首个 GPU、PCI console/block/net、按 DTB 顺序的 VirtIO-MMIO、xHCI），使用者据登记顺序命名
    设备。component-manager 按类派生给各服务，宿主的监督查询和会话打开使用独立连接。
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
@@ -358,7 +358,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   Benchmark 决策：新增 Arc 只在构造/析构增减引用，稳定收发仅借用；额外 owner 间接访问与稠密元数据的综合成本留到目标机吞吐/时延诊断，
   不用 host 虚拟地址模拟设备/IOMMU 时延。现有 DMA fixture 覆盖线性槽、共享保活及跨非连续页的地址投影，不能代替实际 DMA 验收。
 - 网络队列由 `(device, queue pair, slot)` 标识；pair 数实例内固定、非零，槽号不能脱离队列寻址。
-  device-protocol 网络描述版本为 5，携带硬件最大 pair 数，不接受旧布局。客户端明确请求非零且不超过上限的 pair 数，
+  device-protocol 网络描述版本为 6，携带硬件最大 pair 数，不接受旧布局。客户端明确请求非零且不超过上限的 pair 数，
   驱动必须精确满足或失败，不能按 CPU 数替用户决定。目录独占 OPEN 的设备选项直接交给 NetworkController::open；
   MEMORY 授权 RX/TX 池与布局，
   QUEUE 一次授权四环 VMO、ready Event 与 progress Event，重复领取返回 ALREADY_BOUND。
@@ -388,7 +388,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   停止只废弃本次配置，controller 在旧租约彻底退休后允许重新配置另一数量的队列，本期不承诺故障后恢复运行时状态。
   Benchmark 决策：每 pair 四环和固定 ticket 表换取无逐帧分配/无逐包 RPC，默认 32 容量的四环总计一页；
   host codec 用例只覆盖容量、回绕、错误位置和 kick 重新武装，实际 DMA、跨核唤醒和批处理吞吐在最终来宾验收测量。
-- VirtIO-net 只同时协商 CTRL_VQ/MQ，max_virtqueue_pairs 从同代配置读取并校验 1..=0x8000。
+- VirtIO-net 的 MQ/RSS 都依赖 CTRL_VQ；只在控制队列可用且至少支持其一时协商它。max_virtqueue_pairs 从同代配置读取并校验 1..=0x8000。
   VirtIONetworkDevice 只拥有 transport、能力与冷配置租约；ActiveNetwork 拥有本次配置的 queues/control/pools/failed。
   发现设备时不创建数据队列或置 DRIVER_OK；OPEN 按请求重新协商 feature、准备精确数量的队列与 reset owner，再启用 DMA。
   初始化失败尚未发表租约时 Drop 只 reset，不能重入已经持有的配置锁；租约 Weak 即使失效也不是可重配的证明，必须等旧 owner reset、退休全部 queue/pin/IOVA 并显式撤销。
@@ -397,17 +397,31 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   IRQ 不强持 ActiveNetwork，回调由 controller 的租约保护并在锁外调用；错误完成线程先无锁观察错误，仅错误时 try_lock 消费本代锁存并临时 upgrade 租约，竞争时重调度，不能阻塞其他设备的完成；数据收发不取配置锁。
   IRQ 的 ACK/错误锁存与冷重配串行，重开先清除旧锁存；控制 used/ACK 不依赖 IRQ 服务线程，不会因该串行化互等。
   各 pair 独立准备 ring、RX/TX pool 和锁；控制队列位于 `2 * max_virtqueue_pairs`，不以活动数猜测控制队列编号。
-  DRIVER_OK 后发送 VQ_PAIRS_SET，校验唯一 head、设备写入长度与 ACK 后才发布 adapter；失败/超时先 reset 再释放 DMA。
+  DRIVER_OK 后，MQ 使用 VQ_PAIRS_SET；仅 RSS 的硬件用标准 RSS_CONFIG（hash=0、未分类队列 0、max_tx_vq=请求数）初始化。
+  只有唯一 head、设备写入长度与 ACK 全部正确后才发布 adapter；失败/超时先 reset 再释放 DMA。
   控制命令为冷初始化，有界睡眠等待，不占数据队列锁、不忙等。共享 MMIO/INTx 中断通知全部 pair，尚未声称实现每队列 MSI-X。
-- 设备失败原子状态为 Live/Stopping/Quiescent；唯一 0→1 owner 先拒绝新 DMA，依次锁过所有 pair/control，待旧操作退出再 reset，最后 Release 发表 2。
-  并发 stop 必须等到 Quiescent，不能看到 Stopping 就提前归还 DMA。等待仅发生在故障冷路径，sleep 不占 queue 锁。
+- RSS 按固定 [VirtIO 1.4 CS01 网络规范](https://github.com/oasis-tcs/virtio-spec/blob/917e900e0246b7fe21cdde795b0e566dd4f57d8d/device-types/net/description.tex)实现可配置 Toeplitz 分流。
+  只协商 RSS，不协商 HASH_REPORT，收发 header 保持 12 字节。能力来自同代配置的 key/table/hash-types；key 上限至少 40、table 上限至少 128，
+  领域 hash bits 只涵盖 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6 与 IPv6 EX 三类；不公布未实现的隧道散列或校验和/TSO 能力。
+  v6 静态描述在 maximum-pairs 后依次编码 rss-present(bool)、若存在则 key-max(u8)/table-max(u16)/hash-types(u32)，之后才是 MAC/name。
+  RSS_CONFIG 冷请求携带 length(u64) 和只读 VMO，VMO 格式是 hash-types(u32)、unclassified(u16)、key-length(u16)、table-count(u32)、
+  table-count 个 u16 pair 下标、原始 key 字节。所有整数小端；服务先有界复制快照，再按同一领域校验检查权能/长度/队列，避免 TOCTOU 及 64 KiB channel 限制。
+  表长为 2 的幂且不超过设备上限，所有下标在本次会话内；启用散列时 key 非空且不超过设备上限；40-byte key 是执行者策略，不作为拒绝合法短 key 的协议门禁。禁止硬编码设备不支持的 hash bits。
+  硬件控制 payload 使用标准 hash-types/mask/unclassified/table/max_tx_vq/key-length/key 顺序，pair 下标就是 rss_rq_id（实际 virtqueue index >> 1），max_tx_vq 是数量。
+  控制 DMA 按真实上限预分配连续 backing/pin（通常一页），只有输入与 ACK 两个 descriptor；不为普通 NIC 固定预留大 RSS 缓冲。
+  串行控制锁拥有整个 command→ACK 生命周期；未确认、拒绝或畸形完成均 reset，不能假定失败时硬件保留旧表。
+  Netstack 在多 worker 时选择均衡表和随机 40-byte key，单 worker 保留标准初始化、不额外计算散列。RSS 切换可能移动既有流，worker 切换职责仍属于协议引擎。
+  Benchmark 决策：编码/VMO/连续控制页只在冷配置分配，不改变逐帧缓冲与复制路径；主机 codec 覆盖超 64 KiB 表及非法队列/hash，真实分流和吞吐在最终来宾验收。
+- 设备失败原子状态为 Live(0)/StopRequested(1)/ResetOwner(2)/Quiescent(3)；先 0→1 拒绝新 DMA，再非阻塞锁过所有 pair/control，
+  仅 1→2 的唯一 owner reset，最后 Release 发表 3。完成线程遇到忙队列/控制事务就重调度其他完成源，锁存保留到 DMA 已停止；
+  同步 stop 才在无锁冷路径 sleep 等待。并发 stop 必须等到 Quiescent，不能看到已请求撤离就提前归还 DMA。
   descriptor publication 与 doorbell 都在所属队列锁内，延迟通知不能跨过故障屏障；doorbell 失败同样 stop，reset 失败 fail-stop 保活所有存储。
   统计只在冷查询时汇总各队列权威计数。
 - 当前主机栈以轮转起点消费所有 RX pair，回复预留回到原 pair；显式外发/AF_PACKET 使用 queue 0，后续每核 worker 不受此适配层限制。
   TX 完成返回实际 completed 数，主机栈跨队列/网卡扣同一轮预算，零预算仍可观察 backlog；畸形完成数不得扩大预算。
   Benchmark 决策：每 pair 独立锁与预分配池换取并行，驱动队列热路径不分配；活动数量增加时存储按请求 pair 数线性增长。
   冷配置锁隔离重开/初始化，当前共享 INTx 的回调短锁/Arc 成本在最终目标机诊断，不用 host 模拟设备时延；
-  整机吞吐/内存及共享 IRQ 扇出成本在最终来宾诊断。当前直接帧借用、RSS/卸载和 MSI-X 仍待路由阶段补齐，不能据此宣称数据面完成。
+  整机吞吐/内存及共享 IRQ 扇出成本在最终来宾诊断。当前直接帧借用、校验和/TSO 卸载和 MSI-X 仍待路由阶段补齐，不能据此宣称数据面完成。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。
 
 - 设备 OpenRequest 保留原始 status flags；PTS 的 O_NOCTTY 禁止自动接管。文件壳和 slave

@@ -1,10 +1,14 @@
 use super::queue::{MAX_BATCH, Queue, Ring};
-use super::{LINK, MEMORY, NETWORK_VERSION, QUEUE, STATISTICS, decode_error, queue_request};
+use super::{
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_error, queue_request,
+};
 use crate::directory::{DirectoryClient, Entry};
 use crate::{ActivityBinding, EventHub, Writer, call, take_handle};
 use alloc::{sync::Arc, vec::Vec};
 use device_model::network::{
-    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics,
+    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkReceiveFrame,
+    NetworkRssCapabilities, NetworkRssConfiguration, NetworkStatistics, NetworkTransmit,
+    RECEIVE_HASH_TYPES,
 };
 use device_model::{Activity, DeviceBacking};
 use native_runtime::native_abi::{self, Status, rights, signals};
@@ -82,6 +86,11 @@ enum TransmitOwner {
     Reserved { ticket: u64 },
     Submitted { ticket: u64 },
 }
+#[derive(Clone, Copy)]
+enum ReceiveOwner {
+    Available { last_ticket: u64 },
+    Borrowed { ticket: u64 },
+}
 struct Producer {
     transmit: Vec<TransmitOwner>,
     free: Vec<u16>,
@@ -89,7 +98,7 @@ struct Producer {
     // FLAG: reserve/available 也会排空 CQ，但 writable transition 必须留给下一次 poll 交付。
     // 缺失时提前观察容量会吞掉其他等待发送者的唤醒。
     transmit_became_available: bool,
-    received: Vec<u64>,
+    received: Vec<ReceiveOwner>,
 }
 struct RemoteQueue {
     activity: ActivityBinding,
@@ -176,6 +185,7 @@ pub struct RemoteNetwork {
     queues: Vec<RemoteQueue>,
     mac: [u8; 6],
     driver: alloc::string::String,
+    rss: Option<NetworkRssCapabilities>,
 }
 /// 显式请求 queue_pairs 个队列，打开硬件会话并一次映射 DMA/共享环。
 /// directory 是已授权的网络设备目录，entry 的静态描述公布硬件上限；不自动截断请求。
@@ -197,6 +207,22 @@ pub fn connect(
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let count = queue_pairs;
+    let rss = if reader.bool()? {
+        let cap = NetworkRssCapabilities {
+            maximum_key_bytes: reader.u8()?,
+            maximum_table_entries: reader.u16()?,
+            hash_types: reader.u32()?,
+        };
+        if cap.maximum_key_bytes < 40
+            || cap.maximum_table_entries < 128
+            || cap.hash_types & !RECEIVE_HASH_TYPES != 0
+        {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        Some(cap)
+    } else {
+        None
+    };
     let mac = reader
         .bytes()?
         .try_into()
@@ -240,7 +266,10 @@ pub fn connect(
         received
             .try_reserve_exact(memory.receive_slots as usize)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        received.resize(memory.receive_slots as usize, 0);
+        received.resize(
+            memory.receive_slots as usize,
+            ReceiveOwner::Available { last_ticket: 0 },
+        );
         queues.push(RemoteQueue {
             activity,
             memory,
@@ -260,8 +289,36 @@ pub fn connect(
         queues,
         mac,
         driver,
+        rss,
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)
+}
+impl RemoteNetwork {
+    /// 可配置 RSS 的真实硬件能力；不存在时只能采用设备已有的分流方式。
+    pub fn receive_scaling(&self) -> Option<NetworkRssCapabilities> {
+        self.rss
+    }
+    /// 同步替换 RSS 表与密钥；本操作可能改变既有流的队列，调用者负责 worker 切换。
+    /// # Errors
+    /// 能力或参数无效、分配失败、服务断开或设备未确认配置时返回错误。
+    pub fn set_receive_scaling(
+        &self,
+        config: &NetworkRssConfiguration,
+    ) -> Result<(), NetworkError> {
+        let cap = self.rss.ok_or(NetworkError::InvalidConfiguration)?;
+        config.validate(self.queue_count(), cap)?;
+        let bytes = super::rss::encode(config).map_err(decode_error)?;
+        let vmo = Vmo::create(bytes.len() as u64, 0).map_err(decode_error)?;
+        vmo.write(&bytes, 0).map_err(decode_error)?;
+        let snapshot = vmo
+            .duplicate(rights::READ | rights::TRANSFER | rights::INSPECT)
+            .map_err(decode_error)?;
+        let mut request = Writer::request(RSS_CONFIG);
+        request.u64(bytes.len() as u64);
+        call(&self.channel, &request, alloc::vec![snapshot.into_handle()])
+            .map_err(decode_error)
+            .map(drop)
+    }
 }
 impl NetworkDevice for RemoteNetwork {
     fn queue_count(&self) -> u16 {
@@ -287,10 +344,10 @@ impl NetworkDevice for RemoteNetwork {
             speed_mbps: (speed <= i32::MAX as u32).then_some(speed),
         })
     }
-    fn receive(&self, queue: u16, frame: &mut [u8]) -> Result<usize, NetworkError> {
+    fn receive(&self, queue_index: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError> {
         let queue = self
             .queues
-            .get(queue as usize)
+            .get(queue_index as usize)
             .ok_or(NetworkError::Device)?;
         let memory = &queue.memory;
         let mut state = queue.producer.lock();
@@ -306,45 +363,31 @@ impl NetworkDevice for RemoteNetwork {
         }
         let [slot, ticket, length] = records[0];
         let slot = u16::try_from(slot).map_err(|_| queue.abort())?;
-        let last = state
+        let owner = state
             .received
             .get_mut(slot as usize)
             .ok_or_else(|| queue.abort())?;
-        if ticket <= *last || length == 0 || length > (memory.receive_stride - memory.header) as u64
+        let ReceiveOwner::Available { last_ticket } = *owner else {
+            return Err(queue.abort());
+        };
+        if ticket <= last_ticket
+            || length == 0
+            || length > (memory.receive_stride - memory.header) as u64
         {
             return Err(queue.abort());
         }
-        *last = ticket;
-        let length = length as usize;
-        let copied = match frame.get_mut(..length) {
-            Some(target) => {
-                // SAFETY: 已验证槽/长度；RX 的 Release/Acquire 交付 CPU ownership，FILL 之前
-                // 提供者不 repost。backing 保活映射，调用者拿不到池地址，源与目标不重叠。
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        (memory.receive_base
-                            + slot as usize * memory.receive_stride
-                            + memory.header) as *const u8,
-                        target.as_mut_ptr(),
-                        length,
-                    );
-                }
-                Ok(length)
-            }
-            None => Err(NetworkError::FrameTooLarge),
-        };
-        // CPU buffer 太小也须归还；环容量不小于 RX 槽数，每槽最多一个未归还 ticket。
-        queue
-            .ring
-            .push(Ring::Fill, &[[u64::from(slot), ticket, 0]])
-            .map_err(|_| queue.abort())?;
-        queue.kick()?;
-        copied
+        *owner = ReceiveOwner::Borrowed { ticket };
+        let address = memory.receive_base + slot as usize * memory.receive_stride + memory.header;
+        // SAFETY: 布局/slot/length 已校验，RX Acquire 交付本槽 CPU ownership；Borrowed 状态阻止
+        // 重复领取，唯一 token 释放前不发表 FILL。self 保活 backing，返回引用不越过 self。
+        Ok(unsafe {
+            NetworkReceiveFrame::new(self, queue_index, slot, ticket, address, length as usize)
+        })
     }
-    fn reserve_transmit(&self, queue: u16) -> Result<u16, NetworkError> {
+    fn reserve_transmit(&self, queue_index: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
         let queue = self
             .queues
-            .get(queue as usize)
+            .get(queue_index as usize)
             .ok_or(NetworkError::Device)?;
         let mut state = queue.producer.lock();
         queue.check()?;
@@ -355,63 +398,92 @@ impl NetworkDevice for RemoteNetwork {
         let ticket = state.next_transmit;
         state.next_transmit = ticket.checked_add(1).ok_or_else(|| queue.abort())?;
         state.transmit[slot as usize] = TransmitOwner::Reserved { ticket };
-        Ok(slot)
+        let memory = &queue.memory;
+        let address = memory.transmit_base + slot as usize * memory.transmit_stride + memory.header;
+        // SAFETY: Reserved 是唯一 CPU 写入权，匹配 CQ 后才会进入 free；本端无其他安全 API 能
+        // 提前提交/取消此身份。token 借用 self 保活映射，header/其他槽在返回范围之外。
+        Ok(unsafe {
+            NetworkTransmit::new(
+                self,
+                queue_index,
+                slot,
+                ticket,
+                address,
+                memory.transmit_limit,
+            )
+        })
     }
-    fn submit_transmit(
+    unsafe fn release_received(
         &self,
-        queue: u16,
-        reservation: u16,
-        frame: &[u8],
+        queue_index: u16,
+        slot: u16,
+        ticket: u64,
     ) -> Result<(), NetworkError> {
         let queue = self
             .queues
-            .get(queue as usize)
+            .get(queue_index as usize)
             .ok_or(NetworkError::Device)?;
-        let memory = &queue.memory;
         let mut state = queue.producer.lock();
         queue.check()?;
-        if frame.is_empty() || frame.len() > memory.transmit_limit {
+        let owner = state
+            .received
+            .get_mut(slot as usize)
+            .ok_or_else(|| queue.abort())?;
+        if !matches!(*owner, ReceiveOwner::Borrowed { ticket: current } if current == ticket) {
+            return Err(queue.abort());
+        }
+        // SAFETY 契约已结束全部 CPU 内容引用；FILL Release 后设备才可能重新取得该范围。
+        queue
+            .ring
+            .push(Ring::Fill, &[[u64::from(slot), ticket, 0]])
+            .map_err(|_| queue.abort())?;
+        *owner = ReceiveOwner::Available {
+            last_ticket: ticket,
+        };
+        queue.kick()
+    }
+    unsafe fn submit_transmit(
+        &self,
+        queue_index: u16,
+        slot: u16,
+        ticket: u64,
+        length: usize,
+    ) -> Result<(), NetworkError> {
+        let queue = self
+            .queues
+            .get(queue_index as usize)
+            .ok_or(NetworkError::Device)?;
+        let mut state = queue.producer.lock();
+        queue.check()?;
+        if length == 0 || length > queue.memory.transmit_limit {
             return Err(NetworkError::FrameTooLarge);
         }
         let owner = state
             .transmit
-            .get_mut(reservation as usize)
+            .get_mut(slot as usize)
             .ok_or(NetworkError::Device)?;
-        let TransmitOwner::Reserved { ticket } = *owner else {
+        if !matches!(*owner, TransmitOwner::Reserved { ticket: current } if current == ticket) {
             return Err(NetworkError::Device);
-        };
-        // SAFETY: 写入前验证槽身份，锁跨写入与提交。Reserved 无 DMA，TX Release 后
-        // 仅 CQ matching ticket 归还写权。backing 保活，SDK 不向调用者暴露池地址。
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                frame.as_ptr(),
-                (memory.transmit_base
-                    + reservation as usize * memory.transmit_stride
-                    + memory.header) as *mut u8,
-                frame.len(),
-            );
         }
+        // 调用者消费唯一 token，所有 payload 引用已结束；Release 同时交出初始化后的内容。
         queue
             .ring
-            .push(
-                Ring::Transmit,
-                &[[u64::from(reservation), ticket, frame.len() as u64]],
-            )
+            .push(Ring::Transmit, &[[u64::from(slot), ticket, length as u64]])
             .map_err(|_| queue.abort())?;
         *owner = TransmitOwner::Submitted { ticket };
         queue.kick()
     }
-    fn cancel_transmit(&self, queue: u16, reservation: u16) {
-        let Some(queue) = self.queues.get(queue as usize) else {
+    unsafe fn cancel_transmit(&self, queue_index: u16, slot: u16, ticket: u64) {
+        let Some(queue) = self.queues.get(queue_index as usize) else {
             return;
         };
         let mut state = queue.producer.lock();
-        let Some(owner) = state.transmit.get_mut(reservation as usize) else {
+        let Some(owner) = state.transmit.get_mut(slot as usize) else {
             return;
         };
-        if matches!(*owner, TransmitOwner::Reserved { .. }) {
+        if matches!(*owner, TransmitOwner::Reserved { ticket: current } if current == ticket) {
             *owner = TransmitOwner::Free;
-            state.free.push(reservation);
+            state.free.push(slot);
         }
     }
     fn transmit_available(&self, queue: u16) -> bool {

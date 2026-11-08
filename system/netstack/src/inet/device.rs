@@ -10,11 +10,11 @@ use smoltcp::{
 use super::device_error;
 use crate::packet;
 use device_model::network::{
-    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics, NetworkTransmit,
+    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkReceiveFrame,
+    NetworkStatistics, NetworkTransmit,
 };
 
 const ETHERNET_MTU: usize = 1514;
-const RECEIVE_CAPACITY: usize = 2048;
 mod loopback;
 use loopback::{LoopbackDevice, LoopbackRxToken, LoopbackTxToken};
 
@@ -109,10 +109,6 @@ impl ProtocolDevice {
         }
     }
 }
-#[allow(
-    clippy::large_enum_variant,
-    reason = "RX token 内联持有有界物理帧；每包堆分配会引入 OOM 丢包与热路径分配"
-)]
 pub(super) enum ProtocolRxToken<'a> {
     Ethernet(EthernetRxToken<'a>),
     Loopback(LoopbackRxToken<'a>),
@@ -402,8 +398,9 @@ pub(super) struct EthernetRxToken<'a> {
     net_id: u64,
     interface_index: u32,
     mac: [u8; 6],
-    frame: [u8; RECEIVE_CAPACITY],
-    length: usize,
+    frame: NetworkReceiveFrame<'a>,
+    received_errors: &'a Cell<u64>,
+    pending_error: &'a Cell<Option<NetworkError>>,
     ingress_reset: &'a Cell<Option<TcpReset>>,
 }
 
@@ -412,10 +409,18 @@ impl RxToken for EthernetRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let frame = &self.frame[..self.length];
+        let frame = &self.frame;
         self.ingress_reset.set(TcpReset::from_frame(frame));
         packet::deliver(self.net_id, self.interface_index, self.mac, frame);
-        operation(frame)
+        let result = operation(frame);
+        if let Err(error) = self.frame.release() {
+            self.received_errors
+                .set(self.received_errors.get().saturating_add(1));
+            if self.pending_error.get().is_none() {
+                self.pending_error.set(Some(error));
+            }
+        }
+        result
     }
 }
 
@@ -423,7 +428,7 @@ impl RxToken for EthernetRxToken<'_> {
 pub(super) struct EthernetTxToken<'a> {
     net_id: u64,
     interface_index: u32,
-    reservation: Option<NetworkTransmit>,
+    reservation: Option<NetworkTransmit<'a>>,
     maximum_frame_length: usize,
     dropped_transmits: &'a Cell<u64>,
     transmitted_errors: &'a Cell<u64>,
@@ -439,32 +444,49 @@ impl TxToken for EthernetTxToken<'_> {
             length <= self.maximum_frame_length,
             "smoltcp TX exceeds actual Ethernet MTU"
         );
-        let mut frame = [0u8; ETHERNET_MTU];
-        let result = operation(&mut frame[..length]);
-        if length >= 14 {
-            packet::deliver_outgoing(
-                self.net_id,
-                self.interface_index,
-                1,
-                frame[..14].try_into().unwrap(),
-                &frame[14..length],
-                u16::from_be_bytes([frame[12], frame[13]]),
-                None,
-            );
-        }
-        if let Some(reservation) = self.reservation {
-            if let Err(error) = reservation.submit(&frame[..length]) {
-                self.transmitted_errors
-                    .set(self.transmitted_errors.get().saturating_add(1));
-                self.dropped_transmits
-                    .set(self.dropped_transmits.get().saturating_add(1));
-                if self.pending_error.get().is_none() {
-                    self.pending_error.set(Some(error));
-                }
+        let render = |frame: &mut [u8]| {
+            // 保留现有 codec 的零初始化前提（如 reserved/padding），直接在预留槽写入，不另复制帧。
+            frame.fill(0);
+            let result = operation(frame);
+            if length >= 14 {
+                packet::deliver_outgoing(
+                    self.net_id,
+                    self.interface_index,
+                    1,
+                    frame[..14].try_into().unwrap(),
+                    &frame[14..],
+                    u16::from_be_bytes([frame[12], frame[13]]),
+                    None,
+                );
             }
-        } else {
+            result
+        };
+        let (result, error) = match self.reservation {
+            Some(mut reservation) if length <= reservation.capacity() => {
+                let result = render(&mut reservation.buffer_mut()[..length]);
+                (result, reservation.submit(length).err())
+            }
+            reservation => {
+                let error = reservation.as_ref().map(|_| NetworkError::FrameTooLarge);
+                drop(reservation);
+                // 无发送槽也要执行同一协议推进（不能因 TX 拥塞停止 RX/ACK）；此帧只丢弃，不发布 DMA。
+                let mut discarded = [0u8; ETHERNET_MTU];
+                let result = render(&mut discarded[..length]);
+                if error.is_none() {
+                    self.dropped_transmits
+                        .set(self.dropped_transmits.get().saturating_add(1));
+                }
+                (result, error)
+            }
+        };
+        if let Some(error) = error {
+            self.transmitted_errors
+                .set(self.transmitted_errors.get().saturating_add(1));
             self.dropped_transmits
                 .set(self.dropped_transmits.get().saturating_add(1));
+            if self.pending_error.get().is_none() {
+                self.pending_error.set(Some(error));
+            }
         }
         result
     }
@@ -476,15 +498,13 @@ impl Device for EthernetDevice {
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         self.ingress_reset.set(None);
-        let mut frame = [0u8; RECEIVE_CAPACITY];
         for _ in 0..self.device.queue_count() {
             let queue = self.receive_queue;
             self.receive_queue = (queue + 1) % self.device.queue_count();
-            let length = match device_error::classify_optional(
-                self.device.receive(queue, &mut frame),
-                |error| *error == NetworkError::WouldBlock,
-            ) {
-                Ok(Some(length)) => length,
+            let frame = match device_error::classify_optional(self.device.receive(queue), |error| {
+                *error == NetworkError::WouldBlock
+            }) {
+                Ok(Some(frame)) => frame,
                 Ok(None) => continue,
                 Err(error) => {
                     self.record_receive_error(error);
@@ -492,7 +512,7 @@ impl Device for EthernetDevice {
                 }
             };
             let reservation = match device_error::classify_optional(
-                NetworkTransmit::reserve(self.device.clone(), queue),
+                self.device.reserve_transmit(queue),
                 |error| *error == NetworkError::WouldBlock,
             ) {
                 // TX 拥塞不阻塞 RX/ACK；reply token 仍执行同一 codec，并记录无法提交的回复。
@@ -508,7 +528,8 @@ impl Device for EthernetDevice {
                     interface_index: self.interface_index,
                     mac: self.device.mac_address(),
                     frame,
-                    length,
+                    received_errors: &self.received_errors,
+                    pending_error: &self.pending_error,
                     ingress_reset: &self.ingress_reset,
                 },
                 EthernetTxToken {
@@ -526,10 +547,9 @@ impl Device for EthernetDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        match device_error::classify_optional(
-            NetworkTransmit::reserve(self.device.clone(), 0),
-            |error| *error == NetworkError::WouldBlock,
-        ) {
+        match device_error::classify_optional(self.device.reserve_transmit(0), |error| {
+            *error == NetworkError::WouldBlock
+        }) {
             Ok(reservation) => reservation.map(|reservation| EthernetTxToken {
                 net_id: self.net_id,
                 interface_index: self.interface_index,

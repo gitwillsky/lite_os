@@ -1,15 +1,15 @@
 use super::queue::{MAX_BATCH, Queue, Record, Ring};
-use super::{LINK, MEMORY, NETWORK_VERSION, QUEUE, STATISTICS, encode_error};
+use super::{LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, encode_error};
 use crate::directory::{self, Class, Directory, Session, SessionState};
-use crate::{Reader, Writer};
+use crate::{Reader, Writer, take_handle};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use device_model::network::{
-    NetworkController, NetworkProvider, NetworkQueueMemory, NetworkReceive,
+    NetworkController, NetworkProvider, NetworkQueueMemory, NetworkReceive, NetworkRssCapabilities,
     NetworkTransmitDescriptor,
 };
 use native_runtime::native_abi::{self, Status, rights, signals};
 use native_runtime::sync::Mutex;
-use native_runtime::{Channel, Event, Handle};
+use native_runtime::{Channel, Event, Handle, Vmo};
 
 enum TransmitOwner {
     Free { last_ticket: u64 },
@@ -37,9 +37,13 @@ struct SessionQueue {
 struct NetworkSession {
     device: Arc<dyn NetworkProvider>,
     queues: Vec<SessionQueue>,
+    rss: Option<NetworkRssCapabilities>,
 }
 impl NetworkSession {
-    fn new(device: Arc<dyn NetworkProvider>) -> Result<Self, Status> {
+    fn new(
+        device: Arc<dyn NetworkProvider>,
+        rss: Option<NetworkRssCapabilities>,
+    ) -> Result<Self, Status> {
         let mut queues = Vec::new();
         queues
             .try_reserve_exact(device.queue_count() as usize)
@@ -77,7 +81,11 @@ impl NetworkSession {
                 }),
             });
         }
-        Ok(Self { device, queues })
+        Ok(Self {
+            device,
+            queues,
+            rss,
+        })
     }
     fn close_after_stop(&self) {
         // 不能持 consumer 锁等 reset；另一工作者可能正带着该锁完成设备调用。
@@ -103,8 +111,27 @@ impl NetworkSession {
         ordinal: u32,
         request: &mut Reader<'_>,
         reply: &mut Writer,
+        mut handles: Vec<Handle>,
     ) -> Result<Vec<Handle>, Status> {
         match ordinal {
+            RSS_CONFIG => {
+                let cap = self.rss.ok_or(native_abi::ERR_NOT_SUPPORTED)?;
+                let length = request.usize()?;
+                if length < 12 || length > super::rss::maximum_bytes(cap) {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                let snapshot = Vmo::from_handle(take_handle(&mut handles, 0)?);
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(length)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                bytes.resize(length, 0);
+                snapshot.read(&mut bytes, 0)?;
+                let config = super::rss::decode(&bytes, self.device.queue_count(), cap)?;
+                self.device
+                    .set_receive_scaling(&config)
+                    .map_err(encode_error)?;
+            }
             LINK => {
                 let link = self.device.link().map_err(encode_error)?;
                 reply
@@ -394,7 +421,16 @@ pub fn publish(
     let mut description = directory::description();
     description
         .u16(NETWORK_VERSION)
-        .u16(controller.maximum_queue_pairs())
+        .u16(controller.maximum_queue_pairs());
+    let rss = controller.receive_scaling();
+    description.bool(rss.is_some());
+    if let Some(cap) = rss {
+        description
+            .u8(cap.maximum_key_bytes)
+            .u16(cap.maximum_table_entries)
+            .u32(cap.hash_types);
+    }
+    description
         .bytes(&controller.mac_address())
         .bytes(controller.driver().as_bytes());
     directory
@@ -426,9 +462,11 @@ pub fn publish(
                     hardware.push(event);
                 }
 
-                let session =
-                    Arc::try_new(SessionState::new(NetworkSession::new(device.clone())?, end))
-                        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                let session = Arc::try_new(SessionState::new(
+                    NetworkSession::new(device.clone(), rss)?,
+                    end,
+                ))
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let (client, server) = Channel::create()?;
                 let watch = server.duplicate(rights::SAME)?;
                 let mut events = Vec::new();
@@ -443,8 +481,8 @@ pub fn publish(
                 let activity = Arc::try_new(move || active.get().dispatch())
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let handler = Arc::try_new(
-                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                        session.get().handle(ordinal, request, reply)
+                    move |ordinal: u32, request: &mut Reader<'_>, handles, reply: &mut Writer| {
+                        session.get().handle(ordinal, request, reply, handles)
                     },
                 )
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;

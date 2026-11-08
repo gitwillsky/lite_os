@@ -9,7 +9,7 @@ use native_runtime::native_abi::signals;
 use native_runtime::sync::Once;
 
 use crate::{namespace::Namespace, receive::ReceiveBuffer};
-use device_model::network::{NetworkError, NetworkTransmit};
+use device_model::network::NetworkError;
 use fallible_tree::FallibleMap;
 use network_protocol::{PacketAddress, PacketKind, SocketError, SocketPollState};
 
@@ -317,13 +317,14 @@ impl PacketSocket {
             return Err(SocketError::Invalid);
         }
         let device = device.expect("Ethernet interface owns its NIC");
-        let transmit = NetworkTransmit::reserve(device, 0).map_err(network_error)?;
-        let mut frame = Vec::new();
-        frame
-            .try_reserve_exact(ETH_HEADER_LENGTH + payload.len())
-            .map_err(|_| SocketError::NoMemory)?;
-        frame.extend_from_slice(&link_header);
-        frame.extend_from_slice(payload);
+        let mut transmit = device.reserve_transmit(0).map_err(network_error)?;
+        let length = ETH_HEADER_LENGTH + payload.len();
+        if length > transmit.capacity() {
+            return Err(SocketError::MessageTooLarge);
+        }
+        let frame = &mut transmit.buffer_mut()[..length];
+        frame[..ETH_HEADER_LENGTH].copy_from_slice(&link_header);
+        frame[ETH_HEADER_LENGTH..].copy_from_slice(payload);
         deliver_outgoing(
             self.namespace.id(),
             interface.index,
@@ -333,7 +334,7 @@ impl PacketSocket {
             u16::from_be(target.protocol),
             Some(self.id),
         );
-        transmit.submit(&frame).map_err(network_error)?;
+        transmit.submit(length).map_err(network_error)?;
         Ok(input.len())
     }
 
