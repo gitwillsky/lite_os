@@ -211,14 +211,24 @@ fn minimized_windows_are_skipped_by_activation() {
         "already minimized"
     );
     assert_eq!(stack.active(), Some((ClientId(1), surface(5))));
-    assert!(stack.placement(ClientId(2), surface(5)).unwrap().minimized());
+    assert!(
+        stack
+            .placement(ClientId(2), surface(5))
+            .unwrap()
+            .minimized()
+    );
     // 全部最小化后没有活动窗口。
     stack.minimize(ClientId(1), surface(5));
     assert_eq!(stack.active(), None);
     // 激活会恢复最小化并提到最上层，即使它本来就在栈顶。
     assert!(stack.raise(ClientId(2), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
-    assert!(!stack.placement(ClientId(2), surface(5)).unwrap().minimized());
+    assert!(
+        !stack
+            .placement(ClientId(2), surface(5))
+            .unwrap()
+            .minimized()
+    );
     // 撤销批量最小化与主动激活不同：恢复后台窗口不能把它提到前台。
     assert!(stack.unminimize(ClientId(1), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
@@ -318,4 +328,63 @@ fn refit_follows_the_work_area_for_maximized_windows_only() {
     // 普通窗口永远不被 refit 触碰。
     let mut normal = two_windows();
     assert!(normal.refit(work, FULL).is_empty());
+}
+
+#[test]
+fn batch_minimize_undo_preserves_manual_choices_modes_and_order() {
+    let mut stack = two_windows();
+    let owner = ClientId(10);
+    stack.set_mode(ClientId(1), surface(5), Mode::Maximized, FULL, FULL);
+    let before = stack.windows().to_vec();
+    // 手动最小化先于批量命令，即使客户端还没有收到快照，也不能加入撤销集合。
+    stack.minimize(ClientId(2), surface(5));
+    assert!(stack.minimize_all(owner));
+    assert!(!stack.minimize_all(owner));
+    assert!(stack.can_undo(owner));
+    assert!(!stack.undo_minimize_all(ClientId(11)));
+    assert!(stack.undo_minimize_all(owner));
+    assert!(
+        stack
+            .placement(ClientId(2), surface(5))
+            .unwrap()
+            .minimized()
+    );
+    assert_eq!(stack.windows()[0], before[0]);
+    assert_eq!(stack.active(), Some((ClientId(1), surface(5))));
+    // 批量命令之后的手动最小化同样替代该窗口的来源，不能被迟到的撤销覆盖。
+    assert!(stack.minimize_all(owner));
+    assert!(stack.minimize(ClientId(1), surface(5)));
+    assert!(!stack.can_undo(owner));
+    assert!(stack.undo_minimize_all(owner));
+    assert!(stack.windows().iter().all(|placed| placed.minimized()));
+}
+
+#[test]
+fn show_desktop_toggles_and_new_windows_end_elevation_without_reordering_undo() {
+    let mut stack = two_windows();
+    let owner = ClientId(10);
+    let before = stack.windows().to_vec();
+    assert!(stack.toggle_desktop(owner));
+    assert!(stack.showing_desktop());
+    assert_eq!(stack.active(), None);
+    assert!(stack.windows().iter().all(|placed| !stack.visible(placed)));
+    assert!(stack.toggle_desktop(owner));
+    assert_eq!(stack.windows(), before);
+    assert!(!stack.showing_desktop());
+    assert!(stack.toggle_desktop(owner));
+    stack.sync(
+        &[
+            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(3), surface(5), 300, 200, Initial::Cascade),
+        ],
+        SCREEN,
+        1,
+    );
+    assert!(!stack.showing_desktop());
+    assert_eq!(stack.active(), Some((ClientId(3), surface(5))));
+    // 撤销与外壳断连使用同一 owner 操作；新窗口的焦点与层次不受旧命令影响。
+    assert!(stack.undo_minimize_all(owner));
+    assert_eq!(&stack.windows()[..2], before);
+    assert_eq!(stack.active(), Some((ClientId(3), surface(5))));
 }

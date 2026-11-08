@@ -110,7 +110,9 @@ impl Session {
             .rev()
             .find_map(|(client, popup)| {
                 let root = windows.iter().find(|root| {
-                    root.client == client && root.surface == popup.client_root && self.stack.visible(root)
+                    root.client == client
+                        && root.surface == popup.client_root
+                        && self.stack.visible(root)
                 })?;
                 self.tree_hit(
                     client,

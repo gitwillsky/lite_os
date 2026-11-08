@@ -44,9 +44,9 @@ fn ordinary_clients_see_the_window_list_but_never_the_shell_globals() {
     let globals = globals_of(Harness::new());
     assert!(globals.contains(&"zwlr_foreign_toplevel_manager_v1".to_owned()));
     assert!(
-        !globals
-            .iter()
-            .any(|name| name.contains("layer_shell") || name.contains("security_context") || name == "liteos_shell_v1"),
+        !globals.iter().any(|name| name.contains("layer_shell")
+            || name.contains("security_context")
+            || name == "liteos_shell_v1"),
         "{globals:?}"
     );
 }
@@ -59,6 +59,7 @@ fn privileged_clients_see_layer_shell_and_foreign_toplevel() {
     assert!(globals.contains(&"zwlr_layer_shell_v1".to_owned()));
     assert!(globals.contains(&"zwlr_foreign_toplevel_manager_v1".to_owned()));
     assert!(globals.contains(&"wp_security_context_manager_v1".to_owned()));
+    assert!(!globals.contains(&"liteos_shell_v1".to_owned()));
     assert_eq!(globals.len(), 14);
 }
 
@@ -67,6 +68,7 @@ fn an_ordinary_client_cannot_bind_a_shell_global_by_guessing_its_name() {
     for (name, interface) in [
         (6, "zwlr_layer_shell_v1"),
         (8, "wp_security_context_manager_v1"),
+        (16, "liteos_shell_v1"),
     ] {
         let mut harness = Harness::new();
         assert!(bind(&mut harness, name, interface).is_err(), "{interface}");
@@ -84,4 +86,25 @@ fn a_delegated_shell_has_shell_globals_but_cannot_delegate_again() {
     assert!(!globals.contains(&"wp_security_context_manager_v1".to_owned()));
     assert!(globals.contains(&"liteos_shell_v1".to_owned()));
     assert_eq!(globals.len(), 14);
+}
+
+#[test]
+fn shell_control_lifetime_and_state_are_bound_to_the_authorized_object() {
+    use wayland_wire::protocol::liteos_shell_v1 as shell;
+    let mut harness = Harness {
+        client: Client::shell(OUTPUT),
+    };
+    bind(&mut harness, 16, "liteos_shell_v1").unwrap();
+    assert!(harness.client.has_shell_control());
+    harness.client.sync_shell(shell::state::CANUNDO);
+    let events = harness.events(&[(50, Interface::LiteosShellV1)]);
+    assert!(
+        matches!(&events[..], [Event { object: 50, event: AnyEvent::LiteosShellV1(shell::Event::State { flags }) }] if *flags == shell::state::CANUNDO)
+    );
+    harness.client.sync_shell(shell::state::CANUNDO);
+    assert!(harness.events(&[(50, Interface::LiteosShellV1)]).is_empty());
+    harness
+        .send(|w| shell::Request::Destroy.encode(id(50), w).unwrap())
+        .unwrap();
+    assert!(!harness.client.has_shell_control());
 }

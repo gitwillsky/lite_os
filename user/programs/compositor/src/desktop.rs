@@ -35,15 +35,24 @@ pub struct Placement {
 
 /// 最小化来源是窗口状态的一部分，撤销不能覆盖后来的手动选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Visibility { Visible, Minimized, BatchMinimized }
+enum Visibility {
+    Visible,
+    Minimized,
+    BatchMinimized,
+}
 
 impl Placement {
     /// 当前是否最小化；不泄露外壳事务的内部来源。
-    pub fn minimized(&self) -> bool { self.visibility != Visibility::Visible }
+    pub fn minimized(&self) -> bool {
+        self.visibility != Visibility::Visible
+    }
 }
 
 /// 同一窗口栈只保留最近一次有效的批量操作；没有窗口 ID/几何的第二份快照。
-struct ShellBatch { owner: ClientId, showing_desktop: bool }
+struct ShellBatch {
+    owner: ClientId,
+    showing_desktop: bool,
+}
 
 /// 新窗口的初始位置策略（合成器自己的窗口管理策略；Wayland 客户端不能指定位置）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,52 +81,80 @@ const CASCADE_ORIGIN: i32 = 40;
 
 impl Stack {
     /// 最近批量操作的授权连接；连接或最后一个控制对象退出时必须撤销。
-    pub fn batch_owner(&self) -> Option<ClientId> { self.batch.as_ref().map(|batch| batch.owner) }
+    pub fn batch_owner(&self) -> Option<ClientId> {
+        self.batch.as_ref().map(|batch| batch.owner)
+    }
 
     /// 桌面是否已提升至普通窗口之上；Top/Overlay 外壳不受影响。
-    pub fn showing_desktop(&self) -> bool { self.batch.as_ref().is_some_and(|batch| batch.showing_desktop) }
+    pub fn showing_desktop(&self) -> bool {
+        self.batch
+            .as_ref()
+            .is_some_and(|batch| batch.showing_desktop)
+    }
 
     /// 指定连接能否撤销它最近一次批量最小化。
     pub fn can_undo(&self, owner: ClientId) -> bool {
-        self.batch_owner() == Some(owner) && self.order.iter().any(|placed| placed.visibility == Visibility::BatchMinimized)
+        self.batch_owner() == Some(owner)
+            && self
+                .order
+                .iter()
+                .any(|placed| placed.visibility == Visibility::BatchMinimized)
     }
 
     /// 普通窗口是否位于当前桌面之上；绘制和输入共用此判定。
-    pub fn visible(&self, placed: &Placement) -> bool { !placed.minimized() && !self.showing_desktop() }
+    pub fn visible(&self, placed: &Placement) -> bool {
+        !placed.minimized() && !self.showing_desktop()
+    }
 
     /// 原子最小化本次可见的窗口；重复空操作保留撤销来源，不分配 ID 快照。
-    pub fn minimize_all(&mut self, owner: ClientId) -> bool { self.begin_batch(owner, false) }
+    pub fn minimize_all(&mut self, owner: ClientId) -> bool {
+        self.begin_batch(owner, false)
+    }
 
     fn begin_batch(&mut self, owner: ClientId, showing_desktop: bool) -> bool {
-        if !showing_desktop && !self.order.iter().any(|placed| !placed.minimized()) { return false; }
+        if !showing_desktop && !self.order.iter().any(|placed| !placed.minimized()) {
+            return false;
+        }
         for placed in &mut self.order {
             placed.visibility = match placed.visibility {
                 Visibility::Visible => Visibility::BatchMinimized,
                 Visibility::BatchMinimized | Visibility::Minimized => Visibility::Minimized,
             };
         }
-        self.batch = Some(ShellBatch { owner, showing_desktop });
+        self.batch = Some(ShellBatch {
+            owner,
+            showing_desktop,
+        });
         true
     }
 
     /// 只还原仍属于本连接批量操作的窗口，保留原栈序、模式和后来的手动最小化。
     pub fn undo_minimize_all(&mut self, owner: ClientId) -> bool {
-        if self.batch_owner() != Some(owner) { return false; }
+        if self.batch_owner() != Some(owner) {
+            return false;
+        }
         self.batch = None;
         for placed in &mut self.order {
-            if placed.visibility == Visibility::BatchMinimized { placed.visibility = Visibility::Visible; }
+            if placed.visibility == Visibility::BatchMinimized {
+                placed.visibility = Visibility::Visible;
+            }
         }
         true
     }
 
     /// 切换显示桌面；切换决定发生在栈 owner，不读取异步客户端快照。
     pub fn toggle_desktop(&mut self, owner: ClientId) -> bool {
-        if self.batch_owner() == Some(owner) && self.showing_desktop() { self.undo_minimize_all(owner) }
-        else { self.begin_batch(owner, true) }
+        if self.batch_owner() == Some(owner) && self.showing_desktop() {
+            self.undo_minimize_all(owner)
+        } else {
+            self.begin_batch(owner, true)
+        }
     }
 
     fn leave_desktop(&mut self) -> bool {
-        self.batch.as_mut().is_some_and(|batch| std::mem::replace(&mut batch.showing_desktop, false))
+        self.batch
+            .as_mut()
+            .is_some_and(|batch| std::mem::replace(&mut batch.showing_desktop, false))
     }
 
     /// 自底向上的窗口。
@@ -261,7 +298,9 @@ impl Stack {
 
     /// 活动窗口：栈中最上层的未最小化窗口。把活动状态放在栈序里，就不会出现"栈序与焦点不一致"的第二份状态。
     pub fn active(&self) -> Option<(ClientId, ObjectId)> {
-        if self.showing_desktop() { return None; }
+        if self.showing_desktop() {
+            return None;
+        }
         self.order
             .iter()
             .rev()
@@ -273,7 +312,9 @@ impl Stack {
     /// 活动窗口及沿 set_parent 向下查找的祖先都不是全屏时返回 None，任务栏仍在普通窗口之上。
     /// 只查找当前窗口之前的父窗口，使栈内悬空或循环 parent 不会导致遍历不终止。
     pub fn fullscreen_start(&self) -> Option<usize> {
-        if self.showing_desktop() { return None; }
+        if self.showing_desktop() {
+            return None;
+        }
         let mut index = self.order.iter().rposition(|placed| !placed.minimized())?;
         loop {
             let placed = &self.order[index];

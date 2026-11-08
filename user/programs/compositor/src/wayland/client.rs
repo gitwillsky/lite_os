@@ -510,7 +510,11 @@ impl Client {
             .into_iter()
             .chain(privileged)
             .chain(session)
-            .chain((self.privilege == Privilege::Shell).then_some((16, Interface::LiteosShellV1, 1)))
+            .chain((self.privilege == Privilege::Shell).then_some((
+                16,
+                Interface::LiteosShellV1,
+                1,
+            )))
             .chain(
                 self.gpu
                     .is_some()
@@ -534,7 +538,11 @@ impl Client {
                 id.interface, id.version
             )));
         }
-        let data = if interface == Interface::LiteosShellV1 { Data::Shell(None) } else { Data::None };
+        let data = if interface == Interface::LiteosShellV1 {
+            Data::Shell(None)
+        } else {
+            Data::None
+        };
         self.create(id.id, interface, id.version, data)?;
         if interface == Interface::ZwpLinuxDmabufV1 {
             self.announce_dmabuf(id.id, id.version)?;

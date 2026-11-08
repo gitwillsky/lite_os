@@ -404,7 +404,9 @@ impl Display {
         }
         let shell = if globals.iter().any(|(_, name, _)| name == "liteos_shell_v1") {
             Some((bind(Interface::LiteosShellV1, 1)?, 0))
-        } else { None };
+        } else {
+            None
+        };
         let dialog_manager = if globals
             .iter()
             .any(|(_, name, _)| name == "xdg_wm_dialog_v1")

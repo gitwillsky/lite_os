@@ -368,7 +368,9 @@ impl Desktop {
         use popups::Action;
         match action {
             Action::MinimizeAll => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
-            Action::UndoMinimizeAll => display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?,
+            Action::UndoMinimizeAll => {
+                display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?
+            }
             Action::TaskManager => self.launch_task_manager(),
             Action::TaskbarProperties => self.control_panel("taskbar"),
             Action::SystemProperties => self.control_panel("system"),
@@ -455,7 +457,7 @@ impl Desktop {
                 self.apps = installed_programs();
                 self.refresh_icons();
             }
-            Action::Window(id, request) => display.control_toplevel( id, request)?,
+            Action::Window(id, request) => display.control_toplevel(id, request)?,
         }
         Ok(())
     }
@@ -1253,7 +1255,9 @@ impl Desktop {
                 18 => self.open_place(start::Place::MyComputer),
                 19 => self.dialog(display, Kind::Run)?,
                 32 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
-                50 if modifiers.shift => display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?,
+                50 if modifiers.shift => {
+                    display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?
+                }
                 50 => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
                 119 => self.control_panel("system"),
                 _ => unreachable!("matched shell shortcut"),

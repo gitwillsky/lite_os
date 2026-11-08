@@ -171,12 +171,13 @@ impl Client {
             // 保留已告知窗口的记录；对象表删除句柄后不再更新它，也不重复宣告同一窗口。
             R::Destroy => return Ok(()),
         };
-        self.requests.push(super::WindowCommand::Foreign(ForeignRequest {
-            shell: ClientId(0),
-            client,
-            surface,
-            action,
-        }));
+        self.requests
+            .push(super::WindowCommand::Foreign(ForeignRequest {
+                shell: ClientId(0),
+                client,
+                surface,
+                action,
+            }));
         Ok(())
     }
 
@@ -298,5 +299,4 @@ impl Client {
         let _ = handle::Event::Done.encode(handle, writer);
         *sent = window.clone();
     }
-
 }

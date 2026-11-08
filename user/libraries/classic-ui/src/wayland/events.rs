@@ -39,7 +39,10 @@ impl Display {
     }
 
     pub(super) fn dispatch(&mut self, object: ObjectId, event: AnyEvent) -> io::Result<()> {
-        if self.shell_event(object, &event) || self.foreign_event(object, &event)? || self.clipboard_event(object, &event)? {
+        if self.shell_event(object, &event)
+            || self.foreign_event(object, &event)?
+            || self.clipboard_event(object, &event)?
+        {
             return Ok(());
         }
         match event {

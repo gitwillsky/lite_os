@@ -95,7 +95,9 @@ impl Session {
             }
             for (client, popup) in &popup_views {
                 if let Some(root) = group.iter().find(|root| {
-                    root.client == *client && root.surface == popup.client_root && self.stack.visible(root)
+                    root.client == *client
+                        && root.surface == popup.client_root
+                        && self.stack.visible(root)
                 }) {
                     append(
                         *client,

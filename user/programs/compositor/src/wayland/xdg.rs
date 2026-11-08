@@ -381,7 +381,8 @@ impl Client {
             },
             _ => return Err(Fail::implementation(toplevel)),
         };
-        self.requests.push(super::WindowCommand::Toplevel(surface, request));
+        self.requests
+            .push(super::WindowCommand::Toplevel(surface, request));
         Ok(())
     }
 

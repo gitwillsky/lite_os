@@ -263,7 +263,12 @@ fn popup_with_incomplete_positioner_is_a_protocol_error() {
 
 #[test]
 fn window_requests_are_queued_keyed_by_surface() {
-    let mut harness = Harness::bound();
+    let mut harness = Harness::bound_with(
+        Harness {
+            client: Client::shell(OUTPUT),
+        },
+        3,
+    );
     let serial = window(&mut harness);
     ack(&mut harness, serial).unwrap();
     for request in [
@@ -297,8 +302,95 @@ fn window_requests_are_queued_keyed_by_surface() {
         WindowRequest::Minimize,
         WindowRequest::Fullscreen(true),
     ];
-    assert_eq!(requests, expected.map(|request| crate::wayland::WindowCommand::Toplevel(id(5), request)).to_vec());
+    assert_eq!(
+        requests,
+        expected
+            .map(|request| crate::wayland::WindowCommand::Toplevel(id(5), request))
+            .to_vec()
+    );
     assert!(harness.client.take_requests().is_empty());
+    // 标准单窗命令、foreign-toplevel 与系统批量命令必须保留同一连接上的线序。
+    use crate::wayland::{
+        ClientId, ForeignAction, ForeignInfo, ForeignRequest, ForeignState, WindowCommand,
+    };
+    use wayland_wire::protocol::{
+        liteos_shell_v1 as shell, zwlr_foreign_toplevel_handle_v1 as handle,
+    };
+    harness
+        .send(|w| {
+            for (name, interface, object, version) in [
+                (7, "zwlr_foreign_toplevel_manager_v1", 52, 3),
+                (16, "liteos_shell_v1", 60, 1),
+            ] {
+                wl_registry::Request::Bind {
+                    name,
+                    id: DynamicNewId {
+                        interface: interface.into(),
+                        version,
+                        id: id(object),
+                    },
+                }
+                .encode(id(2), w)
+                .unwrap();
+            }
+        })
+        .unwrap();
+    harness.client.sync_foreign(&[ForeignInfo {
+        client: ClientId(99),
+        surface: id(5),
+        title: "target".into(),
+        app_id: "target".into(),
+        state: ForeignState::default(),
+    }]);
+    let events = harness.events(&[(52, Interface::ZwlrForeignToplevelManagerV1)]);
+    let target = events
+        .iter()
+        .find_map(|event| match event.event {
+            AnyEvent::ZwlrForeignToplevelManagerV1(
+                wayland_wire::protocol::zwlr_foreign_toplevel_manager_v1::Event::Toplevel {
+                    toplevel,
+                },
+            ) => Some(toplevel),
+            _ => None,
+        })
+        .unwrap();
+    harness
+        .send(|w| {
+            xdg_toplevel::Request::SetMinimized
+                .encode(id(22), w)
+                .unwrap();
+            handle::Request::SetMinimized.encode(target, w).unwrap();
+            shell::Request::Perform {
+                action: shell::Action::MinimizeAll,
+            }
+            .encode(id(60), w)
+            .unwrap();
+            handle::Request::UnsetMinimized.encode(target, w).unwrap();
+            shell::Request::Perform {
+                action: shell::Action::UndoMinimizeAll,
+            }
+            .encode(id(60), w)
+            .unwrap();
+        })
+        .unwrap();
+    let foreign = |action| {
+        WindowCommand::Foreign(ForeignRequest {
+            shell: ClientId(0),
+            client: ClientId(99),
+            surface: id(5),
+            action,
+        })
+    };
+    assert_eq!(
+        harness.client.take_requests(),
+        [
+            WindowCommand::Toplevel(id(5), WindowRequest::Minimize),
+            foreign(ForeignAction::Minimize(true)),
+            WindowCommand::Shell(shell::Action::MinimizeAll),
+            foreign(ForeignAction::Minimize(false)),
+            WindowCommand::Shell(shell::Action::UndoMinimizeAll),
+        ]
+    );
     assert!(
         harness
             .send(|w| {

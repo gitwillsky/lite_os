@@ -14,7 +14,9 @@ impl Session {
                     continue;
                 }
                 WindowCommand::Shell(action) => {
-                    if self.server.has_shell_control(client) { self.shell_command(client, action); }
+                    if self.server.has_shell_control(client) {
+                        self.shell_command(client, action);
+                    }
                     continue;
                 }
             };
@@ -96,61 +98,63 @@ impl Session {
 
     /// 处理外壳（任务栏）通过 foreign-toplevel 对窗口提出的操作。
     fn handle_foreign_request(&mut self, request: crate::wayland::ForeignRequest) {
-            let (client, surface) = (request.client, request.surface);
-            if self.stack.placement(client, surface).is_none() {
-                return;
+        let (client, surface) = (request.client, request.surface);
+        if self.stack.placement(client, surface).is_none() {
+            return;
+        }
+        // 窗口操作交还焦点。矩形只更新动画端点，不能抢走桌面刚获得的键盘焦点。
+        if !self.secure_pending && !matches!(request.action, ForeignAction::Rectangle { .. }) {
+            self.keyboard_layer = None;
+        }
+        match request.action {
+            ForeignAction::Activate => {
+                self.restore_window(client, surface);
             }
-            // 窗口操作交还焦点。矩形只更新动画端点，不能抢走桌面刚获得的键盘焦点。
-            if !self.secure_pending && !matches!(request.action, ForeignAction::Rectangle { .. }) {
-                self.keyboard_layer = None;
-            }
-            match request.action {
-                ForeignAction::Activate => {
-                    self.restore_window(client, surface);
-                }
-                ForeignAction::Minimize(false) => self.unminimize_window(client, surface),
-                ForeignAction::Minimize(true) => self.minimize_window(client, surface),
-                ForeignAction::Rectangle {
-                    surface: shell_surface,
-                    x,
-                    y,
-                    width,
-                    height,
-                } => {
-                    // 矩形是外壳 surface 内的逻辑坐标，换算到输出物理坐标。
-                    let scale = self.scale as i32;
-                    if let Some(layer) = self.layer_boxes().iter().find(|layer| {
-                        layer.client == request.shell && layer.surface == shell_surface
-                    }) {
-                        self.minimize_targets.insert(
-                            (client, surface),
-                            (
-                                layer.x + x * scale,
-                                layer.y + y * scale,
-                                width * scale,
-                                height * scale,
-                            ),
-                        );
-                    }
-                }
-                ForeignAction::Maximize(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Maximized } else { Mode::Normal },
+            ForeignAction::Minimize(false) => self.unminimize_window(client, surface),
+            ForeignAction::Minimize(true) => self.minimize_window(client, surface),
+            ForeignAction::Rectangle {
+                surface: shell_surface,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // 矩形是外壳 surface 内的逻辑坐标，换算到输出物理坐标。
+                let scale = self.scale as i32;
+                if let Some(layer) = self
+                    .layer_boxes()
+                    .iter()
+                    .find(|layer| layer.client == request.shell && layer.surface == shell_surface)
+                {
+                    self.minimize_targets.insert(
+                        (client, surface),
+                        (
+                            layer.x + x * scale,
+                            layer.y + y * scale,
+                            width * scale,
+                            height * scale,
+                        ),
                     );
                 }
-                ForeignAction::Fullscreen(on) => {
-                    self.set_mode(
-                        client,
-                        surface,
-                        if on { Mode::Fullscreen } else { Mode::Normal },
-                    );
-                }
-                ForeignAction::Close => self
-                    .server
-                    .with_client(client, |client| client.close(surface)),
             }
+            ForeignAction::Maximize(on) => {
+                self.set_mode(
+                    client,
+                    surface,
+                    if on { Mode::Maximized } else { Mode::Normal },
+                );
+            }
+            ForeignAction::Fullscreen(on) => {
+                self.set_mode(
+                    client,
+                    surface,
+                    if on { Mode::Fullscreen } else { Mode::Normal },
+                );
+            }
+            ForeignAction::Close => self
+                .server
+                .with_client(client, |client| client.close(surface)),
+        }
     }
 
     fn publish_batch(&mut self) {
@@ -160,32 +164,42 @@ impl Session {
             let placed = &self.stack.windows()[index];
             self.send_configure(placed.client, placed.surface, None, false);
         }
-        if !self.secure_pending { self.keyboard_layer = None; }
+        if !self.secure_pending {
+            self.keyboard_layer = None;
+        }
         self.dirty = true;
     }
 
-    fn shell_command(&mut self, owner: ClientId, action: wayland_wire::protocol::liteos_shell_v1::Action) {
+    fn shell_command(
+        &mut self,
+        owner: ClientId,
+        action: wayland_wire::protocol::liteos_shell_v1::Action,
+    ) {
         use wayland_wire::protocol::liteos_shell_v1::Action;
         let changed = match action {
             Action::MinimizeAll => self.stack.minimize_all(owner),
             Action::UndoMinimizeAll => self.stack.undo_minimize_all(owner),
             Action::ToggleDesktop => self.stack.toggle_desktop(owner),
         };
-        if changed { self.publish_batch(); }
+        if changed {
+            self.publish_batch();
+        }
     }
 
     /// 最后一个授权对象关闭时先撤销，不能遗留无人能恢复的批量隐藏窗口。
     pub(super) fn sync_shell(&mut self) {
         if let Some(owner) = self.stack.batch_owner()
             && !self.server.has_shell_control(owner)
-            && self.stack.undo_minimize_all(owner) {
+            && self.stack.undo_minimize_all(owner)
+        {
             self.publish_batch();
         }
         use wayland_wire::protocol::liteos_shell_v1::state;
         let stack = &self.stack;
         self.server.sync_shell(|owner| {
             (u32::from(stack.can_undo(owner)) * state::CANUNDO)
-                | (u32::from(stack.batch_owner() == Some(owner) && stack.showing_desktop()) * state::SHOWINGDESKTOP)
+                | (u32::from(stack.batch_owner() == Some(owner) && stack.showing_desktop())
+                    * state::SHOWINGDESKTOP)
         });
     }
 

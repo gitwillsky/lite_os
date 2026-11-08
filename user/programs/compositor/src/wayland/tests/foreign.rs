@@ -176,12 +176,14 @@ fn handle_requests_become_actions_on_the_right_window() {
         },
     );
     let requests = harness.client.take_requests();
-    let request = |client, action| crate::wayland::WindowCommand::Foreign(ForeignRequest {
-        shell: ClientId(0),
-        client: ClientId(client),
-        surface: id(5),
-        action,
-    });
+    let request = |client, action| {
+        crate::wayland::WindowCommand::Foreign(ForeignRequest {
+            shell: ClientId(0),
+            client: ClientId(client),
+            surface: id(5),
+            action,
+        })
+    };
     assert_eq!(
         requests,
         [

@@ -1,9 +1,7 @@
 //! 任务栏图层：层次/高度/独占区、自动隐藏、任务按钮矩形与悬停提示。
 //! 状态仍由 Desktop 唯一持有；本模块只是同一 owner 的任务栏方法。
 use super::{Desktop, TASKBAR_HEIGHT, paint};
-use classic_ui::{
-    Display, KeyboardInteractivity, Layer, LayerSettings, layer_anchor,
-};
+use classic_ui::{Display, KeyboardInteractivity, Layer, LayerSettings, layer_anchor};
 use std::{io, time::Duration};
 
 /// 自动隐藏的任务栏收起后露出的细线高度。

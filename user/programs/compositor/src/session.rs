@@ -1,11 +1,11 @@
 //! 显示会话主循环：输入、Wayland 连接、窗口栈、桌面外壳与整帧合成的唯一装配点。
 
 mod cursor_requests;
-mod window_requests;
 mod hit_testing;
 mod presentation;
 mod seat_input;
 mod window_menu_commands;
+mod window_requests;
 mod window_switching;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -813,7 +813,6 @@ impl Session {
         self.seat
             .update_pointer(&mut self.server, hit, pointer, scale, time, false);
     }
-
 
     fn set_mode(&mut self, client: ClientId, surface: ObjectId, mode: Mode) {
         let (work, full) = (self.work_area(), self.full_area());

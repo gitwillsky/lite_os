@@ -40,8 +40,8 @@ pub mod layer_edges {
     pub use super::layer::{ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP, exclusive_side};
 }
 pub use seat::CursorRequest;
-pub use shell::WindowCommand;
 pub use server::{ClientId, Server};
+pub use shell::WindowCommand;
 pub use subsurface::ChildView;
 pub use surface::Content;
 pub use xdg::{ToplevelState, Window, WindowRequest};
