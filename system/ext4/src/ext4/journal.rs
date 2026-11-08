@@ -844,6 +844,24 @@ impl<'a> MutationGuard<'a> {
     /// 第 2 步失败时 guard drop 回滚本次 mutation；第 4 步失败时 journal 已 fail-stop，
     /// 后续 mutation 全部失败。
     pub(super) fn commit(mut self) -> Result<(), FileSystemError> {
+        self.commit_inner()
+    }
+
+    /// 提交失败且尚未并入 running 时，在 mutation owner 释放前撤销外部预留转换。
+    /// # Errors
+    /// 同 commit；并入后提交 I/O 失败已 fail-stop，不把已分配块重新计为预留。
+    pub(super) fn commit_with_rollback(
+        mut self,
+        rollback: impl FnOnce(),
+    ) -> Result<(), FileSystemError> {
+        let result = self.commit_inner();
+        if result.is_err() && !self.committed {
+            rollback();
+        }
+        result
+    }
+
+    fn commit_inner(&mut self) -> Result<(), FileSystemError> {
         let allocation_dirty = self
             .fs
             .journal

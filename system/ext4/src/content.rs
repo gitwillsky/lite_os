@@ -4,13 +4,12 @@
 //! 1. 缺页：pager 工作线程从存储读入并补页；越过 EOF 的部分补零。
 //! 2. 写：延迟分配。write 只预留尚未分配的 block（ENOSPC 在这里同步报告给写者）、提交文件大小与修改时间，
 //!    数据只写入内容 VMO 并留下脏标记；块分配与落盘发生在回写（fsync、syncfs、5 秒周期、节点释放、脏数据超限）。
-//! 3. 映射写入使页变脏；[`Content::writeback`] 查询脏区间、先清脏再读出并写入存储（读出之后的并发写会重新
-//!    标脏，不会被本次回写吞掉）。
+//! 3. 映射写入使页变脏；[`Content::writeback`] 固定本批页后开始回写代次，直接 DMA 写出、解除固定后确认。
+//!    并发写重新标脏，不会被较旧的回写确认吞掉。
 //! 4. 截断与分配改变大小后调整 VMO 大小，并清零新末页越过 EOF 的字节。
 
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use native_runtime::native_abi::{self, rights};
@@ -188,8 +187,7 @@ impl Content {
     /// # Errors
     ///
     /// VMO 大小调整或清零失败。
-    pub(crate) fn resized(&self) -> Result<(), FileSystemError> {
-        let mut reserved = self.reserved.lock();
+    fn resized(&self, reserved: &mut BTreeSet<u32>) -> Result<(), FileSystemError> {
         let size = self.inode.size();
         // 截断后越过新 EOF 的预留作废（那些页随 VMO 缩小被丢弃，不会再回写）。
         let keep = size.div_ceil(self.inode.block_size() as u64) as u32;
@@ -209,6 +207,31 @@ impl Content {
         Ok(())
     }
 
+    /// 在同一内容事务中回写、截断并调整 VMO，排除写回重新插入被截去的 extent。
+    /// # Errors
+    /// 回写、截断或 VMO 调整失败。
+    pub(crate) fn truncate(&self, size: u64, policy: WritePolicy) -> Result<(), FileSystemError> {
+        let mut reserved = self.reserved.lock();
+        self.writeback_range(&mut reserved, 0, u64::MAX)?;
+        self.inode.truncate_storage(size, Some(policy))?;
+        self.resized(&mut reserved)
+    }
+
+    /// 分配范围与内容回写串行；只先转换相交脏页的延迟分配预留。
+    /// # Errors
+    /// 区间溢出、回写、块分配或 VMO 调整失败。
+    pub(crate) fn allocate(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+        let end = offset.checked_add(length).ok_or(FileSystemError::NoSpace)?;
+        let mut reserved = self.reserved.lock();
+        self.writeback_range(
+            &mut reserved,
+            offset / PAGE * PAGE,
+            end.next_multiple_of(PAGE),
+        )?;
+        self.inode.allocate_storage(offset, length, None)?;
+        self.resized(&mut reserved)
+    }
+
     /// 让 VMO 覆盖到当前 EOF（写入可能扩大文件）。
     fn cover(&self) -> Result<(), FileSystemError> {
         let needed = self.inode.size().next_multiple_of(PAGE);
@@ -224,11 +247,21 @@ impl Content {
     ///
     /// 分配、读出或存储写入失败：未确认页保持可查询，后继回写重试；不覆盖映射期间的新写入。
     pub(crate) fn writeback(&self) -> Result<(), FileSystemError> {
-        let mut reserved = self.reserved.lock();
+        self.writeback_range(&mut self.reserved.lock(), 0, u64::MAX)
+    }
+
+    fn writeback_range(
+        &self,
+        reserved: &mut BTreeSet<u32>,
+        first: u64,
+        limit: u64,
+    ) -> Result<(), FileSystemError> {
         let size = self.inode.size();
-        let end = size.next_multiple_of(PAGE);
-        let mut cursor = 0;
-        self.dirty.store(0, Ordering::Relaxed);
+        let end = size.next_multiple_of(PAGE).min(limit);
+        let mut cursor = first;
+        if first == 0 && limit == u64::MAX {
+            self.dirty.store(0, Ordering::Relaxed);
+        }
         while cursor < end {
             let Some((start, dirty)) = pager_pool::first_dirty(&self.vmo, cursor, end - cursor)
             else {
@@ -242,31 +275,10 @@ impl Content {
                     .op_range(native_abi::vmo::OP_ZERO, size, end - size)
                     .map_err(vmo_error)?;
             }
-            // 回写即将分配这些 block：先归还它们的预留；分配失败则补回（数据仍是脏的，下次再写）。
-            // 数据已经读出，之后不再有会遗漏预留的提前返回。
-            let block_size = self.inode.block_size() as u64;
-            let (first_block, end_block) = (
-                (start / block_size) as u32,
-                (start + valid as u64).div_ceil(block_size) as u32,
-            );
-            let converted: Vec<u32> = {
-                let converted = reserved.range(first_block..end_block).copied().collect();
-                for block in &converted {
-                    reserved.remove(block);
-                }
-                converted
-            };
             self.inode
-                .release_buffered_reservation(converted.len() as u64);
-            let written = self.inode.write_back_vmo(start, chunk, &self.vmo, || {
-                pager_pool::begin_writeback(&self.vmo, start, chunk);
-            });
-            if let Err(error) = written {
-                self.inode
-                    .restore_buffered_reservation(converted.len() as u64);
-                reserved.extend(converted);
-                return Err(error);
-            }
+                .write_back_vmo(start, chunk, &self.vmo, reserved, || {
+                    pager_pool::begin_writeback(&self.vmo, start, chunk);
+                })?;
             pager_pool::end_writeback(&self.vmo, start, chunk);
             cursor = start + chunk;
         }

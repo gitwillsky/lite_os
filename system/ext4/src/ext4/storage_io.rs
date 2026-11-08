@@ -72,6 +72,7 @@ impl Ext4Inode {
         offset: u64,
         length: u64,
         source: &Vmo,
+        reserved: &mut alloc::collections::BTreeSet<u32>,
         begin_writeback: impl FnOnce(),
     ) -> Result<(), FileSystemError> {
         let bs = self.fs.block_size as u64;
@@ -90,8 +91,22 @@ impl Ext4Inode {
         // pin 经写解析保证 COW 独占，可能重新标脏；必须在它完成后开始回写代次，
         // 否则每次 DMA 登记都把刚建立的 AwaitingClean 变回 Dirty，永远无法确认清洁。
         begin_writeback();
+        // 预留的集合仍由 Content 独占；先准备变更记录，再在 FS mutation 内归还配额并分配，
+        // 防止其他文件在释放预留与取得分配 owner 的间隙抢走已向写者承诺的空间。
+        let first = u32::try_from(offset / bs).map_err(|_| FileSystemError::NoSpace)?;
+        let end =
+            u32::try_from((offset + length).div_ceil(bs)).map_err(|_| FileSystemError::NoSpace)?;
+        let mut converted = Vec::new();
+        converted
+            .try_reserve_exact(reserved.range(first..end).count())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        converted.extend(reserved.range(first..end).copied());
+        for block in &converted {
+            reserved.remove(block);
+        }
+        self.release_buffered_reservation(converted.len() as u64);
         let written = (|| {
-            let mut mutation = self.fs.begin_mutation()?;
             let mut runs: Vec<(u64, u64, u64)> = Vec::new();
             let first = u32::try_from(offset / bs).map_err(|_| FileSystemError::NoSpace)?;
             for n in 0..length / bs {
@@ -117,8 +132,21 @@ impl Ext4Inode {
                 let inode = mutation.inode(self)?;
                 self.fs.write_inode_disk(self.inode_num, &inode)?;
             }
-            mutation.commit()
+            Ok(())
         })();
+        // 失败在释放 mutation owner 前补回预留，guard 随后恢复 inode/bitmap；并入成功后不再撤销。
+        let written = match written {
+            Ok(()) => mutation.commit_with_rollback(|| {
+                self.restore_buffered_reservation(converted.len() as u64);
+                reserved.extend(converted);
+            }),
+            Err(error) => {
+                self.restore_buffered_reservation(converted.len() as u64);
+                reserved.extend(converted);
+                drop(mutation);
+                Err(error)
+            }
+        };
         let detached = self.fs.device.detach_buffer(buffer).map_err(block_error);
         written.and(detached)
     }

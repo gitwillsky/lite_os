@@ -455,9 +455,11 @@ MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不
   （fsync、syncfs、5 秒周期、节点释放、单文件脏数据超过 8 MiB 时由写者同步回写，即脏页限流）。预留是精确块数
   （`delalloc_reserved`），准入检查另给总预留留出每 128 块一个 extent 节点的余量；其他分配（metadata、fallocate、直接写）
   只能使用预留之外的空闲 block（`allocate_block_number` 检查），`statfs` 的可用块已扣除预留。回写（`write_back_vmo`）
-  先归还本区间的预留再分配，分配失败则补回预留并把数据留作脏页；它只映射 block，不改大小也不改时间戳，
+  在同一 FS mutation owner 内归还本区间的预留再分配，失败在 owner 释放前补回预留并保留脏页；它只映射 block，不改大小也不改时间戳，
   所以不会覆盖使用者随后用 `utimensat` 设置的 mtime。截断后越过新 EOF 的预留作废，内容被丢弃时剩余预留一并归还。
-  缓冲写入、预留转换和回写确认复用 Content 的预留锁串行；准备失败仅撤销本次新增预留，不移除已有脏数据的块。
+  缓冲写入、预留转换、回写确认及完整 truncate/fallocate 复用 Content 的预留锁串行；准备失败仅撤销本次新增预留，不移除已有脏数据的块。
+  commit_with_rollback 只在并入前失败时归还配额；并入后的 I/O 失败由 journal fail-stop，不撤销已分配块。
+  fallocate 先回写相交脏页以转换其预留，不迫使无关区间落盘；截断先回写再变更 extent 与 VMO，排除旧回写复活截去的块。
   VMO 复制失败可能已修改前缀，保守保留预留到回写/截断/内容退休，不能撤销已修改数据的空间保证。
   ext4 在 BEGIN 前登记本批 VMO slice，linuxd CPU 缓冲在 BEGIN 前准备；失败的待确认页可重试，不把旧快照重新写入 VMO。
   映射并发写由内核写保护/重新置脏保留，回写确认由各内容 owner 的原有操作锁串行。

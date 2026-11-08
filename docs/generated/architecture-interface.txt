@@ -2835,10 +2835,11 @@ system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmio
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioScan
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransport
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn allocate (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn backing_memory (& self) -> Result < Vmo , native_abi :: Status >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn new (inode : Arc < Ext4Inode >) -> Result < Arc < Self > , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
-system/ext4/src/content.rs :: pub (crate) impl Content :: fn resized (& self) -> Result < () , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn truncate (& self , size : u64 , policy : WritePolicy) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn write (& self , offset : u64 , data : & [u8] , policy : Option < WritePolicy > ,) -> Result < usize , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn writeback (& self) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) struct Content
@@ -3039,6 +3040,7 @@ system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut s
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext4FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit_with_rollback (mut self , rollback : impl FnOnce () ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'mutation , 'inode > (& 'mutation mut self , inode : & 'inode Ext4Inode ,) -> Result < InodeMutation < 'mutation , 'inode > , FileSystemError >
 system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn try_begin (fs : & 'a Ext4FileSystem) -> Result < Option < Self > , FileSystemError >
@@ -3146,7 +3148,7 @@ system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn remove_o
 system/ext4/src/ext4/orphan.rs :: pub (super) impl OrphanFile :: const fn unavailable () -> Self
 system/ext4/src/ext4/orphan.rs :: pub (super) struct OrphanFile
 system/ext4/src/ext4/storage_io.rs :: pub (crate) impl Ext4Inode :: fn read_storage_vmo (& self , offset : u64 , length : u64 , target : & Vmo ,) -> Result < () , FileSystemError >
-system/ext4/src/ext4/storage_io.rs :: pub (crate) impl Ext4Inode :: fn write_back_vmo (& self , offset : u64 , length : u64 , source : & Vmo , begin_writeback : impl FnOnce () ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/storage_io.rs :: pub (crate) impl Ext4Inode :: fn write_back_vmo (& self , offset : u64 , length : u64 , source : & Vmo , reserved : & mut alloc :: collections :: BTreeSet < u32 > , begin_writeback : impl FnOnce () ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn finish_write_locked (& self , mutation : & mut MutationGuard < '_ > , end : usize ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn allocate_range (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
 system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u64 , FileSystemError >

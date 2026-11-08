@@ -835,11 +835,12 @@ impl Mount {
                     return Err(errno::EOPNOTSUPP as i32);
                 }
                 let inode = self.handle(handle)?;
-                inode
-                    .allocate_storage(offset, length, None)
-                    .map_err(fs_error)?;
-                if let Some(content) = self.cached_content(&inode) {
-                    content.resized().map_err(fs_error)?;
+                if let Some(content) = self.content(&inode).map_err(fs_error)? {
+                    content.allocate(offset, length).map_err(fs_error)?;
+                } else {
+                    inode
+                        .allocate_storage(offset, length, None)
+                        .map_err(fs_error)?;
                 }
                 Ok(None)
             }
@@ -929,15 +930,13 @@ impl Mount {
         let inode = self.node(header.nodeid)?;
         let kill_suidgid = valid & FATTR_KILL_SUIDGID != 0;
         if valid & fuse::FATTR_SIZE != 0 {
-            // 先写回映射写入：截断只撤去越过新 EOF 的页，之前的脏页必须先到达存储。
-            if let Some(content) = self.cached_content(&inode) {
-                content.writeback().map_err(fs_error)?;
-            }
-            inode
-                .truncate_storage(size, Some(WritePolicy { kill_suidgid }))
-                .map_err(fs_error)?;
-            if let Some(content) = self.cached_content(&inode) {
-                content.resized().map_err(fs_error)?;
+            let policy = WritePolicy { kill_suidgid };
+            if let Some(content) = self.content(&inode).map_err(fs_error)? {
+                content.truncate(size, policy).map_err(fs_error)?;
+            } else {
+                inode
+                    .truncate_storage(size, Some(policy))
+                    .map_err(fs_error)?;
             }
         }
         if valid & (fuse::FATTR_MODE | fuse::FATTR_UID | fuse::FATTR_GID) != 0 || kill_suidgid {
