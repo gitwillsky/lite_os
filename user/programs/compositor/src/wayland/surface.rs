@@ -126,13 +126,21 @@ impl Content {
                 let texture = gpu
                     .create_sampled_texture(width as u32, height as u32)
                     .map_err(Upload)?;
+                // 单像素 SHM 同时保留已读到的确切像素，复用现有 readback owner。
+                // 透明输入根由此无需每帧混合整屏；绝不为此读回 GPU 或扫描大缓冲。
+                let readback = OnceCell::new();
                 gpu.stage_texture(&texture, [0, 0, width as u32, height as u32], |staging| {
-                    spec.read_rect(spec.bounds(), |y, row| staging.write_words(y * width, row))
+                    spec.read_rect(spec.bounds(), |y, row| {
+                        staging.write_words(y * width, row);
+                        if width == 1 && height == 1 {
+                            let _ = readback.set(row.to_vec());
+                        }
+                    })
                 })?;
                 Pixels::Texture {
                     texture: Rc::new(texture),
                     context: gpu.clone(),
-                    readback: OnceCell::new(),
+                    readback,
                 }
             }
         };
@@ -197,6 +205,9 @@ impl Content {
                         &rows,
                     )
                     .map_err(Upload)?;
+                    if self.width == 1 && self.height == 1 {
+                        let _ = readback.set(rows.clone());
+                    }
                 }
             }
             _ => return Ok(false),
@@ -210,6 +221,21 @@ impl Content {
     pub(crate) fn is_dma(&self) -> bool {
         matches!(self.pixels.as_ref(), Pixels::Dma { .. })
     }
+    /// 仅省略已提交 SHM 中确切为零的单像素；视口拉伸不改变其透明性。
+    /// dma-buf 可由外部 GPU 改写，不能用可能过期的 readback 作此证明。
+    pub(crate) fn is_transparent(&self) -> bool {
+        if self.width != 1 || self.height != 1 {
+            return false;
+        }
+        match self.pixels.as_ref() {
+            Pixels::Memory(pixels) => pixels.as_slice() == [0],
+            Pixels::Texture { readback, .. } => readback
+                .get()
+                .is_some_and(|pixels| pixels.as_slice() == [0]),
+            Pixels::Dma { .. } => false,
+        }
+    }
+
     /// GPU 合成采样的纹理；CPU 后端的内容没有纹理。
     pub(crate) fn texture(&self) -> Option<&Rc<linux_uapi::drm::VirglResource>> {
         match self.pixels.as_ref() {

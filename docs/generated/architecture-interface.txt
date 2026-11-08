@@ -2537,7 +2537,7 @@ system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciF
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: transport : PciTransport
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) fn discover () -> Option < VirtioPciFunction >
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) struct VirtioPciFunction
-system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " buffer 长度溢出或没有可发布的 segment。"] InvalidBuffer
+system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " buffer 无效或整条链超过协商的队列总容量。"] InvalidBuffer
 system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " 当前 free descriptor 不足。"] NoDescriptors
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) VirtQueue :: avail : * mut VirtqAvail
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) VirtQueue :: avail_idx : u16
@@ -2596,6 +2596,7 @@ system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn readable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn readable_all (& self) -> DmaSlice < '_ >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn try_zeroed (bti : & Bti) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable_all (& self) -> DmaSlice < '_ >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn length (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn limit_segment_size (mut self , maximum : usize ,) -> Result < Self , DmaMappingError >

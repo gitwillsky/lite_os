@@ -59,6 +59,56 @@ fn set_clip_returns_previous_and_stays_inside_surface() {
 }
 
 #[test]
+fn local_backing_matches_the_same_region_of_a_full_canvas() {
+    fn paint(surface: &mut Surface<'_>) {
+        surface.gradient_horizontal(Rect::new(1, 1, 9, 6), BLACK, WHITE);
+        surface.checker(Rect::new(3, 2, 6, 5), 1, BLACK, RED);
+        surface.blit(
+            Image {
+                pixels: &[WHITE.0, RED.0, BLACK.0, WHITE.0],
+                width: 2,
+                height: 2,
+                stride: 2,
+            },
+            4,
+            3,
+            2,
+        );
+        surface.draw_mask(
+            Mask {
+                coverage: &[0, 128, 255, 255],
+                width: 2,
+                height: 2,
+                stride: 2,
+            },
+            5,
+            4,
+            WHITE,
+        );
+        surface.invert_dotted_frame(Rect::new(2, 1, 8, 6), 1);
+    }
+    let mut full = canvas(12, 9);
+    paint(&mut Surface::new(&mut full, 12, 9, 12).unwrap());
+    let mut local = canvas(5, 4);
+    let mut surface = Surface::new(&mut local, 5, 4, 5)
+        .unwrap()
+        .with_origin((3, 2))
+        .unwrap();
+    assert_eq!(
+        surface.set_clip(Rect::new(0, 0, 12, 9)),
+        Rect::new(3, 2, 5, 4)
+    );
+    paint(&mut surface.reborrow());
+    assert_eq!(surface.pixel(3, 2), Some(Color(at(&full, 12, 3, 2))));
+    assert_eq!(surface.pixel(2, 2), None);
+    for y in 0..4 {
+        for x in 0..5 {
+            assert_eq!(at(&local, 5, x, y), at(&full, 12, x + 3, y + 2));
+        }
+    }
+}
+
+#[test]
 fn bevel_gives_bottom_right_the_mitred_corners() {
     let mut pixels = canvas(5, 5);
     let mut surface = Surface::new(&mut pixels, 5, 5, 5).unwrap();

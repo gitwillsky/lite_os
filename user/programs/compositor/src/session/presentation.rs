@@ -52,8 +52,11 @@ impl Session {
                 if drawable.rect.intersect(screen).is_empty() {
                     continue;
                 }
-                drawables.push(drawable);
+                // 透明输入根仍然已映射，必须交付 frame callback；只省略无像素贡献的绘制。
                 visible.push((client, leaf.surface));
+                if !leaf.content.is_transparent() {
+                    drawables.push(drawable);
+                }
             }
         };
         for layer in boxes.iter().filter(|layer| layer.layer < Layer::Top) {

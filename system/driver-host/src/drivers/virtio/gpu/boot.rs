@@ -334,7 +334,7 @@ impl VirtIOGpuDevice {
             } = &mut *control;
             let slot = commands.boot_slot_mut();
             let request = slot.request.readable(0..request_length).ok()?;
-            let response = slot.response.writable_all();
+            let response = slot.response.writable(0..response_length).ok()?;
             match data {
                 Some((backing, length)) => queue
                     .add_dma(&[

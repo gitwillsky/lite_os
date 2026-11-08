@@ -13,7 +13,7 @@ use dma::{DmaChainRequirement, descriptor_requirement};
 /// Virtqueue descriptor chain 在 publication 前的可恢复构造错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VirtQueueError {
-    /// buffer 长度溢出或没有可发布的 segment。
+    /// buffer 无效或整条链超过协商的队列总容量。
     InvalidBuffer,
     /// 当前 free descriptor 不足。
     NoDescriptors,
@@ -270,13 +270,16 @@ impl VirtQueue {
     }
 
     pub(super) fn add_dma(&mut self, buffers: &[DmaSlice<'_>]) -> Result<u16, VirtQueueError> {
-        let total_count = match descriptor_requirement(buffers, usize::from(self.num_free)) {
+        let total_count = match descriptor_requirement(buffers, usize::from(self.size)) {
             DmaChainRequirement::Required(count) => count,
-            DmaChainRequirement::Empty => return Err(VirtQueueError::InvalidBuffer),
-            DmaChainRequirement::ExceedsCapacity => {
-                return Err(VirtQueueError::NoDescriptors);
+            DmaChainRequirement::Empty | DmaChainRequirement::ExceedsCapacity => {
+                // 没有未来 completion 能让一条超过整个队列的链变得可提交。
+                return Err(VirtQueueError::InvalidBuffer);
             }
         };
+        if total_count > usize::from(self.num_free) {
+            return Err(VirtQueueError::NoDescriptors);
+        }
 
         let total_needed = total_count as u16;
         let head = self.free_head;

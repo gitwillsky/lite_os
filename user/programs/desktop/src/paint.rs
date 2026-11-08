@@ -1,5 +1,5 @@
 //! 桌面、任务栏、开始菜单的经典绘制与共享命中几何。
-use super::{Desktop, TASKBAR_HEIGHT, dialogs::Kind, popups, start};
+use super::{Desktop, dialogs::Kind, popups, start};
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C};
 use classic_ui::{
@@ -412,6 +412,90 @@ fn text(p: &mut Painter<'_>, x: i32, y: i32, text: &str) {
     p.text(x, y, text, Ink::Color(C::ButtonText), false);
 }
 
+/// 同步子表面只光栅弹出内容的包围盒；透明根保持整屏输入和独占键盘，父 commit 原子发表两者。
+/// 子缓冲仍忙时保留失效，等待已有 callback/release；错误随桌面连接退出，不覆盖在途缓冲。
+pub fn present_popup(
+    s: &mut Desktop,
+    display: &mut Display,
+    id: WindowId,
+    c: Configuration,
+    art: &mut Art,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let start = (Some(id) == s.menu).then(|| s.menu_geometry(c));
+    let overlay = s.overlay.as_ref().filter(|(root, _)| *root == id);
+    let mut bounds = Rect::default();
+    let mut cover = |rect: Rect| {
+        if bounds.is_empty() {
+            bounds = rect;
+        } else {
+            let (x, y) = (bounds.x.min(rect.x), bounds.y.min(rect.y));
+            bounds = Rect::new(
+                x,
+                y,
+                bounds.right().max(rect.right()) - x,
+                bounds.bottom().max(rect.bottom()) - y,
+            );
+        }
+    };
+    if let Some((_, geometry)) = &start {
+        cover(geometry.panel);
+        if let Some((panel, _)) = &geometry.flyout {
+            cover(*panel);
+        }
+    } else {
+        match overlay.map(|(_, overlay)| overlay) {
+            Some(popups::Overlay::Volume(panel)) => cover(*panel),
+            Some(popups::Overlay::Menu(menu)) => {
+                for rect in menu.state.popup_rects() {
+                    cover(rect);
+                }
+            }
+            None => return Err("missing popup content".into()),
+        }
+    }
+    let bounds = bounds.intersect(Rect::new(0, 0, c.width, c.height));
+    if bounds.is_empty() {
+        return Ok(true);
+    }
+    let child = match s.popup_surfaces.get(&id) {
+        Some(child) => *child,
+        None => {
+            let child = display.create_subsurface(id, bounds)?;
+            display.set_input_region(child, Some(Rect::default()))?;
+            s.popup_surfaces.insert(id, child);
+            child
+        }
+    };
+    if !display.ready_to_draw(child) {
+        return Ok(false);
+    }
+    display.set_subsurface_bounds(child, bounds)?;
+    display.paint_frame(child, |pixels, configured, _, _| {
+        pixels.fill(0);
+        let (w, h) = configured.pixel_size()?;
+        let surface = Surface::new(pixels, w, h, w as usize)
+            .and_then(|surface| surface.with_origin((bounds.x * c.scale, bounds.y * c.scale)))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let fonts = art.resources.fonts(c.scale)?;
+        let mut p = Painter::new(surface, art.resources.theme(), &fonts, c.scale);
+        if let Some((rows, geometry)) = &start {
+            start::paint(&mut p, art, rows, geometry, s.menu_selection);
+        } else if let Some((_, overlay)) = overlay {
+            match overlay {
+                popups::Overlay::Menu(menu) => menu.paint(&mut p),
+                popups::Overlay::Volume(panel) => {
+                    p.edge(*panel, Edge::Raised);
+                    p.fill(panel.inset(2), C::ButtonFace);
+                    s.volume.paint(&mut p, &sndvol::Layout::popup(*panel));
+                }
+            }
+        }
+        Ok(vec![Rect::new(0, 0, w, h)])
+    })?;
+    display.present_solid(id, 0)?;
+    Ok(true)
+}
+
 pub fn frame(
     s: &Desktop,
     d: &Display,
@@ -531,20 +615,6 @@ pub fn frame(
         }
     } else if let Some((_, text)) = s.tooltip_window.as_ref().filter(|(w, _)| *w == id) {
         p.tooltip(0, 0, text);
-    } else if let Some((_, overlay)) = s.overlay.as_ref().filter(|(w, _)| *w == id) {
-        match overlay {
-            popups::Overlay::Menu(menu) => menu.paint(&mut p),
-            popups::Overlay::Volume(panel) => {
-                p.edge(*panel, Edge::Raised);
-                p.fill(panel.inset(2), C::ButtonFace);
-                s.volume.paint(&mut p, &sndvol::Layout::popup(*panel));
-            }
-        }
-    } else if Some(id) == s.menu {
-        let rows = start::rows(&s.apps);
-        let open = Some(s.menu_selection.top);
-        let g = start::geometry(&rows, (c.width, c.height), TASKBAR_HEIGHT, open);
-        start::paint(&mut p, art, &rows, &g, s.menu_selection);
     } else if let Some(dialog) = s.dialogs.iter().find(|dialog| dialog.window == id) {
         p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
         // layer surface 没有 xdg 的 activated 状态：对话框持有键盘焦点时标题栏画成活动。

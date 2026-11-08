@@ -309,7 +309,12 @@ impl VirtIOGpuDevice {
                 .request
                 .readable(0..prepared.length)
                 .map_err(|_| DisplayError::Device)?;
-            let response = slot.response.writable_all();
+            // 运行期响应只允许写入实际长度。挂入完整 capset 缓冲会多占一页的 descriptor，
+            // 让已按 64 项上限准备的大命令永远无法入队，即使队列为空也只能等待。
+            let response = slot
+                .response
+                .writable(0..response_length)
+                .map_err(|_| DisplayError::Device)?;
             let added = match &prepared.stream {
                 Some((backing, length)) => queue.add_dma(&[
                     request,
@@ -361,7 +366,10 @@ impl VirtIOGpuDevice {
             .request
             .readable(0..request_length)
             .map_err(|_| DisplayError::Device)?;
-        let response = slot.response.writable_all();
+        let response = slot
+            .response
+            .writable(0..CONTROL_HEADER_SIZE)
+            .map_err(|_| DisplayError::Device)?;
         match queue.add_dma(&[request, response]) {
             Ok(head) => Ok(head),
             Err(VirtQueueError::NoDescriptors) => Err(DisplayError::WouldBlock),

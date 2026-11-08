@@ -229,6 +229,17 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
         self.whole(false)
     }
 
+    /// 只允许设备写入实际响应区间。
+    ///
+    /// `range` 是固定缓冲内的字节区间；返回该区间借用的 writable DMA segments。
+    /// 空范围或超出 backing 返回 InvalidRange，不发布 descriptor。
+    pub(in crate::drivers::virtio) fn writable(
+        &self,
+        range: Range<usize>,
+    ) -> Result<DmaSlice<'_>, DmaMappingError> {
+        self.slice(range, true)
+    }
+
     pub(in crate::drivers::virtio) fn writable_all(&self) -> DmaSlice<'_> {
         self.whole(true)
     }
@@ -476,6 +487,34 @@ mod tests {
             observed,
             [(0x1fff, 1, true), (0x5000, 4096, true), (0x9000, 1, true)]
         );
+    }
+
+    #[test]
+    fn writable_prefix_does_not_publish_unused_response_page() {
+        let response = super::DmaBuffer::<4120> {
+            bytes: alloc::boxed::Box::new([0; 4120]),
+            segments: alloc::vec![
+                DmaSegment {
+                    device_address: 0x1000,
+                    offset: 0,
+                    length: 4096
+                },
+                DmaSegment {
+                    device_address: 0x9000,
+                    offset: 4096,
+                    length: 24
+                },
+            ]
+            .into_boxed_slice(),
+        };
+        assert_eq!(response.writable_all().segment_count(), 2);
+        let prefix = response.writable(0..24).unwrap();
+        let mut observed = Vec::new();
+        prefix.for_each_segment(|address, length, writable| {
+            observed.push((address, length, writable))
+        });
+        assert_eq!(observed, [(0x1000, 24, true)]);
+        assert!(response.writable(0..4121).is_err());
     }
 
     #[test]

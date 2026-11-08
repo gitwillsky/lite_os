@@ -7,6 +7,7 @@ pub struct Surface<'a> {
     width: i32,
     height: i32,
     stride: usize,
+    origin: (i32, i32),
     clip: Rect,
 }
 
@@ -56,8 +57,21 @@ impl<'a> Surface<'a> {
             width,
             height,
             stride,
+            origin: (0, 0),
             clip: Rect::new(0, 0, width, height),
         })
+    }
+
+    /// 将局部像素缓冲放入完整画布的坐标系，不分配或复制像素。
+    ///
+    /// `origin` 是缓冲左上角的物理坐标；绘制与采样坐标保持完整画布坐标，裁剪重设为该缓冲边界。
+    /// 返回重定位后的面；原点加尺寸超出 i32 时返回 None。省略此投影会迫使弹出层分配整屏缓冲。
+    pub fn with_origin(mut self, origin: (i32, i32)) -> Option<Self> {
+        origin.0.checked_add(self.width)?;
+        origin.1.checked_add(self.height)?;
+        self.origin = origin;
+        self.clip = Rect::new(origin.0, origin.1, self.width, self.height);
+        Some(self)
     }
 
     pub fn width(&self) -> i32 {
@@ -75,6 +89,7 @@ impl<'a> Surface<'a> {
             width: self.width,
             height: self.height,
             stride: self.stride,
+            origin: self.origin,
             clip: self.clip,
         }
     }
@@ -86,12 +101,19 @@ impl<'a> Surface<'a> {
     /// 把裁剪矩形设为 `rect` 与整个面的交集，返回旧裁剪矩形以便调用者恢复。
     pub fn set_clip(&mut self, rect: Rect) -> Rect {
         let previous = self.clip;
-        self.clip = rect.intersect(Rect::new(0, 0, self.width, self.height));
+        self.clip = rect.intersect(Rect::new(
+            self.origin.0,
+            self.origin.1,
+            self.width,
+            self.height,
+        ));
         previous
     }
 
     /// 读取像素；越出绘制面返回 `None`（不受裁剪影响）。
     pub fn pixel(&self, x: i32, y: i32) -> Option<Color> {
+        let x = x.checked_sub(self.origin.0)?;
+        let y = y.checked_sub(self.origin.1)?;
         let inside = (0..self.width).contains(&x) && (0..self.height).contains(&y);
         inside.then(|| Color(self.pixels[y as usize * self.stride + x as usize]))
     }
@@ -104,7 +126,7 @@ impl<'a> Surface<'a> {
         let start = if area.is_empty() {
             0
         } else {
-            area.y as usize * stride + area.x as usize
+            (area.y - self.origin.1) as usize * stride + (area.x - self.origin.0) as usize
         };
         let rows = if area.is_empty() {
             0

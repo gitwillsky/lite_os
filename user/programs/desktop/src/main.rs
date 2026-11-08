@@ -91,6 +91,8 @@ struct Desktop {
     background: WindowId,
     taskbar: WindowId,
     menu: Option<WindowId>,
+    /// 全屏输入根到局部绘图子表面的唯一关联；根销毁时 Display 递归销毁子表面。
+    popup_surfaces: std::collections::HashMap<WindowId, WindowId>,
     menu_selection: start::Selection,
     /// 当前弹出层（托盘音量面板或右键菜单）及其全屏表面；同一时刻最多一个。
     overlay: Option<(WindowId, popups::Overlay)>,
@@ -173,6 +175,7 @@ impl Desktop {
             background,
             taskbar,
             menu: None,
+            popup_surfaces: Default::default(),
             menu_selection: start::Selection::default(),
             overlay: None,
             apps: installed_programs(),
@@ -206,31 +209,6 @@ impl Desktop {
             tooltip_window: None,
             apps_changed: true,
         })
-    }
-    fn toggle_menu(&mut self, display: &mut Display) -> io::Result<()> {
-        if let Some(menu) = self.menu.take() {
-            display.destroy_window(menu)?;
-            // 栈的活动窗口由标准 foreign-toplevel 快照提供；关闭菜单后交还键盘，不另存焦点历史。
-            let active = display
-                .toplevels()
-                .find(|(_, window)| window.active)
-                .map(|(id, _)| id);
-            if let Some(active) = active {
-                display.control_toplevel(active, ToplevelRequest::Activate)?;
-            }
-        } else {
-            self.menu_selection = start::Selection::default();
-            self.menu = Some(display.create_layer(
-                "org.liteos.start",
-                LayerSettings {
-                    layer: Layer::Overlay,
-                    exclusive_zone: -1,
-                    keyboard: KeyboardInteractivity::Exclusive,
-                    ..Default::default()
-                },
-            )?);
-        }
-        Ok(())
     }
     fn dialog(&mut self, display: &mut Display, kind: Kind) -> io::Result<()> {
         if self.dialogs.iter().any(|dialog| dialog.kind == kind) {
@@ -1476,6 +1454,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("missing desktop configure")?;
             if id == state.background {
                 if !art.present_background(&state, &mut display)? {
+                    continue;
+                }
+            } else if Some(id) == state.menu
+                || state.overlay.as_ref().is_some_and(|(root, _)| *root == id)
+            {
+                if !paint::present_popup(&mut state, &mut display, id, c, &mut art)? {
                     continue;
                 }
             } else {

@@ -1,4 +1,4 @@
-//! 外壳的弹出层：托盘音量面板与右键菜单，共用一张全屏 Overlay 表面；坐标都是屏幕逻辑像素。
+//! 外壳的弹出层：托盘音量面板与右键菜单，根接收全屏输入，局部子表面绘图；坐标都是屏幕逻辑像素。
 //!
 //! 右键菜单使用与应用相同的共享 `classic_ui::MenuBar` 状态机（级联子菜单、延时展开、方向键、助记键、
 //! 松开时执行），条目结构与文字取自 Windows 2000 简中 shell32.dll 的菜单资源。
@@ -9,7 +9,7 @@ use classic_ui::{
 };
 use std::{io, time::Instant};
 
-use super::{Desktop, TASKBAR_HEIGHT, clipboard, icons::Arrange, paint};
+use super::{Desktop, TASKBAR_HEIGHT, clipboard, icons::Arrange, paint, start};
 
 /// 点击菜单项的结果。
 #[derive(Clone, Copy, Debug)]
@@ -352,12 +352,39 @@ pub fn volume_panel(
 }
 
 impl Desktop {
+    pub(super) fn toggle_menu(&mut self, display: &mut Display) -> io::Result<()> {
+        if let Some(menu) = self.menu.take() {
+            self.popup_surfaces.remove(&menu);
+            display.destroy_window(menu)?;
+            // 栈的活动窗口由标准 foreign-toplevel 快照提供；关闭菜单后交还键盘，不另存焦点历史。
+            let active = display
+                .toplevels()
+                .find(|(_, window)| window.active)
+                .map(|(id, _)| id);
+            if let Some(active) = active {
+                display.control_toplevel(active, ToplevelRequest::Activate)?;
+            }
+        } else {
+            self.menu_selection = start::Selection::default();
+            self.menu = Some(display.create_layer(
+                "org.liteos.start",
+                LayerSettings {
+                    layer: Layer::Overlay,
+                    exclusive_zone: -1,
+                    keyboard: KeyboardInteractivity::Exclusive,
+                    ..Default::default()
+                },
+            )?);
+        }
+        Ok(())
+    }
     /// 关闭当前弹出层并释放其输入抓取。
     pub(super) fn close_overlay(&mut self, display: &mut Display) -> io::Result<()> {
         if let Some((window, overlay)) = self.overlay.take() {
             if matches!(overlay, Overlay::Volume(_)) {
                 self.volume.cancel();
             }
+            self.popup_surfaces.remove(&window);
             display.destroy_window(window)?;
         }
         Ok(())

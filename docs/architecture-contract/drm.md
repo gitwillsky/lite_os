@@ -113,6 +113,9 @@
 - EXECBUFFER 命令流上限 `VIRGL_COMMAND_MAX` 等于 Mesa virgl 命令缓冲最大值（64 Ki + 1024 dwords）。
   ioctl 在任何提交锁之前把命令流分段拷入匿名 VMO 的 DeviceBacking，`Submit3d` 以 Arc 持有它。
   adapter 按实际 BTI 区段构造 scatter/gather chain，不把物理碎片数量作为应用限制；请求头、响应各占一个 descriptor。
+  运行期 response descriptor 只投影该 opcode 的实际响应长度（普通响应 24 字节、显示信息 408 字节），
+  不把跨页的能力查询暂存整块发布；否则容量计算与实际链长不一致，可让空队列上的提交永久等待。
+  队列只把当前 free-list 不足报告为可重试；超过协商总容量的链在 publication 前拒绝，不能等待不会发生的完成。
   若整条 chain 超过已协商的 controlq 容量，只有 GPU adapter 用自己的 BTI 分配连续 DMA backing 并复制命令，
   再进入原有唯一 publication/fence 路径；linuxd 不取得硬件分配能力。其余提交不新增分配或复制。
   整理时只复制已验证的 command 前缀：源在调用期间不可变，目标是独立新 VMO 的独占映射，
