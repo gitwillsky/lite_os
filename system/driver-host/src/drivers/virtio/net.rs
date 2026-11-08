@@ -129,6 +129,8 @@ pub(crate) struct VirtIONetworkDevice {
     // OWNER: 冷配置租约与 IRQ 回调；Some(Weak) 即使已不能 upgrade，也要等旧 Drop 撤销 DMA 后清空。
     // 否则新 OPEN 可能在旧队列正在析构时重新启用设备。IRQ 不持有活动队列强引用。
     lease: Mutex<Lease>,
+    // OWNER: 已 stop 的最后一个临时引用退休后唤醒重开者；避免把短暂析构窗口误报为永久安装失败。
+    retired: native_runtime::Event,
 }
 struct Lease {
     active: Option<Weak<ActiveNetwork>>,
@@ -218,6 +220,7 @@ impl VirtIONetworkDevice {
                 active: None,
                 activity: Vec::new(),
             }),
+            retired: native_runtime::Event::create().ok()?,
         })
         .ok()?;
         crate::io_completion::register_completion_source(controller.clone()).ok()?;
@@ -268,16 +271,39 @@ impl NetworkController for VirtIONetworkDevice {
         self.mac
     }
     fn driver(&self) -> &str {
+        // 名称只由物理驱动提供，活动会话按 owner 借用。
         "virtio_net"
     }
     fn open(self: Arc<Self>, count: u16) -> Result<Arc<dyn NetworkProvider>, NetworkError> {
         if count == 0 || count > self.maximum_pairs {
             return Err(NetworkError::InvalidConfiguration);
         }
-        let mut lease = self.lease.lock();
-        if lease.active.is_some() {
-            return Err(NetworkError::WouldBlock);
-        }
+        let mut lease = loop {
+            let lease = self.lease.lock();
+            if lease.active.is_none() {
+                break lease;
+            }
+            // 目录会话已关闭，但错误完成线程可能仍临时保活已 stop 的队列。
+            // Weak 失效也可能只是 Drop 正在 reset/撤销 pin，必须等实际退休事件。
+            let current = lease.active.as_ref().and_then(Weak::upgrade);
+            let retiring = current
+                .as_ref()
+                .is_none_or(|active| active.failed.load(Ordering::Acquire) == 2);
+            // 可能在此归还最后一个强引用；不能持 lease 锁触发 ActiveNetwork::drop。
+            drop(lease);
+            drop(current);
+            if !retiring {
+                return Err(NetworkError::WouldBlock);
+            }
+            self.retired
+                .wait_one(
+                    native_runtime::native_abi::signals::SIGNALED,
+                    native_runtime::native_abi::DEADLINE_INFINITE,
+                )
+                .map_err(|_| NetworkError::Device)?;
+        };
+        // 冷配置锁同时划分 IRQ 错误代际；旧实例的锁存不能延迟杀死重开的队列。
+        self.completion_irq.take_transport_error();
         self.device.initialize().map_err(|_| NetworkError::Device)?;
         self.device
             .set_driver_features(self.features)
@@ -337,6 +363,9 @@ impl NetworkController for VirtIONetworkDevice {
                 .notify_queue(u32::from(index) * 2)
                 .map_err(|_| NetworkError::Device)?;
         }
+        self.retired
+            .signal(native_runtime::native_abi::signals::SIGNALED, 0)
+            .map_err(|_| NetworkError::Device)?;
         Arc::get_mut(&mut active)
             .expect("network lease is not yet published")
             .lease_published = true;
@@ -394,8 +423,7 @@ impl NetworkProvider for ActiveNetwork {
     }
 
     fn driver(&self) -> &str {
-        // Linux drivers/net/virtio_net.c 的 driver 名。
-        "virtio_net"
+        self.owner.driver()
     }
 
     fn link(&self) -> Result<NetworkLink, NetworkError> {
@@ -716,9 +744,18 @@ impl Drop for ActiveNetwork {
                 .reset()
                 .expect("VirtIO net must stop DMA before retiring ownership");
         }
+        // reset 已结束 DMA；先退休 pin/IOVA，再让下一个 OPEN 获得配置租约。
+        // 否则新配置会与旧存储的延迟析构竞争地址空间和内存配额。
+        self.queues.clear();
+        drop(self.control.take());
         if self.lease_published {
             let callbacks = {
                 let mut lease = self.owner.lease.lock();
+                // 与 active=None 同锁发表，旧退休通知不能越过下一租约的 clear。
+                self.owner
+                    .retired
+                    .signal(0, native_runtime::native_abi::signals::SIGNALED)
+                    .expect("network lease retirement event must remain valid");
                 lease.active = None;
                 core::mem::take(&mut lease.activity)
             };
@@ -735,11 +772,22 @@ impl Drop for VirtIONetworkDevice {
 }
 impl crate::io_completion::CompletionSource for VirtIONetworkDevice {
     fn dispatch_completions(&self) -> bool {
-        if self.completion_irq.take_transport_error() {
-            let active = self.lease.lock().active.as_ref().and_then(Weak::upgrade);
-            if let Some(active) = active {
-                active.fail_device();
+        if !self.completion_irq.has_transport_error() {
+            return false;
+        }
+        let active = {
+            // 完成线程服务其他设备，不能因本 NIC 的冷控制 ACK 等待而停住全部来源。
+            let Some(lease) = self.lease.try_lock() else {
+                return true;
+            };
+            if self.completion_irq.take_transport_error() {
+                lease.active.as_ref().and_then(Weak::upgrade)
+            } else {
+                None
             }
+        };
+        if let Some(active) = active {
+            active.fail_device();
         }
         false
     }
@@ -751,7 +799,12 @@ struct VirtIONetworkIrqHandler {
 
 impl InterruptHandler for VirtIONetworkIrqHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
-        let Some(status) = self.device.completion_irq.acknowledge(&self.device.device) else {
+        // native IRQ 服务线程可在冷重配置期间阻塞；控制 ACK 由 DMA/used 推进，不依赖此线程。
+        // 与重开事务串行 ACK/错误锁存，否则上一租约的延迟错误可能停止下一租约。
+        let lease = self.device.lease.lock();
+        let status = self.device.completion_irq.acknowledge(&self.device.device);
+        drop(lease);
+        let Some(status) = status else {
             // IRQ 不取得队列锁、不等待 reset；完成线程消费错误后停止 DMA 并唤醒全部队列。
             crate::completion::raise();
             return Ok(());

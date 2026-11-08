@@ -35,6 +35,11 @@ impl VirtIOCompletionIrq {
         status
     }
 
+    /// 只观察错误锁存，避免正常完成分派进入设备的冷配置锁；不能代替 take 消费。
+    pub(super) fn has_transport_error(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
     /// safe point 原子消费 hardirq 观察到的 transport error。
     pub(super) fn take_transport_error(&self) -> bool {
         self.0.swap(false, Ordering::AcqRel)

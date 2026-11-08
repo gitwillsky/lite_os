@@ -2245,6 +2245,7 @@ system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn decode_sta
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_transfer (capacity_sectors : u64 , block : u64 , length : usize) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge (& self , device : & VirtIODevice) -> Option < u32 >
+system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn has_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
 system/driver-host/src/drivers/virtio/console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport , bti : & 'static native_runtime :: Bti ,) -> Option < Arc < Self > >

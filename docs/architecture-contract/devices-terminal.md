@@ -391,8 +391,11 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
 - VirtIO-net 只同时协商 CTRL_VQ/MQ，max_virtqueue_pairs 从同代配置读取并校验 1..=0x8000。
   VirtIONetworkDevice 只拥有 transport、能力与冷配置租约；ActiveNetwork 拥有本次配置的 queues/control/pools/failed。
   发现设备时不创建数据队列或置 DRIVER_OK；OPEN 按请求重新协商 feature、准备精确数量的队列与 reset owner，再启用 DMA。
-  初始化失败尚未发表租约时 Drop 只 reset，不能重入已经持有的配置锁；租约 Weak 即使失效也不是可重配的证明，必须等旧 owner reset 并显式撤销。
-  IRQ 不强持 ActiveNetwork，回调由 controller 的租约保护并在锁外调用；错误完成线程只临时 upgrade 当前租约，热路径不获取配置锁。
+  初始化失败尚未发表租约时 Drop 只 reset，不能重入已经持有的配置锁；租约 Weak 即使失效也不是可重配的证明，必须等旧 owner reset、退休全部 queue/pin/IOVA 并显式撤销。
+  已 stop 的租约若仍被完成线程临时保活，OPEN 等待 controller 的 retired Event；最后一个 owner 在清空租约的同一锁内 signal，新租约发表前清除。
+  所有 Weak upgrade 得到的强引用在配置锁外 drop，避免最后引用析构反入该锁；没有定时轮询或逐包开销。
+  IRQ 不强持 ActiveNetwork，回调由 controller 的租约保护并在锁外调用；错误完成线程先无锁观察错误，仅错误时 try_lock 消费本代锁存并临时 upgrade 租约，竞争时重调度，不能阻塞其他设备的完成；数据收发不取配置锁。
+  IRQ 的 ACK/错误锁存与冷重配串行，重开先清除旧锁存；控制 used/ACK 不依赖 IRQ 服务线程，不会因该串行化互等。
   各 pair 独立准备 ring、RX/TX pool 和锁；控制队列位于 `2 * max_virtqueue_pairs`，不以活动数猜测控制队列编号。
   DRIVER_OK 后发送 VQ_PAIRS_SET，校验唯一 head、设备写入长度与 ACK 后才发布 adapter；失败/超时先 reset 再释放 DMA。
   控制命令为冷初始化，有界睡眠等待，不占数据队列锁、不忙等。共享 MMIO/INTx 中断通知全部 pair，尚未声称实现每队列 MSI-X。
