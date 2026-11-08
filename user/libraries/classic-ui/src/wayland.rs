@@ -570,11 +570,47 @@ impl Display {
     }
 
     /// 当前已确认的窗口配置；窗口已销毁或尚未 configure 时返回 `None`。
+    /// 子表面的 `suspended` 取自根窗口，与 Display 的绘制门控一致。
     pub fn configuration(&self, window: WindowId) -> Option<Configuration> {
         self.windows
             .get(&window)
-            .filter(|window| window.configured)
-            .map(|window| window.configuration)
+            .filter(|state| state.configured)
+            .map(|state| Configuration {
+                suspended: self.suspended(window),
+                ..state.configuration
+            })
+    }
+
+    /// 窗口所在 surface 树的根是否被合成器挂起。挂起只由根 toplevel 的已确认配置持有，
+    /// 子表面沿父链推导而不复制；否则子表面会在根挂起后继续分配和提交缓冲。
+    /// 父链按窗口总数限界，悬空或循环的父关系视为未挂起。
+    pub(super) fn suspended(&self, window: WindowId) -> bool {
+        let mut current = window;
+        for _ in 0..=self.windows.len() {
+            match self.windows.get(&current) {
+                Some(Window {
+                    role: Role::Subsurface { parent, .. },
+                    ..
+                }) => current = *parent,
+                Some(state) => return state.configuration.suspended,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// `root` 及其全部后代子表面；用于挂起时一并回收整棵 surface 树的空闲缓冲。
+    pub(super) fn surface_tree(&self, root: WindowId) -> Vec<WindowId> {
+        let mut tree = vec![root];
+        let mut index = 0;
+        while let Some(&parent) = tree.get(index) {
+            tree.extend(self.windows.iter().filter_map(|(id, state)| {
+                matches!(state.role, Role::Subsurface { parent: owner, .. } if owner == parent)
+                    .then_some(*id)
+            }));
+            index += 1;
+        }
+        tree
     }
 
     /// 当前实际持有键盘焦点的窗口；应用据此决定是否显示输入光标。
@@ -585,9 +621,11 @@ impl Display {
     /// 是否可以开始绘制下一帧；未配置、已销毁、被挂起或前一帧未完成时返回 false。
     /// 这是连接内 frame callback 与挂起状态的投影，应用可据此避免先渲染再遇到 WouldBlock。
     pub fn ready_to_draw(&self, window: WindowId) -> bool {
-        self.windows.get(&window).is_some_and(|state| {
-            state.configured && state.frame.is_none() && !state.configuration.suspended
-        }) && self.buffer_available(window)
+        self.windows
+            .get(&window)
+            .is_some_and(|state| state.configured && state.frame.is_none())
+            && !self.suspended(window)
+            && self.buffer_available(window)
     }
 
     /// 发出窗口管理请求；不直接修改配置，等待 compositor 的后续 Configure。

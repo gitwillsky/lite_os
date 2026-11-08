@@ -166,8 +166,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   同次损伤、光栅与确认使用冻结的 now，防止提示在提交中途到期而被误标为已显示；成功提交后才确认 Tree 基线。
   callback ID 在绘制/分配/像素写入准备成功后登记，避免可重试绘制失败遗留永远没有 done/delete_id 的对象。
   稳定状态每窗口只保留一块空闲缓冲，第二块仅在上一块未 release 时临时分配、release 后退休；交互缩放保留空闲池复用几何。
-  configure 带 `suspended`（xdg-shell v6）时，ack 后回收空闲缓冲，在途缓冲 release 即退休；`ready_to_draw` 为假、
-  `paint_frame`/`present` 返回 WouldBlock，不分配也不提交。解除挂起的 configure 使 WindowHost 失效，新缓冲整幅重绘。
+  configure 带 `suspended`（xdg-shell v6）时，ack 后回收根窗口及全部后代子表面的空闲缓冲，在途缓冲 release 即退休；
+  挂起只由根 toplevel 的已确认配置持有，子表面沿父链推导（`configuration()` 同样投影），不复制状态。
+  挂起期间 `ready_to_draw` 为假、`paint_frame`/`present` 返回 WouldBlock，不分配也不提交；共享不可变图像不属于窗口缓冲，保持不变。
+  解除挂起由根窗口的 Configure 通知：WindowHost 失效并以新缓冲整幅重绘，子表面所有者据此重绘。
   缺少它，最小化的最大化窗口持续占用整窗像素内存并光栅化不可见画面。
   成本与验收范围由[性能覆盖](../development/performance-coverage.md)拥有；合并/背景重建参照 [Qt 6.8 QWidget paintEvent/update](https://doc.qt.io/qt-6.8/qwidget.html#paintEvent)，缓冲内容有效性沿固定 EGL_EXT_buffer_age 语义。
 - calendar 的 OnceLock<RwLock<TimeZone>> 唯一持有已解析 TZif，文件 I/O 和解析均在锁外。

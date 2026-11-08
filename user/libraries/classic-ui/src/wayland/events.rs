@@ -170,9 +170,12 @@ impl Display {
                         window: id,
                         kind: EventKind::Configure(window.configuration),
                     });
-                    // 挂起后不再绘制，空闲缓冲只占内存；在途缓冲在 release 时按同一状态退休。
+                    // 挂起后整棵 surface 树都不再绘制，空闲缓冲只占内存；在途缓冲在 release 时按同一状态退休。
+                    // 解除挂起由这条 Configure 通知，子表面所有者据此重绘。
                     if suspended {
-                        self.retire_idle_buffers(id)?;
+                        for window in self.surface_tree(id) {
+                            self.retire_idle_buffers(window)?;
+                        }
                     }
                 }
             }

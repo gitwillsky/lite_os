@@ -19,7 +19,7 @@ ABI v1、共享运行库与安全 SDK 已接入构建和安装，尚未完成二
 每个窗口至多持有三个提交缓冲，release 前不重写；尺寸变更只淘汰已释放缓冲。稳定状态每窗口只留一块空闲缓冲：
 第二块只在上一块尚未 release 时临时分配，release 后立即退休（交互缩放期间保留空闲池）。
 关闭窗口先回收空闲缓冲，在途缓冲仍由连接保活，release 后销毁；连接析构统一断开并关闭 fd。
-合成器以 xdg-shell v6 `suspended` 通知最小化；挂起期间 Display 不绘制、不保留空闲缓冲，还原后整幅重绘。
+合成器以 xdg-shell v6 `suspended` 通知最小化；挂起期间 Display 对整棵 surface 树（含子表面）不绘制、不保留空闲缓冲，还原后整幅重绘。
 `FrameReady` 是 wl_surface.frame 的重绘提示，`BufferAvailable` 是内存可复用通知，均不表示真实呈现完成。
 
 `WindowHost` 唯一拥有装饰和未提交失效，查询 Display 的权威状态；它没有私有画布，经 `Display::paint_frame`

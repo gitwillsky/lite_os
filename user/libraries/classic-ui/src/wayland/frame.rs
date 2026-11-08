@@ -191,9 +191,8 @@ impl Display {
             .get(&window)
             .filter(|state| state.configured)
             .ok_or_else(|| io::Error::other("window has not been configured"))?;
-        // 挂起的窗口不可见：不分配缓冲、不提交，等解除挂起的 configure 后整幅重绘。
-        if state.frame.is_some() || state.configuration.suspended || !self.buffer_available(window)
-        {
+        // 挂起的 surface 树不可见：不分配缓冲、不提交，等根窗口解除挂起的 configure 后整幅重绘。
+        if state.frame.is_some() || self.suspended(window) || !self.buffer_available(window) {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let configuration = state.configuration;
@@ -524,14 +523,15 @@ impl Display {
     }
 
     pub(super) fn release_buffer(&mut self, object: ObjectId) -> io::Result<()> {
-        let Some(buffer) = self.buffers.get_mut(&object) else {
+        let Some(window) = self.buffers.get(&object).map(|buffer| buffer.window) else {
             return Ok(());
         };
-        let window = buffer.window;
+        let suspended = self.suspended(window);
+        let buffer = self.buffers.get_mut(&object).expect("known buffer");
         let state = self.windows.get(&window);
         let live = state.is_some();
         if state.is_none_or(|state| {
-            state.configuration.suspended
+            suspended
                 || !state.configuration.resizing
                     && state
                         .history
