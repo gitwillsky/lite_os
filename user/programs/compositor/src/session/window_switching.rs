@@ -71,14 +71,17 @@ impl Session {
 
     /// 立即还原并激活窗口，画面独立播放整窗过渡；重复激活不重启动画或丢弃紧接着的键盘输入。
     pub(super) fn restore_window(&mut self, client: ClientId, surface: ObjectId) {
-        if self
-            .stack
-            .placement(client, surface)
-            .is_some_and(|placed| placed.minimized)
-        {
-            self.animate(client, surface, false);
-        }
+        self.unminimize_window(client, surface);
         self.dirty |= self.stack.raise(client, surface);
+    }
+
+    /// 仅恢复可见性，保留已有 Z 序；批量撤销不能按协议句柄的枚举次序重新排列窗口。
+    pub(super) fn unminimize_window(&mut self, client: ClientId, surface: ObjectId) {
+        if self.stack.unminimize(client, surface) {
+            self.animate(client, surface, false);
+            self.send_configure(client, surface, None, false);
+            self.dirty = true;
+        }
     }
 
     /// 以最近使用顺序（栈顶在前）列出全部窗口并打开切换面板。

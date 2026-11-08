@@ -80,6 +80,13 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Seat 只识别并路由受支持的外壳组合键，desktop 经标准键盘事件执行开始、运行、我的电脑、系统属性与任务管理器命令。
   Desktop.start_key 仅表示尚未被其他输入打断的 Win 单键候选；释放时消费，其他按键、点击与失焦撤销，缺少它会让组合键误开开始菜单。
   开始菜单关闭后从现有 foreign-toplevel 快照选择活动窗口并请求 Activate，窗口栈与键盘目标仍由 compositor 拥有。
+- Win+M、Shift+Win+M 与任务栏批量命令共用 Desktop.minimized_windows；它只记录本次命令涉及的带代际句柄，
+  不包含之前已最小化的窗口，也不保存窗口模式、位置或第二份栈序。没有该历史，撤销会误恢复用户原先已最小化的窗口。
+  手动操作某窗口即移除其旧命令记录，closed 更新裁掉过期句柄；空批次保留前次有效命令，撤销消费并释放整份记录。
+  标准 foreign-toplevel 的 UnsetMinimized 只清除最小化状态并通知 suspended，不改变栈序；Activate 明确激活并置顶。
+  活动窗口仍由 compositor 栈的最上层可见窗口决定，批量恢复不按句柄枚举顺序重新排列，也不抢走后创建窗口的前台位置。
+  传输失败沿既有会话退出路径清理；只忽略已失效句柄的 NotFound，不吞掉其他错误。成本为命令触发时的 O(窗口数) 空间与请求，
+  无逐帧副本、全局缓存或轮询，保留现有动画与 canvas 基线；窗口栈现有用例覆盖恢复后台窗口不能意外置顶的回归。
 - 外部 PollFd 带 fd owner 的类型借用；批量等待后只投影 readiness，不延长其他描述符的生命周期。
   PollBuffer 只持有不可自行轮询的 raw 存储；每轮 PollSet 重新建立有效借用，析构清空旧编号并保留容量。
   唯一切片转换位于 linux-uapi，依据 repr(transparent) 与 push 借用前置条件；不建立 static FD 或从旧轮次复活编号。

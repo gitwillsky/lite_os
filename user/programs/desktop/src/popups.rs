@@ -14,6 +14,7 @@ pub enum Action {
     /// 打开真实 USB 设备列表与安全移除入口。
     UsbDevices,
     MinimizeAll,
+    UndoMinimizeAll,
     TaskManager,
     /// 打开完整的"音量控制"窗口。
     VolumeProperties,
@@ -90,16 +91,20 @@ pub enum Overlay {
 }
 
 /// 任务栏空白处。层叠/平铺窗口需要 compositor 提供窗口摆放协议，尚未实现，不显示灰色占位项。
-pub fn taskbar_items() -> Vec<Item> {
+pub fn taskbar_items(can_undo: bool) -> Vec<Item> {
     let mut tasks = item("任务管理器(K)", Action::TaskManager);
     tasks.separator_before = true;
     let mut properties = item("属性(R)", Action::TaskbarProperties);
     properties.separator_before = true;
-    vec![
+    let mut items = vec![
         item("最小化所有窗口(M)", Action::MinimizeAll),
         tasks,
         properties,
-    ]
+    ];
+    if can_undo {
+        items.insert(1, item("撤销最小化所有窗口(U)", Action::UndoMinimizeAll));
+    }
+    items
 }
 
 /// 任务按钮：窗口的系统菜单。只列当前状态下有意义的项。
@@ -108,7 +113,7 @@ pub fn window_items(id: ToplevelId, info: &Toplevel) -> Vec<Item> {
     if info.minimized {
         items.push(item(
             "还原(R)",
-            Action::Window(id, ToplevelRequest::Minimize(false)),
+            Action::Window(id, ToplevelRequest::Activate),
         ));
     } else if info.maximized {
         items.push(item(
@@ -530,16 +535,16 @@ impl Desktop {
                 Some(paint::CLOCK) => return Ok(()),
                 Some(n) if n >= paint::TASKS_FROM => {
                     let ids = paint::task_ids(self, display, c.width);
-                    match ids
-                        .get(n - paint::TASKS_FROM)
-                        .and_then(|id| display.toplevels().find(|(t, _)| t == id))
-                    {
-                        Some((id, info)) => window_items(id, info),
-                        None => return Ok(()),
-                    }
+                    let Some(id) = ids.get(n - paint::TASKS_FROM) else {
+                        return Ok(());
+                    };
+                    let Some(info) = display.toplevel(*id) else {
+                        return Ok(());
+                    };
+                    window_items(*id, info)
                 }
                 Some(_) => return Ok(()),
-                None => taskbar_items(),
+                None => taskbar_items(!self.minimized_windows.is_empty()),
             }
         } else if window == self.background {
             match hit {
@@ -605,9 +610,9 @@ mod tests {
     #[test]
     fn menus_flip_instead_of_leaving_the_screen() {
         let screen = (800, 600);
-        let normal = ContextMenu::new((100, 100), taskbar_items(), screen, SIZE);
+        let normal = ContextMenu::new((100, 100), taskbar_items(false), screen, SIZE);
         assert_eq!((normal.rect.x, normal.rect.y), (100, 100));
-        let corner = ContextMenu::new((790, 590), taskbar_items(), screen, SIZE);
+        let corner = ContextMenu::new((790, 590), taskbar_items(false), screen, SIZE);
         assert_eq!(corner.rect.right(), 790);
         assert_eq!(corner.rect.bottom(), 590);
         let top_left = ContextMenu::new((0, 0), desktop_items(false), screen, SIZE);
@@ -616,7 +621,7 @@ mod tests {
 
     #[test]
     fn rows_follow_separators_and_hit_testing_ignores_them() {
-        let menu = ContextMenu::new((10, 10), taskbar_items(), (800, 600), SIZE);
+        let menu = ContextMenu::new((10, 10), taskbar_items(false), (800, 600), SIZE);
         let rows = menu.rows();
         assert_eq!(rows[0].y, 13);
         assert_eq!(rows[1].y - rows[0].bottom(), SIZE.separator_height);

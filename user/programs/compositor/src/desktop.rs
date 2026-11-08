@@ -276,6 +276,18 @@ impl Stack {
         }
     }
 
+    /// 取消最小化而不改变栈序；活动窗口仍由最上层的可见窗口决定。
+    /// 窗口不存在或已经可见时返回 `false`，否则返回 `true`，无错误返回。
+    pub fn unminimize(&mut self, client: ClientId, surface: ObjectId) -> bool {
+        match self.find(client, surface) {
+            Some(placed) if placed.minimized => {
+                placed.minimized = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// 切换窗口模式。
     ///
     /// 进入最大化时窗口铺满工作区 `work`（扣除任务栏等独占区），进入全屏时铺满整个输出 `full`；

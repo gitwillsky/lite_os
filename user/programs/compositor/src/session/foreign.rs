@@ -15,9 +15,10 @@ impl Session {
                 self.keyboard_layer = None;
             }
             match request.action {
-                ForeignAction::Activate | ForeignAction::Minimize(false) => {
+                ForeignAction::Activate => {
                     self.restore_window(client, surface);
                 }
+                ForeignAction::Minimize(false) => self.unminimize_window(client, surface),
                 ForeignAction::Minimize(true) => self.minimize_window(client, surface),
                 ForeignAction::Rectangle {
                     surface: shell_surface,

@@ -154,10 +154,10 @@ impl Seat {
             && !modifiers.alt
             && ((code == 1 && modifiers.control && !modifiers.super_key)
                 || (matches!(code, 125 | 126) && !modifiers.control && !modifiers.shift)
-                || (matches!(code, 18 | 19 | 119)
+                || (matches!(code, 18 | 19 | 50 | 119)
                     && modifiers.super_key
                     && !modifiers.control
-                    && !modifiers.shift))
+                    && (!modifiers.shift || code == 50)))
     }
 
     pub fn next_serial(&mut self) -> u32 {

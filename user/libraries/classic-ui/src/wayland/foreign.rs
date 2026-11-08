@@ -47,6 +47,16 @@ impl Display {
             })
         })
     }
+
+    /// 查询 `id` 的最后一次完整快照；尚未发布、已关闭或代际不符时返回 `None`。
+    /// 只借用协议 owner 的状态，不复制窗口信息，无错误返回。
+    pub fn toplevel(&self, id: ToplevelId) -> Option<&Toplevel> {
+        self.foreign
+            .get(&id.0.get())
+            .filter(|state| state.generation == id.1)?
+            .current
+            .as_ref()
+    }
     /// 窗口列表的发布版本；桌面据此合并重绘，不为每条属性消息分配事件。
     pub fn toplevel_revision(&self) -> u64 {
         self.foreign_revision
@@ -54,11 +64,7 @@ impl Display {
     /// 向 `id` 发送 `action`；Ok 只表示请求已发送，实际状态仍等待后续 done。
     /// 无效或已关闭的句柄返回 NotFound，编码/socket 失败返回对应错误。
     pub fn control_toplevel(&mut self, id: ToplevelId, action: ToplevelRequest) -> io::Result<()> {
-        if !self
-            .foreign
-            .get(&id.0.get())
-            .is_some_and(|state| state.generation == id.1)
-        {
+        if self.toplevel(id).is_none() {
             return Err(io::ErrorKind::NotFound.into());
         }
         let request = match action {

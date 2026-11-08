@@ -219,6 +219,11 @@ fn minimized_windows_are_skipped_by_activation() {
     assert!(stack.raise(ClientId(2), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
     assert!(!stack.placement(ClientId(2), surface(5)).unwrap().minimized);
+    // 撤销批量最小化与主动激活不同：恢复后台窗口不能把它提到前台。
+    assert!(stack.unminimize(ClientId(1), surface(5)));
+    assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
+    assert!(!stack.unminimize(ClientId(1), surface(5)));
+    assert!(!stack.unminimize(ClientId(99), surface(5)));
 }
 
 #[test]
