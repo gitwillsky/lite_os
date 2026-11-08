@@ -19,6 +19,8 @@ const TITLE_HEIGHT: i32 = 24;
 pub struct Entry {
     pub client: ClientId,
     pub surface: ObjectId,
+    /// 根窗口的映射身份；旧交互不能操作同编号的新映射。
+    pub generation: u64,
     pub title: String,
     pub app_id: String,
 }
@@ -56,9 +58,9 @@ impl Switcher {
     }
 
     /// 松开 Alt 时要激活的窗口。
-    pub fn target(&self) -> (ClientId, ObjectId) {
+    pub fn target(&self) -> (ClientId, ObjectId, u64) {
         let entry = &self.entries[self.selected];
-        (entry.client, entry.surface)
+        (entry.client, entry.surface, entry.generation)
     }
 }
 

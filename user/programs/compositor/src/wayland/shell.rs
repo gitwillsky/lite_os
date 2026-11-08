@@ -8,7 +8,7 @@ use wayland_wire::{protocol::liteos_shell_v1, wire::ObjectId};
 /// 同一连接的窗口请求按线序进入唯一队列，不能把外壳命令排到逐窗口操作之前或之后。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowCommand {
-    Toplevel(ObjectId, WindowRequest),
+    Toplevel(ObjectId, u64, WindowRequest),
     Foreign(ForeignRequest),
     Shell(liteos_shell_v1::Action),
     Arrange(liteos_shell_v1::Arrangement),

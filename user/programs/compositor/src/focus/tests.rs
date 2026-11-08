@@ -71,8 +71,8 @@ fn stack_with_two() -> Stack {
     let surface = ObjectId::new(5).unwrap();
     stack.sync(
         &[
-            (ClientId(1), surface, 200, 100, Initial::Cascade),
-            (ClientId(2), surface, 200, 100, Initial::Cascade),
+            (ClientId(1), surface, 1, 200, 100, Initial::Cascade),
+            (ClientId(2), surface, 1, 200, 100, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -177,4 +177,147 @@ fn secure_attention_requires_hardware_control_alt_delete_and_desktop_shortcuts_a
     assert!(!super::Seat::secure_attention(hardware, 14, true));
     hardware.apply(29, 0);
     assert!(!super::Seat::secure_attention(hardware, 111, true));
+}
+
+// 单个 window_configure 用例无法发现外壳借走键盘后的漏发；这里观察真实 Client 编码输出，
+// 不把最后激活窗口和当前 wl_keyboard 目标当成同一个状态。
+#[test]
+fn shell_keyboard_borrow_does_not_lose_the_previous_window_activation() {
+    use crate::wayland::{Output, Server};
+    use linux_uapi::unix::PollEvents;
+    use std::{
+        collections::VecDeque,
+        io::{self, Read},
+        os::unix::net::UnixStream,
+    };
+    use wayland_wire::{
+        protocol::{
+            self, AnyEvent, Interface, wl_compositor, wl_display, wl_registry, xdg_surface,
+            xdg_toplevel, xdg_wm_base,
+        },
+        wire::{DynamicNewId, Framer, Reader, Writer},
+    };
+    let id = |value| ObjectId::new(value).unwrap();
+    let path = std::env::temp_dir().join(format!("wl-activation-{}", std::process::id()));
+    let mut server = Server::bind(
+        &path,
+        Output {
+            width: SCREEN.0,
+            height: SCREEN.1,
+            scale: 1,
+        },
+    )
+    .unwrap();
+    let mut peer = UnixStream::connect(&path).unwrap();
+    peer.set_nonblocking(true).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    server.dispatch(&[PollEvents::READ]).unwrap();
+    let mut wire = Writer::new();
+    wl_display::Request::GetRegistry { registry: id(2) }
+        .encode(ObjectId::DISPLAY, &mut wire)
+        .unwrap();
+    for (name, interface, object) in [(1, "wl_compositor", 3), (3, "xdg_wm_base", 20)] {
+        wl_registry::Request::Bind {
+            name,
+            id: DynamicNewId {
+                interface: interface.into(),
+                version: 3,
+                id: id(object),
+            },
+        }
+        .encode(id(2), &mut wire)
+        .unwrap();
+    }
+    for (surface, xdg, top) in [(5, 21, 22), (6, 23, 24)] {
+        wl_compositor::Request::CreateSurface { id: id(surface) }
+            .encode(id(3), &mut wire)
+            .unwrap();
+        xdg_wm_base::Request::GetXdgSurface {
+            id: id(xdg),
+            surface: id(surface),
+        }
+        .encode(id(20), &mut wire)
+        .unwrap();
+        xdg_surface::Request::GetToplevel { id: id(top) }
+            .encode(id(xdg), &mut wire)
+            .unwrap();
+    }
+    wl_compositor::Request::CreateSurface { id: id(7) }
+        .encode(id(3), &mut wire)
+        .unwrap();
+    server.with_client(ClientId(1), |client| {
+        client.receive(wire.bytes(), Vec::new()).unwrap();
+        let length = client.output().0.len();
+        client.consume_output(length);
+    });
+    let mut frames = Framer::new();
+    let mut configs = || {
+        let mut found = Vec::new();
+        let mut bytes = [0; 4096];
+        loop {
+            match peer.read(&mut bytes) {
+                Ok(0) => panic!("peer closed"),
+                Ok(count) => frames.push(&bytes[..count]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        while let Some(frame) = frames.next_frame().unwrap() {
+            if [22, 24].contains(&frame.object.get()) && frame.opcode == 0 {
+                let mut fds = VecDeque::new();
+                let event = protocol::decode_event(
+                    Interface::XdgToplevel,
+                    frame.opcode,
+                    &mut Reader::new(&frame.body, &mut fds),
+                )
+                .unwrap();
+                if let AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { states, .. }) = event
+                {
+                    found.push((
+                        frame.object,
+                        states
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|raw| *raw == 4u32.to_ne_bytes()),
+                    ));
+                }
+            }
+        }
+        found
+    };
+    let first = (ClientId(1), id(5), 1, 200, 100, Initial::Cascade);
+    let second = (ClientId(1), id(6), 1, 200, 100, Initial::Cascade);
+    let mut stack = Stack::default();
+    stack.sync(&[first], SCREEN, 1);
+    let mut seat = super::Seat::default();
+    seat.sync_keyboard(&mut server, &stack, 1, None);
+    assert_eq!(configs(), [(id(22), true)]);
+    let shell = Some((ClientId(1), id(7)));
+    seat.sync_keyboard(&mut server, &stack, 1, shell);
+    let borrowed = configs();
+    stack.sync(&[first, second], SCREEN, 1);
+    seat.sync_keyboard(&mut server, &stack, 1, shell);
+    assert_eq!(
+        configs(),
+        [(id(22), false), (id(24), true)],
+        "activation changes even while the keyboard target stays on the shell"
+    );
+    assert!(
+        borrowed.is_empty(),
+        "keyboard borrow must preserve activation without republishing it"
+    );
+    seat.sync_keyboard(&mut server, &stack, 1, None);
+    assert!(
+        configs().is_empty(),
+        "returning the keyboard must not republish activation"
+    );
+    let replacement = (second.0, second.1, 2, second.3, second.4, second.5);
+    stack.sync(&[first, replacement], SCREEN, 1);
+    assert!(seat.sync_keyboard(&mut server, &stack, 1, None));
+    assert_eq!(
+        configs(),
+        [(id(24), true)],
+        "new mapping must republish activation even with the same raw target"
+    );
 }

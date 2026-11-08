@@ -6,6 +6,9 @@ impl Session {
     /// 返回子 surface 对应的窗口/外壳根；popup 的键盘与窗口管理目标仍为其 xdg_toplevel。
     pub(super) fn root_target(&self, target: (ClientId, ObjectId)) -> Option<(ClientId, ObjectId)> {
         let root = self.server.root_surface(target.0, target.1)?;
+        if self.stack.placement(target.0, root).is_some() {
+            return Some((target.0, root));
+        }
         let root = self
             .server
             .popups()
@@ -23,15 +26,15 @@ impl Session {
     ) -> Option<Hit> {
         let root = self.server.root_surface(target.0, target.1)?;
         let scale = self.scale as i32;
-        let origin = boxes
+        let (origin, generation) = boxes
             .iter()
             .find(|layer| (layer.client, layer.surface) == (target.0, root))
-            .map(|layer| (layer.x, layer.y))
+            .map(|layer| ((layer.x, layer.y), None))
             .or_else(|| {
                 self.stack
                     .placement(target.0, root)
                     .filter(|placed| self.stack.visible(placed))
-                    .map(|placed| (placed.x, placed.y))
+                    .map(|placed| ((placed.x, placed.y), Some(placed.generation)))
             })
             .or_else(|| {
                 self.server
@@ -46,8 +49,11 @@ impl Session {
                             .placement(client, popup.client_root)
                             .filter(|placed| self.stack.visible(placed))?;
                         Some((
-                            placed.x.saturating_add(popup.x.saturating_mul(scale)),
-                            placed.y.saturating_add(popup.y.saturating_mul(scale)),
+                            (
+                                placed.x.saturating_add(popup.x.saturating_mul(scale)),
+                                placed.y.saturating_add(popup.y.saturating_mul(scale)),
+                            ),
+                            Some(placed.generation),
                         ))
                     })
             })?;
@@ -57,6 +63,7 @@ impl Session {
             .find(|leaf| leaf.surface == target.1)
             .map(|leaf| Hit {
                 target,
+                generation,
                 origin: (
                     origin.0.saturating_add(leaf.x.saturating_mul(scale)),
                     origin.1.saturating_add(leaf.y.saturating_mul(scale)),
@@ -70,6 +77,7 @@ impl Session {
         surface: ObjectId,
         origin: (i32, i32),
         point: (i32, i32),
+        generation: Option<u64>,
     ) -> Option<Hit> {
         let scale = self.scale as i32;
         self.server
@@ -96,6 +104,7 @@ impl Session {
                     )
                     .then_some(Hit {
                         target: (client, leaf.surface),
+                        generation,
                         origin: (x, y),
                     })
             })
@@ -122,6 +131,7 @@ impl Session {
                         root.y.saturating_add(popup.y.saturating_mul(scale)),
                     ),
                     point,
+                    Some(root.generation),
                 )
             })
     }
@@ -137,7 +147,7 @@ impl Session {
                 .rev()
                 .filter(|layer| layers.contains(&layer.layer))
                 .find_map(|layer| {
-                    self.tree_hit(layer.client, layer.surface, (layer.x, layer.y), point)
+                    self.tree_hit(layer.client, layer.surface, (layer.x, layer.y), point, None)
                 })
         };
         let window_hit = |windows: &[Placement]| {
@@ -146,11 +156,17 @@ impl Session {
                 .rev()
                 .filter(|placed| self.stack.visible(placed))
                 .find_map(|placed| {
-                    self.tree_hit(placed.client, placed.surface, (placed.x, placed.y), point)
+                    self.tree_hit(
+                        placed.client,
+                        placed.surface,
+                        (placed.x, placed.y),
+                        point,
+                        Some(placed.generation),
+                    )
                 })
         };
         let windows = self.stack.windows();
-        let split = self.stack.fullscreen_start().unwrap_or(windows.len());
+        let split = self.fullscreen_start().unwrap_or(windows.len());
         let (below, above) = windows.split_at(split);
         layer_hit(Layer::Overlay..=Layer::Overlay)
             .or_else(|| self.popup_hit(point, above))

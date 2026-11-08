@@ -55,6 +55,7 @@ const KEYBOARD_STEP: i32 = 8;
 struct Animation {
     client: ClientId,
     surface: ObjectId,
+    generation: u64,
     from: (i32, i32, i32, i32),
     to: (i32, i32, i32, i32),
     start: Instant,
@@ -156,6 +157,7 @@ pub struct Parts {
 #[derive(Clone, Copy)]
 struct PointerGrab {
     target: (ClientId, ObjectId),
+    generation: Option<u64>,
     serial: u32,
     position: (i32, i32),
 }
@@ -173,7 +175,7 @@ pub struct Session {
     shape: Shape,
     /// 成功上传的客户端光标像素与热点；不可变引用避免场景 dirty 时反复上传同一图像。
     applied_client_cursor: Option<(crate::wayland::Content, (u32, u32))>,
-    last_pointer_focus: Option<(ClientId, ObjectId)>,
+    last_pointer_focus: Option<((ClientId, ObjectId), u32)>,
     /// 当前按下的指针按钮。非空期间指针焦点固定在按下时的 surface（Wayland 的隐式抓取）：
     /// 否则拖动 layer surface 这类“随指针移动”的界面时，指针一旦跑出 surface 就收不到后续 motion 与释放。
     pressed_buttons: BTreeSet<u16>,
@@ -199,7 +201,7 @@ pub struct Session {
     /// 上一次宣告剪贴板选择的键盘焦点客户端；变化时重新宣告，缺少它新聚焦的程序看不到已复制的内容。
     selection_focus: Option<ClientId>,
     /// 外壳用 `set_rectangle` 告知的任务按钮位置（输出物理坐标），最小化/还原动画的目标。
-    minimize_targets: HashMap<(ClientId, ObjectId), (i32, i32, i32, i32)>,
+    minimize_targets: HashMap<(ClientId, ObjectId, u64), Geometry>,
     /// 进行中的最小化/还原动画。
     animation: Option<Animation>,
     seat: Seat,
@@ -410,6 +412,15 @@ impl Session {
             .map(|layer| (layer.client, layer.surface))
     }
 
+    /// 全屏组只在普通窗口持有键盘时压住 Top 外壳；绘制和命中共用此边界。
+    /// 按需外壳取得键盘（例如运行对话框或任务按钮导航）时，不能仍被后台全屏窗口遮住。
+    fn fullscreen_start(&self) -> Option<usize> {
+        self.keyboard_layer
+            .is_none()
+            .then(|| self.stack.fullscreen_start())
+            .flatten()
+    }
+
     /// 普通桌面的按需键盘目标；安全登录图层不参与桌面焦点回退。
     fn desktop_keyboard(&self, boxes: &[LayerBox]) -> Option<(ClientId, ObjectId)> {
         boxes
@@ -520,6 +531,12 @@ impl Session {
             }
             // 已由前一轮按钮按下授权的 start_drag/accept 先于同轮硬件释放生效。
             self.server.dispatch(&returned[2 + input_count..])?;
+            // 先退休旧映射及其授权，再处理同轮输入；否则旧抓取可能命中新一代窗口。
+            let windows_changed = self.sync_windows()?;
+            self.sync_work_area();
+            if windows_changed {
+                self.sync_focus();
+            }
             self.process_data_device();
             // 一批积压的位置只应用最终状态，避免逐样本提交光标与 resize configure。
             input::coalesce_motion(&mut events);
@@ -535,8 +552,6 @@ impl Session {
                     self.on_input(event, false)?;
                 }
             }
-            self.sync_windows()?;
-            self.sync_work_area();
             self.handle_requests()?;
             self.sync_shell();
             self.sync_selection();
@@ -656,115 +671,6 @@ impl Session {
         }
     }
 
-    /// 与客户端的已映射窗口对账；窗口增减、尺寸变化与新的 commit 都会触发重绘。
-    fn sync_windows(&mut self) -> io::Result<()> {
-        let mapped: Vec<(ClientId, ObjectId, i32, i32, Initial)> = self
-            .server
-            .windows()
-            .map(|(client, window)| {
-                (
-                    client,
-                    window.surface,
-                    window.content.output_size(self.scale as i32).0,
-                    window.content.output_size(self.scale as i32).1,
-                    match (window.parent, window.fixed) {
-                        (Some(parent), _) => Initial::CenterOn(parent),
-                        (None, true) => Initial::Center,
-                        (None, false) => Initial::Cascade,
-                    },
-                )
-            })
-            .collect();
-        let modal: Vec<_> = self
-            .server
-            .windows()
-            .filter_map(|(client, window)| {
-                window
-                    .parent
-                    .filter(|_| window.modal)
-                    .map(|parent| (client, parent, window.surface))
-            })
-            .collect();
-        let before = self.stack.windows().len();
-        let active_before = self.stack.active();
-        if self.stack.sync(&mapped, self.screen(), self.scale as i32) {
-            // 映射/退出改变活动窗口时，焦点跟随窗口栈；SAS 握手仍由可信登录目标独占。
-            if self.stack.active() != active_before && !self.secure_pending {
-                self.keyboard_layer = None;
-            }
-            self.dirty = true;
-            if self.stack.windows().len() != before {
-                println!("compositor: windows={}", self.stack.windows().len());
-                for (_, window) in self.server.windows() {
-                    println!(
-                        "compositor: window {:?} app_id={:?}",
-                        window.title, window.app_id
-                    );
-                }
-            }
-        }
-        // 模态提示只约束其父窗口；其他应用仍可激活。多层对话框逐层将焦点推到最深处。
-        for _ in 0..modal.len() {
-            let active = self.stack.active();
-            let Some((client, _, child)) = modal
-                .iter()
-                .find(|(client, parent, _)| active == Some((*client, *parent)))
-            else {
-                break;
-            };
-            if !self.stack.raise(*client, *child) {
-                break;
-            }
-            if !self.secure_pending {
-                self.keyboard_layer = None;
-            }
-            self.dirty = true;
-        }
-        let layer_count = self.server.layers().count();
-        if layer_count != self.layers_seen {
-            self.layers_seen = layer_count;
-            self.dirty = true;
-            for (_, layer) in self.server.layers() {
-                println!(
-                    "compositor: layer {:?} {:?}",
-                    layer.namespace, layer.state.layer
-                );
-            }
-        }
-        let commits = self.server.commits();
-        if commits != self.commits_seen {
-            self.commits_seen = commits;
-            self.dirty = true;
-        }
-        if self.animation.as_ref().is_some_and(|animation| {
-            self.stack
-                .placement(animation.client, animation.surface)
-                .is_none()
-        }) {
-            self.animation = None;
-            self.dirty = true;
-        }
-        // 抓取的窗口消失了（被关闭、客户端断开）：抓取随之结束。
-        if let Some(active) = &self.grab
-            && self
-                .stack
-                .placement(active.grab.client, active.grab.surface)
-                .is_none()
-        {
-            self.end_grab()?;
-        }
-        Ok(())
-    }
-
-    /// 任务栏等独占区出现、消失或改变大小：最大化的窗口重新铺满新的工作区。
-    fn sync_work_area(&mut self) {
-        let (work, full) = (self.work_area(), self.full_area());
-        for (client, surface, size) in self.stack.refit(work, full) {
-            self.send_configure(client, surface, Some(size), false);
-            self.dirty = true;
-        }
-    }
-
     /// 键盘焦点跟随活动窗口（或独占键盘的外壳 surface）；窗口布局变化会改变光标下的窗口，位置没动所以不发 motion。
     fn sync_focus(&mut self) {
         let scale = self.scale as i32;
@@ -789,7 +695,7 @@ impl Session {
         {
             self.keyboard_layer = self.desktop_keyboard(&boxes);
         }
-        self.seat.sync_keyboard(
+        self.dirty |= self.seat.sync_keyboard(
             &mut self.server,
             &self.stack,
             scale,
@@ -808,7 +714,10 @@ impl Session {
         }
         let hit = self
             .pointer_grab
-            .and_then(|grab| self.locate_target(&boxes, grab.target))
+            .and_then(|grab| {
+                self.locate_target(&boxes, grab.target)
+                    .filter(|hit| hit.generation == grab.generation)
+            })
             .or_else(|| self.hit_test(&boxes, pointer));
         self.seat
             .update_pointer(&mut self.server, hit, pointer, scale, time, false);
@@ -841,6 +750,9 @@ impl Session {
         size: Option<(i32, i32)>,
         resizing: bool,
     ) {
+        self.dirty |= self
+            .seat
+            .sync_activation(&mut self.server, &self.stack, self.scale as i32);
         let (width, height, state) = window_configure(
             &self.stack,
             (client, surface),
@@ -882,17 +794,13 @@ impl Session {
             return Ok(());
         };
         // 缩放结束：告诉客户端不再处于缩放中（保留最后的尺寸）。
-        if let (Kind::Resize(_), Some(size)) = (active.grab.kind, active.last_size) {
-            let (width, height, state) = window_configure(
-                &self.stack,
-                (active.grab.client, active.grab.surface),
-                self.scale as i32,
-                Some(size),
-                false,
-            );
-            self.server.with_client(active.grab.client, |client| {
-                client.configure(active.grab.surface, width, height, state)
-            });
+        if let (Kind::Resize(_), Some(size)) = (active.grab.kind, active.last_size)
+            && self
+                .stack
+                .placement(active.grab.client, active.grab.surface)
+                .is_some_and(|placed| placed.generation == active.grab.generation)
+        {
+            self.send_configure(active.grab.client, active.grab.surface, Some(size), false);
         }
         self.seat.end_grab();
         self.shape = Shape::Default;

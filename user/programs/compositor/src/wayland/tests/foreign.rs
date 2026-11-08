@@ -11,6 +11,7 @@ fn window(client: u64, title: &str, state: ForeignState) -> ForeignInfo {
     ForeignInfo {
         client: ClientId(client),
         surface: id(5),
+        generation: 1,
         title: title.into(),
         app_id: "app".into(),
         state,
@@ -120,15 +121,22 @@ fn a_vanished_window_is_closed_and_a_returning_one_gets_a_fresh_handle() {
         .client
         .sync_foreign(&[window(2, "a", ForeignState::default())]);
     let first = handle_of(&events(&mut harness));
-    harness.client.sync_foreign(&[]);
-    let closed = events(&mut harness);
+    // 无需中间的空快照：同编号换代也必须关闭旧句柄，不能复用其操作授权。
+    let mut replacement = window(2, "a", ForeignState::default());
+    replacement.generation = 2;
+    harness.client.sync_foreign(&[replacement]);
+    let changes = events(&mut harness);
     assert!(
-        matches!(&closed[..], [(id, AnyEvent::ZwlrForeignToplevelHandleV1(handle::Event::Closed))] if *id == first)
+        matches!(&changes[0], (id, AnyEvent::ZwlrForeignToplevelHandleV1(handle::Event::Closed)) if *id == first)
     );
+    assert_ne!(handle_of(&changes), first);
     harness
-        .client
-        .sync_foreign(&[window(2, "a", ForeignState::default())]);
-    assert_ne!(handle_of(&events(&mut harness)), first);
+        .send(|w| handle::Request::Close.encode(id(first), w).unwrap())
+        .unwrap();
+    assert!(
+        harness.client.take_requests().is_empty(),
+        "closed handle cannot control the replacement"
+    );
 }
 
 #[test]
@@ -181,6 +189,7 @@ fn handle_requests_become_actions_on_the_right_window() {
             shell: ClientId(0),
             client: ClientId(client),
             surface: id(5),
+            generation: 1,
             action,
         })
     };

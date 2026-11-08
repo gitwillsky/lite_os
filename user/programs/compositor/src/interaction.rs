@@ -47,6 +47,8 @@ pub enum Kind {
 pub struct Grab {
     pub client: ClientId,
     pub surface: ObjectId,
+    /// 根窗口的映射身份；旧交互不能操作同编号的新映射。
+    pub generation: u64,
     pub kind: Kind,
     /// 抓取开始时的指针位置与窗口几何。
     pub pointer: (i32, i32),

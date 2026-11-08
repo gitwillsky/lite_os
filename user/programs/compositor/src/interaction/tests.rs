@@ -9,6 +9,7 @@ fn grab(kind: Kind) -> Grab {
     Grab {
         client: ClientId(1),
         surface: ObjectId::new(5).unwrap(),
+        generation: 1,
         kind,
         pointer: (200, 200),
         start: (100, 100, 400, 300),

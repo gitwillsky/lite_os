@@ -373,8 +373,12 @@ fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
         pagers,
     }
 }
+/// 按外壳 `s`、连接 `d` 和逻辑宽 `width` 的同一版式返回每页任务容量，至少为 1，无错误返回。
+pub fn task_capacity(s: &Desktop, d: &Display, width: i32) -> usize {
+    (taskbar_layout(s, d, width).tasks.width / 80).max(1) as usize
+}
 pub fn task_ids(s: &Desktop, d: &Display, width: i32) -> Vec<ToplevelId> {
-    let count = (taskbar_layout(s, d, width).tasks.width / 80).max(1) as usize;
+    let count = task_capacity(s, d, width);
     let total = d.toplevels().count();
     let page = s.task_page.min(total.saturating_sub(1) / count);
     d.toplevels()
@@ -586,6 +590,9 @@ pub fn frame(
                 if pressed {
                     // 活动窗口的按钮按下并带高光/按钮面棋盘格底。
                     p.checker(rect.inset(2), C::ButtonHilight, C::ButtonFace);
+                }
+                if s.task_focus == Some(*id) {
+                    p.focus_rect(rect.inset(3));
                 }
                 // 16×16 程序图标加左对齐标题，按下时整体下移一像素。
                 let shift = i32::from(pressed);

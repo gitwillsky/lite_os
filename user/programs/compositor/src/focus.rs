@@ -60,6 +60,8 @@ impl KeyTracker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hit {
     pub target: Target,
+    /// 普通窗口及其子树继承根映射身份；外壳图层不属于 xdg 窗口。
+    pub generation: Option<u64>,
     pub origin: (i32, i32),
 }
 
@@ -132,8 +134,11 @@ pub fn window_configure(
 #[derive(Default)]
 pub struct Seat {
     serial: u32,
-    pointer_focus: Option<Target>,
-    keyboard_focus: Option<Target>,
+    pointer_focus: Option<(Target, Option<u64>)>,
+    keyboard_focus: Option<(Target, Option<u64>)>,
+    /// 最近已发表 activated 的 xdg 窗口，仅是协议投影；当前活动窗口仍由 Stack 唯一决定。
+    /// 外壳借走键盘后若不保留此目标，新窗口出现时就无法通知原窗口取消激活。
+    advertised_activation: Option<(Target, u64)>,
     keys: KeyTracker,
     /// 合成器正在抓取指针（交互式移动/缩放）：客户端看不到指针事件。
     grabbed: bool,
@@ -154,10 +159,10 @@ impl Seat {
             && !modifiers.alt
             && ((code == 1 && modifiers.control && !modifiers.super_key)
                 || (matches!(code, 125 | 126) && !modifiers.control && !modifiers.shift)
-                || (matches!(code, 18 | 19 | 32 | 50 | 119)
+                || (matches!(code, 15 | 18 | 19 | 32 | 50 | 119)
                     && modifiers.super_key
                     && !modifiers.control
-                    && (!modifiers.shift || code == 50)))
+                    && (!modifiers.shift || matches!(code, 15 | 50))))
     }
 
     pub fn next_serial(&mut self) -> u32 {
@@ -166,7 +171,7 @@ impl Seat {
     }
 
     pub fn pointer_focus(&self) -> Option<Target> {
-        self.pointer_focus
+        self.pointer_focus.map(|(target, _)| target)
     }
 
     pub fn pointer_enter_serial(&self) -> u32 {
@@ -175,7 +180,7 @@ impl Seat {
 
     /// 开始抓取：指针对当前焦点客户端就像离开了窗口。
     pub fn begin_grab(&mut self, server: &mut Server) {
-        if let Some((client, surface)) = self.pointer_focus.take() {
+        if let Some(((client, surface), _)) = self.pointer_focus.take() {
             let serial = self.next_serial();
             server.with_client(client, |client| client.pointer_leave(serial, surface));
         }
@@ -204,15 +209,16 @@ impl Seat {
         if self.grabbed {
             return;
         }
-        let target = hit.map(|hit| hit.target);
+        let target = hit.map(|hit| (hit.target, hit.generation));
         if target != self.pointer_focus {
-            if let Some((client, surface)) = self.pointer_focus {
+            if let Some(((client, surface), _)) = self.pointer_focus {
                 let serial = self.next_serial();
                 server.with_client(client, |client| client.pointer_leave(serial, surface));
             }
             if let Some(Hit {
                 target: (client, surface),
                 origin,
+                ..
             }) = hit
             {
                 let serial = self.next_serial();
@@ -226,6 +232,7 @@ impl Seat {
             Some(Hit {
                 target: (client, _),
                 origin,
+                ..
             }),
         ) = (moved, hit)
         {
@@ -236,7 +243,7 @@ impl Seat {
 
     /// 滚轮发给当前指针焦点的客户端；没有焦点时丢弃。
     pub fn wheel(&mut self, server: &mut Server, vertical: i32, horizontal: i32, time: u32) {
-        if let Some((client, _)) = self.pointer_focus {
+        if let Some(((client, _), _)) = self.pointer_focus {
             server.with_client(client, |client| {
                 client.pointer_axis(time, vertical, horizontal)
             });
@@ -252,7 +259,7 @@ impl Seat {
         pressed: bool,
         time: u32,
     ) -> Option<u32> {
-        if let Some((client, _)) = self.pointer_focus {
+        if let Some(((client, _), _)) = self.pointer_focus {
             let serial = self.next_serial();
             server.with_client(client, |client| {
                 client.pointer_button(serial, time, u32::from(code), pressed)
@@ -263,54 +270,78 @@ impl Seat {
         }
     }
 
-    /// 键盘焦点跟随活动窗口：旧窗口 leave 并标记未激活，新窗口标记已激活并 enter。
-    ///
-    /// `exclusive` 是持有独占键盘交互的外壳 surface（登录屏）；它存在时优先于任何窗口。
+    /// 把 Stack 的活动窗口投影为 xdg 装饰状态；返回投影是否改变，无错误返回。
+    /// 几何与模式均从 `stack` 读取，`scale` 换算逻辑尺寸。Session 的唯一 configure 入口及键盘同步均先调用它，
+    /// 避免同批命令中的中间激活先经几何 configure 发表，随后未被取消。
+    pub fn sync_activation(&mut self, server: &mut Server, stack: &Stack, scale: i32) -> bool {
+        let active = stack.active().and_then(|target| {
+            stack
+                .placement(target.0, target.1)
+                .map(|placed| (target, placed.generation))
+        });
+        if active == self.advertised_activation {
+            return false;
+        }
+        // 旧映射已退休时不能把它的取消激活发送给同编号的新映射；新映射仍须独立激活。
+        let previous = self.advertised_activation.filter(|(target, generation)| {
+            stack
+                .placement(target.0, target.1)
+                .is_some_and(|placed| placed.generation == *generation)
+        });
+        for ((client, surface), _) in previous.into_iter().chain(active) {
+            let (width, height, state) =
+                window_configure(stack, (client, surface), scale, None, false);
+            server.with_client(client, |client| {
+                client.configure(surface, width, height, state)
+            });
+        }
+        self.advertised_activation = active;
+        true
+    }
+
+    /// 键盘焦点跟随活动窗口或显式外壳目标；`exclusive` 仅改变 wl_keyboard，不决定装饰激活。
+    /// `stack` 决定应用激活，`scale` 换算尺寸。返回键盘目标或激活投影是否改变，Session 据此失效绘制。
     pub fn sync_keyboard(
         &mut self,
         server: &mut Server,
         stack: &Stack,
         scale: i32,
         exclusive: Option<Target>,
-    ) {
-        let active = exclusive.or_else(|| stack.active());
+    ) -> bool {
+        let activation_changed = self.sync_activation(server, stack, scale);
+        let active = exclusive.or_else(|| stack.active()).map(|target| {
+            let generation = stack
+                .placement(target.0, target.1)
+                .map(|placed| placed.generation);
+            (target, generation)
+        });
         let changed = active != self.keyboard_focus;
         // 1. logical focus 未变也要检查新对象；客户端绑定键盘可能晚于窗口取得焦点。
-        if !changed && !active.is_some_and(|(client, _)| server.keyboard_needs_enter(client)) {
-            return;
+        if !changed && !active.is_some_and(|((client, _), _)| server.keyboard_needs_enter(client)) {
+            return activation_changed;
         }
         // 2. 只有真正换焦点才发送旧对象 leave；新绑定不能使已有对象重新 enter。
-        if changed && let Some((client, surface)) = self.keyboard_focus {
+        if changed && let Some(((client, surface), _)) = self.keyboard_focus {
             let serial = self.next_serial();
-            // 窗口可能刚被最小化或移除；还存在时通知它失去激活，并保留它的最大化等状态。
-            let (width, height, state) =
-                window_configure(stack, (client, surface), scale, None, false);
-            server.with_client(client, |client| {
-                client.keyboard_leave(serial, surface);
-                client.configure(surface, width, height, state);
-            });
+            server.with_client(client, |client| client.keyboard_leave(serial, surface));
         }
-        if let Some((client, surface)) = active {
+        if let Some(((client, surface), _)) = active {
             let serial = self.next_serial();
             let (depressed, locked) = xkb::modifier_masks(self.keys.modifiers());
             let pressed = self.keys.pressed().to_vec();
-            let (width, height, state) =
-                window_configure(stack, (client, surface), scale, None, false);
             server.with_client(client, |client| {
                 // 3. 新对象先 enter，再同步当前 pressed keys/modifiers；按键只投递给已 enter 对象。
-                if changed {
-                    client.configure(surface, width, height, state);
-                }
                 client.keyboard_enter(serial, surface, &pressed);
                 client.keyboard_modifiers(serial, depressed, locked);
             });
         }
         self.keyboard_focus = active;
+        changed || activation_changed
     }
 
     /// 键盘焦点所在的客户端。
     pub fn keyboard_client(&self) -> Option<ClientId> {
-        self.keyboard_focus.map(|(client, _)| client)
+        self.keyboard_focus.map(|((client, _), _)| client)
     }
 
     /// 记录一次由合成器模态界面（窗口菜单、键盘移动）消费的按键：只更新按键状态，不转发给任何客户端，
@@ -355,7 +386,7 @@ impl Seat {
         if !pressed && self.keys.take_consumed(code) {
             return Shortcut::None;
         }
-        if let Some((client, _)) = self.keyboard_focus {
+        if let Some(((client, _), _)) = self.keyboard_focus {
             let (depressed, locked) = xkb::modifier_masks(self.keys.modifiers());
             let serial = self.next_serial();
             server.with_client(client, |client| {

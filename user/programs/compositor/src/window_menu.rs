@@ -91,6 +91,8 @@ fn height() -> i32 {
 pub struct WindowMenu {
     pub client: ClientId,
     pub surface: ObjectId,
+    /// 根窗口的映射身份；旧交互不能操作同编号的新映射。
+    pub generation: u64,
     /// 菜单左上角的物理坐标，已对齐到输出 scale 的整数倍。
     origin: (i32, i32),
     scale: i32,
@@ -129,6 +131,7 @@ impl WindowMenu {
         Self {
             client: placement.client,
             surface: placement.surface,
+            generation: placement.generation,
             origin: (x, y),
             scale,
             enabled,

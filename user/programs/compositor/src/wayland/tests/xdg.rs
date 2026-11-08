@@ -305,7 +305,7 @@ fn window_requests_are_queued_keyed_by_surface() {
     assert_eq!(
         requests,
         expected
-            .map(|request| crate::wayland::WindowCommand::Toplevel(id(5), request))
+            .map(|request| crate::wayland::WindowCommand::Toplevel(id(5), 1, request))
             .to_vec()
     );
     assert!(harness.client.take_requests().is_empty());
@@ -338,6 +338,7 @@ fn window_requests_are_queued_keyed_by_surface() {
     harness.client.sync_foreign(&[ForeignInfo {
         client: ClientId(99),
         surface: id(5),
+        generation: 1,
         title: "target".into(),
         app_id: "target".into(),
         state: ForeignState::default(),
@@ -384,13 +385,14 @@ fn window_requests_are_queued_keyed_by_surface() {
             shell: ClientId(0),
             client: ClientId(99),
             surface: id(5),
+            generation: 1,
             action,
         })
     };
     assert_eq!(
         harness.client.take_requests(),
         [
-            WindowCommand::Toplevel(id(5), WindowRequest::Minimize),
+            WindowCommand::Toplevel(id(5), 1, WindowRequest::Minimize),
             foreign(ForeignAction::Minimize(true)),
             WindowCommand::Shell(shell::Action::MinimizeAll),
             WindowCommand::Arrange(shell::Arrangement::Vertical),
@@ -625,4 +627,116 @@ fn size_limits_are_committed_together_before_window_arrangement_can_use_them() {
             .is_err()
     );
     harness.expect_error(xdg_toplevel::Error::InvalidSize as u32);
+}
+
+#[test]
+fn unmapping_discards_toplevel_attributes_and_requires_a_new_initial_handshake() {
+    let mut harness = Harness::bound();
+    let first = window(&mut harness);
+    ack(&mut harness, first).unwrap();
+    map(&mut harness);
+    harness.events(&[(11, Interface::WlBuffer)]);
+    let original_generation = harness.client.windows().next().unwrap().generation;
+    harness
+        .send(|w| {
+            xdg_toplevel::Request::SetTitle {
+                title: "旧窗口".into(),
+            }
+            .encode(id(22), w)
+            .unwrap();
+            xdg_toplevel::Request::SetAppId {
+                app_id: "old-app".into(),
+            }
+            .encode(id(22), w)
+            .unwrap();
+            xdg_toplevel::Request::SetMinSize {
+                width: 2,
+                height: 2,
+            }
+            .encode(id(22), w)
+            .unwrap();
+            xdg_toplevel::Request::SetMaxSize {
+                width: 2,
+                height: 2,
+            }
+            .encode(id(22), w)
+            .unwrap();
+            wl_surface::Request::Commit.encode(id(5), w).unwrap();
+            wl_surface::Request::Attach {
+                buffer: None,
+                x: 0,
+                y: 0,
+            }
+            .encode(id(5), w)
+            .unwrap();
+            wl_surface::Request::Commit.encode(id(5), w).unwrap();
+        })
+        .unwrap();
+    assert_eq!(harness.client.windows().count(), 0);
+    assert!(
+        harness.events(&XDG_OBJECTS).is_empty(),
+        "unmap does not count as the next initial commit"
+    );
+    harness
+        .send(|w| wl_surface::Request::Commit.encode(id(5), w).unwrap())
+        .unwrap();
+    let events = harness.events(&XDG_OBJECTS);
+    let second = events
+        .iter()
+        .find_map(|event| match event.event {
+            AnyEvent::XdgSurface(xdg_surface::Event::Configure { serial }) => Some(serial),
+            _ => None,
+        })
+        .expect("remapping needs a fresh initial configure");
+    assert_ne!(first, second);
+    ack(&mut harness, second).unwrap();
+    harness
+        .send(|w| {
+            wl_surface::Request::Attach {
+                buffer: Some(id(11)),
+                x: 0,
+                y: 0,
+            }
+            .encode(id(5), w)
+            .unwrap();
+            wl_surface::Request::Commit.encode(id(5), w).unwrap();
+        })
+        .unwrap();
+    let window = harness.client.windows().next().unwrap();
+    assert_ne!(
+        window.generation, original_generation,
+        "the same wl_surface has a new mapped lifetime"
+    );
+    assert_eq!((window.title, window.app_id), ("", ""));
+    assert_eq!((window.min_size, window.max_size), ((0, 0), (0, 0)));
+    assert!(!window.fixed && window.parent.is_none());
+    harness.events(&[(11, Interface::WlBuffer)]);
+    harness
+        .send(|w| {
+            wl_surface::Request::Attach {
+                buffer: None,
+                x: 0,
+                y: 0,
+            }
+            .encode(id(5), w)
+            .unwrap();
+            wl_surface::Request::Commit.encode(id(5), w).unwrap();
+        })
+        .unwrap();
+    assert!(
+        harness
+            .send(|w| {
+                wl_surface::Request::Attach {
+                    buffer: Some(id(11)),
+                    x: 0,
+                    y: 0,
+                }
+                .encode(id(5), w)
+                .unwrap();
+                wl_surface::Request::Commit.encode(id(5), w).unwrap();
+            })
+            .is_err(),
+        "the old ack cannot authorize another mapping"
+    );
+    harness.expect_error(xdg_surface::Error::UnconfiguredBuffer as u32);
 }

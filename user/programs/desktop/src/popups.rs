@@ -543,7 +543,19 @@ impl Desktop {
             return Ok(());
         };
         let (_, pointer_x, pointer_y) = self.pointer;
-        let (x, y, hit) = if keyboard {
+        let (x, y, hit) = if keyboard && window == self.taskbar {
+            let ids = paint::task_ids(self, display, c.width);
+            let Some(index) = ids.iter().position(|id| Some(*id) == self.task_focus) else {
+                return Ok(());
+            };
+            let index = paint::TASKS_FROM + index;
+            let rect = paint::areas(self, display, window, c)[index];
+            (
+                f64::from(rect.x + rect.width / 2),
+                f64::from(rect.y),
+                Some(index),
+            )
+        } else if keyboard {
             let (x, y) = self.focused.map_or((0, 0), |index| {
                 let cell = self.icons.rect(index);
                 (cell.x + cell.width / 2, cell.bottom())

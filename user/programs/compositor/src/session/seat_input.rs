@@ -25,9 +25,10 @@ impl Session {
                     self.drag((x, y));
                 } else {
                     let boxes = self.layer_boxes();
-                    let grabbed = self
-                        .pointer_grab
-                        .and_then(|grab| self.locate_target(&boxes, grab.target));
+                    let grabbed = self.pointer_grab.and_then(|grab| {
+                        self.locate_target(&boxes, grab.target)
+                            .filter(|hit| hit.generation == grab.generation)
+                    });
                     if grabbed.is_none() {
                         self.pointer_grab = None;
                     }
@@ -129,6 +130,10 @@ impl Session {
                         self.pointer_grab =
                             target.zip(serial).map(|(target, serial)| PointerGrab {
                                 target,
+                                generation: self
+                                    .root_target(target)
+                                    .and_then(|root| self.stack.placement(root.0, root.1))
+                                    .map(|placed| placed.generation),
                                 serial,
                                 position,
                             });
@@ -187,7 +192,7 @@ impl Session {
                 {
                     self.keyboard_layer = self.desktop_keyboard(&self.layer_boxes());
                 }
-                self.seat.sync_keyboard(
+                self.dirty |= self.seat.sync_keyboard(
                     &mut self.server,
                     &self.stack,
                     scale,

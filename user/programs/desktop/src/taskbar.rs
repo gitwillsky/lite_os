@@ -1,8 +1,15 @@
 //! 任务栏图层：层次/高度/独占区、自动隐藏、任务按钮矩形与悬停提示。
 //! 状态仍由 Desktop 唯一持有；本模块只是同一 owner 的任务栏方法。
 use super::{Desktop, TASKBAR_HEIGHT, paint};
-use classic_ui::{Display, KeyboardInteractivity, Layer, LayerSettings, layer_anchor};
-use std::{io, time::Duration};
+use crate::{dialogs::Kind, start};
+use classic_ui::{
+    Display, Event, EventKind, KeyboardInteractivity, Layer, LayerSettings, ToplevelRequest,
+    layer_anchor,
+};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 /// 自动隐藏的任务栏收起后露出的细线高度。
 const HIDDEN_HEIGHT: i32 = 2;
@@ -10,6 +17,204 @@ const HIDDEN_HEIGHT: i32 = 2;
 const HIDE_DELAY: Duration = Duration::from_millis(400);
 
 impl Desktop {
+    /// 只移动任务按钮的逻辑焦点，Enter 才激活窗口；直接遍历现有快照，不复制任务列表。
+    fn cycle_tasks(&mut self, display: &mut Display, reverse: bool) -> io::Result<()> {
+        let count = display.toplevels().count();
+        if count == 0 {
+            self.task_focus = None;
+            return Ok(());
+        }
+        let current = self.task_focus.or_else(|| {
+            display
+                .toplevels()
+                .find(|(_, info)| info.active)
+                .map(|(id, _)| id)
+        });
+        let index =
+            current.and_then(|current| display.toplevels().position(|(id, _)| id == current));
+        let index = match (index, reverse) {
+            (Some(index), false) => (index + 1) % count,
+            (Some(index), true) => (index + count - 1) % count,
+            (None, false) => 0,
+            (None, true) => count - 1,
+        };
+        self.task_focus = display.toplevels().nth(index).map(|(id, _)| id);
+        if self.taskbar_hidden {
+            self.taskbar_hidden = false;
+            // 键盘展开不会产生 PointerLeave；记录收起期限，焦点存在时暂停收起。
+            self.leave_at = Some(Instant::now());
+            self.apply_taskbar(display)?;
+        }
+        self.sync_task_focus(display);
+        Ok(())
+    }
+
+    /// 窗口集合或任务栏尺寸变化后裁决焦点与分页；带 generation 的句柄不能命中复用的旧编号。
+    pub(super) fn sync_task_focus(&mut self, display: &Display) {
+        let Some(current) = self.task_focus else {
+            return;
+        };
+        if display.toplevel(current).is_none() {
+            self.task_focus = display.toplevels().next().map(|(id, _)| id);
+        }
+        if let Some(index) = self
+            .task_focus
+            .and_then(|current| display.toplevels().position(|(id, _)| id == current))
+        {
+            let width = display.configuration(self.taskbar).map_or(0, |c| c.width);
+            self.task_page = index / paint::task_capacity(self, display, width);
+        }
+    }
+
+    /// 背景 surface 承载外壳的键盘，逻辑焦点可落在另一 surface 的任务按钮上；
+    /// 该焦点存在时键盘不能落入背景文件的删除/重命名等命令。
+    pub(super) fn task_key(
+        &mut self,
+        display: &mut Display,
+        art: &mut paint::Art,
+        event: &Event,
+    ) -> io::Result<bool> {
+        match event.kind {
+            EventKind::Button { pressed: true, .. } => self.task_focus = None,
+            EventKind::Focus(false)
+                if (event.window == self.background || event.window == self.taskbar)
+                    && self.overlay.is_none()
+                    && self.menu.is_none() =>
+            {
+                self.task_focus = None
+            }
+            EventKind::Configure(_) if event.window == self.taskbar => {
+                self.sync_task_focus(display)
+            }
+            EventKind::ToplevelsChanged => self.sync_task_focus(display),
+            _ => {}
+        }
+        if self.task_focus.is_none()
+            || (event.window != self.background && event.window != self.taskbar)
+            || self.overlay.is_some()
+            || self.menu.is_some()
+        {
+            return Ok(false);
+        }
+        let EventKind::Key(key) = event.kind else {
+            return Ok(false);
+        };
+        if !key.pressed || key.modifiers.control || key.modifiers.alt || key.modifiers.super_key {
+            return Ok(true);
+        }
+        match key.code {
+            15 => self.cycle_tasks(display, key.modifiers.shift)?,
+            103 | 105 => self.cycle_tasks(display, true)?,
+            106 | 108 => self.cycle_tasks(display, false)?,
+            102 | 107 => {
+                self.task_focus = if key.code == 102 {
+                    display.toplevels().next().map(|(id, _)| id)
+                } else {
+                    display.toplevels().last().map(|(id, _)| id)
+                };
+                self.sync_task_focus(display);
+            }
+            28 | 57 if !key.repeat => {
+                if let Some(id) = self
+                    .task_focus
+                    .take()
+                    .filter(|id| display.toplevel(*id).is_some())
+                {
+                    display.control_toplevel(id, ToplevelRequest::Activate)?;
+                }
+            }
+            1 => {
+                self.task_focus = None;
+                let active = display
+                    .toplevels()
+                    .find(|(_, info)| info.active)
+                    .map(|(id, _)| id);
+                if let Some(id) = active {
+                    display.control_toplevel(id, ToplevelRequest::Activate)?;
+                }
+            }
+            68 | 127 | 139 if !key.repeat && key.modifiers.shift == (key.code == 68) => {
+                self.context_menu(display, art, self.taskbar, true)?;
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// 外壳快捷键先于菜单与编辑控件解释；未消费的事件继续原来的输入路径。
+    pub(super) fn shell_key(
+        &mut self,
+        display: &mut Display,
+        event: &EventKind,
+    ) -> io::Result<bool> {
+        if matches!(
+            event,
+            EventKind::Focus(false) | EventKind::Button { pressed: true, .. }
+        ) {
+            self.start_key = None;
+        }
+        let EventKind::Key(key) = event else {
+            return Ok(false);
+        };
+        if matches!(key.code, 125 | 126) {
+            if key.pressed && !key.repeat {
+                self.start_key =
+                    (!key.modifiers.control && !key.modifiers.alt && !key.modifiers.shift)
+                        .then_some(key.code);
+            } else if !key.pressed && self.start_key.take() == Some(key.code) {
+                self.toggle_menu(display)?;
+            }
+            return Ok(true);
+        }
+        if !key.pressed {
+            return Ok(false);
+        }
+        self.start_key = None;
+        let modifiers = key.modifiers;
+        let control_escape =
+            key.code == 1 && modifiers.control && !modifiers.alt && !modifiers.super_key;
+        let win_command = matches!(key.code, 15 | 18 | 19 | 32 | 50 | 119)
+            && modifiers.super_key
+            && !modifiers.alt
+            && !modifiers.control
+            && (!modifiers.shift || matches!(key.code, 15 | 50));
+        if !control_escape && !win_command {
+            return Ok(false);
+        }
+        if key.repeat && key.code != 15 {
+            return Ok(true);
+        }
+        if key.code != 15 {
+            self.task_focus = None;
+        }
+        if control_escape && !modifiers.shift {
+            self.toggle_menu(display)?;
+        } else {
+            if self.menu.is_some() {
+                self.toggle_menu(display)?;
+            }
+            match key.code {
+                15 => {
+                    self.commit_rename();
+                    if self.rename.is_none() {
+                        self.cycle_tasks(display, modifiers.shift)?;
+                    }
+                }
+                1 => self.launch_task_manager(),
+                18 => self.open_place(start::Place::MyComputer),
+                19 => self.dialog(display, Kind::Run)?,
+                32 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
+                50 if modifiers.shift => {
+                    display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?
+                }
+                50 => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
+                119 => self.control_panel("system"),
+                _ => unreachable!("matched shell shortcut"),
+            }
+        }
+        Ok(true)
+    }
+
     /// 任务栏图层的设置：层次（总在最前）、高度与独占区（自动隐藏时收起并释放独占区）。
     pub(super) fn taskbar_layer(
         settings: &desktop_settings::Settings,
@@ -41,10 +246,12 @@ impl Desktop {
 
     /// 按当前设置重新配置任务栏图层。
     pub(super) fn apply_taskbar(&mut self, display: &mut Display) -> io::Result<()> {
-        display.configure_layer(
-            self.taskbar,
-            Self::taskbar_layer(&self.settings, self.taskbar_hidden),
-        )
+        let mut settings = Self::taskbar_layer(&self.settings, self.taskbar_hidden);
+        // 非置顶任务栏取得键盘时也必须可见；结束导航后由事件边界重新应用用户的层次设置。
+        if self.task_focus.is_some() {
+            settings.layer = Layer::Top;
+        }
+        display.configure_layer(self.taskbar, settings)
     }
 
     /// 设置文件变了就重读并应用；返回是否需要重画。
@@ -167,7 +374,10 @@ impl Desktop {
             return Ok(());
         }
         if self.leave_at.is_some_and(|at| {
-            at.elapsed() >= HIDE_DELAY && self.menu.is_none() && self.overlay.is_none()
+            at.elapsed() >= HIDE_DELAY
+                && self.menu.is_none()
+                && self.overlay.is_none()
+                && self.task_focus.is_none()
         }) {
             self.leave_at = None;
             self.taskbar_hidden = true;

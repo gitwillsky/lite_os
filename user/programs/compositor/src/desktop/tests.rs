@@ -14,7 +14,7 @@ const FULL: (i32, i32, i32, i32) = (0, 0, 1280, 800);
 fn new_windows_cascade_by_a_title_bar_and_land_on_top() {
     let mut stack = Stack::default();
     let changed = stack.sync(
-        &[(ClientId(1), surface(5), 300, 200, Initial::Cascade)],
+        &[(ClientId(1), surface(5), 1, 300, 200, Initial::Cascade)],
         SCREEN,
         1,
     );
@@ -22,8 +22,8 @@ fn new_windows_cascade_by_a_title_bar_and_land_on_top() {
     assert_eq!((stack.windows()[0].x, stack.windows()[0].y), (40, 40));
     stack.sync(
         &[
-            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -36,7 +36,7 @@ fn new_windows_cascade_by_a_title_bar_and_land_on_top() {
 fn cascade_scales_with_the_output_and_wraps_before_leaving_the_screen() {
     let mut stack = Stack::default();
     stack.sync(
-        &[(ClientId(1), surface(5), 300, 200, Initial::Cascade)],
+        &[(ClientId(1), surface(5), 1, 300, 200, Initial::Cascade)],
         SCREEN,
         2,
     );
@@ -44,7 +44,7 @@ fn cascade_scales_with_the_output_and_wraps_before_leaving_the_screen() {
     let mut stack = Stack::default();
     let mut mapped = Vec::new();
     for client in 0..40 {
-        mapped.push((ClientId(client), surface(5), 300, 200, Initial::Cascade));
+        mapped.push((ClientId(client), surface(5), 1, 300, 200, Initial::Cascade));
         stack.sync(&mapped, SCREEN, 1);
     }
     assert!(stack.windows().iter().all(|placed| placed.x + placed.width < SCREEN.0 && placed.y + placed.height < SCREEN.1));
@@ -57,12 +57,12 @@ fn cascade_scales_with_the_output_and_wraps_before_leaving_the_screen() {
 #[test]
 fn sync_is_idempotent_and_reports_only_real_changes() {
     let mut stack = Stack::default();
-    let mapped = [(ClientId(1), surface(5), 300, 200, Initial::Cascade)];
+    let mapped = [(ClientId(1), surface(5), 1, 300, 200, Initial::Cascade)];
     assert!(stack.sync(&mapped, SCREEN, 1));
     assert!(!stack.sync(&mapped, SCREEN, 1));
     assert!(
         stack.sync(
-            &[(ClientId(1), surface(5), 320, 200, Initial::Cascade)],
+            &[(ClientId(1), surface(5), 1, 320, 200, Initial::Cascade)],
             SCREEN,
             1
         ),
@@ -83,15 +83,15 @@ fn identity_is_client_and_surface_not_position_in_the_list() {
     let mut stack = Stack::default();
     stack.sync(
         &[
-            (ClientId(1), surface(5), 100, 100, Initial::Cascade),
-            (ClientId(2), surface(5), 100, 100, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 100, 100, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 100, 100, Initial::Cascade),
         ],
         SCREEN,
         1,
     );
     // 第一个连接断开：第二个窗口保持原位，不会被当成新窗口重新层叠。
     stack.sync(
-        &[(ClientId(2), surface(5), 100, 100, Initial::Cascade)],
+        &[(ClientId(2), surface(5), 1, 100, 100, Initial::Cascade)],
         SCREEN,
         1,
     );
@@ -108,8 +108,8 @@ fn the_top_of_the_stack_is_the_active_window_and_raise_changes_it() {
     assert_eq!(stack.active(), None);
     stack.sync(
         &[
-            (ClientId(1), surface(5), 100, 100, Initial::Cascade),
-            (ClientId(2), surface(5), 100, 100, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 100, 100, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 100, 100, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -130,7 +130,7 @@ fn the_top_of_the_stack_is_the_active_window_and_raise_changes_it() {
     assert!(!stack.raise(ClientId(9), surface(5)), "unknown window");
     // 栈顶窗口消失后，下一个窗口自动成为活动窗口。
     stack.sync(
-        &[(ClientId(2), surface(5), 100, 100, Initial::Cascade)],
+        &[(ClientId(2), surface(5), 1, 100, 100, Initial::Cascade)],
         SCREEN,
         1,
     );
@@ -141,8 +141,8 @@ fn two_windows() -> Stack {
     let mut stack = Stack::default();
     stack.sync(
         &[
-            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -243,8 +243,8 @@ fn mode_and_minimized_state_survive_sync() {
     stack.minimize(ClientId(1), surface(5));
     stack.sync(
         &[
-            (ClientId(1), surface(5), 1280, 800, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 1280, 800, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -253,8 +253,8 @@ fn mode_and_minimized_state_survive_sync() {
     assert!(placed.minimized() && placed.mode == Mode::Maximized);
     assert!(!stack.sync(
         &[
-            (ClientId(1), surface(5), 1280, 800, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade)
+            (ClientId(1), surface(5), 1, 1280, 800, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade)
         ],
         SCREEN,
         1
@@ -266,9 +266,9 @@ fn alt_esc_lowers_the_active_window() {
     let mut stack = Stack::default();
     stack.sync(
         &[
-            (ClientId(1), surface(5), 100, 100, Initial::Cascade),
-            (ClientId(2), surface(5), 100, 100, Initial::Cascade),
-            (ClientId(3), surface(5), 100, 100, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 100, 100, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 100, 100, Initial::Cascade),
+            (ClientId(3), surface(5), 1, 100, 100, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -374,9 +374,9 @@ fn show_desktop_toggles_and_new_windows_end_elevation_without_reordering_undo() 
     assert!(stack.toggle_desktop(owner));
     stack.sync(
         &[
-            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(3), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(1), surface(5), 1, 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade),
+            (ClientId(3), surface(5), 1, 300, 200, Initial::Cascade),
         ],
         SCREEN,
         1,
@@ -486,15 +486,11 @@ fn arrangement_constraints_and_undo_follow_live_members_and_manual_changes() {
             (0, 0)
         )))
     );
-    stack.sync(
-        &[(ClientId(2), surface(5), 300, 200, Initial::Cascade)],
-        SCREEN,
-        1,
-    );
+    // 映射在一次 dispatch 内换代，窗口栈没有观察到中间空快照。
     stack.sync(
         &[
-            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
+            (ClientId(1), surface(5), 2, 300, 200, Initial::Cascade),
+            (ClientId(2), surface(5), 1, 300, 200, Initial::Cascade),
         ],
         SCREEN,
         1,

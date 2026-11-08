@@ -90,6 +90,9 @@
    排列保留 Z 序，最大化窗口转普通模式；不移动固定尺寸、最小化、全屏、owned 窗口及模态 owner。按工作区和已提交尺寸约束分格，横向上下排列，纵向左右排列。
    撤销恢复未被手动修改的存活成员及其原窗口模式；行为依据 [CascadeWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-cascadewindows)
    和 [TileWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-tilewindows)，几何由合成器统一裁决。
+   Win+Tab / Win+Shift+Tab 在任务按钮间正向/反向选择，Enter 激活；按钮有焦点虚线框，松开 Win 保留选择。
+   左右方向键及 Home/End 调整选择，Esc 返回当前活动窗口，Shift+F10 或菜单键打开所选任务的系统菜单。
+   原版键义见 [Microsoft Keyboards 指南第 2 页](https://m.media-amazon.com/images/I/71r36u13L6L.pdf#page=4)。
 6. 任务栏属性："总在最前(T)""自动隐藏(U)""在开始菜单中显示小图标(S)""显示时钟(C)""使用个性化菜单(P)"（确定）。
 
 ## 托盘

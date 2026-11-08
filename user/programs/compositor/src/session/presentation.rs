@@ -64,7 +64,7 @@ impl Session {
         }
         // 全屏与其对话框属于 Top 之上的窗口组；绘制与 hit_test 使用同一个栈分界。
         let windows = self.stack.windows();
-        let split = self.stack.fullscreen_start().unwrap_or(windows.len());
+        let split = self.fullscreen_start().unwrap_or(windows.len());
         for above_top in [false, true] {
             let group = if above_top {
                 &windows[split..]

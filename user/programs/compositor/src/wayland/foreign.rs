@@ -38,11 +38,12 @@ impl ForeignState {
     }
 }
 
-/// 一个窗口的对外描述；`(client, surface)` 唯一标识窗口。
+/// 一个映射窗口的对外描述；`(client, surface, generation)` 唯一标识其生命周期。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignInfo {
     pub client: ClientId,
     pub surface: ObjectId,
+    pub generation: u64,
     pub title: String,
     pub app_id: String,
     pub state: ForeignState,
@@ -73,6 +74,7 @@ pub struct ForeignRequest {
     pub shell: ClientId,
     pub client: ClientId,
     pub surface: ObjectId,
+    pub generation: u64,
     pub action: ForeignAction,
 }
 
@@ -89,7 +91,7 @@ pub struct ForeignManager {
 /// 句柄对象指向的窗口。
 pub struct ForeignHandle {
     /// closed 后撤销目标；否则客户端复用 surface id 时，旧句柄可能错误控制新窗口。
-    target: Option<(ClientId, ObjectId)>,
+    target: Option<(ClientId, ObjectId, u64)>,
 }
 
 /// 服务端分配的对象 id 从这里开始（客户端分配的 id 都小于它）。
@@ -135,7 +137,7 @@ impl Client {
         object: ObjectId,
         request: handle::Request,
     ) -> Result<(), Fail> {
-        let (client, surface) = match self.objects.get(&object.get()) {
+        let (client, surface, generation) = match self.objects.get(&object.get()) {
             Some(entry) => match &entry.data {
                 Data::ForeignHandle(target) => match target.target {
                     Some(target) => target,
@@ -176,6 +178,7 @@ impl Client {
                 shell: ClientId(0),
                 client,
                 surface,
+                generation,
                 action,
             }));
         Ok(())
@@ -193,9 +196,11 @@ impl Client {
         let mut managers = std::mem::take(&mut self.foreign);
         for state in &mut managers {
             state.handles.retain(|(handle, info)| {
-                let alive = windows
-                    .iter()
-                    .any(|window| window.client == info.client && window.surface == info.surface);
+                let alive = windows.iter().any(|window| {
+                    window.client == info.client
+                        && window.surface == info.surface
+                        && window.generation == info.generation
+                });
                 if !alive && self.objects.contains_key(&handle.get()) {
                     let _ = handle::Event::Closed.encode(*handle, &mut self.writer);
                     if let Some(super::client::Entry {
@@ -210,7 +215,9 @@ impl Client {
             });
             for window in windows {
                 let known = state.handles.iter().position(|(_, info)| {
-                    info.client == window.client && info.surface == window.surface
+                    info.client == window.client
+                        && info.surface == window.surface
+                        && info.generation == window.generation
                 });
                 match known {
                     Some(index) => self.update_handle(&mut state.handles[index], window),
@@ -233,7 +240,7 @@ impl Client {
                 interface: Interface::ZwlrForeignToplevelHandleV1,
                 version,
                 data: Data::ForeignHandle(ForeignHandle {
-                    target: Some((window.client, window.surface)),
+                    target: Some((window.client, window.surface, window.generation)),
                 }),
             },
         );

@@ -13,7 +13,7 @@ impl Session {
         let (screen_width, screen_height) = self.screen();
         let target = self
             .minimize_targets
-            .get(&(client, surface))
+            .get(&(client, surface, placement.generation))
             .copied()
             .unwrap_or((
                 screen_width / 2 - 50 * scale,
@@ -37,14 +37,23 @@ impl Session {
         from: (i32, i32, i32, i32),
         to: (i32, i32, i32, i32),
     ) {
+        let Some(placed) = self.stack.placement(client, surface) else {
+            return;
+        };
+        let generation = placed.generation;
         let previous = self.animation.take();
         let current = previous
             .as_ref()
-            .filter(|animation| animation.client == client && animation.surface == surface)
+            .filter(|animation| {
+                animation.client == client
+                    && animation.surface == surface
+                    && animation.generation == generation
+            })
             .map(Animation::frame);
         self.animation = Some(Animation {
             client,
             surface,
+            generation,
             from: current.unwrap_or(from),
             to,
             start: Instant::now(),
@@ -98,6 +107,7 @@ impl Session {
                 switcher::Entry {
                     client: placed.client,
                     surface: placed.surface,
+                    generation: placed.generation,
                     title: window
                         .as_ref()
                         .map_or_else(String::new, |(_, w)| w.title.to_owned()),
@@ -116,8 +126,14 @@ impl Session {
     /// 松开 Alt：激活选中的窗口并收起面板。
     pub(super) fn commit_switcher(&mut self) {
         if let Some(switcher) = self.switcher.take() {
-            let (client, surface) = switcher.target();
-            self.restore_window(client, surface);
+            let (client, surface, generation) = switcher.target();
+            if self
+                .stack
+                .placement(client, surface)
+                .is_some_and(|placed| placed.generation == generation)
+            {
+                self.restore_window(client, surface);
+            }
         }
     }
 }

@@ -153,6 +153,8 @@ pub struct Client {
     pub(super) buffer_releases: super::dmabuf::Releases,
     /// 下一个 `xdg_surface.configure` 序号；每个连接独立。
     pub(super) next_serial: u32,
+    /// 本连接的映射身份分配器；不复用已发布代际，避免 surface 编号复用后命中旧窗口。
+    pub(super) next_mapping: u64,
     pub(super) requests: Vec<super::WindowCommand>,
     pub(super) commits: u64,
     pub(super) output: Output,
@@ -205,6 +207,7 @@ impl Client {
             gpu: None,
             buffer_releases: Rc::new(std::cell::RefCell::new(Vec::new())),
             next_serial: 1,
+            next_mapping: 1,
             requests: Vec::new(),
             commits: 0,
             output,
@@ -722,6 +725,7 @@ impl Client {
         match request {
             R::Destroy => {
                 self.commits += 1;
+                self.xdg_unmap(object)?;
                 self.orphan_children(object);
                 self.detach_subsurface(object);
                 // 未呈现的 frame callback 随 surface 一起回收，否则客户端的 id 永远无法复用。

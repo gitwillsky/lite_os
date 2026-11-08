@@ -1,13 +1,162 @@
-//! 按连接线序裁决窗口与外壳事务；窗口栈是批量成员和桌面状态的唯一 owner。
+//! 对账已提交映射并按连接线序裁决窗口与外壳事务；窗口栈是批量成员和桌面状态的唯一 owner。
 
 use super::*;
 
 impl Session {
+    /// 与客户端的已映射窗口对账；窗口增减、尺寸变化与新的 commit 都会触发重绘。
+    pub(super) fn sync_windows(&mut self) -> io::Result<bool> {
+        let mapped: Vec<(ClientId, ObjectId, u64, i32, i32, Initial)> = self
+            .server
+            .windows()
+            .map(|(client, window)| {
+                (
+                    client,
+                    window.surface,
+                    window.generation,
+                    window.content.output_size(self.scale as i32).0,
+                    window.content.output_size(self.scale as i32).1,
+                    match (window.parent, window.fixed) {
+                        (Some(parent), _) => Initial::CenterOn(parent),
+                        (None, true) => Initial::Center,
+                        (None, false) => Initial::Cascade,
+                    },
+                )
+            })
+            .collect();
+        let modal: Vec<_> = self
+            .server
+            .windows()
+            .filter_map(|(client, window)| {
+                window
+                    .parent
+                    .filter(|_| window.modal)
+                    .map(|parent| (client, parent, window.surface))
+            })
+            .collect();
+        let before = self.stack.windows().len();
+        let active_before = self
+            .stack
+            .active()
+            .and_then(|target| self.stack.placement(target.0, target.1).copied());
+        let changed = self.stack.sync(&mapped, self.screen(), self.scale as i32);
+        if changed {
+            // 映射/退出改变活动窗口时，焦点跟随窗口栈；SAS 握手仍由可信登录目标独占。
+            if self
+                .stack
+                .active()
+                .and_then(|target| self.stack.placement(target.0, target.1))
+                .map(|placed| (placed.client, placed.surface, placed.generation))
+                != active_before.map(|placed| (placed.client, placed.surface, placed.generation))
+                && !self.secure_pending
+            {
+                self.keyboard_layer = None;
+            }
+            self.dirty = true;
+            if self.stack.windows().len() != before {
+                println!("compositor: windows={}", self.stack.windows().len());
+                for (_, window) in self.server.windows() {
+                    println!(
+                        "compositor: window {:?} app_id={:?}",
+                        window.title, window.app_id
+                    );
+                }
+            }
+        }
+        // 模态提示只约束其父窗口；其他应用仍可激活。多层对话框逐层将焦点推到最深处。
+        for _ in 0..modal.len() {
+            let active = self.stack.active();
+            let Some((client, _, child)) = modal
+                .iter()
+                .find(|(client, parent, _)| active == Some((*client, *parent)))
+            else {
+                break;
+            };
+            if !self.stack.raise(*client, *child) {
+                break;
+            }
+            if !self.secure_pending {
+                self.keyboard_layer = None;
+            }
+            self.dirty = true;
+        }
+        if changed {
+            // 动画端点只属于被外壳宣告的那次映射；退休后释放，不能持续积累旧 surface 编号。
+            self.minimize_targets
+                .retain(|(client, surface, generation), _| {
+                    self.stack
+                        .placement(*client, *surface)
+                        .is_some_and(|placed| placed.generation == *generation)
+                });
+        }
+        let layer_count = self.server.layers().count();
+        let layers_changed = layer_count != self.layers_seen;
+        if layer_count != self.layers_seen {
+            self.layers_seen = layer_count;
+            self.dirty = true;
+            for (_, layer) in self.server.layers() {
+                println!(
+                    "compositor: layer {:?} {:?}",
+                    layer.namespace, layer.state.layer
+                );
+            }
+        }
+        let commits = self.server.commits();
+        if commits != self.commits_seen {
+            self.commits_seen = commits;
+            self.dirty = true;
+        }
+        if self.animation.as_ref().is_some_and(|animation| {
+            self.stack
+                .placement(animation.client, animation.surface)
+                .is_none_or(|placed| placed.generation != animation.generation)
+        }) {
+            self.animation = None;
+            self.dirty = true;
+        }
+        // 抓取的窗口消失了（被关闭、客户端断开）：抓取随之结束。
+        if let Some(active) = &self.grab
+            && self
+                .stack
+                .placement(active.grab.client, active.grab.surface)
+                .is_none_or(|placed| placed.generation != active.grab.generation)
+        {
+            self.end_grab()?;
+        }
+        if self.window_menu.as_ref().is_some_and(|menu| {
+            self.stack
+                .placement(menu.client, menu.surface)
+                .is_none_or(|placed| placed.generation != menu.generation)
+        }) {
+            self.close_menu();
+        }
+        if let Some(grab) = self.pointer_grab {
+            let root = self.root_target(grab.target);
+            let generation = root
+                .and_then(|root| self.stack.placement(root.0, root.1))
+                .map(|placed| placed.generation);
+            if root.is_none() || generation != grab.generation {
+                self.pointer_grab = None;
+            }
+        }
+        Ok(changed || layers_changed)
+    }
+
+    /// 任务栏等独占区出现、消失或改变大小：最大化的窗口重新铺满新的工作区。
+    pub(super) fn sync_work_area(&mut self) {
+        let (work, full) = (self.work_area(), self.full_area());
+        for (client, surface, size) in self.stack.refit(work, full) {
+            self.send_configure(client, surface, Some(size), false);
+            self.dirty = true;
+        }
+    }
+
     /// 处理客户端的窗口请求：交互式移动/缩放、最大化、全屏与最小化。
     pub(super) fn handle_requests(&mut self) -> io::Result<()> {
         for (client, command) in self.server.take_requests() {
-            let (surface, request) = match command {
-                WindowCommand::Toplevel(surface, request) => (surface, request),
+            let (surface, generation, request) = match command {
+                WindowCommand::Toplevel(surface, generation, request) => {
+                    (surface, generation, request)
+                }
                 WindowCommand::Foreign(mut request) => {
                     request.shell = client;
                     self.handle_foreign_request(request);
@@ -32,7 +181,12 @@ impl Session {
                     continue;
                 }
             };
-            let Some(placement) = self.stack.placement(client, surface).copied() else {
+            let Some(placement) = self
+                .stack
+                .placement(client, surface)
+                .copied()
+                .filter(|placed| placed.generation == generation)
+            else {
                 continue;
             };
             match request {
@@ -55,6 +209,7 @@ impl Session {
                         let grab = Grab {
                             client,
                             surface,
+                            generation,
                             kind,
                             pointer: pressed.position,
                             start,
@@ -112,7 +267,11 @@ impl Session {
     /// 处理外壳（任务栏）通过 foreign-toplevel 对窗口提出的操作。
     fn handle_foreign_request(&mut self, request: crate::wayland::ForeignRequest) {
         let (client, surface) = (request.client, request.surface);
-        if self.stack.placement(client, surface).is_none() {
+        if !self
+            .stack
+            .placement(client, surface)
+            .is_some_and(|placed| placed.generation == request.generation)
+        {
             return;
         }
         // 窗口操作交还焦点。矩形只更新动画端点，不能抢走桌面刚获得的键盘焦点。
@@ -140,7 +299,7 @@ impl Session {
                     .find(|layer| layer.client == request.shell && layer.surface == shell_surface)
                 {
                     self.minimize_targets.insert(
-                        (client, surface),
+                        (client, surface, request.generation),
                         (
                             layer.x + x * scale,
                             layer.y + y * scale,
@@ -295,6 +454,7 @@ impl Session {
                 Some(ForeignInfo {
                     client: placed.client,
                     surface: placed.surface,
+                    generation: placed.generation,
                     title,
                     app_id,
                     state: ForeignState {

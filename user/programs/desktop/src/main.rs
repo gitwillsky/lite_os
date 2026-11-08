@@ -120,6 +120,8 @@ struct Desktop {
     /// 选中标签的单击先等待是否有下一次点击，期间新输入或目录刷新会取消。
     rename_click: Option<(usize, Instant)>,
     task_page: usize,
+    /// 任务按钮的逻辑键盘焦点，仅保存带 generation 的 foreign 句柄；窗口激活状态仍由合成器拥有。
+    task_focus: Option<classic_ui::ToplevelId>,
     home: PathBuf,
     message: String,
     volume: sndvol::Volume,
@@ -194,6 +196,7 @@ impl Desktop {
             clicked: None,
             rename_click: None,
             task_page: 0,
+            task_focus: None,
             home,
             message: String::new(),
             volume: sndvol::Volume::open(),
@@ -581,7 +584,7 @@ impl Desktop {
         {
             self.rename_click = None;
         }
-        if self.shell_key(display, &event.kind)? {
+        if self.shell_key(display, &event.kind)? || self.task_key(display, art, &event)? {
             return Ok(());
         }
 
@@ -1206,67 +1209,6 @@ impl Desktop {
         }
         Ok(())
     }
-
-    /// 外壳快捷键先于菜单与编辑控件解释；未消费的事件继续原来的输入路径。
-    fn shell_key(&mut self, display: &mut Display, event: &EventKind) -> io::Result<bool> {
-        if matches!(
-            event,
-            EventKind::Focus(false) | EventKind::Button { pressed: true, .. }
-        ) {
-            self.start_key = None;
-        }
-        let EventKind::Key(key) = event else {
-            return Ok(false);
-        };
-        if matches!(key.code, 125 | 126) {
-            if key.pressed && !key.repeat {
-                self.start_key =
-                    (!key.modifiers.control && !key.modifiers.alt && !key.modifiers.shift)
-                        .then_some(key.code);
-            } else if !key.pressed && self.start_key.take() == Some(key.code) {
-                self.toggle_menu(display)?;
-            }
-            return Ok(true);
-        }
-        if !key.pressed {
-            return Ok(false);
-        }
-        self.start_key = None;
-        let modifiers = key.modifiers;
-        let control_escape =
-            key.code == 1 && modifiers.control && !modifiers.alt && !modifiers.super_key;
-        let win_command = matches!(key.code, 18 | 19 | 32 | 50 | 119)
-            && modifiers.super_key
-            && !modifiers.alt
-            && !modifiers.control
-            && (!modifiers.shift || key.code == 50);
-        if !control_escape && !win_command {
-            return Ok(false);
-        }
-        if key.repeat {
-            return Ok(true);
-        }
-        if control_escape && !modifiers.shift {
-            self.toggle_menu(display)?;
-        } else {
-            if self.menu.is_some() {
-                self.toggle_menu(display)?;
-            }
-            match key.code {
-                1 => self.launch_task_manager(),
-                18 => self.open_place(start::Place::MyComputer),
-                19 => self.dialog(display, Kind::Run)?,
-                32 => display.control_shell(classic_ui::ShellCommand::ToggleDesktop)?,
-                50 if modifiers.shift => {
-                    display.control_shell(classic_ui::ShellCommand::UndoMinimizeAll)?
-                }
-                50 => display.control_shell(classic_ui::ShellCommand::MinimizeAll)?,
-                119 => self.control_panel("system"),
-                _ => unreachable!("matched shell shortcut"),
-            }
-        }
-        Ok(true)
-    }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
@@ -1335,7 +1277,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ) {
                 dirty = true;
             }
+            let taskbar_focused = state.task_focus.is_some();
             state.event(&mut display, &mut art, event, &mut pending)?;
+            if taskbar_focused != state.task_focus.is_some() && !state.settings.always_on_top {
+                state.apply_taskbar(&mut display)?;
+            }
         }
         dirty |= state.volume.poll();
         dirty |= state.poll_paste(&mut display);

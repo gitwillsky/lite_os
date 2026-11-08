@@ -6,9 +6,10 @@ impl Session {
     /// 客户端的 `set_cursor`：只接受当前指针焦点客户端、带最近一次 enter 序号的请求。
     pub(super) fn handle_cursor_requests(&mut self) -> io::Result<()> {
         let focus = self.seat.pointer_focus();
-        if focus != self.last_pointer_focus {
-            // 指针换了窗口：新窗口的光标由它自己在 enter 之后设置，在此之前用默认光标。
-            self.last_pointer_focus = focus;
+        let identity = focus.map(|target| (target, self.seat.pointer_enter_serial()));
+        if identity != self.last_pointer_focus {
+            // 指针换了窗口或映射：新窗口的光标由它自己在 enter 之后设置，在此之前用默认光标。
+            self.last_pointer_focus = identity;
             if self.grab.is_none() {
                 self.shape = Shape::Default;
                 self.apply_cursor()?;

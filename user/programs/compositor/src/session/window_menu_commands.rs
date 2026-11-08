@@ -91,6 +91,7 @@ impl Session {
                     grab: Grab {
                         client,
                         surface,
+                        generation: placement.generation,
                         kind,
                         pointer: self.input.pointer().position(),
                         start,

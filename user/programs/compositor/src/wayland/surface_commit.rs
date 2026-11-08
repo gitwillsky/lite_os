@@ -213,8 +213,10 @@ impl Client {
             self.enter_outputs(object)?;
         }
         if commit.unmapping {
-            self.xdg_unmap(object);
+            self.xdg_unmap(object)?;
             self.layer_unmap(object);
+            // 取消映射提交不兼任下一代的 initial commit；客户必须另作无缓冲提交再等待 configure。
+            return Ok(());
         } else {
             self.layer_after_commit(object, layer_before)?;
         }

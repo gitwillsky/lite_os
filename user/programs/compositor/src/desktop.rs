@@ -23,6 +23,8 @@ pub type Geometry = (i32, i32, i32, i32);
 pub struct Placement {
     pub client: ClientId,
     pub surface: ObjectId,
+    /// xdg owner 分配的映射代际；同编号的新映射必须先退休旧 placement。
+    pub generation: u64,
     pub x: i32,
     pub y: i32,
     pub width: i32,
@@ -86,7 +88,7 @@ impl Stack {
     ///
     /// # Parameters
     ///
-    /// - `mapped`: `(连接, surface, 物理宽, 物理高, 初始位置策略)`；策略只对新出现的窗口生效，已映射的窗口不会被移动。
+    /// - `mapped`: `(连接, surface, 映射代际, 物理宽, 物理高, 初始位置策略)`；策略只对新出现的窗口生效，已映射的窗口不会被移动。
     /// - `screen`: 屏幕物理尺寸；窗口至少保留一个标题栏在屏内。
     /// - `scale`: 输出 scale，用来把逻辑层叠步长换成物理像素。
     ///
@@ -95,15 +97,17 @@ impl Stack {
     /// 栈是否发生任何变化（窗口增、删或尺寸变）。
     pub fn sync(
         &mut self,
-        mapped: &[(ClientId, ObjectId, i32, i32, Initial)],
+        mapped: &[(ClientId, ObjectId, u64, i32, i32, Initial)],
         screen: (i32, i32),
         scale: i32,
     ) -> bool {
         let before = self.order.clone();
         let is_mapped = |placed: &Placement| {
-            mapped
-                .iter()
-                .any(|(client, surface, ..)| *client == placed.client && *surface == placed.surface)
+            mapped.iter().any(|(client, surface, generation, ..)| {
+                *client == placed.client
+                    && *surface == placed.surface
+                    && *generation == placed.generation
+            })
         };
         // 活动子窗口退出时先沿原父链寻找仍可见的 owner；否则栈顶可能是之前切换过的其他应用。
         // 只处理确实退出的活动窗口，后台对话框关闭不能抢焦点；同时退出多层时返回最近的存活祖先。
@@ -134,7 +138,7 @@ impl Stack {
             self.raise(client, surface);
         }
         for placed in &mut self.order {
-            if let Some((_, _, width, height, initial)) =
+            if let Some((_, _, _, width, height, initial)) =
                 mapped.iter().find(|(client, surface, ..)| {
                     *client == placed.client && *surface == placed.surface
                 })
@@ -146,7 +150,7 @@ impl Stack {
                 };
             }
         }
-        for &(client, surface, width, height, initial) in mapped {
+        for &(client, surface, generation, width, height, initial) in mapped {
             if self
                 .order
                 .iter()
@@ -175,6 +179,7 @@ impl Stack {
                 self.order.push(Placement {
                     client,
                     surface,
+                    generation,
                     x: at(x, w, width, screen.0),
                     y: at(y, h, height, screen.1),
                     width,
@@ -200,6 +205,7 @@ impl Stack {
             self.order.push(Placement {
                 client,
                 surface,
+                generation,
                 x: offset,
                 y: offset,
                 width,

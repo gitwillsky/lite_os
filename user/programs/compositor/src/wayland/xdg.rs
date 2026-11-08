@@ -26,6 +26,8 @@ pub struct XdgSurface {
 
 pub struct Toplevel {
     pub xdg_surface: ObjectId,
+    /// 为本次映射预留的身份；role 创建及取消映射后分配，未附缓冲前的请求也归入该代。
+    pub generation: u64,
     pub title: String,
     pub app_id: String,
     /// `set_min_size` / `set_max_size`（0 表示无限制）。两者相等且非零即“固定尺寸窗口”，
@@ -37,6 +39,22 @@ pub struct Toplevel {
     pending_max_size: Option<(i32, i32)>,
     /// `set_parent` 指定的父 toplevel；子窗口居中于父窗口。
     pub parent: Option<ObjectId>,
+}
+
+impl Toplevel {
+    fn new(xdg_surface: ObjectId, generation: u64) -> Self {
+        Self {
+            xdg_surface,
+            generation,
+            title: String::new(),
+            app_id: String::new(),
+            min_size: (0, 0),
+            max_size: (0, 0),
+            pending_min_size: None,
+            pending_max_size: None,
+            parent: None,
+        }
+    }
 }
 
 /// 客户端对窗口提出的、需要窗口管理器裁决的请求。
@@ -105,6 +123,7 @@ impl ToplevelState {
 /// 一个已映射的顶层窗口。
 pub struct Window<'a> {
     pub surface: ObjectId,
+    pub generation: u64,
     pub title: &'a str,
     pub app_id: &'a str,
     pub content: &'a Content,
@@ -210,16 +229,8 @@ impl Client {
                         "xdg_surface already has a role",
                     ));
                 }
-                let toplevel = Toplevel {
-                    xdg_surface: object,
-                    title: String::new(),
-                    app_id: String::new(),
-                    min_size: (0, 0),
-                    max_size: (0, 0),
-                    pending_min_size: None,
-                    pending_max_size: None,
-                    parent: None,
-                };
+                let generation = self.mapping_generation(object)?;
+                let toplevel = Toplevel::new(object, generation);
                 self.create(
                     id,
                     Interface::XdgToplevel,
@@ -227,6 +238,23 @@ impl Client {
                     Data::Toplevel(toplevel),
                 )?;
                 self.xdg_surface_mut(object)?.toplevel = Some(id);
+                // 协议要求 v5 起在第一次 xdg_surface.configure 之前公布一次窗口管理能力；
+                // 本合成器支持全部四项，能力不会变化，因此只发这一次。
+                if version >= WM_CAPABILITIES_SINCE {
+                    use xdg_toplevel::WmCapabilities;
+                    xdg_toplevel::Event::WmCapabilities {
+                        capabilities: [
+                            WmCapabilities::WindowMenu,
+                            WmCapabilities::Maximize,
+                            WmCapabilities::Fullscreen,
+                            WmCapabilities::Minimize,
+                        ]
+                        .into_iter()
+                        .flat_map(|capability| (capability as u32).to_ne_bytes())
+                        .collect(),
+                    }
+                    .encode(id, &mut self.writer)?;
+                }
                 Ok(())
             }
             xdg_surface::Request::GetPopup {
@@ -313,14 +341,11 @@ impl Client {
             R::Destroy => {
                 let xdg_surface = toplevel.xdg_surface;
                 let old_surface = self.xdg_surface_mut(xdg_surface)?.surface;
-                self.xdg_unmap(old_surface);
+                self.xdg_unmap(old_surface)?;
                 // 角色销毁后窗口取消映射，必须重新走一遍 configure/ack 才能再次映射。
                 let surface = {
                     let xdg = self.xdg_surface_mut(xdg_surface)?;
                     xdg.toplevel = None;
-                    xdg.initial_sent = false;
-                    xdg.acked = false;
-                    xdg.outstanding.clear();
                     xdg.surface
                 };
                 self.inert_dialogs(object);
@@ -376,7 +401,7 @@ impl Client {
 
     /// 记录窗口请求；键是窗口的 `wl_surface`，与 [`Window::surface`] 一致。
     fn window_request(&mut self, toplevel: ObjectId, request: WindowRequest) -> Result<(), Fail> {
-        let surface = match self.objects.get(&toplevel.get()) {
+        let (surface, generation) = match self.objects.get(&toplevel.get()) {
             Some(Entry {
                 data: Data::Toplevel(state),
                 ..
@@ -384,13 +409,13 @@ impl Client {
                 Some(Entry {
                     data: Data::XdgSurface(xdg),
                     ..
-                }) => xdg.surface,
+                }) => (xdg.surface, state.generation),
                 _ => return Err(Fail::implementation(toplevel)),
             },
             _ => return Err(Fail::implementation(toplevel)),
         };
         self.requests
-            .push(super::WindowCommand::Toplevel(surface, request));
+            .push(super::WindowCommand::Toplevel(surface, generation, request));
         Ok(())
     }
 
@@ -444,23 +469,6 @@ impl Client {
             return Ok(());
         }
         self.xdg_surface_mut(xdg)?.initial_sent = true;
-        // 协议要求 v5 起在第一次 xdg_surface.configure 之前公布一次窗口管理能力；
-        // 本合成器支持全部四项，能力不会变化，因此只发这一次。
-        if self.toplevel_version(toplevel)? >= WM_CAPABILITIES_SINCE {
-            use xdg_toplevel::WmCapabilities;
-            xdg_toplevel::Event::WmCapabilities {
-                capabilities: [
-                    WmCapabilities::WindowMenu,
-                    WmCapabilities::Maximize,
-                    WmCapabilities::Fullscreen,
-                    WmCapabilities::Minimize,
-                ]
-                .into_iter()
-                .flat_map(|capability| (capability as u32).to_ne_bytes())
-                .collect(),
-            }
-            .encode(toplevel, &mut self.writer)?;
-        }
         self.send_configure(xdg, toplevel, 0, 0, ToplevelState::default())
     }
 
@@ -583,6 +591,7 @@ impl Client {
             };
             Some(Window {
                 surface: xdg.surface,
+                generation: toplevel.generation,
                 title: &toplevel.title,
                 app_id: &toplevel.app_id,
                 content: surface.current.content.as_ref()?,
@@ -600,8 +609,8 @@ impl Client {
 }
 
 impl Client {
-    /// xdg-shell 在 unmap 时将孩子交给原父窗口；对象 ID 后续复用也不能恢复旧关系。
-    pub(super) fn xdg_unmap(&mut self, surface: ObjectId) {
+    /// xdg-shell 取消映射时恢复 role 初始属性及握手，将孩子交给原父窗口；重新映射不恢复旧亲缘关系。
+    pub(super) fn xdg_unmap(&mut self, surface: ObjectId) -> Result<(), Fail> {
         let owner = self
             .objects
             .iter()
@@ -615,14 +624,33 @@ impl Client {
                 _ => None,
             });
         let Some((owner, parent)) = owner else {
-            return;
+            return Ok(());
         };
-        for entry in self.objects.values_mut() {
-            if let Data::Toplevel(top) = &mut entry.data
-                && top.parent == Some(owner)
-            {
-                top.parent = parent;
+        let generation = self.mapping_generation(owner)?;
+        for (id, entry) in &mut self.objects {
+            match &mut entry.data {
+                Data::Toplevel(top) if *id == owner.get() => {
+                    // 复用唯一的 role 初始状态；current 与尚未提交的约束都不能带进下一次映射。
+                    *top = Toplevel::new(top.xdg_surface, generation);
+                }
+                Data::Toplevel(top) if top.parent == Some(owner) => top.parent = parent,
+                Data::XdgSurface(xdg) if xdg.toplevel == Some(owner) => {
+                    xdg.initial_sent = false;
+                    xdg.acked = false;
+                    xdg.outstanding.clear();
+                }
+                _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// 每连接单调预留映射身份；耗尽时拒绝请求，不能回绕而复活旧操作授权。
+    fn mapping_generation(&mut self, object: ObjectId) -> Result<u64, Fail> {
+        let generation = self.next_mapping;
+        self.next_mapping = generation
+            .checked_add(1)
+            .ok_or_else(|| Fail::implementation(object))?;
+        Ok(generation)
     }
 }
