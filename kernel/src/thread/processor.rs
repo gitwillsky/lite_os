@@ -12,7 +12,7 @@ use super::Thread;
 use super::scheduler::deadline::Parameters;
 
 use super::scheduler::run_queue::{RunQueue, RunQueueEntry};
-use super::scheduling::{CpuAffinity, RunState, WaitMembership};
+use super::scheduling::{CpuAffinity, RunState, SchedulingState, WaitMembership};
 use crate::arch::context::KernelContext;
 use crate::execution::cpu::{self, CpuId, CpuSet};
 use crate::execution::sync::{IrqMutex, LocalIrqGuard, LocalIrqTransfer, WaitResult};
@@ -20,6 +20,7 @@ use crate::platform;
 
 mod admission;
 mod handoff;
+mod isolation;
 mod placement;
 mod ready_membership;
 mod ready_queue;
@@ -27,6 +28,11 @@ pub(crate) use admission::DeadlineError;
 pub(super) use admission::DeadlineReservation;
 pub(super) use admission::ThreadSlot;
 pub(super) use handoff::{publish_pending_handoff, resume_without_switch, take_pending_handoff};
+pub(crate) use isolation::IsolationError;
+pub(super) use isolation::{
+    cpu_is_shared, exit_partition, observe_partition, register_thread, replace_isolation,
+    shared_cpus,
+};
 pub(super) use placement::enqueue_new;
 use placement::{ready_entry, select_cpu, select_cpu_after_preemption};
 use ready_membership::{commit_ready_retirement, commit_ready_transition};
@@ -129,6 +135,13 @@ struct PerCpuProcessor {
     preemptions_since_rotation: AtomicU32,
     // timer softirq 可远端投递；IRQ-safe 锁防止打断本 CPU drain 后再入。
     inbound: IrqMutex<Inbound>,
+    // OWNER: 独占 CPU 的执行体 KOID，0 表示共享；仅隔离事务与该线程退出可写。
+    // 热路径只做 Acquire 读取，不增加全局锁。缺失时普通任务仍会进入已指定的独占核。
+    exclusive_owner: AtomicU64,
+    // OWNER: 新租约的唯一身份，在 owner 发表之后更新；防止同一 worker 再次申请时复用旧确认。
+    exclusive_epoch: AtomicU64,
+    // OWNER: 本 CPU 在旧上下文已保存的安全点确认上述 KOID；防止配置成功早于普通线程撤离。
+    exclusive_ack: AtomicU64,
 }
 
 /// 目标 CPU 的跨核投递和两份已在创建线程时准备好的替换存储。
@@ -163,6 +176,9 @@ impl PerCpuProcessor {
                 spare_entries: VecDeque::new(),
                 spare_runqueue: RunQueue::new(),
             }),
+            exclusive_owner: AtomicU64::new(0),
+            exclusive_epoch: AtomicU64::new(0),
+            exclusive_ack: AtomicU64::new(0),
         }
     }
 }
@@ -220,6 +236,7 @@ pub(super) fn begin_runtime_interval(sample: impl FnOnce() -> u64) -> u64 {
 
 /// 本 CPU 进入 idle：没有未提交的运行区间，也不再需要时间片截止。
 pub(super) fn enter_idle() {
+    observe_partition();
     assert!(
         current_per_cpu().busy.lock().active_from.is_none(),
         "idle entered with uncommitted runtime"
@@ -280,6 +297,15 @@ struct ProcessorTopology {
     // OWNER: 各 CPU 已承诺的 Q32 截止密度；凭据归还也取此锁，不取线程/队列锁。
     // 缺失会使并发准入超售。同一事务扣旧添新，分配/唤醒/队列投递均在锁外。
     deadline_bandwidth: IrqMutex<Box<[u64]>>,
+    // OWNER: 只串行化 affinity/CBS/隔离配置；调度热路径与线程退出不取此锁。
+    // 事务不阻塞、不分配、不等远端；防止预检之后硬绑定或预算变化造成无核可运行。
+    cpu_configuration: spin::Mutex<()>,
+    // OWNER: 执行体弱索引，仅用于冷路径隔离预检。容量与 ThreadSlot 同时准备；
+    // IRQ-safe 短锁内只登记/移除/upgrade，不分配、不取线程锁、不析构最后一个强引用。
+    threads: IrqMutex<Vec<(u64, alloc::sync::Weak<Thread>)>>,
+    // OWNER: 配置锁内从独占 owner 事务投影的共享集合；单次 Release 发表整个分区。
+    // 选核只取一次 Acquire 快照，避免逐核读取跨两代配置后误判所有 CPU 均不可用。
+    shared_cpus: AtomicUsize,
 }
 
 // OWNER: 每个平台 CPU 的调度状态。
@@ -306,6 +332,9 @@ pub(super) fn init_topology() {
         slots: slots.into_boxed_slice(),
         admitted_capacity: IrqMutex::new(0),
         thread_slots: AtomicUsize::new(0),
+        cpu_configuration: spin::Mutex::new(()),
+        threads: IrqMutex::new(Vec::new()),
+        shared_cpus: AtomicUsize::new(cpu::possible().native_word()),
     });
 }
 
@@ -453,10 +482,15 @@ fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry, cause: ReadyCause) {
 ///
 /// 正在已禁止 CPU 上运行的线程被请求重新调度：抢占后的 CPU 选择遵守新 affinity。
 pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) -> Result<(), ()> {
-    let mut replacement = None;
-    let mut running_elsewhere = None;
-    {
+    let configuration = PROCESSOR_TOPOLOGY.wait().cpu_configuration.lock();
+    let (replacement, running_elsewhere) = {
         let mut scheduling = thread.scheduling.state.lock();
+        if scheduling.run_state() == RunState::Exited
+            || scheduling.cpu_affinity.is_exclusive()
+            || (affinity.eligible_in(shared_cpus()) & cpu::active()).is_empty()
+        {
+            return Err(());
+        }
         if thread
             .scheduling
             .policy
@@ -467,19 +501,9 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) -> R
             return Err(());
         }
         scheduling.cpu_affinity = affinity;
-        match scheduling.run_state() {
-            RunState::Ready { cpu, .. } if !affinity.allows(cpu) => {
-                let target = select_cpu(thread, affinity);
-                placement::rebase_for_migration(thread, cpu, target);
-                replacement = Some((
-                    target,
-                    commit_ready_transition(scheduling.transition_to_ready(target)),
-                ));
-            }
-            RunState::Running { cpu } if !affinity.allows(cpu) => running_elsewhere = Some(cpu),
-            _ => {}
-        }
-    }
+        relocate_after_affinity(thread, &mut scheduling)
+    };
+    drop(configuration);
     if let Some((cpu, generation)) = replacement {
         deliver_ready_entry(
             cpu,
@@ -491,6 +515,29 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) -> R
         publish_reschedule_at(cpu);
     }
     Ok(())
+}
+
+/// 普通 affinity 与隔离事务共用 membership 迁移；调用者持有 state 与 CPU 配置锁。
+/// Ready token 仍只由 processor 唯一提交，冷路径分区 owner 不接触 committer。
+fn relocate_after_affinity(
+    thread: &Arc<Thread>,
+    scheduling: &mut SchedulingState,
+) -> (Option<(CpuId, u64)>, Option<CpuId>) {
+    match scheduling.run_state() {
+        RunState::Ready { cpu, .. } if !scheduling.cpu_affinity.allows(cpu) => {
+            let target = select_cpu(thread, scheduling.cpu_affinity);
+            placement::rebase_for_migration(thread, cpu, target);
+            (
+                Some((
+                    target,
+                    commit_ready_transition(scheduling.transition_to_ready(target)),
+                )),
+                None,
+            )
+        }
+        RunState::Running { cpu } if !scheduling.cpu_affinity.allows(cpu) => (None, Some(cpu)),
+        _ => (None, None),
+    }
 }
 
 /// 消费精确等待身份并使线程可运行。
@@ -620,6 +667,7 @@ pub(in crate::thread) fn replace_deadline(
     thread: &Arc<Thread>,
     parameters: Option<Parameters>,
 ) -> Result<(), DeadlineError> {
+    let configuration = PROCESSOR_TOPOLOGY.wait().cpu_configuration.lock();
     let mut ready = None;
     let mut reschedule = None;
     {
@@ -657,6 +705,7 @@ pub(in crate::thread) fn replace_deadline(
             _ => {}
         }
     }
+    drop(configuration);
     if let Some((cpu, generation)) = ready {
         deliver_ready_entry(
             cpu,

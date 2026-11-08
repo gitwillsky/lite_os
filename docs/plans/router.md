@@ -27,7 +27,7 @@ NAT 与有状态防火墙、网桥/VLAN、OSPFv2/v3、BGP，以及实时刷新�
 | R9 | `netcfg` 并入 `router-config` 后删除；`dhcp-client` 保留为执行服务，由 router-config 驱动；控制面板网络页改为经 API 网关读写配置树 | — |
 | R10 | 数据面 CPU：默认自适应轮询（高负载忙轮询批处理，空闲回到中断）；配置树可指定独占核。未开独占核时转发让位于桌面交互 | Linux NAPI busy-poll、VPP adaptive mode |
 | R11 | 路由进程：`routing-rib` 负责选路、下一跳解析与策略并下发 FIB；`bgp`、`ospf` 各自独立进程，崩溃只影响自身并由 component-manager 重启 | FRR zebra + bgpd/ospfd |
-| R12 | 不中断转发：FIB、接口表与连接跟踪放在可跨进程保留的 VMO，netstack 重启后由 component-manager 交还；BGP/OSPF 支持 Graceful Restart | Zircon VMO 交接、RFC 4724、RFC 3623/5187 |
+| R12 | 本期优先完整路由功能，不要求故障/重启后恢复此前的运行时状态；跨重启 VMO 交还、转发接续及 BGP/OSPF Graceful Restart 放入二期。正常配置持久化与开机加载仍属本期 | 2026-11-08 用户修订；二期参考 RFC 4724、RFC 3623/5187 |
 | R13 | 防火墙与 NAT 规则对用户呈现为有序规则链（匹配条件 + 动作，支持跳转链、地址集、连接状态、命中计数）；提交时编译为决策树加哈希集合的分类器，原子替换；已建立连接走流表快路径 | nftables flowtable、DPDK ACL |
 | R14 | 本计划与已落地的[热路径优化](../development/performance-coverage.md)分开 | — |
 | R15 | 第一个里程碑包含 RSTP（802.1D-2004），不做 MSTP；网桥端口状态（discarding/learning/forwarding）与 BPDU 上送从数据面设计之初就具备 | IEEE 802.1D-2004；RouterOS 网桥默认 RSTP |
@@ -48,6 +48,8 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - 不复制 RouterOS 或 WinBox 的名称、图标与品牌；只借鉴交互方式，界面使用现有经典桌面控件。
 - 验证节奏：每阶段做两架构编译/clippy、architecture-check 与相关单元测试；运行时门禁与完整 `make verify`
   在全部阶段完成后经用户允许统一执行。
+- 用户提供的 x86_64 PVE 可按需要用于后续平台支持及部署验收；不修改既有虚拟机，尤其家庭网关/OpenWrt，亦不修改宿主现有网桥、路由或防火墙。
+  只使用专用测试实例；DHCP/RA、动态路由和二层环路等主动测试必须与家庭业务网隔离。连接凭据不进入源码、文档或日志。
 
 ## 服务拓扑
 
@@ -74,7 +76,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **连接跟踪**：每核分片哈希表，按协议状态定时老化；NAT 映射与端口分配在同一 owner 内。
 - **分类器**：规则链编译为决策树与哈希集合；地址集独立更新不触发整体重编译；按规则计数（每核计数，读时汇总）。
 - **报文缓冲**：每队列预分配缓冲池，网卡 DMA 直接写入 netstack 的 VMO；批大小固定，热路径不分配。
-- **跨重启保留状态**：FIB、下一跳、接口表、连接跟踪放在版本化布局的 VMO 中，布局版本不匹配时丢弃并重建。
+- **状态寿命**：本期运行时 FIB、下一跳、接口表、连接跟踪随其 owner 存续，不宣称故障后恢复；配置树仍按版本持久化。跨重启保留及布局迁移属二期。
 
 ## 阶段与验证点
 
@@ -113,7 +115,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 ### 3. L3 转发、VRF 与策略路由
 
 - FIB（Poptrie/DIR-24-8）、共享下一跳与多路径（ECMP 哈希）、规则表、邻居解析、ICMP 错误生成、TTL/hop limit、分片处理。
-- 跨重启保留布局（VMO）在本阶段定义，阶段 9 接入交还流程。
+- 共享 FIB 的布局按当前读写与发布语义设计；本期不引入跨重启交还布局或恢复流程。
 - **benchmark 决策**：FIB 查找与更新加 host blocking benchmark（100 万前缀查找、批量更新吞吐）。
 - **验证点**：FIB 单元测试（最长前缀匹配对照参考实现的随机测试）；多网卡转发运行时测试。
 
@@ -153,10 +155,10 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **契约**：用户态与 ABI 契约（授权端点、组）；UI 框架契约（新控件需求若有）。
 - **验证点**：网关单元测试（授权、断线、背压）；管理器在十万级条目下的绘制与刷新诊断。
 
-### 9. 不中断转发
+### 9. 二期：故障恢复（本期不实施）
 
-- netstack 重启时由 component-manager 交还状态 VMO，校验布局版本后恢复转发；协议进程实现 Graceful Restart。
-- **验证点**：人为终止 netstack 期间持续转发的运行时测试；BGP/OSPF 邻居在重启期间保持路由。
+- 依 R12 的用户修订，本期不要求 netstack 故障或重启后恢复此前的路由、接口运行状态、连接跟踪及 NAT 映射。
+- 跨进程状态交还、恢复时限、转发连续性及 BGP/OSPF Graceful Restart 在二期设计和验收，不作为本期完成声明。
 
 ### 10. 评测、文档迁移与整体验证
 
@@ -169,4 +171,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 
 ## 进度
 
-- 路由专属阶段未开始；前置热路径优化已落地，socket 共享环的运行与性能边界见[性能覆盖](../development/performance-coverage.md)。
+- `micro_kernel` 已于 2026-11-08 快进合入本地 `main`，实现分支为 `codex/router`，起点 `c070532f`。
+- 阶段 0 开始；故障恢复依 R12 修订移至二期，其余阶段与用户可用目标保持完整。前置 socket 环边界见[性能覆盖](../development/performance-coverage.md)。
+- 阶段 0：原生中断对象已接通在线逻辑 CPU 亲和配置，GIC/PLIC 保持屏蔽与 ack；CPU 独占接口已接入配置准入、调度分派与退出归还，
+  见[执行契约](../architecture-contract/execution.md#cpu-分区)。两架构静态检查与 scheduler-unit 覆盖不代替 SMP 硬件验收；多队列与队列授权传输仍在实施。

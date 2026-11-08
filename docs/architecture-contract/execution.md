@@ -52,13 +52,32 @@
   约束截止采用 Revisited CBS：截止前只削减剩余额度，截止后到下一周期前等待，禁止反复唤醒提前取得完整预算。
 - ProcessorTopology 的 IRQ-safe 密度账本在同一事务扣旧添新，单 CPU 上限 95%；Q32 的 runtime/deadline 向上取整，
   比只验 runtime/period 更保守。凭据不复制，睡眠不归还；终止/退出立即撤销，不等 stale Arc 最后释放。
-  配置锁序 state → Policy → 带宽账本；账本不反向取线程/队列锁，不分配或投递唤醒。失败保留原凭据、预算与 membership。
+  配置锁序 CPU 配置 → state → Policy → 带宽账本；账本不反向取线程/队列锁，不分配或投递唤醒。失败保留原凭据、预算与 membership。
   配置替换推进 Ready generation，执行体换 CPU 后仍按原 handoff 发布。截止线程固定在准入 CPU，不参与公平轮转或 RPC 选核提示；
   native affinity 变更必须保留该 CPU，否则拒绝；需要重新选核先显式重新准入，不能不经容量检查迁移承诺。
 - THREAD_SET_DEADLINE 仅限已启动系统线程，需覆盖 system::SCHEDULE 的 resource 和线程 MANAGE；三项时间全零撤销。
   object/task/scheduling 只转发线程调度操作，不复制执行体配置；相同配置不重置预算或变更 Ready generation。
   linuxd 获系统操作范围，audio-core 只获调度子范围。Linux 用户调用走标准 sched_attr，不获得 resource 或原生 syscall。
   不增加全局轮询或周期 tick；三组 heap 的有界 backing、一个冷准入账本与预算算术成本在最终调度/音频/显示门禁测量。
+
+## CPU 分区
+
+- `THREAD_SET_ISOLATION` 需 system::SCHEDULE resource 与线程 MANAGE，只接受已启动执行体。
+  一个 worker 独占一个 active 逻辑 CPU，至少保留一个共享 active CPU；None 归还并恢复全 possible 集合的普通 affinity。
+  普通 affinity 不能创建独占凭据、修改独占线程或绕过分区；预设 affinity 不预留 CPU，start 重新接纳，冲突返回 NO_RESOURCES。
+- `processor::isolation` 在唯一 CPU 配置锁内串行化 affinity、CBS、分区及退出归还。
+  分区预检所有存活执行体的 requested affinity，拒绝导致其他普通线程无核可用或使既有 CBS 承诺迁移的请求；移动独占核前先撤销预算。
+  每核 owner 是租约权威，shared_cpus 是该事务一次发表的调度投影；选核用一代集合快照，实际 Ready→Running 再验证。
+  动态分区可使已发表 Ready 条目失效，沿既有 generation/负载 token 迁移，不把线程 affinity 暗改为其他 CPU。
+- ThreadSlot 同时准备弱索引容量；登记/移除不分配，弱索引不保活线程。配置预检在锁外准备强引用快照容量，
+  取得配置锁后复核并复制；所有引用在配置锁之外析构，不能把栈/地址空间退休与远端 TLB 等待带入配置锁。
+  锁序 CPU 配置 → 短索引锁（复制后释放）→ state；容量增长沿 admission → 短索引锁，不反向取得配置锁。
+- 接纳不等于撤离完成：新租约唯一 epoch 晚于分区发表；目标 CPU 只在 outgoing context 保存后的 handoff/idle 安全点确认，
+  取消切换的 resume 路径重新观察分区，避免清除并发隔离请求。调用者在全部锁释放后 yield 等待该 epoch，不能复用同一 worker 上次的确认。
+  线程退出立即归还核，句柄与旧队列 Arc 不延长租约。CPU 隔离只排除普通执行体，不屏蔽设备 IRQ/必要的内核中断；IRQ 路由独立授权配置。
+- Benchmark 决策：分派增加一次机器字 Acquire/位测试，选核每轮只取一份快照；无新增热路径分配或全局锁。
+  弱索引随线程高水位复用，配置快照为 O(线程数) 临时存储。现有 scheduler-unit 增补硬 affinity/独占授权过滤回归；
+  两架构 Clippy 与静态围栏覆盖源码，SMP 并发配置/退出及吞吐、桌面延迟需最终来宾诊断，尚未宣称运行验收通过。
 
 ## 上下文与返回
 
@@ -197,6 +216,7 @@ PLIC 的 level source 用全局 priority 0/1 屏蔽与恢复；context enable bi
 已 claim source 在 complete 时仍保持 context enable，避免控制器忽略完成；unmask 的 priority 写入
 同时使 QEMU 重新裁决已有 pending 的 SEIP，不能只改 enable bitmap 后等待下一次设备边沿。
 该顺序参照固定 Linux irq-sifive-plic 的 irq_mask/irq_unmask/eoi；不新增中断状态副本。
+动态 IRQ 亲和配置与 claim→handler→complete 使用同一控制器锁，不能在已 claim 未 complete 时移除原 context 的 enable 位；配置入口及权限归设备契约。
 
 ## 返回硬件视图
 

@@ -24,7 +24,7 @@ use spin::{Mutex, Once};
 mod context_switch;
 mod processor;
 mod scheduler;
-pub(crate) use processor::DeadlineError;
+pub(crate) use processor::{DeadlineError, IsolationError};
 pub(crate) use scheduler::deadline::Parameters as DeadlineParameters;
 mod scheduling;
 mod timer_queue;
@@ -33,8 +33,8 @@ mod wait;
 
 pub(crate) use context_switch::{yield_current, yield_current_period};
 pub(crate) use processor::{cpu_busy_snapshot, take_reschedule};
+use scheduling::SchedulingEntity;
 pub(crate) use scheduling::{DEFAULT_PRIORITY, PRIORITY_LEVELS};
-use scheduling::{RunState, SchedulingEntity};
 use user_context::ContextSlot;
 
 use crate::arch::context::{KernelContext, KernelResume, UserContext};
@@ -232,7 +232,7 @@ impl Thread {
         // SAFETY: 上下文存储尚未被任何人使用；整体写入初始值后才通过 slot 访问。
         unsafe { pointer.as_ptr().write(user_context) };
         let thread = Arc::try_new(Self {
-            id: crate::id::next_koid(),
+            id: scheduler_slot.id(),
             body: ThreadBody::User(UserState {
                 context,
                 space: Mutex::new(Some(space.clone())),
@@ -250,7 +250,10 @@ impl Thread {
             flags: AtomicU32::new(0),
         });
         match thread {
-            Ok(thread) => Ok(thread),
+            Ok(thread) => {
+                processor::register_thread(&thread);
+                Ok(thread)
+            }
             Err(_) => {
                 if let Some(address) = context_page {
                     space.release_context(address);
@@ -345,6 +348,16 @@ impl Thread {
         parameters: Option<scheduler::deadline::Parameters>,
     ) -> Result<(), DeadlineError> {
         processor::replace_deadline(self, parameters)
+    }
+
+    /// 授权 worker 的独占核配置；退出自动归还，None 恢复共享 affinity。
+    /// # Errors
+    /// 分区/预算冲突或线程已经退出。
+    pub(crate) fn set_isolation(
+        self: &Arc<Self>,
+        cpu: Option<crate::execution::cpu::CpuId>,
+    ) -> Result<(), processor::IsolationError> {
+        processor::replace_isolation(self, cpu)
     }
 
     /// CPU 时间与上下文切换计数。
@@ -446,18 +459,7 @@ pub(crate) fn exit_current() -> ! {
             policy.finish(get_time_ns);
             policy.retire_deadline();
         }
-        {
-            let mut scheduling = thread.scheduling.state.lock();
-            assert!(
-                matches!(scheduling.run_state(), RunState::Running { .. }),
-                "only the running thread can exit"
-            );
-            assert!(
-                scheduling.wait.is_none(),
-                "running thread retains wait membership"
-            );
-            scheduling.replace_non_ready_state(RunState::Exited);
-        }
+        processor::exit_partition(&thread);
         let idle = processor::with_current_processor(processor::Processor::idle_context_ptr);
         let save = {
             let mut context = thread.kernel_context.lock();

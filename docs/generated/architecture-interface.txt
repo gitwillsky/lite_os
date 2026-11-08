@@ -1060,6 +1060,7 @@ kernel/src/object/resource.rs :: pub (crate) impl Bti :: fn release_quarantine (
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn ack (& self) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn bind_port (& self , port : Arc < Port > , key : u64) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn create (vector : u32 , level : bool) -> Result < Self , Status >
+kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn set_affinity (& self , cpu : crate :: execution :: cpu :: CpuId) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn wait (& self , deadline_ns : Option < u64 >) -> Result < i64 , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Iommu :: fn create (kind : u32 , descriptor : & [u8]) -> Result < Self , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Pmt :: fn addresses (& self) -> & [u64]
@@ -1153,6 +1154,7 @@ kernel/src/object/task/restricted_state.rs :: pub (super) impl RestrictedStateBi
 kernel/src/object/task/scheduling.rs :: pub (crate) impl Thread :: fn runtime (& self) -> crate :: thread :: Runtime
 kernel/src/object/task/scheduling.rs :: pub (crate) impl Thread :: fn set_affinity (& self , cpus : crate :: execution :: cpu :: CpuSet) -> Result < () , Status >
 kernel/src/object/task/scheduling.rs :: pub (crate) impl Thread :: fn set_deadline (& self , parameters : Option < crate :: thread :: DeadlineParameters > ,) -> Result < () , Status >
+kernel/src/object/task/scheduling.rs :: pub (crate) impl Thread :: fn set_isolation (& self , cpu : Option < crate :: execution :: cpu :: CpuId > ,) -> Result < () , Status >
 kernel/src/object/task/scheduling.rs :: pub (crate) impl Thread :: fn set_priority (& self , priority : u8) -> Result < () , Status >
 kernel/src/platform/mod.rs :: enum ResetKind :: ColdReboot
 kernel/src/platform/mod.rs :: enum ResetKind :: Shutdown
@@ -1160,7 +1162,7 @@ kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -1208,6 +1210,7 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize (inf
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize_local ()
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device (vector : u32 , handler : Arc < dyn InterruptHandler > , affinity : CpuSet ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : cpu :: CpuId) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
@@ -1233,7 +1236,7 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct InstructionFe
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { bind_interrupt , device_interrupt_range , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { bind_interrupt , device_interrupt_range , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , send_ipi }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { reset_system , start_cpu }
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
@@ -1252,7 +1255,7 @@ kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -1274,6 +1277,7 @@ kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn bind_interrup
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn device_interrupt_range () -> core :: ops :: Range < u32 >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn initialize ()
+kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : crate :: execution :: cpu :: CpuId ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (super) fn register_device_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
@@ -1312,7 +1316,7 @@ kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_r
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn timebase_frequency () -> u64
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) mod console
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { bind_interrupt , device_interrupt_range , handle_external_interrupt , initialize as initialize_devices , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { bind_interrupt , device_interrupt_range , handle_external_interrupt , initialize as initialize_devices , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize , validate_boot_info }
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use firmware :: { InstructionFenceError , TlbShootdownError , arm_timer , debug_console_write , debug_console_write_bytes , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn disable_interrupt (& self , vector : InterruptVector)
@@ -1363,6 +1367,7 @@ kernel/src/syscall/hardware.rs :: pub (super) fn bti_release_quarantine (call : 
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_ack (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_bind (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_create (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_set_affinity (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_wait (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn iommu_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn pmt_unpin (call : & Call < '_ >) -> Result < () , Status >
@@ -1452,6 +1457,7 @@ kernel/src/syscall/task.rs :: pub (super) fn task_kill (call : & Call < '_ >) ->
 kernel/src/syscall/task.rs :: pub (super) fn thread_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_affinity (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_deadline (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/task.rs :: pub (super) fn thread_set_isolation (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_priority (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_start (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/thread/context_switch.rs :: pub (crate) fn yield_current ()
@@ -1506,6 +1512,7 @@ kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn record_restricted_faul
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn runtime (& self) -> Runtime
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn set_affinity (self : & Arc < Self > , cpus : crate :: execution :: cpu :: CpuSet ,) -> Result < () , () >
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn set_deadline (self : & Arc < Self > , parameters : Option < scheduler :: deadline :: Parameters > ,) -> Result < () , DeadlineError >
+kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn set_isolation (self : & Arc < Self > , cpu : Option < crate :: execution :: cpu :: CpuId > ,) -> Result < () , processor :: IsolationError >
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn set_priority (& self , priority : u8) -> Result < () , () >
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn set_restricted_accounting (& self , restricted : bool)
 kernel/src/thread/mod.rs :: pub (crate) impl Thread :: fn start (self : & Arc < Self >)
@@ -1517,7 +1524,7 @@ kernel/src/thread/mod.rs :: pub (crate) struct UserEntryPoints
 kernel/src/thread/mod.rs :: pub (crate) struct UserStart
 kernel/src/thread/mod.rs :: pub (crate) trait ThreadOwner
 kernel/src/thread/mod.rs :: pub (crate) use context_switch :: { yield_current , yield_current_period }
-kernel/src/thread/mod.rs :: pub (crate) use processor :: DeadlineError
+kernel/src/thread/mod.rs :: pub (crate) use processor :: { DeadlineError , IsolationError }
 kernel/src/thread/mod.rs :: pub (crate) use processor :: { cpu_busy_snapshot , take_reschedule }
 kernel/src/thread/mod.rs :: pub (crate) use scheduler :: deadline :: Parameters as DeadlineParameters
 kernel/src/thread/mod.rs :: pub (crate) use scheduling :: { DEFAULT_PRIORITY , PRIORITY_LEVELS }
@@ -1529,6 +1536,7 @@ kernel/src/thread/processor.rs :: pub (crate) fn cpu_busy_snapshot () -> Result 
 kernel/src/thread/processor.rs :: pub (crate) fn request_reschedule ()
 kernel/src/thread/processor.rs :: pub (crate) fn take_reschedule () -> bool
 kernel/src/thread/processor.rs :: pub (crate) use admission :: DeadlineError
+kernel/src/thread/processor.rs :: pub (crate) use isolation :: IsolationError
 kernel/src/thread/processor.rs :: pub (in crate :: thread) fn replace_deadline (thread : & Arc < Thread > , parameters : Option < Parameters > ,) -> Result < () , DeadlineError >
 kernel/src/thread/processor.rs :: pub (super) Processor :: current : Option < Arc < Thread > >
 kernel/src/thread/processor.rs :: pub (super) fn begin_preempt_current (thread : & Arc < Thread >)
@@ -1555,12 +1563,14 @@ kernel/src/thread/processor.rs :: pub (super) struct Processor
 kernel/src/thread/processor.rs :: pub (super) use admission :: DeadlineReservation
 kernel/src/thread/processor.rs :: pub (super) use admission :: ThreadSlot
 kernel/src/thread/processor.rs :: pub (super) use handoff :: { publish_pending_handoff , resume_without_switch , take_pending_handoff }
+kernel/src/thread/processor.rs :: pub (super) use isolation :: { cpu_is_shared , exit_partition , observe_partition , register_thread , replace_isolation , shared_cpus , }
 kernel/src/thread/processor.rs :: pub (super) use placement :: enqueue_new
 kernel/src/thread/processor/admission.rs :: enum DeadlineError :: Capacity
 kernel/src/thread/processor/admission.rs :: enum DeadlineError :: Terminated
 kernel/src/thread/processor/admission.rs :: pub (crate) enum DeadlineError
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl DeadlineReservation :: fn cpu (& self) -> CpuId
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl DeadlineReservation :: fn replace (previous : Option < & mut Self > , parameters : Parameters , affinity : CpuAffinity ,) -> Result < Self , () >
+kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl ThreadSlot :: fn id (& self) -> u64
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl ThreadSlot :: fn try_new () -> Result < Self , () >
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) struct DeadlineReservation
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) struct ThreadSlot
@@ -1568,6 +1578,16 @@ kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn publish_pe
 kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn resume_without_switch (task : & Arc < Thread >) -> bool
 kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn take_pending_handoff () -> Option < (Arc < Thread > , LocalIrqTransfer) >
 kernel/src/thread/processor/handoff.rs :: pub (super) struct PendingHandoff
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: Conflict
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: NoMemory
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: Terminated
+kernel/src/thread/processor/isolation.rs :: pub (crate) enum IsolationError
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn cpu_is_shared (cpu : CpuId) -> bool
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn exit_partition (thread : & Thread)
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn observe_partition ()
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn register_thread (thread : & Arc < Thread >)
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn replace_isolation (thread : & Arc < Thread > , target : Option < CpuId > ,) -> Result < () , IsolationError >
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn shared_cpus () -> CpuSet
 kernel/src/thread/processor/placement.rs :: pub (in crate :: thread) fn enqueue_new (task : Arc < Thread >) -> CpuId
 kernel/src/thread/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < Thread > , generation : u64) -> RunQueueEntry
 kernel/src/thread/processor/placement.rs :: pub (super) fn rebase_for_migration (task : & Thread , source : CpuId , target : CpuId)
@@ -1664,6 +1684,9 @@ kernel/src/thread/scheduling.rs :: pub (crate) enum WaitMembership
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn all () -> Self
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn allows (self , cpu : CpuId) -> bool
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn effective_bits (self) -> usize
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn eligible_in (self , shared : CpuSet) -> CpuSet
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn exclusive (cpu : CpuId) -> Self
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn is_exclusive (self) -> bool
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn restricted_to (cpus : CpuSet) -> Option < Self >
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn begin (& mut self , sample : impl FnOnce () -> u64)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn checkpoint (& mut self , sample : impl FnOnce () -> u64) -> u64

@@ -72,6 +72,8 @@ pub(super) fn select_cpu_after_preemption(task: &Thread, affinity: CpuAffinity) 
 
 fn select_fair_cpu(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId {
     let current = cpu::current_id();
+    // 分区可以并发重配，整轮选核使用一代快照；分派时再次验证，禁止混合两代后误判空集。
+    let eligible = affinity.eligible_in(shared_cpus());
     // 轮转从源核的后继开始，沿实际允许的核循环。普通 placement 保留轮换扫描起点。
     // 若轮转沿用普通计数器，稀疏亲和掩码会把不同起点反复折叠到同一个目标。
     let start = if rotate {
@@ -84,7 +86,7 @@ fn select_fair_cpu(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId 
     let candidates = (0..cpu::count()).filter_map(|offset| {
         let index = (start + offset) % cpu::count();
         let cpu_id = cpu::id_at(index).expect("logical CPU disappeared from topology");
-        if !cpu::is_active(cpu_id) || !affinity.allows(cpu_id) {
+        if !cpu::is_active(cpu_id) || !eligible.contains(cpu_id) {
             return None;
         }
         let slot = processor_at(index);
@@ -101,7 +103,7 @@ fn select_fair_cpu(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId 
         None => {
             // init 在 boot CPU 发布 active 前已进入本地 runqueue；缺少这一条装配路径会让
             // 首个 New task 因 active set 暂空而 fail-stop。userspace mask 已另行与 active 相交。
-            if affinity.allows(current) {
+            if eligible.contains(current) {
                 current
             } else {
                 panic!(

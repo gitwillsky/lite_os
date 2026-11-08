@@ -41,6 +41,7 @@ pub(crate) use selected::{
     claim_interrupt, complete_interrupt, complete_pending_ipi, console, device_interrupt_range,
     dtb_range, hardware_cpu_ids, initialize, initialize_devices, initrd_range, kernel_command_line,
     kernel_mmio_regions, physical_memory_end, physical_memory_range, read_realtime_ns,
-    reset_system, send_ipi, start_cpu, synchronize_instruction_cache, synchronize_tlb,
-    timebase_frequency, unbind_interrupt, unmask_interrupt, validate_boot_info, verify_firmware,
+    reset_system, send_ipi, set_interrupt_affinity, start_cpu, synchronize_instruction_cache,
+    synchronize_tlb, timebase_frequency, unbind_interrupt, unmask_interrupt, validate_boot_info,
+    verify_firmware,
 };

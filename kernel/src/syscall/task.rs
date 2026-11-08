@@ -198,6 +198,22 @@ pub(super) fn thread_set_affinity(call: &Call<'_>) -> Result<(), Status> {
     Ok(())
 }
 
+pub(super) fn thread_set_isolation(call: &Call<'_>) -> Result<(), Status> {
+    if !call
+        .resource(call.arg_handle(0), 0)?
+        .covers_system(native_abi::resource::system::SCHEDULE)
+    {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let cpu = if call.arg(2) == usize::MAX {
+        None
+    } else {
+        Some(crate::execution::cpu::id_at(call.arg(2)).ok_or(native_abi::ERR_INVALID_ARGS)?)
+    };
+    call.thread_handle(call.arg_handle(1), rights::MANAGE)?
+        .set_isolation(cpu)
+}
+
 pub(super) fn cpu_current(call: &Call<'_>) -> Result<(), Status> {
     let cpu = crate::execution::cpu::current_id().index() as u32;
     call.write(call.arg(0), &cpu)

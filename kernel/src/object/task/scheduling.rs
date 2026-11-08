@@ -24,7 +24,8 @@ impl Thread {
     /// 限制可运行的 CPU；未启动的线程在启动时应用。
     ///
     /// # Errors
-    /// 集合与 possible CPU 不相交返回 `ERR_INVALID_ARGS`；已退出返回 `ERR_BAD_STATE`。
+    /// 集合与 possible CPU 不相交、已启动后无共享 active CPU 或处于独占分区时返回
+    /// `ERR_INVALID_ARGS`；已退出返回 `ERR_BAD_STATE`。未启动配置在 start 时重新接纳。
     pub(crate) fn set_affinity(&self, cpus: crate::execution::cpu::CpuSet) -> Result<(), Status> {
         if (cpus & crate::execution::cpu::possible()).is_empty() {
             return Err(native_abi::ERR_INVALID_ARGS);
@@ -58,6 +59,23 @@ impl Thread {
             .map_err(|error| match error {
                 crate::thread::DeadlineError::Capacity => native_abi::ERR_NO_RESOURCES,
                 crate::thread::DeadlineError::Terminated => native_abi::ERR_BAD_STATE,
+            })
+    }
+
+    /// 指定系统 worker 的独占逻辑 CPU；None 归还并恢复共享 affinity。
+    /// # Errors
+    /// 未启动/退出或并发替换返回 BAD_STATE；分区/CBS 冲突返回 NO_RESOURCES；快照分配失败返回 NO_MEMORY。
+    pub(crate) fn set_isolation(
+        &self,
+        cpu: Option<crate::execution::cpu::CpuId>,
+    ) -> Result<(), Status> {
+        self.execution()
+            .ok_or(native_abi::ERR_BAD_STATE)?
+            .set_isolation(cpu)
+            .map_err(|error| match error {
+                crate::thread::IsolationError::Conflict => native_abi::ERR_NO_RESOURCES,
+                crate::thread::IsolationError::Terminated => native_abi::ERR_BAD_STATE,
+                crate::thread::IsolationError::NoMemory => native_abi::ERR_NO_MEMORY,
             })
     }
 

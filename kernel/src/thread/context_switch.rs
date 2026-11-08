@@ -103,6 +103,8 @@ fn schedule(thread: Arc<Thread>) {
     let next = select_switch_target();
     if next.is_none() && resume_without_switch(&thread) {
         begin_runtime(&thread);
+        // resume 清除旧请求后重新观察分区；否则并发隔离的 IPI 可能被该清除覆盖。
+        processor::observe_partition();
         drop(handoff_irq);
         return;
     }
@@ -157,12 +159,14 @@ fn begin_runtime(thread: &Arc<Thread>) -> *const KernelContext {
 
 /// 在 next 线程或 idle 栈上完成前一次切换的 outgoing 后果。
 pub(super) fn complete_pending_handoff() {
-    let Some((thread, irq)) = take_pending_handoff() else {
-        return;
-    };
-    finish_deschedule(&thread);
-    drop(thread);
-    drop(irq);
+    if let Some((thread, irq)) = take_pending_handoff() {
+        finish_deschedule(&thread);
+        drop(thread);
+        processor::observe_partition();
+        drop(irq);
+    } else {
+        processor::observe_partition();
+    }
 }
 
 impl Thread {
@@ -176,8 +180,8 @@ impl Thread {
         let kernel_stack = crate::vm::KernelStack::try_new()?;
         let top = kernel_stack.get_top();
         let scheduler_slot = processor::ThreadSlot::try_new()?;
-        Arc::try_new(Self {
-            id: crate::id::next_koid(),
+        let thread = Arc::try_new(Self {
+            id: scheduler_slot.id(),
             body: super::ThreadBody::Kernel(entry),
             _kernel_stack: kernel_stack,
             _scheduler_slot: scheduler_slot,
@@ -189,7 +193,9 @@ impl Thread {
             ),
             flags: core::sync::atomic::AtomicU32::new(0),
         })
-        .map_err(|_| ())
+        .map_err(|_| ())?;
+        processor::register_thread(&thread);
+        Ok(thread)
     }
 }
 

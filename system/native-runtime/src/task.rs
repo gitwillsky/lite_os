@@ -378,6 +378,33 @@ impl Thread {
         check(unsafe { invoke(call::THREAD_SET_AFFINITY, &[self.raw() as usize, mask]) })
     }
 
+    /// 为已启动系统 worker 设置独占逻辑 CPU；None 归还并恢复全部 CPU 的普通 affinity。
+    ///
+    /// # Parameters
+    /// resource 必须覆盖 system::SCHEDULE，cpu 是逻辑 CPU 编号。
+    /// # Returns
+    /// 旧普通线程已撤离目标核后返回 Ok；线程退出自动归还独占核。
+    /// # Errors
+    /// 无授权、CPU 非 active、分区/截止预算冲突、未启动/退出或并发替换。
+    /// 独占期间普通 set_affinity 被拒绝；设备中断仍须单独设置亲和。
+    pub fn set_isolation(
+        &self,
+        resource: &crate::Resource,
+        cpu: Option<u32>,
+    ) -> Result<(), Status> {
+        // SAFETY: 无指针参数，resource 和线程句柄由借用 owner 保活。
+        check(unsafe {
+            invoke(
+                call::THREAD_SET_ISOLATION,
+                &[
+                    resource.raw() as usize,
+                    self.raw() as usize,
+                    cpu.map_or(usize::MAX, |cpu| cpu as usize),
+                ],
+            )
+        })
+    }
+
     /// 让线程尽快退出 restricted mode。
     ///
     /// # Errors

@@ -71,6 +71,26 @@ impl Resource {
 }
 
 impl Interrupt {
+    /// 将本对象的中断路由到一个在线逻辑 CPU，不改变当前屏蔽与 ack 状态。
+    ///
+    /// # Parameters
+    /// - `cpu`: 逻辑 CPU 编号，不是硬件 hart ID 或 MPIDR。
+    ///
+    /// # Returns
+    /// 控制器完成路由配置后返回 unit；已经投递的事件仍属于原中断对象。
+    ///
+    /// # Errors
+    /// 句柄缺少 WRITE、CPU 不存在/未在线、源未绑定或控制器元数据分配失败。
+    pub fn set_affinity(&self, cpu: u32) -> Result<(), Status> {
+        // SAFETY: 对象句柄保持存活，仅传递标量；权限与在线 CPU 由内核验证。
+        check(unsafe {
+            invoke(
+                call::INTERRUPT_SET_AFFINITY,
+                &[self.raw() as usize, cpu as usize],
+            )
+        })
+    }
+
     /// 创建中断对象。
     ///
     /// # Errors

@@ -788,7 +788,8 @@ impl Thread {
     /// 启动线程。`owner` 是本对象作为执行体 owner 的 trait 视图。
     ///
     /// # Errors
-    /// 已启动或进程已终止返回 `ERR_BAD_STATE`；执行体分配失败返回 `ERR_NO_MEMORY`。
+    /// 已启动或进程已终止返回 `ERR_BAD_STATE`；执行体分配失败返回 `ERR_NO_MEMORY`；
+    /// 预设 affinity 已因 CPU 分区变化失去可用核时返回 `ERR_NO_RESOURCES`。
     pub(crate) fn start(
         self: &Arc<Self>,
         owner: Arc<dyn crate::thread::ThreadOwner>,
@@ -826,10 +827,14 @@ impl Thread {
                     .set_priority(priority)
                     .expect("pending priority validated when stored");
             }
-            if let Some(affinity) = pending.affinity {
-                thread
-                    .set_affinity(affinity)
-                    .expect("pending affinity validated when stored");
+            if let Some(affinity) = pending.affinity
+                && thread.set_affinity(affinity).is_err()
+            {
+                // pending 只验证 topology，不预留 CPU；隔离可能在保存后、启动前改变可用集合。
+                drop(execution);
+                drop(thread);
+                self.process.unregister_thread(self.koid);
+                return Err(native_abi::ERR_NO_RESOURCES);
             }
             *execution = Execution::Running(thread.clone());
         }

@@ -5,7 +5,7 @@
 | Owner | 唯一状态与边界 |
 |---|---|
 | `kernel::serial` / `kernel::log` | 串口 RX ring / 日志记录与输出；日志不拥有串口输入 |
-| `kernel::object::resource` | 不可变 MMIO/IRQ/system 授权范围与中断投递、屏蔽、ack |
+| `kernel::object::resource` | 不可变 MMIO/IRQ/system 授权范围与中断投递、亲和、屏蔽、ack |
 | `kernel::iommu` / `kernel::vm::device_space` | stream domain、IOVA / 设备页表及 retirement |
 | `arch::dma` | 静态硬件后端、设备表编码与同步失效 |
 | `driver-manager::platform` / `nodes` / `host` | 设备事实解码与节点资源 / 节点顺序与驱动匹配 / 宿主启动、目录汇聚与监督 |
@@ -142,6 +142,10 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
 
 ## Interface
 
+- 原生 `INTERRUPT_SET_AFFINITY` 只接受当前中断句柄的 WRITE 权限及一个在线逻辑 CPU，不能指定其他中断源或以硬件标识代替逻辑 CPU。
+  `object::resource::Interrupt` 校验 CPU 生命周期，platform façade 分别交给 GIC/PLIC；不引入 Linux 应用接口或通用网络概念。
+  改路由保留原事件和屏蔽/ack 状态：GIC 先停止已启用 SPI、更新 IROUTER 后恢复原使能；PLIC 在覆盖 claim→complete 的同一控制器锁内改 context enable，并保持 priority。
+  错误在改变硬件路由前校验；PLIC 元数据 OOM 不发表目标。沿用控制器现有锁，不新增 IRQ 热路径锁/分配；此配置冷路径不另设微基准，运行时路由核对留到路由计划统一验收。
 - driver-host 的中断线程只确认设备并请求完成分派；电平中断在设备侧清除后才 ack。
   `completion::raise` 是可合并通知，完成线程清除 pending 后分派全部已注册 source；
   新完成必须重新置位，不能依赖下一次无关中断。普通 adapter lock 不跨等待持有。
