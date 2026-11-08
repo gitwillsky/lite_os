@@ -67,20 +67,34 @@ pub struct ToplevelState {
     pub fullscreen: bool,
     /// 用户正在拖动边框缩放；客户端据此可以放宽重绘质量。
     pub resizing: bool,
+    /// 窗口不再被普通重绘（最小化）。客户端据此停止绘制并释放空闲窗口缓冲；
+    /// 缺少它，最小化的窗口会一直占着整窗像素内存并继续光栅化不可见的画面。
+    pub suspended: bool,
 }
 
+/// `suspended` 状态从 xdg_wm_base v6 起定义；更低版本的对象不能收到这个枚举值。
+const SUSPENDED_SINCE: u32 = 6;
+/// `wm_capabilities` 事件从 xdg_wm_base v5 起定义。
+const WM_CAPABILITIES_SINCE: u32 = 5;
+
 impl ToplevelState {
-    /// `xdg_toplevel.state` 的数值，按协议编码为 u32 数组。
-    fn encode(self) -> Vec<u8> {
+    /// `xdg_toplevel.state` 的数值，按协议编码为 u32 数组；只编码 `version` 已定义的状态。
+    fn encode(self, version: u32) -> Vec<u8> {
+        use xdg_toplevel::State;
         [
-            (self.maximized, 1u32),
-            (self.fullscreen, 2),
-            (self.resizing, 3),
-            (self.activated, 4),
+            (self.maximized, State::Maximized),
+            (self.fullscreen, State::Fullscreen),
+            (self.resizing, State::Resizing),
+            (self.activated, State::Activated),
+            (
+                self.suspended && version >= SUSPENDED_SINCE,
+                State::Suspended,
+            ),
         ]
         .into_iter()
         .filter(|(set, _)| *set)
-        .flat_map(|(_, value)| value.to_ne_bytes())
+        .map(|(_, state)| state as u32)
+        .flat_map(u32::to_ne_bytes)
         .collect()
     }
 }
@@ -401,7 +415,32 @@ impl Client {
             return Ok(());
         };
         xdg_state.initial_sent = true;
+        // 协议要求 v5 起在第一次 xdg_surface.configure 之前公布一次窗口管理能力；
+        // 本合成器支持全部四项，能力不会变化，因此只发这一次。
+        if self.toplevel_version(toplevel)? >= WM_CAPABILITIES_SINCE {
+            use xdg_toplevel::WmCapabilities;
+            xdg_toplevel::Event::WmCapabilities {
+                capabilities: [
+                    WmCapabilities::WindowMenu,
+                    WmCapabilities::Maximize,
+                    WmCapabilities::Fullscreen,
+                    WmCapabilities::Minimize,
+                ]
+                .into_iter()
+                .flat_map(|capability| (capability as u32).to_ne_bytes())
+                .collect(),
+            }
+            .encode(toplevel, &mut self.writer)?;
+        }
         self.send_configure(xdg, toplevel, 0, 0, ToplevelState::default())
+    }
+
+    /// 已绑定的 xdg_toplevel 版本；它决定 configure 能携带哪些状态和事件。
+    fn toplevel_version(&self, toplevel: ObjectId) -> Result<u32, Fail> {
+        self.objects
+            .get(&toplevel.get())
+            .map(|entry| entry.version)
+            .ok_or_else(|| Fail::implementation(toplevel))
     }
 
     fn send_configure(
@@ -412,13 +451,14 @@ impl Client {
         height: i32,
         state: ToplevelState,
     ) -> Result<(), Fail> {
+        let version = self.toplevel_version(toplevel)?;
         let serial = self.next_serial;
         self.next_serial = self.next_serial.wrapping_add(1).max(1);
         self.xdg_surface_mut(xdg)?.outstanding.push(serial);
         xdg_toplevel::Event::Configure {
             width,
             height,
-            states: state.encode(),
+            states: state.encode(version),
         }
         .encode(toplevel, &mut self.writer)?;
         xdg_surface::Event::Configure { serial }.encode(xdg, &mut self.writer)?;

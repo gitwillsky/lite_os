@@ -133,14 +133,22 @@ impl Harness {
 
     /// 完成握手并绑定 compositor（id 3）、shm（id 4）与 xdg_wm_base（id 20）。
     fn bound() -> Self {
-        Self::bound_with(Self::new())
+        Self::bound_with(Self::new(), 3)
+    }
+
+    /// 同 [`Self::bound`]，但以 `xdg_version` 绑定 xdg_wm_base，用于版本相关的事件与状态。
+    fn bound_xdg(xdg_version: u32) -> Self {
+        Self::bound_with(Self::new(), xdg_version)
     }
 
     /// 特权客户端：额外绑定 layer-shell（id 51）与 foreign-toplevel 管理器（id 52）。
     fn privileged() -> Self {
-        let mut harness = Self::bound_with(Harness {
-            client: Client::session(OUTPUT),
-        });
+        let mut harness = Self::bound_with(
+            Harness {
+                client: Client::session(OUTPUT),
+            },
+            3,
+        );
         for (name, interface, version, new) in [
             (6, "zwlr_layer_shell_v1", 5, 51),
             (7, "zwlr_foreign_toplevel_manager_v1", 3, 52),
@@ -164,7 +172,7 @@ impl Harness {
         harness
     }
 
-    fn bound_with(mut harness: Self) -> Self {
+    fn bound_with(mut harness: Self, xdg_version: u32) -> Self {
         harness
             .send(|w| {
                 wl_display::Request::GetRegistry { registry: id(2) }
@@ -176,7 +184,7 @@ impl Harness {
         for (name, interface, version, new) in [
             (1, "wl_compositor", 6, 3),
             (2, "wl_shm", 1, 4),
-            (3, "xdg_wm_base", 3, 20),
+            (3, "xdg_wm_base", xdg_version, 20),
         ] {
             harness
                 .send(|w| {
@@ -271,7 +279,7 @@ fn registry_advertises_the_implemented_globals() {
         [
             (1, "wl_compositor".to_owned(), 6),
             (2, "wl_shm".to_owned(), 1),
-            (3, "xdg_wm_base".to_owned(), 3),
+            (3, "xdg_wm_base".to_owned(), 6),
             (4, "wl_output".to_owned(), 4),
             (5, "wl_seat".to_owned(), 7),
             (7, "zwlr_foreign_toplevel_manager_v1".to_owned(), 3),

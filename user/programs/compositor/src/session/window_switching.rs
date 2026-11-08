@@ -61,7 +61,12 @@ impl Session {
         {
             self.animate(client, surface, true);
         }
-        self.dirty |= self.stack.minimize(client, surface);
+        if self.stack.minimize(client, surface) {
+            // 最小化不一定改变键盘焦点（例如从任务栏最小化后台窗口），所以由这里通知 suspended；
+            // 还原总会激活窗口，由焦点同步的 configure 带上解除后的状态。
+            self.send_configure(client, surface, None, false);
+            self.dirty = true;
+        }
     }
 
     /// 立即还原并激活窗口，画面独立播放整窗过渡；重复激活不重启动画或丢弃紧接着的键盘输入。

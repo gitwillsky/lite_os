@@ -111,7 +111,7 @@ pub(super) struct Entry {
 const GLOBALS: [(u32, Interface, u32); 12] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
-    (3, Interface::XdgWmBase, 3),
+    (3, Interface::XdgWmBase, 6),
     (4, Interface::WlOutput, 4),
     (5, Interface::WlSeat, 7),
     // 窗口列表与控制对同一桌面上的所有程序开放：Windows 2000 的 EnumWindows 与 WM_CLOSE 也是这个语义，

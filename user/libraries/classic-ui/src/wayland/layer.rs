@@ -101,6 +101,7 @@ impl Display {
             maximized: false,
             fullscreen: false,
             resizing: false,
+            suspended: false,
         };
         let id = WindowId(surface);
         self.windows.insert(

@@ -109,7 +109,7 @@ impl Display {
     ///   只写入并声明变化区域；完全相同且已按同一规格映射时只提交 frame callback，不 attach 缓冲。
     ///
     /// # Errors
-    /// 在途 callback/缓冲池满返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
+    /// 在途 callback/缓冲池满或窗口被挂起时返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
     /// 连接错误后调用方应销毁 Display，不能继续使用部分发送的请求。
     pub fn present(&mut self, window: WindowId, pixels: &[u32]) -> io::Result<()> {
         self.present_frame(window, Some(pixels), false, |_, _, _, _| Ok(Vec::new()))
@@ -191,7 +191,9 @@ impl Display {
             .get(&window)
             .filter(|state| state.configured)
             .ok_or_else(|| io::Error::other("window has not been configured"))?;
-        if state.frame.is_some() || !self.buffer_available(window) {
+        // 挂起的窗口不可见：不分配缓冲、不提交，等解除挂起的 configure 后整幅重绘。
+        if state.frame.is_some() || state.configuration.suspended || !self.buffer_available(window)
+        {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let configuration = state.configuration;
@@ -529,11 +531,12 @@ impl Display {
         let state = self.windows.get(&window);
         let live = state.is_some();
         if state.is_none_or(|state| {
-            !state.configuration.resizing
-                && state
-                    .history
-                    .key
-                    .is_some_and(|(w, h, _)| buffer.size != (w, h))
+            state.configuration.suspended
+                || !state.configuration.resizing
+                    && state
+                        .history
+                        .key
+                        .is_some_and(|(w, h, _)| buffer.size != (w, h))
         }) {
             self.destroy_buffer(object)?;
         } else {

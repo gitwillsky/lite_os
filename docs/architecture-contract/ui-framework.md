@@ -166,6 +166,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   同次损伤、光栅与确认使用冻结的 now，防止提示在提交中途到期而被误标为已显示；成功提交后才确认 Tree 基线。
   callback ID 在绘制/分配/像素写入准备成功后登记，避免可重试绘制失败遗留永远没有 done/delete_id 的对象。
   稳定状态每窗口只保留一块空闲缓冲，第二块仅在上一块未 release 时临时分配、release 后退休；交互缩放保留空闲池复用几何。
+  configure 带 `suspended`（xdg-shell v6）时，ack 后回收空闲缓冲，在途缓冲 release 即退休；`ready_to_draw` 为假、
+  `paint_frame`/`present` 返回 WouldBlock，不分配也不提交。解除挂起的 configure 使 WindowHost 失效，新缓冲整幅重绘。
+  缺少它，最小化的最大化窗口持续占用整窗像素内存并光栅化不可见画面。
   成本与验收范围由[性能覆盖](../development/performance-coverage.md)拥有；合并/背景重建参照 [Qt 6.8 QWidget paintEvent/update](https://doc.qt.io/qt-6.8/qwidget.html#paintEvent)，缓冲内容有效性沿固定 EGL_EXT_buffer_age 语义。
 - calendar 的 OnceLock<RwLock<TimeZone>> 唯一持有已解析 TZif，文件 I/O 和解析均在锁外。
   reload 失败保留旧模型，固定偏移写入使用同目录 create_new 临时文件、sync 与 rename；没有进程环境写入。
@@ -278,6 +281,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   客户端提交新尺寸后继续按插值矩形缩放；否则旧尺寸缓冲会先跳到新位置、等新缓冲才撑满。
   还原期间窗口留在 minimized 输入状态，合成单独投影整窗；结束再 raise。切换目标先完成已有还原，同目标反向从当前矩形继续，
   重复还原不重置计时，窗口销毁取消动画。没有每帧复制像素、重新排版标题或建立动画专用纹理。
+- xdg_wm_base 公布 v6：v5+ toplevel 在首个 configure 前收到一次 wm_capabilities（窗口菜单、最大化、全屏、最小化）；
+  configure_bounds 为协议可选事件，不发送。`suspended` 只由 Stack 的 minimized 投影，`window_configure` 是唯一编码点，
+  低于 v6 的对象不编码该状态。最小化可能不改变键盘焦点（任务栏最小化后台窗口），由 `minimize_window` 发 configure；
+  还原总会激活窗口，由焦点同步的 configure 解除。合成器保留已提交 Content，还原动画与首帧前仍显示最小化前的画面。
 - Drawable 的 rect 是 CPU/GPU 共同使用的物理目标矩形；整窗和所有子 surface 从同一个根矩形映射，不能独立插值。
   GPU 借用 Content 的现有纹理，只改变顶点；CPU 的 blit_scaled 原地最近邻采样，整数等比尺寸保留既有快速复制路径。
   DRM flip 在途仍禁止覆盖 back，纹理由 GPU 采样视图保活到完成；不改变标准 Wayland commit/damage/frame/release 语义。

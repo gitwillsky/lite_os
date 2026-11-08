@@ -362,6 +362,7 @@ mod tests {
             maximized: false,
             fullscreen: false,
             resizing: false,
+            suspended: false,
         }
     }
     fn button(pressed: bool) -> EventKind {

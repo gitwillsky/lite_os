@@ -370,6 +370,7 @@ fn configure_states_are_encoded_in_protocol_order() {
         maximized: true,
         fullscreen: true,
         resizing: true,
+        suspended: true,
     };
     harness.client.configure(id(5), 1280, 800, all);
     harness
@@ -389,7 +390,7 @@ fn configure_states_are_encoded_in_protocol_order() {
             assert_eq!(
                 values,
                 [1, 2, 3, 4],
-                "maximized, fullscreen, resizing, activated"
+                "maximized, fullscreen, resizing, activated; a v3 toplevel never sees suspended (v6)"
             );
         }
         _ => panic!("expected a toplevel configure"),
@@ -397,4 +398,63 @@ fn configure_states_are_encoded_in_protocol_order() {
     assert!(
         matches!(&events[2].event, AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { states, .. }) if states.is_empty())
     );
+}
+
+#[test]
+fn v6_toplevel_gets_capabilities_before_first_configure_and_suspended_state() {
+    let mut harness = Harness::bound_xdg(6);
+    harness.create_surface(5);
+    harness
+        .send(|w| {
+            xdg_wm_base::Request::GetXdgSurface {
+                id: id(21),
+                surface: id(5),
+            }
+            .encode(id(20), w)
+            .unwrap()
+        })
+        .unwrap();
+    harness
+        .send(|w| {
+            xdg_surface::Request::GetToplevel { id: id(22) }
+                .encode(id(21), w)
+                .unwrap()
+        })
+        .unwrap();
+    harness
+        .send(|w| wl_surface::Request::Commit.encode(id(5), w).unwrap())
+        .unwrap();
+    let events = harness.events(&XDG_OBJECTS);
+    let words = |bytes: &[u8]| -> Vec<u32> {
+        bytes
+            .chunks(4)
+            .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
+            .collect()
+    };
+    match &events[0].event {
+        AnyEvent::XdgToplevel(xdg_toplevel::Event::WmCapabilities { capabilities }) => {
+            assert_eq!(words(capabilities), [1, 2, 3, 4]);
+        }
+        _ => panic!("v5+ requires wm_capabilities before the first configure"),
+    }
+    assert!(matches!(
+        events[1].event,
+        AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { .. })
+    ));
+    harness.client.configure(
+        id(5),
+        0,
+        0,
+        ToplevelState {
+            suspended: true,
+            ..ToplevelState::default()
+        },
+    );
+    let events = harness.events(&XDG_OBJECTS);
+    match &events[0].event {
+        AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { states, .. }) => {
+            assert_eq!(words(states), [9], "suspended");
+        }
+        _ => panic!("expected a toplevel configure"),
+    }
 }

@@ -118,6 +118,7 @@ pub fn window_configure(
         maximized: mode == Mode::Maximized,
         fullscreen: mode == Mode::Fullscreen,
         resizing,
+        suspended: placement.is_some_and(|placed| placed.minimized),
     };
     let physical = match (size, mode, placement) {
         (Some(size), ..) => size,

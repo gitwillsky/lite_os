@@ -32,6 +32,7 @@ impl Display {
             maximized: false,
             fullscreen: false,
             resizing: false,
+            suspended: false,
         };
         configuration.pixel_size()?;
         let surface = self.transport.allocate(Interface::WlSurface)?;

@@ -148,6 +148,7 @@ impl Display {
                     next.fullscreen = states.contains(&2);
                     next.resizing = states.contains(&3);
                     next.active = states.contains(&4);
+                    next.suspended = states.contains(&9);
                     next.pixel_size()?;
                     if let Role::Toplevel { pending, .. } = &mut window.role { *pending = next; }
                 }
@@ -164,10 +165,15 @@ impl Display {
                         .map_err(io::Error::other)?;
                     if let Role::Toplevel { pending, .. } = window.role { window.configuration = pending; }
                     window.configured = true;
+                    let (id, suspended) = (*id, window.configuration.suspended);
                     self.events.push_back(Event {
-                        window: *id,
+                        window: id,
                         kind: EventKind::Configure(window.configuration),
                     });
+                    // 挂起后不再绘制，空闲缓冲只占内存；在途缓冲在 release 时按同一状态退休。
+                    if suspended {
+                        self.retire_idle_buffers(id)?;
+                    }
                 }
             }
             AnyEvent::XdgToplevel(xdg_toplevel::Event::Close) => {
@@ -379,6 +385,7 @@ mod tests {
             maximized: false,
             fullscreen: false,
             resizing: false,
+            suspended: false,
         };
         let window = WindowId(id(10));
         (

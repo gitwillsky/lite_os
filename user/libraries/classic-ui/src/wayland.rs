@@ -64,6 +64,9 @@ pub struct Configuration {
     pub maximized: bool,
     pub fullscreen: bool,
     pub resizing: bool,
+    /// 合成器挂起了窗口重绘（xdg_toplevel `suspended`，例如最小化）。挂起期间 Display 不再分配或提交
+    /// 缓冲，并释放空闲窗口缓冲；缺少它，不可见窗口仍占着整窗像素内存并继续光栅化。
+    pub suspended: bool,
 }
 
 impl Configuration {
@@ -348,7 +351,7 @@ impl Display {
         } else {
             None
         };
-        let wm_base = bind(Interface::XdgWmBase, 3)?;
+        let wm_base = bind(Interface::XdgWmBase, 6)?;
         let seat = bind(Interface::WlSeat, 7)?;
         let _output = bind(Interface::WlOutput, 4)?;
         let layer_shell = if let Some((_, _, version)) = globals
@@ -516,6 +519,7 @@ impl Display {
             maximized: false,
             fullscreen: false,
             resizing: false,
+            suspended: false,
         };
         configuration.pixel_size()?;
         let surface = self.transport.allocate(Interface::WlSurface)?;
@@ -578,13 +582,12 @@ impl Display {
         self.keyboard
     }
 
-    /// 是否可以开始绘制下一帧；未配置、已销毁或前一帧未完成时返回 false。
-    /// 这是连接内 frame callback 状态的投影，应用可据此避免先渲染再遇到 WouldBlock。
+    /// 是否可以开始绘制下一帧；未配置、已销毁、被挂起或前一帧未完成时返回 false。
+    /// 这是连接内 frame callback 与挂起状态的投影，应用可据此避免先渲染再遇到 WouldBlock。
     pub fn ready_to_draw(&self, window: WindowId) -> bool {
-        self.windows
-            .get(&window)
-            .is_some_and(|state| state.configured && state.frame.is_none())
-            && self.buffer_available(window)
+        self.windows.get(&window).is_some_and(|state| {
+            state.configured && state.frame.is_none() && !state.configuration.suspended
+        }) && self.buffer_available(window)
     }
 
     /// 发出窗口管理请求；不直接修改配置，等待 compositor 的后续 Configure。
