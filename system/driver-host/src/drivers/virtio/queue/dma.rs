@@ -514,6 +514,47 @@ mod tests {
             observed.push((address, length, writable))
         });
         assert_eq!(observed, [(0x1000, 24, true)]);
+        // 卡死现场的 257328 字节命令覆盖 63 页；其中两页连续时，命令流恰有 62 个区段。
+        // 用相同请求/命令，只替换 response 投影：旧整块响应需要 65 项，真实 24 字节响应恰好 64 项。
+        let request_segments = [DmaSegment {
+            device_address: 0xc000,
+            offset: 0,
+            length: 32,
+        }];
+        let request = DmaSlice {
+            source: DmaSource::Mapped(&request_segments),
+            range: 0..32,
+            device_writable: false,
+            segment_limit: u32::MAX as usize,
+        };
+        let mut stream_segments = Vec::new();
+        let mut offset = 0;
+        for index in 0..62 {
+            let length = if index == 0 { 8192 } else { 4096 };
+            stream_segments.push(DmaSegment {
+                device_address: 0x100000 + index * 0x3000,
+                offset,
+                length,
+            });
+            offset += length;
+        }
+        let stream = DmaSlice {
+            source: DmaSource::Mapped(&stream_segments),
+            range: 0..257328,
+            device_writable: false,
+            segment_limit: u32::MAX as usize,
+        };
+        assert_eq!(
+            descriptor_requirement(
+                &[request.clone(), stream.clone(), response.writable_all()],
+                64
+            ),
+            DmaChainRequirement::ExceedsCapacity
+        );
+        assert_eq!(
+            descriptor_requirement(&[request, stream, prefix], 64),
+            DmaChainRequirement::Required(64)
+        );
         assert!(response.writable(0..4121).is_err());
     }
 
