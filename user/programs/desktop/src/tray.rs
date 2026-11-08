@@ -1,4 +1,5 @@
-//! 通知区域的网络链路采样；Linux 状态由 network-config 解释，UI 线程只接收不可变快照。
+//! 通知区采样与命令的唯一后台 owner；网络/USB 快照只在 UI 线程中应用。
+use linux_uapi::usb::{self, Device};
 use network_config::{Link, LinkState};
 use std::{io, sync::mpsc, thread, time::Duration};
 
@@ -6,27 +7,34 @@ struct Disable {
     index: u32,
     result: mpsc::SyncSender<io::Result<()>>,
 }
-
-pub(super) struct Network {
-    links: Vec<Link>,
-    updates: mpsc::Receiver<io::Result<Vec<Link>>>,
-    // OWNER: 本对象独占请求发送端与线程；Drop 断开通道唤醒 recv_timeout，再 join 回收线程。
-    // 只接受一个禁用请求；无界排队会重复操作接口并拖延退出。
-    requests: Option<mpsc::SyncSender<Disable>>,
-    disabling: Option<mpsc::Receiver<io::Result<()>>>,
+struct Snapshot {
+    links: io::Result<Vec<Link>>,
+    devices: io::Result<Vec<Device>>,
+}
+/// 同一通知区的采样共用一个线程/截止，避免为两个低频状态各保留一份栈与唤醒。
+/// UI 不执行 sysfs/配置 I/O；结果容量为一，忙时保留已排队快照，不积压采样。
+pub(super) struct Tray {
+    pub network: Network,
+    pub usb: Usb,
+    updates: mpsc::Receiver<Snapshot>,
     worker: Option<thread::JoinHandle<()>>,
 }
-impl Network {
+impl Tray {
     pub fn new() -> io::Result<Self> {
         let (sender, updates) = mpsc::sync_channel(1);
         let (requests, pending) = mpsc::sync_channel::<Disable>(1);
         let worker = thread::Builder::new()
-            .name("network-tray".into())
+            .name("notification-area".into())
             .spawn(move || {
                 loop {
-                    match sender.try_send(network_config::ethernet_links()) {
-                        Err(mpsc::TrySendError::Disconnected(_)) => break,
-                        Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+                    if matches!(
+                        sender.try_send(Snapshot {
+                            links: network_config::ethernet_links(),
+                            devices: usb::devices()
+                        }),
+                        Err(mpsc::TrySendError::Disconnected(_))
+                    ) {
+                        break;
                     }
                     match pending.recv_timeout(Duration::from_millis(500)) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -45,20 +53,58 @@ impl Network {
                 }
             })?;
         Ok(Self {
-            links: Vec::new(),
+            network: Network {
+                links: Vec::new(),
+                requests: Some(requests),
+                disabling: None,
+            },
+            usb: Usb {
+                devices: Vec::new(),
+            },
             updates,
-            requests: Some(requests),
-            disabling: None,
             worker: Some(worker),
         })
     }
-
     pub fn poll(&mut self) -> io::Result<bool> {
+        // 禁用完成与采样分别消费；命令失败不能阻止同轮 USB 状态刷新。
+        let completed = self.network.poll_disable();
+        let mut changed = completed.as_ref().copied().unwrap_or(false);
+        if let Ok(snapshot) = self.updates.try_recv() {
+            let links = snapshot.links.unwrap_or_default();
+            changed |= links != self.network.links;
+            self.network.links = links;
+            if let Ok(devices) = snapshot.devices {
+                changed |= devices != self.usb.devices;
+                self.usb.devices = devices;
+            }
+        }
+        completed.map(|_| changed)
+    }
+}
+impl Drop for Tray {
+    fn drop(&mut self) {
+        // 唯一请求发送端断开会唤醒等待；join 后才释放视图和结果接收者，不遗留桌面后台线程。
+        self.network.requests.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+pub(super) struct Network {
+    links: Vec<Link>,
+    // OWNER: 一个通知区至多一个禁用请求；有界准入避免重复修改接口和拖延退出。
+    requests: Option<mpsc::SyncSender<Disable>>,
+    disabling: Option<mpsc::Receiver<io::Result<()>>>,
+}
+impl Network {
+    fn poll_disable(&mut self) -> io::Result<bool> {
         if let Some(result) = &self.disabling {
             match result.try_recv() {
                 Ok(result) => {
                     self.disabling = None;
                     result?;
+                    return Ok(true);
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -67,15 +113,8 @@ impl Network {
                 }
             }
         }
-        let Ok(result) = self.updates.try_recv() else {
-            return Ok(false);
-        };
-        let links = result.unwrap_or_default();
-        let changed = self.links != links;
-        self.links = links;
-        Ok(changed)
+        Ok(false)
     }
-
     pub fn link(&self, index: u32) -> Option<&Link> {
         self.links.iter().find(|link| link.index == index)
     }
@@ -120,11 +159,16 @@ impl Network {
         Some(format!("{}：{status}", link.name))
     }
 }
-impl Drop for Network {
-    fn drop(&mut self) {
-        self.requests.take();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+
+pub(super) struct Usb {
+    devices: Vec<Device>,
+}
+impl Usb {
+    pub fn connected(&self) -> bool {
+        !self.devices.is_empty()
+    }
+    pub fn tooltip(&self) -> Option<String> {
+        self.connected()
+            .then(|| format!("拔出或弹出硬件（{} 个设备）", self.devices.len()))
     }
 }

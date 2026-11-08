@@ -102,7 +102,11 @@ impl Output {
     /// # Errors
     ///
     /// 设备配置、port 或线程创建失败。
-    pub(crate) fn attach(id: u64, device: Arc<dyn PcmOutput>) -> Result<Arc<Self>, Status> {
+    pub(crate) fn attach(
+        id: u64,
+        device: Arc<dyn PcmOutput>,
+        scheduler: Arc<native_runtime::Resource>,
+    ) -> Result<Arc<Self>, Status> {
         let info = OutputInfo {
             id,
             name: device.name().as_bytes().to_vec(),
@@ -128,12 +132,13 @@ impl Output {
             .set_observer(output.clone())
             .map_err(|_| native_abi::ERR_IO)?;
         let mixer = output.clone();
-        let thread = native_runtime::thread::spawn(b"audio-mixer", move || mixer.run())?;
+        let thread = native_runtime::thread::spawn(b"audio-mixer", move || mixer.run(scheduler))?;
         drop(thread);
         Ok(output)
     }
 
-    fn run(&self) {
+    fn run(&self, scheduler: Arc<native_runtime::Resource>) {
+        let mut configured = None;
         loop {
             let Ok(packet) = self.port.wait(native_abi::DEADLINE_INFINITE) else {
                 continue;
@@ -147,14 +152,47 @@ impl Output {
                 }
                 _ => {}
             }
-            self.process();
+            if let Err(status) = self.process(&scheduler, &mut configured) {
+                error!(
+                    "audio output {} deadline configuration failed: {status}",
+                    self.info.id
+                );
+                self.engine.lock().fail();
+                let _ = self.device.stop();
+                break;
+            }
         }
     }
 
     /// 消化一个设备事件快照并补填队列。先取引擎锁再提取计数，避免并发调用把较新的完成批次先交给引擎。
-    fn process(&self) {
+    fn process(
+        &self,
+        scheduler: &native_runtime::Resource,
+        configured: &mut Option<PcmConfiguration>,
+    ) -> Result<(), Status> {
         let mut engine = self.engine.lock();
+        let configuration = engine.configuration();
+        if configuration != *configured {
+            let period = configuration.map_or(0, |configuration| {
+                ((configuration.period_frames as u128 * 1_000_000_000)
+                    / u128::from(configuration.rate)) as u64
+            });
+            // 每个实际 PCM 周期预留 10% CPU；其余可供显示/公平类。配置失败显式停止输出，不能静默退回非实时混音。
+            native_runtime::thread::current().handle().set_deadline(
+                scheduler,
+                period / 10,
+                period,
+                period,
+            )?;
+            *configured = configuration;
+        }
         engine.tick(self.events.take(), &*self.device);
+        Ok(())
+    }
+
+    /// RPC 只更新控制状态并通知已有混音端口，所有实际混音/提交由拥有 CBS 预算的线程执行。
+    fn wake_mixer(&self) {
+        let _ = self.port.queue(DEVICE, 0);
     }
 
     /// 清除已写入通知并重新登记等待；之后的写入不会丢失。
@@ -237,7 +275,7 @@ impl Output {
             enabled: controls.enabled,
         });
         if changed {
-            self.process();
+            self.wake_mixer();
         }
         changed
     }
@@ -353,7 +391,7 @@ impl StreamService for StreamHandle {
             .lock()
             .start(self.index)
             .map_err(|()| native_abi::ERR_BAD_STATE)?;
-        output.process();
+        output.wake_mixer();
         Ok(())
     }
 
@@ -375,7 +413,7 @@ impl StreamService for StreamHandle {
                 .switch(configuration)
                 .map_err(|_| native_abi::ERR_IO)?;
         }
-        output.process();
+        output.wake_mixer();
         Ok(())
     }
 

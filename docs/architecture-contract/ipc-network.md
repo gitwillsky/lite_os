@@ -37,6 +37,28 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
   AF_UNIX 在已有 endpoint state guard 内读取 Listening，IPv4 TCP 在已有 NetworkStack guard 内读取 TcpMode，UDP/RAW/packet/netlink 返回 false。
   新 scoped getter 的 production caller 只有该 syscall 投影及下一层 façade；不增加依赖、缓存、锁对象或可修改状态。
 
+## Socket 服务传输
+
+- `network-protocol` 控制 channel 只承载低频配置、创建、关闭和一次 QUEUE 协商；send/receive/poll 的旧 RPC codec 已删除。
+  数据面版本 `LSOCK001`：固定 8 槽 SQ/CQ、128 字节记录与每槽最多 256 KiB 载荷，两个 Event 合并请求和完成通知。
+  VMO 非 RESIZABLE，metadata/载荷偏移固定且校验长度；双方只作同宽对齐原子访问。记录小端、字节载荷保留原序；
+  索引 Release/Acquire 交接，载荷字 Relaxed，不将可变对端存储形成 Rust 非原子引用。
+- 客户端一个本地锁独占 SQ producer/CQ consumer、ticket 与 credit；持锁只操作有界记录/复制，不跨等待。
+  credit 在领取 CQ 后仍保留，复制完载荷才归还；同槽单调 ticket 拒绝重放，计数距离不能超过容量。
+  多调用者由当前调用者之一推进 port/CQ，其余等本地 epoch；等待人数与谓词同锁，单调用者不发多余 futex wake/credit 通知。
+  无逐 socket 分派线程、每请求 VMO 或消息 Vec。
+  协议损坏后 abort 并停止复用；载荷已复制到共享 VMO，没有借给服务的调用者地址，失败不需要伪造 I/O 完成。
+- 服务端一个锁独占 SQ consumer/CQ producer、ticket 与发送暂存，netstack dispatcher 串行化同 socket 的控制与数据操作。
+  每轮至多 16 条控制消息、8 条数据请求，剩余请求保留电平通知；两个来源分别记录一次性等待状态，不能重复武装。
+  worker 从一个空闲读者起步、繁忙时至多四个、多余空闲 5 s 退休；最后一个读者永久等实际通知。
+- 协议状态仍只有 netstack 一个 owner。短读写、整条 datagram 错误、PEEK、截断长度与 packet info 由实际引擎产生；
+  poll 经共享环查询真实状态，不引入需要人工同步的就绪缓存，也不宣称消除了所有服务切换。
+  就绪 Event 仍只提示复查；对端关闭也经同一 EventHub 活动回调唤醒已阻塞的 poll/epoll。
+  CLOSE 回复后立即退休服务端登记，进程退出由 channel PEER_CLOSED 退休；两条路径均公布 queue closed 并唤醒等待者。
+- 两端映射复用同一 VMO，不预提交载荷；每 socket 载荷提交上限 2 MiB，发送暂存上限 256 KiB，均随连接退休。
+  控制/数据并发调用仅保证各自发布顺序与同 socket 串行执行，不另创跨来源的先后承诺；已完成调用的后继操作保持顺序。
+  共享服务传输不新增应用 ABI、syscall 或内核 Linux 概念；适用于 linuxd 和现有原生 DHCP 客户端。
+
 ## Interface
 
 - DHCP 租约事件带服务器标识、发出请求的单调时刻及租期。netcfg 只在地址配置成功后发布租约，失效或切换配置时一并清除。

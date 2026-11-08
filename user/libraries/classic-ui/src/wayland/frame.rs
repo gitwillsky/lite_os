@@ -1,11 +1,14 @@
 //! wl_shm 缓冲池：Display 独占内存与 busy 状态，release 之前绝不重写。
 
-use super::{Configuration, Display, WindowId, damage::Tiles};
+use super::{Configuration, Display, WindowId};
 use canvas::Rect;
 use linux_uapi::shared_memory::{MemFd, SharedMapping};
 use std::{collections::VecDeque, io, os::fd::AsFd};
 use wayland_wire::{
-    protocol::{Interface, wl_buffer, wl_shm, wl_shm_pool, wl_surface, wp_viewport, wp_viewporter},
+    protocol::{
+        Interface, wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
+        wp_viewport, wp_viewporter,
+    },
     wire::{ObjectId, Writer},
 };
 
@@ -51,8 +54,6 @@ pub(super) struct History {
     key: Option<(i32, i32, i32)>,
     /// 上一次有像素提交的缓冲。它已保留完整画面，供下一次计算损伤。
     latest: Option<ObjectId>,
-    /// 整窗重绘路径上一次提交画面的分块哈希；损伤相对它推导，与具体缓冲无关。
-    tiles: Option<Tiles>,
 }
 
 impl History {
@@ -60,7 +61,6 @@ impl History {
     pub(super) fn invalidate(&mut self) {
         self.key = None;
         self.latest = None;
-        self.tiles = None;
         self.damage.clear();
     }
 
@@ -112,9 +112,7 @@ impl Display {
     /// 在途 callback/缓冲池满返回 WouldBlock；配置、尺寸、分配、编码与 I/O 失败保留错误。
     /// 连接错误后调用方应销毁 Display，不能继续使用部分发送的请求。
     pub fn present(&mut self, window: WindowId, pixels: &[u32]) -> io::Result<()> {
-        self.present_frame(window, Some(pixels), false, false, |_, _, _, _| {
-            Ok(Vec::new())
-        })
+        self.present_frame(window, Some(pixels), false, |_, _, _, _| Ok(Vec::new()))
     }
 
     /// 在已经释放的 Wayland 缓冲中绘制画面，然后提交实际损伤。
@@ -132,27 +130,7 @@ impl Display {
         window: WindowId,
         paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
     ) -> io::Result<()> {
-        self.present_frame(window, None, false, false, paint)
-    }
-
-    /// 在已经释放的 Wayland 缓冲中整幅重绘，损伤由与上一次提交的分块哈希比较得出。
-    ///
-    /// # 参数
-    ///
-    /// `paint` 接收可写像素（物理像素、行距等于宽度）、当前配置和只读 Display，必须画满整个缓冲：
-    /// 缓冲里是更早一帧或未初始化的内容，不能假定任何像素保留。
-    ///
-    /// # 错误
-    ///
-    /// 在途 callback/缓冲池满返回 WouldBlock（此时不会调用 `paint`）；其余错误同 [`Self::paint_frame`]。
-    pub fn render_frame(
-        &mut self,
-        window: WindowId,
-        paint: impl FnOnce(&mut [u32], Configuration, &Self) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.present_frame(window, None, false, true, |pixels, configuration, _, display| {
-            paint(pixels, configuration, display).map(|()| Vec::new())
-        })
+        self.present_frame(window, None, false, paint)
     }
 
     /// 用一个预乘 ARGB `pixel` 覆盖 `window` 的当前逻辑尺寸。
@@ -160,9 +138,45 @@ impl Display {
     /// # Errors
     /// 需要标准 wp_viewporter；其余配置、在途缓冲和提交错误同 [`Self::present`]。
     pub fn present_solid(&mut self, window: WindowId, pixel: u32) -> io::Result<()> {
-        self.present_frame(window, Some(&[pixel]), true, false, |_, _, _, _| {
-            Ok(Vec::new())
-        })
+        self.present_frame(window, Some(&[pixel]), true, |_, _, _, _| Ok(Vec::new()))
+    }
+
+    /// 将已证明完全不透明的 surface 逻辑区域加入下一次 commit；None 清除提示。
+    ///
+    /// # Parameters
+    /// `region` 使用 surface 逻辑坐标，调用者必须保证其中每个像素不透明，不能把透明控件层声明为整窗。
+    /// # Errors
+    /// 窗口不存在或协议编码失败；提示与 buffer 在下一次 commit 原子生效。
+    pub fn set_opaque_region(&mut self, window: WindowId, region: Option<Rect>) -> io::Result<()> {
+        if !self.windows.contains_key(&window) {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        let object = region
+            .map(|_| self.transport.allocate(Interface::WlRegion))
+            .transpose()?;
+        let writer = &mut self.transport.writer;
+        if let Some((object, region)) = object.zip(region) {
+            wl_compositor::Request::CreateRegion { id: object }
+                .encode(self.compositor, writer)
+                .map_err(io::Error::other)?;
+            wl_region::Request::Add {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+            }
+            .encode(object, writer)
+            .map_err(io::Error::other)?;
+        }
+        wl_surface::Request::SetOpaqueRegion { region: object }
+            .encode(window.0, writer)
+            .map_err(io::Error::other)?;
+        if let Some(object) = object {
+            wl_region::Request::Destroy
+                .encode(object, writer)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 
     fn present_frame(
@@ -170,7 +184,6 @@ impl Display {
         window: WindowId,
         pixels: Option<&[u32]>,
         solid: bool,
-        measured: bool,
         paint: impl FnOnce(&mut [u32], Configuration, bool, &Self) -> io::Result<Vec<Rect>>,
     ) -> io::Result<()> {
         let state = self
@@ -215,7 +228,7 @@ impl Display {
             }
             _ => vec![bounds],
         };
-        self.set_solid_viewport(
+        self.set_viewport_destination(
             window,
             solid.then_some((configuration.width, configuration.height)),
         )?;
@@ -237,10 +250,10 @@ impl Display {
         for id in retired {
             self.destroy_buffer(id)?;
         }
-        let callback = self.transport.allocate(Interface::WlCallback)?;
         // 2. 画面没变且已按同一规格映射：只请求 frame 并 commit。configure 的 ack 要随 commit 生效，
         //    不能因为像素相同就省掉 commit；也不 attach，免得占用缓冲和触发合成器读取。
         if damage.is_empty() && mapped {
+            let callback = self.transport.allocate(Interface::WlCallback)?;
             return self.commit_callback(window, callback);
         }
         // 3. 只在 release 后重新绑定原来的池；新几何不继承旧画面的损伤历史。
@@ -277,7 +290,6 @@ impl Display {
                 self.allocate_buffer(window, (width, height), stride, capacity)?
             }
         };
-        let mut new_tiles = None;
         if pixels.is_none() {
             let mut buffer = self.buffers.remove(&id).expect("allocated drawing buffer");
             let held = buffer.commit;
@@ -296,21 +308,7 @@ impl Display {
             })();
             self.buffers.insert(id, buffer);
             damage = result?;
-            if measured {
-                // 整幅重绘：相对上一次提交的分块哈希推导损伤；没有同规格基线或哈希分配失败则整幅。
-                let count = bytes as usize / 4;
-                new_tiles = Tiles::of(
-                    self.buffers[&id].pixels(count),
-                    width as usize,
-                    height as usize,
-                );
-                let history = &self.windows[&window].history;
-                damage = match (&new_tiles, &history.tiles) {
-                    (Some(now), Some(before)) if mapped => now.changed_from(before),
-                    _ => None,
-                }
-                .unwrap_or_else(|| vec![bounds]);
-            } else if !preserved {
+            if !preserved {
                 damage = vec![bounds];
             }
             for rect in &mut damage {
@@ -322,6 +320,7 @@ impl Display {
                     .get_mut(&id)
                     .expect("drawing buffer returned")
                     .commit = held;
+                let callback = self.transport.allocate(Interface::WlCallback)?;
                 return self.commit_callback(window, callback);
             }
         }
@@ -355,6 +354,8 @@ impl Display {
                 });
             buffer.memory.write_segments(segments)?;
         }
+        // 绘制/分配/写入成功后才登记 callback；这些准备失败时客户端不能遗留永远没有 done/delete_id 的对象。
+        let callback = self.transport.allocate(Interface::WlCallback)?;
         let writer = &mut self.transport.writer;
         wl_surface::Request::SetBufferScale { scale }
             .encode(window.0, writer)
@@ -386,9 +387,6 @@ impl Display {
         let state = self.windows.get_mut(&window).expect("validated window");
         state.frame = Some(callback);
         state.history.record(key, id, damage);
-        if measured {
-            state.history.tiles = new_tiles;
-        }
         let buffer = self.buffers.get_mut(&id).expect("allocated buffer");
         buffer.busy = true;
         buffer.commit = state.history.commits;
@@ -423,7 +421,7 @@ impl Display {
         self.transport.flush()
     }
 
-    fn set_solid_viewport(
+    pub(super) fn set_viewport_destination(
         &mut self,
         window: WindowId,
         destination: Option<(i32, i32)>,
@@ -465,13 +463,7 @@ impl Display {
     ) -> io::Result<ObjectId> {
         let memory = MemFd::create("classic-ui", capacity)?;
         let mapping = SharedMapping::map(memory.as_fd(), capacity)?;
-        let pool = self.transport.allocate(Interface::WlShmPool)?;
-        let mut request = Writer::new();
-        request.begin(self.shm, 0);
-        request.object(Some(pool));
-        request.int(capacity as i32);
-        request.end().map_err(io::Error::other)?;
-        self.transport.send_fd(request.bytes(), memory.as_fd())?;
+        let pool = self.create_shm_pool(&memory, capacity)?;
         self.create_buffer(
             Buffer {
                 window,
@@ -484,6 +476,23 @@ impl Display {
             },
             stride,
         )
+    }
+
+    /// 两类 SHM 存储共用同一 FD publication；fd 参数只走 SCM_RIGHTS，不写进 Wayland 消息字节。
+    pub(super) fn create_shm_pool(
+        &mut self,
+        memory: &MemFd,
+        length: usize,
+    ) -> io::Result<ObjectId> {
+        let length = i32::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let pool = self.transport.allocate(Interface::WlShmPool)?;
+        let mut request = Writer::new();
+        request.begin(self.shm, 0);
+        request.object(Some(pool));
+        request.int(length);
+        request.end().map_err(io::Error::other)?;
+        self.transport.send_fd(request.bytes(), memory.as_fd())?;
+        Ok(pool)
     }
 
     fn create_buffer(&mut self, buffer: Buffer, stride: i32) -> io::Result<ObjectId> {

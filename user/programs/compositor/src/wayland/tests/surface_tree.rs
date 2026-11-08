@@ -190,6 +190,11 @@ fn input_region_uses_a_commit_time_snapshot_with_subtracted_holes() {
         }
         .encode(id(5), w)
         .unwrap();
+        wl_surface::Request::SetOpaqueRegion {
+            region: Some(id(90)),
+        }
+        .encode(id(5), w)
+        .unwrap();
         wl_region::Request::Add {
             x: 5,
             y: 5,
@@ -206,6 +211,44 @@ fn input_region_uses_a_commit_time_snapshot_with_subtracted_holes() {
     assert!(h.client.accepts_input(id(5), 2., 2.));
     assert!(!h.client.accepts_input(id(5), 10., 10.));
     assert!(!h.client.accepts_input(id(5), 20., 2.));
+    assert!(h.client.subtree(id(5))[0].opaque);
+    h.send(|w| {
+        wl_compositor::Request::CreateRegion { id: id(91) }
+            .encode(id(3), w)
+            .unwrap();
+        wl_region::Request::Add {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        }
+        .encode(id(91), w)
+        .unwrap();
+        wl_region::Request::Subtract {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+        .encode(id(91), w)
+        .unwrap();
+        wl_surface::Request::SetOpaqueRegion {
+            region: Some(id(91)),
+        }
+        .encode(id(5), w)
+        .unwrap();
+        wl_region::Request::Destroy.encode(id(91), w).unwrap();
+    })
+    .unwrap();
+    assert!(
+        h.client.subtree(id(5))[0].opaque,
+        "pending hint cannot affect current frame"
+    );
+    h.commit_surface(5);
+    assert!(
+        !h.client.subtree(id(5))[0].opaque,
+        "a transparent hole forbids whole-surface occlusion"
+    );
 }
 
 #[test]

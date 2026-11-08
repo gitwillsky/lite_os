@@ -26,27 +26,28 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 `kernel/signal.c`、`kernel/exit.c`、`security/commoncap.c`、`arch/arm64/kernel/ptrace.c` 与
 `arch/riscv/kernel/ptrace.c`；musl `src/linux/ptrace.c` 只负责 raw PEEK 的 libc 返回值转换。
 
-### 原生公平调度
+### 原生公平与截止调度
 
 - 虚拟时间下限参照固定 Linux revision 的 [CFS 设计](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/scheduler/sched-design-CFS.rst)。
 - 睡眠额度必须有界的成熟语义参照同树 [fair.c 的 entity_lag](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/fair.c)。
-  LiteOS 使用自己的加权 vruntime 队列与一个时间片的归一化唤醒额度，不声明实现 Linux EEVDF 或实时调度 class。
+  公平类保留有界唤醒额度，不声明 EEVDF；CBS/EDF、Revisited CBS 及 sched_attr 依同树 `Documentation/scheduler/sched-deadline.rst`、`kernel/sched/deadline.c`、`kernel/sched/syscalls.c`。
 
 ### 原生服务消息
 
-原生服务消息参照固定 Zircon revision 的
-[FIDL transaction ID 约定](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/fidl/language/wire-format/README.md#transactional-messages)：
-零事务号不要求回复。LiteOS 只采用该 channel 消息语义，不声明 FIDL 编码兼容。
+原生服务消息参照固定 Zircon revision 的 [FIDL transaction ID 约定](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/fidl/language/wire-format/README.md#transactional-messages)：
+零事务号不要求回复；LiteOS 不声明 FIDL 编码兼容。线程持有调用等待对象、在 channel 锁内登记/退休，参照 revision `bb06fd0022e58d6c501367cd87f16e178498a1b7` 的
+[ThreadDispatcher](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/zircon/kernel/object/include/object/thread_dispatcher.h) 与
+[MessageWaiter](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/zircon/kernel/object/include/object/channel_dispatcher.h)；LiteOS 使用懒分配的安全 Arc 租约复用，不使用裸指针链表。
+Socket 数据与控制分离参照[固定 Zircon Concepts 的 Sockets and Channels](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/concepts/kernel/concepts.md)。
+LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wire 兼容；发布顺序沿下述共享环规范。
 
 ### 原生块 I/O
 
 - 登记 VMO、FIFO 请求/分组完成及会话寿命参照 Fuchsia 固定 revision `bb06fd0022e58d6c501367cd87f16e178498a1b7` 的
-  [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。
-  LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；当前完成度由性能计划与设备契约维护。
+  [`block_server`](https://fuchsia.googlesource.com/fuchsia/+/bb06fd0022e58d6c501367cd87f16e178498a1b7/src/storage/lib/block_server/src/lib.rs)。LiteOS 采用直接操作登记缓冲的语义，不声明 FIDL wire 兼容；当前完成度由性能计划与设备契约维护。
   非阻塞 provider/active request 生命周期也参照同一固定 block_server：已接受请求的缓冲与完成 owner 保持到终态，不以丢弃接收连接代替 DMA 退休。
 - 提交/完成双环的 producer/consumer Release/Acquire 发布顺序参照固定 Linux revision 的
-  [io_uring ring publication](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/io_uring/io_uring.c)。
-  块会话只采用有界双环与通知语义，不声明 io_uring UAPI 或 Zircon FIFO 编码兼容。
+  [io_uring ring publication](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/io_uring/io_uring.c)。块与 socket 会话只采用有界双环与通知语义，不声明 io_uring UAPI 或 Zircon FIFO 编码兼容。
 
 ### 原生任务观测
 
@@ -70,7 +71,7 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 
 - 访问位老化与有限代队列参照同一固定 Linux revision 的 [Multi-Gen LRU](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/mm/multigen_lru.rst)：
   单调 oldest/youngest、截断代号与旧队列排空后复用的窗口不变量。LiteOS 只采用该回收结构，不声明实现匿名换出、tier 或 refault 反馈控制。
-
+- 指令一致性参照 [固定 Zircon ArmVmICacheConsistencyManager](https://fuchsia.googlesource.com/fuchsia/+/9908e150b3a95dd2b5e70dea4593ca1beae35057/zircon/kernel/arch/arm64/mmu.cc)：实际范围清理至 PoU、末尾统一指令失效。
 - VMO COW 与 hidden-parent collapse 的成熟内核参照：[Zircon VmCowPages 固定源码](https://fuchsia.googlesource.com/fuchsia/+/2f4a80e20d0dab1b08e1b2c85f2719c99df6f689/zircon/kernel/vm/vm_cow_pages.cc)。只参照所有权/页可见性语义，不导入 Linux 对象政策。
 - VMAR 允许将缺 backing 的页留到访问时故障的语义：[固定 vmar_map 规范](https://fuchsia.googlesource.com/fuchsia/+/118359eadf6aabbd11106f12df9a1e95c8d0847b/docs/reference/syscalls/vmar_map.md)。
 - 不可变 ELF 段模板使用单向 COW，语义参照[固定 vmo_create_child 规范](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/vmo_create_child.md)的 `SNAPSHOT_AT_LEAST_ON_WRITE`：子对象写入不改父对象，模板必须不再写入。
@@ -429,12 +430,12 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
 
 - 上传暂存的按空闲年龄回收参照 [Skia 固定 revision 的 performDeferredCleanup](https://skia.googlesource.com/skia/+/864ca87ea1c85c45f9cbe26372bf38a739d84cee/include/gpu/GrDirectContext.h)：只清理不再使用的 scratch，GPU 在途资源仍由 fence 保护。
 - 命令编码固定到 virglrenderer `virglrenderer-1.1.0`；继续使用 VirGL2 capset、标准 VirtIO-GPU DRM UAPI。
-  上游 [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer/-/tree/virglrenderer-1.1.0)，
+  CPU 缓冲同步对照固定 Linux 的 [virtgpu_plane.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/virtio/virtgpu_plane.c)
+  与 [drm_damage_helper.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_damage_helper.c)。上游 [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer/-/tree/virglrenderer-1.1.0)，
   [固定源码镜像](https://chromium.googlesource.com/chromiumos/third_party/virglrenderer/+/refs/tags/virglrenderer-1.1.0)。
-  `virgl_protocol.h` SHA-256：`359d7b64e515e170f38c3cf9ab8c7b28a2a38b51e8959a21ecd2ae985b992709`。
-  `p_defines.h` SHA-256：`29b02c15399768ab74054e711f6633c407cf5f952f591c046e7542b82e54a008`。
+  `virgl_protocol.h` SHA-256：`359d7b64e515e170f38c3cf9ab8c7b28a2a38b51e8959a21ecd2ae985b992709`；`p_defines.h` SHA-256：`29b02c15399768ab74054e711f6633c407cf5f952f591c046e7542b82e54a008`。
 - 顶点/片段程序采用 [Mesa TGSI](https://docs.mesa3d.org/gallium/tgsi.html) 的 POSITION、GENERIC、2D sampler 与 TEX 语义。
-  预乘 OVER 混合由固定命令编码实现，不新增 Wayland 私有绘图消息。
+  预乘 OVER、RASTERIZER scissor bit 14 与 SET_SCISSOR_STATE 均按固定源码编码；输出修复遵循 [EGL_EXT_buffer_age v12](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_buffer_age.txt) 的年龄与损伤并集语义，不新增私有绘图消息。
 
 ### 客户端 dma-buf / EGL
 

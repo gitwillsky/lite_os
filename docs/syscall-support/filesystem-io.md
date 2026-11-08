@@ -211,12 +211,12 @@ INIT 失败（请求 `ECONNREFUSED`）。按 entry/attr 超时缓存查找与属
 INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE，其余通知 `ENOSYS`。
 支持 GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR：零缓冲查询、空值、CREATE/REPLACE、64 KiB 上限、
 列表格式校验与独立 ENOSYS 缓存；通用 namespace/capability policy 仍由 VFS 拥有，普通权限由实际 FUSE 判定。
-内置 ext4 同样经 FUSE 服务，但文件内容由 ext4 实例拥有（读与 mmap 使用其 VMO，写直达存储），不经 linuxd 页缓存；
-其属性/目录项 lease 为 60 秒，客户端修改会使缓存过期，不支持外部磁盘修改的即时一致性。映射写入由 ext4 在 fsync、
-syncfs 与 5 秒周期内写回，期间崩溃丢失尚未写回的映射写入（与 Linux 回写语义一致）。
+内置 ext4 同样经 FUSE 服务，但文件内容由 ext4 实例拥有（读、缓冲写与 mmap 共用内容 VMO，块在回写时分配），不经 linuxd 页缓存；
+其属性/目录项 lease 为 60 秒，客户端修改会使缓存过期，不支持外部磁盘修改的即时一致性。ext4 在 fsync、syncfs、
+5 秒周期、节点释放与脏页限流时写回，期间崩溃可能丢失尚未持久化的修改；write 同步预留空间，ENOSPC 不延迟到回写。
 ext4 的 trusted 名称列举以请求 UID 0 判定，不能表达已降 CAP_SYS_ADMIN 的 root 或持该 capability 的非 root；
 GET/SET/REMOVE 的 namespace 授权仍由 linuxd VFS 实施。
-POSIX ACL 的 system.* handler 尚未实现。新增 xattr guest 探针已编写，未宣称运行通过。
+POSIX ACL 的 system.* handler 尚未实现；已实现的 xattr 行为由 BusyBox/FUSE guest 探针覆盖。
 FOPEN_DIRECT_IO 按 per-open fh 绕过内容页缓存，覆盖 vector/positioned I/O、sendfile/copy 与 io_uring worker；
 短读不收缩 EOF，分块写后续失败保留已提交前缀，WRITEBACK_CACHE 不改变 direct 写语义。
 混合缓存先写回脏页，直接写前撤销范围 cache aliases（保留 private COW），并发 pin 无法逐出返回 EBUSY。
@@ -251,9 +251,17 @@ FUSE over io_uring：INIT 选择 OVER_IO_URING，SQE128 的每 CPU REGISTER 完�
 不做 reflink/服务端拷贝；跨 filesystem 复制按普通读写完成，与 Linux 5.19 之后的回退行为一致。
 
 DRM ioctl 子集包含标准 PRIME_HANDLE_TO_FD / FD_TO_HANDLE、DRM_CAP_PRIME 与 renderD128（禁止 KMS/master）。
+KMS 支持 legacy modeset/page flip、MODE_ATOMIC、DIRTYFB（最多 32 clip）与 CREATEPROPBLOB/GETPROPBLOB/DESTROYPROPBLOB。
+property blob 使用全局对象 ID、OFD 创建者引用；GET 仅精确长度时复制，DESTROY 非创建者 EPERM，close 自动释放。
+支持 per-OFD UNIVERSAL_PLANES、GETPLANERESOURCES/GETPLANE、OBJ_GETPROPERTIES/GETPROPERTY；默认隐藏 primary，启用后可枚举。
+当前只有 primary plane（XR24），cursor 仍走 CURSOR2；普通属性列表只含非 atomic 的 type，返回标准枚举和范围描述。
+ATOMIC capability 按 OFD 协商；MODE_ATOMIC 支持 TEST_ONLY/NONBLOCK/ALLOW_MODESET/EVENT，FB_DAMAGE_CLIPS 在途及活动引用独立于创建者。
+当前仅全屏 1:1 primary、canonical CVT timing；不支持缩放/裁剪/ASYNC/atomic cursor/显式 fence，非法组合或 flags 返回 EINVAL。
+mode 的 type/name/vrefresh 按标准提示处理；尺寸、clock/refresh 表示范围和 blob 载荷校验在发表前完成。当前仅静态检查，运行验收待计划终态。
+GETFB 当前只返回本 OFD 的 framebuffer 元数据，handle 固定为 0；未开放按 master/CAP_SYS_ADMIN 返回 GEM handle 的披露路径。
 DRM fdinfo 发布标准 driver/client-id 与 total/shared/resident 系统内存缓冲统计；不提供未被 VirtIO 协议测量的宿主 GPU 执行时间、专用显存容量或占用。
 dma-buf FD 支持 DMA_BUF_IOCTL_SYNC、poll、标准 size seek 和 offset=0 的共享非 executable mmap；
-当前只共享同一 VirtIO-GPU 的 VirGL GEM，不支持跨设备、blob 或显式 sync_file/syncobj。
+当前只共享同一 VirtIO-GPU 的 VirGL GEM，不支持跨设备、VirtIO-GPU resource blob 或显式 sync_file/syncobj。
 FD 事务和导出者关闭后的寿命见设备契约，Wayland 格式/布局范围见 UI 契约。
 
 memfd 支持 F_SEAL_WRITE / F_SEAL_FUTURE_WRITE：共享写映射竞争返回 EBUSY，失败不部分添加 seal；

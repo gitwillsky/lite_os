@@ -81,7 +81,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 ### 0. 前置能力（内核与驱动）
 
 - 依赖性能计划：高精度定时器（第 3 项）、块/DMA 直写服务 VMO 的模式（第 1 项）、截止时间调度类（P2 第 1 项）、
-  socket 共享环（P2 第 5 项，本计划阶段 2 直接按终态实现）。
+  socket 共享环（P2 第 5 项已接通源码，运行验收归性能计划）。
 - 新增：CPU 隔离（独占核不调度普通线程）与中断亲和设置的原生接口；virtio-net 多队列与每队列 MSI-X；
   驱动 trait 改为多队列批量收发（RSS 配置、队列数协商、校验和/TSO 等卸载能力位）。
 - **契约**：执行域契约（CPU 隔离、IRQ 亲和）、设备契约（网络驱动 trait）。
@@ -103,7 +103,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
   UDP、DHCPv4/v6 的解析与构造；每种格式 fuzz 测试，并与 smoltcp 及 Linux 抓包样本做对照测试（对照只在测试中，产品代码不依赖 smoltcp）。
   dhcp-client 在本阶段同步迁移，移除 workspace 中的 smoltcp 依赖。
 - 双栈主机协议栈：IPv4/IPv6、ICMP/ICMPv6、ND/RA、TCP（含 MD5/AO、窗口缩放、SACK）、UDP、原始 IP、多播加组；
-  socket 改为共享环 + 事件通知。
+  socket 沿用性能计划落地的共享 SQ/CQ + 事件通知，迁移到新协议引擎，不恢复逐次数据 RPC。
 - linuxd：socket 接入新协议；rtnetlink/sysfs 只读投影（接口、地址、路由、邻居、规则），写操作 EPERM；
   netns 对应 VRF。
 - **契约**：`docs/architecture/ipc-network.md` 与 IPC/网络契约整体改写；ABI 矩阵（socket、rtnetlink 写操作范围）。
@@ -169,4 +169,4 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 
 ## 进度
 
-- 未开始；先完成[性能计划](performance-hotpaths.md)。
+- 路由专属阶段未开始；先完成[性能计划](performance-hotpaths.md)。前置 socket 共享环已接通源码，其运行与性能验收仍归性能计划。

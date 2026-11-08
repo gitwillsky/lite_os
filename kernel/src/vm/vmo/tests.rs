@@ -634,6 +634,12 @@ fn pager_read_cannot_grant_write_before_dirty_transition_and_writeback_rearms_it
             .with_resolved(0, false, |page| Ok(page.writable))
             .unwrap()
     );
+    // BEGIN 后读出/写盘失败时仍可查询重试，只有 END 才能确认内容已持久化。
+    assert_eq!(
+        file.first_dirty_range(0, PAGE_SIZE as u64).unwrap(),
+        Some((0, PAGE_SIZE as u64))
+    );
+    file.end_writeback(0, PAGE_SIZE as u64).unwrap();
     assert!(
         file.first_dirty_range(0, PAGE_SIZE as u64)
             .unwrap()

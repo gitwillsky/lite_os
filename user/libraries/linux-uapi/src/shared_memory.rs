@@ -25,6 +25,24 @@ const F_SEAL_GROW: i32 = 0x0004;
 #[cfg(target_os = "linux")]
 const F_SEAL_WRITE: i32 = 0x0008;
 
+/// 文件是否已由 Linux sealing 保证内容与尺寸不可再修改；普通文件/不支持查询时保守返回 false。
+/// 此查询只允许优化，不授予权限。fd 由调用方保活，结果中的写封印不能被撤销。
+pub fn is_immutable(fd: BorrowedFd<'_>) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        const F_GET_SEALS: i32 = 1034;
+        // SAFETY: 标准无指针 fcntl 查询；借用保活 fd，无共享可变内存。
+        let seals = unsafe { raw::fcntl(fd.as_raw_fd(), F_GET_SEALS, 0) };
+        let required = F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE;
+        seals >= 0 && seals & required == required
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = fd;
+        false
+    }
+}
+
 /// A sized anonymous shared-memory file.
 pub struct MemFd {
     file: File,
@@ -50,6 +68,20 @@ impl MemFd {
         use std::os::unix::fs::FileExt;
         let memory = Self::allocate(name, bytes.len())?;
         memory.file.write_all_at(bytes, 0)?;
+        #[cfg(target_os = "linux")]
+        memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
+        Ok(memory)
+    }
+
+    /// 发布一次填充的 u32 像素/协议记录；复用分段写入，不为字节转换分配第二份内容。
+    /// Linux 同时封印内容和尺寸；空输入、大小溢出、写入或封印失败返回 I/O 错误。
+    pub fn from_words(name: &str, words: &[u32]) -> io::Result<Self> {
+        let length = words
+            .len()
+            .checked_mul(size_of::<u32>())
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let memory = Self::allocate(name, length)?;
+        memory.write_segments([(0, words)])?;
         #[cfg(target_os = "linux")]
         memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
         Ok(memory)

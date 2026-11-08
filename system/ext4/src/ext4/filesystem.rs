@@ -201,11 +201,11 @@ impl Ext4FileSystem {
 
     /// 归还 [`Self::reserve_delalloc`] 预留的 `blocks` 个 block（回写即将分配它们，或预留所属的区间被丢弃）。
     pub(crate) fn release_delalloc(&self, blocks: u64) {
-        let _ = self
-            .delalloc_reserved
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |reserved| {
-                Some(reserved.saturating_sub(blocks))
-            });
+        let _ =
+            self.delalloc_reserved
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |reserved| {
+                    Some(reserved.saturating_sub(blocks))
+                });
     }
 
     /// 回写分配失败后把已归还的预留补回（不检查空闲数）：数据仍在内容 VMO 里等待下一次回写，

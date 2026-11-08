@@ -144,7 +144,7 @@ impl Drop for KernelStackHandle {
     }
 }
 
-// OWNER: 内核栈高水位探针开关（启动参数 `stack_probe`）。关闭时线程退出不扫描栈；
+// OWNER: 内核栈高水位探针开关（启动参数 `liteos.stack_probe=1`）。关闭时线程退出不扫描栈；
 // 启动时在线程创建前确定；开启后创建时涂写、退出时扫描实际可用区，不进入 trap/调度热路径。
 static STACK_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 // OWNER: 探针观察到的全局最大栈使用字节数；只作诊断，缺失时无法判断栈能否缩小。

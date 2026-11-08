@@ -314,7 +314,7 @@ impl CommandSlots {
                     pending.stage,
                     sequence_policy::RuntimeStage::Virgl
                         | sequence_policy::RuntimeStage::VirglSetScanout
-                        | sequence_policy::RuntimeStage::VirglFlush
+                        | sequence_policy::RuntimeStage::VirglPresent
                 )
             })
         })

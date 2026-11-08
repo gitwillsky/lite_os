@@ -1,6 +1,6 @@
 # 经典桌面资源
 
-产品资源唯一位于受 Git 管理的 `assets/classic/`，全部图像、系统界面字体、声音与光标来自用户提供的
+经典界面素材的唯一输入位于受 Git 管理的 `assets/classic/`，界面位图、系统字体、声音与光标来自用户提供的
 Windows 2000 Professional SP4 简中 ISO。ISO、原始 PE、全部导出资源与中间 PNG 留在被 Git 忽略的
 `.local/inputs/windows2000/`；它们不参与普通构建，clone 后无需重新准备 ISO。
 

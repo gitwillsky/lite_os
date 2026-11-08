@@ -1,9 +1,8 @@
 //! 被 `arch` 与 `memory` 共同消费、且必须位于二者之下的无依赖常量。
 
-/// Boot、secondary 与 task kernel stack 的统一大小（不含 guard page）。
+/// Boot/secondary 的栈大小及 task 的栈槽位上限。
 ///
-/// 每个原生线程（包括每个 Linux 线程的承载线程）在创建时提交整个栈，因此它直接决定每线程的固定内存。
-/// 文件系统与网络协议栈已移出内核，内核路径变浅：在 musl 门禁（6.5 万次 fork/exit、exec、信号与地址空间切换）
-/// 中实测峰值深度 18648 字节（含 AArch64 顶部 4 KiB 的上下文保留），取约 1.7 倍余量的 32 KiB
-/// （Linux arm64 为 16 KiB）。溢出落在 guard page，立即以缺页 fail-stop，不会静默破坏相邻对象。
+/// task 槽位底页不映射作 guard：32 KiB 槽实际映射 28 KiB；AArch64 顶页另存上下文，可用调用栈为 24 KiB。
+/// 16 KiB 槽会只剩 AArch64 8 KiB、RISC-V 12 KiB，必须结合非零染色与编译器栈帧评估，不能引用旧零扫描推算余量。
+/// 当前保留 32 KiB，完整负载评估由执行域契约记录；溢出在 guard page fail-stop，不能以压低统计值替代安全边界。
 pub(crate) const KERNEL_STACK_SIZE: usize = 32 * 1024;

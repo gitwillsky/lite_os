@@ -35,6 +35,7 @@ struct Quad {
     texture: Rc<VirglResource>,
     rect: Rect,
     source: canvas::ImageSource,
+    clip: Rect,
 }
 #[derive(Clone)]
 struct TextureView {
@@ -47,6 +48,8 @@ pub(crate) struct Gpu {
     targets: [Target; 2],
     // 启动进度条的 CPU 暂存，唯一使用期到第一次桌面合成。两个扫描纹理不保留全屏来宾副本。
     boot_staging: Option<VirglResource>,
+    // OWNER: 输出背景的一像素纹理，随主题变化替换；区域清底避免整目标 clear。
+    background: Option<(classic_theme::Rgb, Rc<VirglResource>)>,
     // OWNER: GPU context 独占采样视图和纹理引用，键为仍被 Rc 保活的真实 GEM resource ID。
     // 只在上帧 flip 完成后的下一次 render 淘汰旧项；既保活在途纹理，也避免每帧创建/销毁同一视图。
     // 缺少资源引用会在客户端退出时悬空，直接把 GEM ID 当对象句柄会撞到 shader/state/FBO。
@@ -99,7 +102,7 @@ impl Gpu {
         commands.bind_object(ObjectKind::Blend, OVER);
         commands.create_depth_stencil_alpha(DEPTH);
         commands.bind_object(ObjectKind::DepthStencilAlpha, DEPTH);
-        commands.create_rasterizer(RASTER);
+        commands.create_scissored_rasterizer(RASTER);
         commands.bind_object(ObjectKind::Rasterizer, RASTER);
         commands.create_sampler_state(
             SAMPLER,
@@ -112,6 +115,7 @@ impl Gpu {
             context,
             targets,
             boot_staging: None,
+            background: None,
             views: BTreeMap::new(),
             frame_contents: Vec::new(),
             next_view: FIRST_VIEW,
@@ -182,6 +186,7 @@ impl Gpu {
         back: usize,
         theme: &Theme,
         windows: &[Drawable<'_>],
+        frame: &super::damage::Frame,
         overlay_bounds: Option<Rect>,
         overlay: impl FnOnce(Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
@@ -192,22 +197,51 @@ impl Gpu {
         );
         let mut quads = Vec::with_capacity(windows.len() + usize::from(overlay_bounds.is_some()));
         let screen = Rect::new(0, 0, width as i32, height as i32);
-        for window in windows {
-            let rect = window.rect;
-            if rect.intersect(screen).is_empty() {
+        if !frame.background.is_empty() {
+            let color = theme.color(SystemColor::Background);
+            if self
+                .background
+                .as_ref()
+                .is_none_or(|(previous, _)| *previous != color)
+            {
+                let texture = Rc::new(self.context.create_sampled_texture(1, 1)?);
+                let pixel = 0xff00_0000
+                    | (u32::from(color.red) << 16)
+                    | (u32::from(color.green) << 8)
+                    | u32::from(color.blue);
+                self.context.write_texture(&texture, 0, 0, 1, 1, &[pixel])?;
+                self.background = Some((color, texture));
+            }
+            let texture = &self.background.as_ref().expect("background prepared").1;
+            for rect in frame.background.rects() {
+                quads.push(Quad {
+                    texture: texture.clone(),
+                    rect: screen,
+                    source: canvas::ImageSource::full(1, 1),
+                    clip: *rect,
+                });
+            }
+        }
+        for (window, visible) in windows.iter().zip(&frame.windows) {
+            if visible.is_empty() {
                 continue;
             }
-            quads.push(Quad {
-                texture: window
-                    .content
-                    .texture()
-                    .ok_or_else(|| io::Error::other("CPU-backed content reached GPU composition"))?
-                    .clone(),
-                rect,
-                source: window.content.source,
-            });
+            let texture = window
+                .content
+                .texture()
+                .ok_or_else(|| io::Error::other("CPU-backed content reached GPU composition"))?;
+            for rect in visible.rects() {
+                quads.push(Quad {
+                    texture: texture.clone(),
+                    rect: window.rect,
+                    source: window.content.source,
+                    clip: *rect,
+                });
+            }
         }
-        if let Some(bounds) = overlay_bounds.filter(|bounds| !bounds.is_empty()) {
+        if let Some(bounds) =
+            overlay_bounds.filter(|bounds| !bounds.is_empty() && !frame.overlay.is_empty())
+        {
             let (width, height) = (bounds.width as u32, bounds.height as u32);
             if self.overlay.as_ref().is_none_or(|layer| {
                 (layer.texture.width(), layer.texture.height()) != (width, height)
@@ -230,11 +264,16 @@ impl Gpu {
             // 画布与纹理同尺寸，直接上传连续像素。内联写入沿用上一帧的 GPU 命令顺序。
             self.context
                 .write_texture(&layer.texture, 0, 0, width, height, &layer.pixels)?;
-            quads.push(Quad {
-                texture: layer.texture.clone(),
-                rect: bounds,
-                source: canvas::ImageSource::full(bounds.width, bounds.height),
-            });
+            for rect in frame.overlay.rects() {
+                quads.push(Quad {
+                    texture: layer.texture.clone(),
+                    rect: bounds,
+                    source: canvas::ImageSource::full(bounds.width, bounds.height),
+                    clip: *rect,
+                });
+            }
+        } else if overlay_bounds.is_none() {
+            self.overlay = None;
         }
         let bytes = quads
             .len()
@@ -255,8 +294,8 @@ impl Gpu {
         for quad in &quads {
             let visible = quad.rect.intersect(screen);
             let vertex = |x: i32, y: i32| {
-                let u = f64::from(x - quad.rect.x) / f64::from(quad.rect.width);
-                let v = f64::from(y - quad.rect.y) / f64::from(quad.rect.height);
+                let u = (f64::from(x) - f64::from(quad.rect.x)) / f64::from(quad.rect.width);
+                let v = (f64::from(y) - f64::from(quad.rect.y)) / f64::from(quad.rect.height);
                 let (u, v) = quad.source.point(u, v);
                 [
                     2.0 * x as f32 / width as f32 - 1.0,
@@ -289,17 +328,29 @@ impl Gpu {
         commands.set_framebuffer(TARGET);
         commands.set_viewport(width, height);
         commands.set_vertex_buffer(vertices.resource_id());
-        let background = theme.color(SystemColor::Background);
-        commands.clear([
-            f32::from(background.red) / 255.,
-            f32::from(background.green) / 255.,
-            f32::from(background.blue) / 255.,
-            1.,
-        ]);
-        let used: std::collections::BTreeSet<_> = quads
+        let submitted: std::collections::BTreeSet<_> = quads
             .iter()
             .map(|quad| (quad.texture.resource_id(), quad.texture.format()))
             .collect();
+        // 未损伤的 surface 仍持有其采样视图；局部帧不能反复销毁/重建未绘制窗口的视图。
+        // exec 只 pin 本帧真正采样的资源，隐藏部分不增加 GPU 在途使用期。
+        let mut used = submitted.clone();
+        used.extend(
+            windows
+                .iter()
+                .filter_map(|window| window.content.texture())
+                .map(|texture| (texture.resource_id(), texture.format())),
+        );
+        used.extend(
+            self.background
+                .iter()
+                .map(|(_, texture)| (texture.resource_id(), texture.format())),
+        );
+        used.extend(
+            self.overlay
+                .iter()
+                .map(|layer| (layer.texture.resource_id(), layer.texture.format())),
+        );
         let mut available = self.free_views.clone();
         for (resource, view) in &self.views {
             if !used.contains(resource) {
@@ -307,7 +358,12 @@ impl Gpu {
                 available.push(view.object);
             }
         }
-        let mut views: BTreeMap<(u32, u32), TextureView> = BTreeMap::new();
+        let mut views: BTreeMap<(u32, u32), TextureView> = self
+            .views
+            .iter()
+            .filter(|(resource, _)| used.contains(resource))
+            .map(|(resource, view)| (*resource, view.clone()))
+            .collect();
         let mut next_view = self.next_view;
         for (index, quad) in quads.iter().enumerate() {
             let resource = (quad.texture.resource_id(), quad.texture.format());
@@ -335,16 +391,39 @@ impl Gpu {
                 slot.insert(view);
             }
             commands.set_texture(views[&resource].object, SAMPLER);
+            // VirGL 固定后端使用正 GL viewport Y scale；scissor 按 framebuffer 左下原点转换，
+            // 顶点/UV 不随损伤改写，避免局部几何重新插值改变最近邻采样边界。
+            let clip = quad.clip.intersect(screen);
+            let scissor = [
+                clip.x,
+                height as i32 - clip.bottom(),
+                clip.right(),
+                height as i32 - clip.y,
+            ]
+            .map(u16::try_from);
+            let [min_x, min_y, max_x, max_y] = scissor;
+            commands.set_scissor([
+                min_x.map_err(io::Error::other)?,
+                min_y.map_err(io::Error::other)?,
+                max_x.map_err(io::Error::other)?,
+                max_y.map_err(io::Error::other)?,
+            ]);
             commands.draw_triangles(index as u32 * 6, 6);
         }
         commands.destroy_object(ObjectKind::Surface, TARGET);
         let mut resources = vec![&target.resource, &*vertices];
-        resources.extend(views.values().map(|view| view.texture.as_ref()));
+        resources.extend(
+            views
+                .iter()
+                .filter(|(resource, _)| submitted.contains(resource))
+                .map(|(_, view)| view.texture.as_ref()),
+        );
         self.context.exec(commands.words(), &resources)?;
         self.frame_contents = windows
             .iter()
-            .filter(|window| window.content.is_dma() && !window.rect.intersect(screen).is_empty())
-            .map(|window| window.content.clone())
+            .zip(&frame.windows)
+            .filter(|(window, visible)| window.content.is_dma() && !visible.is_empty())
+            .map(|(window, _)| window.content.clone())
             .collect();
         self.views = views;
         self.next_view = next_view;

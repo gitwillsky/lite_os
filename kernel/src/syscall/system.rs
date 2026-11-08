@@ -142,7 +142,7 @@ pub(super) fn nanosleep(call: &Call<'_>) -> Result<(), Status> {
     let deadline = super::deadline(call.arg(0)).unwrap_or(u64::MAX);
     if deadline <= crate::execution::timer::get_time_ns() {
         // 截止时间已过：让出 CPU（与 Zircon `zx_nanosleep(0)` 相同，即 yield）。
-        crate::thread::yield_current();
+        crate::thread::yield_current_period();
         return Ok(());
     }
     match crate::thread::sleep_until(deadline) {
@@ -210,25 +210,21 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
         native_abi::system::CPU_BUSY => {
             let busy =
                 crate::thread::cpu_busy_snapshot().map_err(|()| native_abi::ERR_NO_MEMORY)?;
-            let mut values = alloc::vec::Vec::new();
-            values
-                .try_reserve_exact(busy.len())
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            values.extend(busy.iter().map(|us| us.saturating_mul(1000)));
-            let size = values.len() * 8;
+            let size = core::mem::size_of_val(busy.as_slice());
             call.write_optional(actual, &size)?;
             if capacity < size {
                 return Err(native_abi::ERR_BUFFER_TOO_SMALL);
             }
-            call.write_array(buffer, &values)
+            call.write_array(buffer, &busy)
         }
         native_abi::system::MEMORY_STATS => {
             let vmo = crate::vm::physical_page_statistics();
+            let reclaim = crate::vm::reclaim_statistics();
             let stats = native_abi::SystemMemoryStats {
                 heap_pages: crate::memory::heap_pages() as u64,
                 kernel_stack_pages: crate::vm::kernel_stack::mapped_pages() as u64,
                 page_table_pages: crate::vm::page_table::table_pages() as u64,
-                evicted_pages: crate::vm::evicted_pages() as u64,
+                evicted_pages: (reclaim.foreground_evicted + reclaim.background_evicted) as u64,
                 vmo_anonymous_pages: vmo.anonymous_pages as u64,
                 vmo_pager_pages: vmo.pager_pages as u64,
                 vmo_contiguous_pages: vmo.contiguous_pages as u64,
@@ -236,6 +232,11 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 pager_dirty_pages: vmo.pager_dirty_pages as u64,
                 pager_writeback_pages: vmo.pager_writeback_pages as u64,
                 pager_reclaimable_pages: vmo.pager_reclaimable_pages as u64,
+                foreground_reclaim_runs: reclaim.foreground_runs as u64,
+                foreground_scanned_pages: reclaim.foreground_scanned as u64,
+                foreground_evicted_pages: reclaim.foreground_evicted as u64,
+                background_scanned_pages: reclaim.background_scanned as u64,
+                background_evicted_pages: reclaim.background_evicted as u64,
             };
             let bytes = super::bytes_of(&stats);
             call.write_optional(actual, &bytes.len())?;

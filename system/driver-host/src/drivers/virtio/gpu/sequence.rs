@@ -288,7 +288,7 @@ pub(super) fn complete(
             CommandPayload::None => Ok(SequenceCompletion::update(None)),
             _ => Err(DisplayError::Device),
         },
-        RuntimeStage::VirglFlush => match payload {
+        RuntimeStage::VirglPresent => match payload {
             CommandPayload::None => {
                 control.resources.deactivate();
                 control.scanout.presented(control.mode);

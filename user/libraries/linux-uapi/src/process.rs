@@ -13,6 +13,54 @@ use std::{
 
 use crate::raw;
 
+/// 以标准 sched_setattr 为调用线程申请 CBS/EDF 配置；fork/clone 子线程恢复普通调度。
+/// # Parameters
+/// runtime/deadline/period 单位纳秒，满足 0 < runtime <= deadline <= period。
+/// # Returns
+/// 内核准入成功返回 Ok；不在失败时静默回退为普通调度。
+/// # Errors
+/// 内核返回权限、参数或容量错误；非 Linux/不支持的 ABI 返回 Unsupported。
+pub fn set_deadline(runtime: u64, deadline: u64, period: u64) -> io::Result<()> {
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )
+    ))]
+    {
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        const NUMBER: std::ffi::c_long = 274;
+        #[cfg(target_arch = "x86_64")]
+        const NUMBER: std::ffi::c_long = 314;
+        let mut attributes = [0u8; 56];
+        attributes[..4].copy_from_slice(&56u32.to_ne_bytes());
+        attributes[4..8].copy_from_slice(&6u32.to_ne_bytes());
+        attributes[8..16].copy_from_slice(&1u64.to_ne_bytes()); // SCHED_FLAG_RESET_ON_FORK
+        attributes[24..32].copy_from_slice(&runtime.to_ne_bytes());
+        attributes[32..40].copy_from_slice(&deadline.to_ne_bytes());
+        attributes[40..48].copy_from_slice(&period.to_ne_bytes());
+        // SAFETY: sched_attr 的标准字节布局在调用期间有效；pid=0 选择当前线程，flags=0。
+        if unsafe { raw::syscall(NUMBER, 0i32, attributes.as_ptr(), 0u32) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )
+    )))]
+    {
+        let _ = (runtime, deadline, period);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 /// Effective user identifier used by filesystem authorization.
 #[cfg(target_os = "linux")]
 pub fn effective_uid() -> u32 {

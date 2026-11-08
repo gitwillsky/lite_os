@@ -35,7 +35,12 @@ impl Rect {
         let y = self.y.max(other.y);
         let right = self.right().min(other.right());
         let bottom = self.bottom().min(other.bottom());
-        Rect::new(x, y, (right - x).max(0), (bottom - y).max(0))
+        Rect::new(
+            x,
+            y,
+            right.saturating_sub(x).max(0),
+            bottom.saturating_sub(y).max(0),
+        )
     }
 
     /// 四边各向内收 `amount`；`amount` 为负则向外扩张。

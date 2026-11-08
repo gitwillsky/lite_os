@@ -29,13 +29,14 @@
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
   userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管 driver-host 启动画面，
-  以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
+  以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
   桌面继续使用 `wl_shm`；具备 VirGL2 的设备使用纹理合成与两块 GPU render target，纯 2D 设备使用 CPU/dumb buffer。
   Content 持有 SHM 像素（GPU 后端直接位于纹理）或 dma-buf 使用期；GPU 在途帧将 dma-buf 协议引用保活到 page-flip 完成。
   VirGL2 初始化成功才公布 linux-dmabuf v4，ARGB/XRGB 单平面隐式 modifier 直接 PRIME 导入，无 CPU 像素副本。
-  GPU 路径已接入代码，尚未执行画面/性能验收。SHM 的 `damage`/`damage_buffer` 决定重读与上传的矩形，合成仍整帧重画；
+  GPU 路径已接入代码，尚未执行画面/性能验收。SHM 的 `damage`/`damage_buffer` 决定重读与上传矩形；
+  输出增量绘制与遮挡规则见 [UI 框架](ui-framework.md#合成后端)，CPU 先 DIRTYFB 同步目标修复区，两个后端再以 atomic KMS damage clips 呈现。
   dma-buf 内容直接取样，不代表完整 OpenGL 兼容。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
@@ -79,7 +80,7 @@
 - GPU 通过 renderD128 开放每 OFD VirGL2 context、PRIME 导入/导出和隐式 fence；compositor 独占 primary/KMS。
   支持 3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与
-  单 connector mode change；Vulkan、跨设备 PRIME、显式 sync_file/syncobj、DRM atomic/auth/lease、完整 evdev
+  单 connector mode change；Vulkan、跨设备 PRIME、显式 sync_file/syncobj、DRM auth/lease、完整 evdev
   output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port、PCI
   bridge/hotplug 或多显示器管理。

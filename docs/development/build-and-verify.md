@@ -359,6 +359,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
   `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）；AArch64 另生成开启 SMMUv3 的 DTB，验证实际 phandle 与 stream 路由。
 - `netstack-unit`：直接装配 netstack 协议、FIB、端口和 packet 队列；NIC/event 是边界输入，Linux 策略另由 kernel-unit/guest 验证。
 - `fallible-tree`：实际 AVL 拓扑、fallible publication、节点迁移与 OOM。
+- `span-heap`：实际块对齐/不重叠、realloc、跨线程释放、退出 owner 接管与空 span 归还；同属 host Clippy 全目标与 unit scope。
 - `scheduler-unit`：实际 native SchedulingState 的 Ready token/generation、退出约束和 Policy 计时；另测 ready heap 与 placement/preemption。
 - `user/` Cargo workspace：linux-uapi、keyboard、terminal-model、terminal-font、canvas、classic-theme、classic-ui、typeface、wayland-scanner 与 wayland-wire 的单元测试。
 - native 线性 Ready token 同时由 production-path 单测与唯一 committer 结构约束；wait registry 的取消、跨 source 排他与独立 publication 由真实 owner fixture 验证，禁止复制测试版调度器/等待队列。

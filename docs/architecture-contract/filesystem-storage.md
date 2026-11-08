@@ -461,4 +461,16 @@ MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不
   只能使用预留之外的空闲 block（`allocate_block` 检查），`statfs` 的可用块已扣除预留。回写（`write_back_storage`）
   先归还本区间的预留再分配，分配失败则补回预留并把数据留作脏页；它只映射 block，不改大小也不改时间戳，
   所以不会覆盖使用者随后用 `utimensat` 设置的 mtime。截断后越过新 EOF 的预留作废，内容被丢弃时剩余预留一并归还。
+  缓冲写入、预留转换和回写确认复用 Content 的预留锁串行；准备失败仅撤销本次新增预留，不移除已有脏数据的块。
+  VMO 复制失败可能已修改前缀，保守保留预留到回写/截断/内容退休，不能撤销已修改数据的空间保证。
+  ext4 与 linuxd 页缓存均在 BEGIN 前准备缓冲；失败仍待确认的页可查询重试，不把旧快照重新写入 VMO。
+  映射并发写由内核写保护/重新置脏保留，回写确认由各内容 owner 的原有操作锁串行。
+  最后 FORGET 退休且链接数为零时直接丢弃内容与预留，不为马上回收的脏数据分配磁盘块；未知链接状态保守写回。
   这取代了此前“先直写存储再写 VMO”的 write：数据不再同时存在于 journal staged 副本与内容 VMO 两份。
+
+
+ext4 的 FUSE channel 沿 `service-rpc::serve_messages` 的既有弹性线程池消费自有线格式，不再固定派生四个读者，
+不套额外 RPC 头、不改变 FUSE unique/乱序完成/单向请求语义。并发上限仍为四，空闲收缩留一个读者。
+`FuseSession` 只拥有该连接的寿命凭据，独立于控制端点与回写线程持有的 Mount；线程池停止接收并排空在途处理后，
+最后一个 handler Drop 才调用原有幂等 finish/shutdown，随后释放 UUID claim。不能以某个空闲 worker 退休代替整个会话退出。
+创建失败同样由该凭据清理，不新增全局表、锁、回收线程或两套挂载状态。

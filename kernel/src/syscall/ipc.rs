@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use native_abi::{ChannelActual, ChannelCallArgs, Handle, PortPacket, Status, rights};
+use native_abi::{ChannelCallArgs, PortPacket, Status, rights};
 
 use super::Call;
 use crate::object::{Channel, Event, HandleEntry, Message, Object, Port, ReadError};
@@ -26,13 +26,17 @@ fn take_message_handles(
     channel: &Arc<Channel>,
     address: usize,
     count: usize,
-) -> Result<Vec<HandleEntry>, Status> {
+    entries: &mut Vec<HandleEntry>,
+) -> Result<(), Status> {
     if count > native_abi::CHANNEL_MAX_HANDLES {
         return Err(native_abi::ERR_OUT_OF_RANGE);
     }
-    let handles: Vec<Handle> = call.read_array(address, count)?;
+    // 标准 ABI 最多 64 个值，固定栈存储避免仅为句柄编号再分配一个 Vec。
+    let mut values = [native_abi::HANDLE_INVALID; native_abi::CHANNEL_MAX_HANDLES];
+    let handles = &mut values[..count];
+    call.read_array_into(address, handles)?;
     let table = call.process().handles();
-    for &handle in &handles {
+    for &handle in handles.iter() {
         let entry = table.get(handle)?;
         if entry.rights & rights::TRANSFER == 0 {
             return Err(native_abi::ERR_ACCESS_DENIED);
@@ -44,14 +48,8 @@ fn take_message_handles(
             return Err(native_abi::ERR_INVALID_ARGS);
         }
     }
-    let entries = table.remove_all(&handles)?;
-    for (&handle, entry) in handles.iter().zip(&entries) {
-        entry
-            .object
-            .kernel_object()
-            .cancel(table.cancel_key(handle));
-    }
-    Ok(entries)
+    table.remove_all(handles, entries)?;
+    Ok(())
 }
 
 fn build_message(
@@ -62,12 +60,12 @@ fn build_message(
     handles: usize,
     count: usize,
 ) -> Result<Message, Status> {
-    if length > native_abi::CHANNEL_MAX_BYTES {
-        return Err(native_abi::ERR_OUT_OF_RANGE);
-    }
-    let bytes = call.read_bytes(bytes, length)?;
-    let handles = take_message_handles(call, channel, handles, count)?;
-    Ok(Message { bytes, handles })
+    let mut message = channel.prepare_message(length, count)?;
+    call.space()?
+        .copy_from_user(bytes, message.bytes_mut())
+        .map_err(|_| native_abi::ERR_INVALID_POINTER)?;
+    take_message_handles(call, channel, handles, count, message.handles_mut())?;
+    Ok(message)
 }
 
 pub(super) fn channel_write(call: &Call<'_>) -> Result<(), Status> {
@@ -90,30 +88,23 @@ pub(super) fn channel_write(call: &Call<'_>) -> Result<(), Status> {
 /// 把消息句柄放进调用者表并写出；失败时句柄随消息一起释放。
 fn deliver(
     call: &Call<'_>,
-    message: Message,
+    mut message: Message,
     bytes: usize,
     handles: usize,
     actual: usize,
 ) -> Result<(), Status> {
-    let Message {
-        bytes: payload,
-        handles: entries,
-    } = message;
-    let counts = ChannelActual {
-        bytes: payload.len() as u32,
-        handles: entries.len() as u32,
-    };
-    let mut values = Vec::new();
+    let counts = message.actual();
+    let mut values = [native_abi::HANDLE_INVALID; native_abi::CHANNEL_MAX_HANDLES];
+    let values = &mut values[..counts.handles as usize];
     call.process()
         .handles()
-        .insert_all(entries, &mut values)
-        .map_err(|(status, _)| status)?;
+        .insert_all(message.handles_mut(), values)?;
     let written = call
-        .write_bytes(bytes, &payload)
-        .and_then(|()| call.write_array(handles, &values))
+        .write_bytes(bytes, message.bytes())
+        .and_then(|()| call.write_array(handles, values))
         .and_then(|()| call.write_optional(actual, &counts));
     if written.is_err() {
-        for handle in values {
+        for &handle in values.iter() {
             drop(call.process().handles().remove(handle));
         }
     }
@@ -144,19 +135,15 @@ pub(super) fn channel_call(call: &Call<'_>) -> Result<(), Status> {
         args.write_handles as usize,
         args.write_num_handles as usize,
     )?;
-    let reply = channel
-        .call(message, super::deadline(call.arg(2)))
+    let reply = call
+        .owner
+        .channel_call(&channel, message, super::deadline(call.arg(2)))
         .map_err(|(status, message)| {
             drop(message);
             status
         })?;
-    if reply.bytes.len() > args.read_num_bytes as usize
-        || reply.handles.len() > args.read_num_handles as usize
-    {
-        let actual = ChannelActual {
-            bytes: reply.bytes.len() as u32,
-            handles: reply.handles.len() as u32,
-        };
+    let actual = reply.actual();
+    if actual.bytes > args.read_num_bytes || actual.handles > args.read_num_handles {
         call.write_optional(call.arg(3), &actual)?;
         return Err(native_abi::ERR_BUFFER_TOO_SMALL);
     }

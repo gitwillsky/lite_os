@@ -181,9 +181,20 @@ fn delayed_allocation_reserves_space_and_writeback_leaves_timestamps_alone() {
         fs.statistics().unwrap().blocks_available,
         before.blocks_available - 10
     );
-    buffered
-        .reserve_buffered_write(FS_BLOCK as u64, 2 * FS_BLOCK, &mut reserved)
+    assert!(
+        buffered
+            .reserve_buffered_write(FS_BLOCK as u64, 2 * FS_BLOCK, &mut reserved)
+            .unwrap()
+            .is_empty()
+    );
+    let added = buffered
+        .reserve_buffered_write((8 * FS_BLOCK) as u64, 4 * FS_BLOCK, &mut reserved)
         .unwrap();
+    assert_eq!(added, [10, 11]);
+    for block in &added {
+        reserved.remove(block);
+    }
+    buffered.release_buffered_reservation(added.len() as u64);
     assert_eq!(reserved.len(), 10);
 
     // 超过剩余空间的预留以 NoSpace 失败，且不改变任何状态。
@@ -214,7 +225,9 @@ fn delayed_allocation_reserves_space_and_writeback_leaves_timestamps_alone() {
     // 缓冲写入在写入时已经提交了大小（回写之前文件就是这个大小，hole 读为零）。
     buffered.note_buffered_write(3 * FS_BLOCK as u64).unwrap();
     assert_eq!(buffered.size(), 3 * FS_BLOCK as u64);
-    buffered.set_times(Some(1_000_000_000), Some(1_000_000_001)).unwrap();
+    buffered
+        .set_times(Some(1_000_000_000), Some(1_000_000_001))
+        .unwrap();
     let mtime = buffered.metadata().unwrap().mtime;
     buffered.release_buffered_reservation(reserved.len() as u64);
     assert_eq!(
@@ -223,10 +236,17 @@ fn delayed_allocation_reserves_space_and_writeback_leaves_timestamps_alone() {
             .unwrap(),
         3 * FS_BLOCK
     );
-    assert_eq!(buffered.size(), 3 * FS_BLOCK as u64, "writeback never changes the size");
+    assert_eq!(
+        buffered.size(),
+        3 * FS_BLOCK as u64,
+        "writeback never changes the size"
+    );
     assert_eq!(buffered.metadata().unwrap().mtime, mtime);
     let mut readback = vec![0u8; 3 * FS_BLOCK];
-    assert_eq!(buffered.read_storage(0, &mut readback).unwrap(), 3 * FS_BLOCK);
+    assert_eq!(
+        buffered.read_storage(0, &mut readback).unwrap(),
+        3 * FS_BLOCK
+    );
     assert!(readback.iter().all(|&byte| byte == 7));
 
     root.sync_storage().unwrap();

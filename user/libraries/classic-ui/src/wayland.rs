@@ -1,7 +1,6 @@
 //! 标准 Wayland 客户端窗口。连接独占协议对象、configure、输入焦点与帧生命周期。
 
 mod clipboard;
-mod damage;
 mod events;
 mod file_drag;
 mod foreign;
@@ -9,6 +8,8 @@ mod frame;
 pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
 mod layer;
 mod security;
+mod subsurface;
+pub use subsurface::ImageId;
 mod transport;
 mod window_size;
 
@@ -187,6 +188,10 @@ pub enum WindowRequest {
 }
 
 enum Role {
+    Subsurface {
+        object: ObjectId,
+        parent: WindowId,
+    },
     Toplevel {
         xdg: ObjectId,
         toplevel: ObjectId,
@@ -226,6 +231,8 @@ pub struct Display {
     transport: Transport,
     compositor: ObjectId,
     shm: ObjectId,
+    subcompositor: Option<ObjectId>,
+    images: HashMap<ImageId, subsurface::Image>,
     viewporter: Option<ObjectId>,
     wm_base: ObjectId,
     seat: ObjectId,
@@ -333,6 +340,14 @@ impl Display {
         };
         let compositor = bind(Interface::WlCompositor, 6)?;
         let shm = bind(Interface::WlShm, 1)?;
+        let subcompositor = if globals
+            .iter()
+            .any(|(_, name, _)| name == "wl_subcompositor")
+        {
+            Some(bind(Interface::WlSubcompositor, 1)?)
+        } else {
+            None
+        };
         let wm_base = bind(Interface::XdgWmBase, 3)?;
         let seat = bind(Interface::WlSeat, 7)?;
         let _output = bind(Interface::WlOutput, 4)?;
@@ -397,6 +412,8 @@ impl Display {
             transport,
             compositor,
             shm,
+            subcompositor,
+            images: HashMap::new(),
             viewporter,
             wm_base,
             seat,
@@ -746,6 +763,17 @@ impl Display {
     ///
     /// 窗口不存在或 socket/编码失败。
     pub fn destroy_window(&mut self, window: WindowId) -> io::Result<()> {
+        let children: Vec<_> = self
+            .windows
+            .iter()
+            .filter_map(|(id, state)| {
+                matches!(state.role, Role::Subsurface { parent, .. } if parent == window)
+                    .then_some(*id)
+            })
+            .collect();
+        for child in children {
+            self.destroy_window(child)?;
+        }
         self.retire_idle_buffers(window)?;
         let state = self
             .windows
@@ -773,6 +801,11 @@ impl Display {
                 .map_err(io::Error::other)?;
         }
         match state.role {
+            Role::Subsurface { object, .. } => {
+                wayland_wire::protocol::wl_subsurface::Request::Destroy
+                    .encode(object, writer)
+                    .map_err(io::Error::other)?;
+            }
             Role::Toplevel { xdg, toplevel, .. } => {
                 xdg_toplevel::Request::Destroy
                     .encode(toplevel, writer)

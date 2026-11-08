@@ -18,7 +18,7 @@ pub(crate) struct Cancelled<V> {
 
 /// 一次取走到期节点的结果。
 pub(crate) struct Due {
-    /// 本次取走的节点数；非零即队首已前进，调用者需要重新发布队首截止时间。
+    /// 本次取走的节点数，即输出 batch 中已初始化的前缀长度。
     pub(crate) taken: usize,
     /// 取满一批后队内仍有到期节点。
     pub(crate) more_due: bool,

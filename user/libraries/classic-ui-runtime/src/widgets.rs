@@ -2,7 +2,9 @@
 use canvas::Rect;
 use classic_ui::{Edit, Scroll};
 use classic_ui_abi::{self as abi, state, widget};
-use std::{collections::BTreeMap, io, rc::Rc};
+use std::{collections::BTreeMap, io, ops::Deref, rc::Rc};
+mod damage;
+use damage::Snapshot;
 
 /// 一行的（小图标, 大图标）；列表/树与大图标视图分别取用，均可缺省。
 pub type RowIcons = (
@@ -11,6 +13,9 @@ pub type RowIcons = (
 );
 
 pub struct Node {
+    // OWNER: 只经 Nodes 的可变入口推进；与已成功提交的 Snapshot 比较，不代表布局失效。
+    revision: u64,
+    painted: Option<Snapshot>,
     pub parent: u64,
     pub children: Vec<u64>,
     pub kind: u32,
@@ -73,6 +78,8 @@ impl Node {
         validate_layout(spec.layout)?;
         validate_state(spec.state)?;
         Ok(Self {
+            revision: 1,
+            painted: None,
             parent,
             label_edit: None,
             image: None,
@@ -214,8 +221,63 @@ pub fn validate_state(value: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// 控件集合只有只读 Deref；所有可变借用都经过版本入口，不能从公开 map 绕过绘制失效。
+#[derive(Default)]
+pub struct Nodes {
+    entries: BTreeMap<u64, Node>,
+}
+impl Deref for Nodes {
+    type Target = BTreeMap<u64, Node>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+impl Nodes {
+    pub fn get_mut(&mut self, id: &u64) -> Option<&mut Node> {
+        let node = self.entries.get_mut(id)?;
+        node.changed();
+        Some(node)
+    }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+        for node in self.entries.values_mut() {
+            node.changed();
+        }
+        self.entries.values_mut()
+    }
+    /// 外部图像资源到达时内容字段不变，但依赖该资源的控件像素已经失效。
+    pub fn invalidate_where(&mut self, mut selected: impl FnMut(&Node) -> bool) {
+        for node in self.entries.values_mut().filter(|node| selected(node)) {
+            node.changed();
+        }
+    }
+    /// 先只读筛选再借出可变节点，不能因定时扫描或遍历无关控件而把全树标成变化。
+    pub fn matching_mut(
+        &mut self,
+        mut selected: impl FnMut(&Node) -> bool,
+    ) -> impl Iterator<Item = (&u64, &mut Node)> {
+        self.entries
+            .iter_mut()
+            .filter(move |(_, node)| selected(node))
+            .map(|(id, node)| {
+                node.changed();
+                (id, node)
+            })
+    }
+}
+impl Node {
+    fn changed(&mut self) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("node paint revision exhausted");
+    }
+}
+
 pub struct Tree {
-    pub nodes: BTreeMap<u64, Node>,
+    pub nodes: Nodes,
+    /// 已提交节点被删除时仍须擦除它的旧覆盖；只在窗口成功提交后清空。
+    retired: Vec<Rect>,
+    painted_cues: bool,
     next: u64,
     root_order: Vec<u64>,
     pub menubar: Option<u64>,
@@ -237,7 +299,9 @@ pub struct Tree {
 impl Tree {
     pub fn new() -> Self {
         Self {
-            nodes: BTreeMap::new(),
+            nodes: Nodes::default(),
+            retired: Vec::new(),
+            painted_cues: false,
             next: 1,
             root_order: Vec::new(),
             menubar: None,
@@ -293,7 +357,7 @@ impl Tree {
             .next
             .checked_add(1)
             .ok_or_else(|| invalid("widget identities exhausted"))?;
-        self.nodes.insert(id, node);
+        self.nodes.entries.insert(id, node);
         self.layout_dirty = true;
         if spec.kind == widget::MENU_BAR {
             self.menubar = Some(id);
@@ -317,8 +381,16 @@ impl Tree {
         self.layout_dirty = true;
         let node = self
             .nodes
+            .entries
             .remove(&id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
+        if let Some(painted) = node.painted {
+            for rect in [painted.clip, painted.overlay] {
+                if !rect.is_empty() {
+                    self.retired.push(rect);
+                }
+            }
+        }
         if node.parent == 0 {
             self.root_order.retain(|root| *root != id);
         }

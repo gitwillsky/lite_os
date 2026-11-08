@@ -13,6 +13,27 @@ pub(super) struct Region {
 }
 
 impl Region {
+    /// 保守证明整个矩形不透明；只采纳覆盖整块的 add，遇到未被后续整块 add 覆盖的 subtract 则拒绝。
+    /// 多个部分 add 的并集不作推断，只影响遮挡优化，不会把透明孔洞当成不透明。
+    pub(super) fn covers(&self, rect: canvas::Rect) -> bool {
+        if rect.is_empty() {
+            return false;
+        }
+        for (add, operation) in self.operations.iter().rev() {
+            let overlap = operation.intersect(rect);
+            if overlap.is_empty() {
+                continue;
+            }
+            if !add {
+                return false;
+            }
+            if overlap == rect {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn contains(&self, x: f64, y: f64) -> bool {
         self.operations
             .iter()

@@ -53,10 +53,9 @@
   专有 UAPI 不属于跨平台 `std` 稳定 surface，由内部
   `linux-uapi::{alsa,credentials,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
   FFI、layout/常量和 RAII；consumer 只使用安全 typed interface。
-- `classic-ui` 已包含 Wayland xdg 窗口客户端、整数 scale shm 提交、装饰拖动/边框缩放/标题按钮、
-  单行 UTF-8 编辑（选择、删除、密码掩码、水平滚动）与 Tab 焦点链；`linux-uapi` 仍独占 fd/poll/memfd 机制。
-  当前限制：单输出、固定 US XKB keymap（其他布局明确 Unsupported）、无 IME/剪贴板、无鼠标定位文本光标、
-  无光标闪烁与文本组合；装饰尚无双击标题栏和系统菜单。开始菜单已有键盘/鼠标交互，尚无菜单动画。
+- `classic-ui` 拥有 Wayland xdg 窗口、整数 scale SHM、装饰和输入；`linux-uapi` 独占 fd/poll/memfd 机制。
+  控件运行库已包含文本选择、标准剪贴板与文件拖放，完整能力和限制由[UI 架构](ui-framework.md)及其契约维护，
+  不在 ABI 总览另存一份会漂移的控件清单。显示协议的单输出、keymap 与 IME 范围见[设备架构](devices-terminal.md)。
 - classic-ui 现有 layer-shell v4+ 客户端，支持背景、panel、Overlay、双缓冲配置与 unmap/remap；Toplevel 与 Layer 共用一份帧和输入 owner。
   Session 可用标准 security-context-v1 为桌面建立独立连接，父客户端断开后 listener 继续存活；通过标准 Command 降 uid/gid 后仍可使用继承连接。
   `logon` 拥有本机 shadow 认证、补充组初始化、锁定、本人/UID 0 管理员解锁、改密与注销；`desktop` 独占外壳。实际范围与运行入口见 [桌面验证](../development/desktop-verification.md)。
@@ -64,7 +63,8 @@
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - 普通 fork 从多线程 parent 只复制 calling Thread，child 取得独立 process owner 与 COW
   AddressSpace；这使 Node/libuv 等标准 launcher 可在 sibling Thread 存活时 fork/exec，
-  而 parent 的其他 Thread 不进入 child graph。多线程 Process 原地 exec 仍未开放。
+  而 parent 的其他 Thread 不进入 child graph。多线程 exec 在映像准备成功后退休 sibling；非 leader caller
+  接管原进程身份，再提交新映像，现有 thread-mm fixture 覆盖身份和 proc 视图。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；运行时
   `/etc/apk/repositories` 只启用同一稳定分支的 `main` 与 `community`，不接入 edge/testing。
   BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`；login profile 把 `/usr/local/bin` 纳入同一标准 PATH，使 npm/pnpm 等全局安装的

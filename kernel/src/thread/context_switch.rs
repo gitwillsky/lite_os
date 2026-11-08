@@ -16,7 +16,7 @@ use super::scheduling::{RunState, WaitMembership};
 use crate::arch::context::KernelContext;
 use crate::execution::cpu;
 use crate::execution::sync::{LocalIrqGuard, WaitResult};
-use crate::execution::timer::get_time_us;
+use crate::execution::timer::get_time_ns;
 
 /// 已发布唯一等待身份、尚未切出的阻塞转换。
 #[must_use = "prepared block must be suspended"]
@@ -52,7 +52,7 @@ impl Drop for PreparedBlock {
 /// 把 current Running 线程原子转为带 `membership` 的 Blocking。
 pub(super) fn prepare_block(thread: &Arc<Thread>, membership: WaitMembership) -> PreparedBlock {
     let cpu = cpu::current_id();
-    thread.scheduling.policy.lock().finish(get_time_us());
+    thread.scheduling.policy.lock().finish(get_time_ns);
     with_current_processor(|processor| {
         let current = processor
             .take_current()
@@ -71,10 +71,25 @@ pub(super) fn prepare_block(thread: &Arc<Thread>, membership: WaitMembership) ->
 
 /// 当前线程让出 CPU（被抢占或主动 yield）。
 pub(crate) fn yield_current() {
+    yield_with_budget(false);
+}
+
+/// 显式用户 yield：公平类让出，截止类放弃本周期剩余额度；不混同 timer 抢占。
+pub(crate) fn yield_current_period() {
+    yield_with_budget(true);
+}
+
+fn yield_with_budget(forfeit: bool) {
     let Some(thread) = super::current() else {
         return;
     };
-    thread.scheduling.policy.lock().finish(get_time_us());
+    {
+        let mut policy = thread.scheduling.policy.lock();
+        policy.finish(get_time_ns);
+        if forfeit {
+            policy.forfeit_deadline();
+        }
+    }
     processor::begin_preempt_current(&thread);
     schedule(thread);
 }
@@ -127,12 +142,10 @@ fn begin_runtime(thread: &Arc<Thread>) -> *const KernelContext {
         RunState::Running { cpu },
         "selected thread must be Running on this CPU"
     );
-    let now = get_time_us();
-    thread.scheduling.policy.lock().begin(now);
+    thread.scheduling.policy.lock().begin(get_time_ns);
     // 新时间片从现在开始：记录起点，并按本 CPU 是否有竞争者决定是否武装截止；
     // 未提交区间的起点同时发布给运行时间观察者。
     crate::execution::timer::note_slice_start();
-    processor::note_busy_from(now);
     with_current_processor(|processor| processor::rearm_slice(processor));
     thread
         .scheduling

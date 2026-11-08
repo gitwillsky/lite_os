@@ -46,49 +46,50 @@ impl AddressSpace {
         )
     }
 
-    /// 读取一个 4 字节对齐的用户字，翻译缺失时不缺页（futex 在桶锁内比较值使用）。
+    /// 稳定一个对齐用户字的映射，在其空间锁内执行一次原子操作。
+    ///
+    /// # Parameters
+    /// - `address`: 4 字节对齐、可读的用户地址。
+    /// - `operation`: 只执行无分配、无等待的读取/登记；可取得 futex 桶锁，不得反向取得空间锁。
     ///
     /// # Returns
-    /// `Some(value)`；空间锁忙、翻译未安装或不可读时为 `None`。不等待、不分配：
-    /// 调用者应释放桶锁、用普通读取等待/缺页后重试，否则 IRQ-safe 锁下会阻塞或等待 pager I/O。
+    /// 返回 `operation` 的结果；地址空间 guard 保证闭包期间映射不能撤销或更换物理身份。
     ///
     /// # Errors
-    /// 地址未对齐或超出用户区间返回 `NotMapped`。
-    pub(crate) fn read_resident_word(&self, address: usize) -> Result<Option<u32>, VmError> {
+    /// 地址越界、权限错误、补页或空间锁准备失败。所有等待/补页均发生在调用闭包之前。
+    pub(crate) fn with_resident_word<R>(
+        self: &Arc<Self>,
+        address: usize,
+        operation: impl FnOnce(&core::sync::atomic::AtomicU32) -> R,
+    ) -> Result<R, VmError> {
         if !address.is_multiple_of(4)
             || address < USER_START
             || address.checked_add(4).is_none_or(|end| end > USER_END)
         {
             return Err(VmError::NotMapped);
         }
-        let owner = self
-            .shared
-            .as_deref()
-            .filter(|owner| owner.range.contains(&address))
-            .unwrap_or(self);
-        let Some(mut inner) = owner.inner.try_lock() else {
-            return Ok(None);
-        };
-        let vpn = VirtualAddress::from(address).floor();
-        let Some(entry) = inner.views.normal.translate(vpn).filter(|entry| {
-            entry
-                .permissions()
-                .contains(PagePermissions::READ | PagePermissions::USER)
-        }) else {
-            return Ok(None);
-        };
-        inner.mark_accessed(vpn, entry)?;
-        let word = entry
-            .ppn()
-            .as_page_mut_ptr()
-            .wrapping_add(address % PAGE_SIZE)
-            .cast::<u32>();
-        // SAFETY: 翻译在持有地址空间锁期间有效（撤销需要同一把锁），页框经 direct map 可读；
-        // 地址 4 字节对齐且不跨页。用户态可并发写该字，故按原子读取。
-        Ok(Some(
-            unsafe { core::sync::atomic::AtomicU32::from_ptr(word) }
-                .load(core::sync::atomic::Ordering::Acquire),
-        ))
+        let owner = self.owner_of(address)?;
+        loop {
+            let mut inner = owner.lock()?;
+            let vpn = VirtualAddress::from(address).floor();
+            if let Some(entry) = inner.views.normal.translate(vpn).filter(|entry| {
+                entry
+                    .permissions()
+                    .contains(PagePermissions::READ | PagePermissions::USER)
+            }) {
+                inner.mark_accessed(vpn, entry)?;
+                let word = entry
+                    .ppn()
+                    .as_page_mut_ptr()
+                    .wrapping_add(address % PAGE_SIZE)
+                    .cast::<u32>();
+                // SAFETY: 空间 guard 保活已验证的可读页，地址对齐且不跨页；与用户原子写使用同宽原子访问。
+                let word = unsafe { core::sync::atomic::AtomicU32::from_ptr(word) };
+                return Ok(operation(word));
+            }
+            drop(inner);
+            self.fault(address, FaultAccess::Read)?;
+        }
     }
 
     fn for_each_user_chunk(

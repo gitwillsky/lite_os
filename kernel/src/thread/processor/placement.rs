@@ -13,7 +13,15 @@ use crate::thread::scheduling::CpuAffinity;
 ///
 /// 被选中的 CPU ID。
 pub(super) fn select_cpu(task: &Thread, affinity: CpuAffinity) -> CpuId {
-    select_cpu_with(task, affinity, false)
+    if let Some(cpu) = task.scheduling.policy.lock().deadline_cpu() {
+        assert!(
+            affinity.allows(cpu),
+            "deadline reservation escaped affinity"
+        );
+        cpu
+    } else {
+        select_fair_cpu(task, affinity, false)
+    }
 }
 
 /// 被抢占的 task 重新进入 Ready 时选核；每隔固定次数的抢占放宽 last-CPU 亲和偏置。
@@ -31,6 +39,9 @@ pub(super) fn select_cpu(task: &Thread, affinity: CpuAffinity) -> CpuId {
 ///
 /// 被选中的 CPU ID。
 pub(super) fn select_cpu_after_preemption(task: &Thread, affinity: CpuAffinity) -> CpuId {
+    if let Some(cpu) = task.scheduling.policy.lock().deadline_cpu() {
+        return cpu;
+    }
     let current = cpu::current_id();
     let slot = current_per_cpu();
     // OWNER 见 `PerCpuProcessor::preemptions_since_rotation`：只有本 CPU 读写。
@@ -44,10 +55,10 @@ pub(super) fn select_cpu_after_preemption(task: &Thread, affinity: CpuAffinity) 
         && affinity.effective_bits().count_ones() > 1;
     let rotate = rotation_pending
         && placement_policy::can_rotate(
-            task.scheduling.policy.lock().runtime_on_cpu_us(),
-            crate::execution::timer::scheduler_quantum_ns() / 1000,
+            task.scheduling.policy.lock().runtime_on_cpu_ns(),
+            crate::execution::timer::scheduler_quantum_ns(),
         );
-    let target = select_cpu_with(task, affinity, rotate);
+    let target = select_fair_cpu(task, affinity, rotate);
     // 最近迁入的线程若仍留在本核，保留本轮机会，让下一个已驻留足够久的线程使用。
     let next = if rotation_pending && !rotate && target == current {
         placement_policy::ROTATION_INTERVAL_PREEMPTIONS - 1
@@ -59,7 +70,7 @@ pub(super) fn select_cpu_after_preemption(task: &Thread, affinity: CpuAffinity) 
     target
 }
 
-fn select_cpu_with(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId {
+fn select_fair_cpu(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId {
     let current = cpu::current_id();
     // 轮转从源核的后继开始，沿实际允许的核循环。普通 placement 保留轮换扫描起点。
     // 若轮转沿用普通计数器，稀疏亲和掩码会把不同起点反复折叠到同一个目标。
@@ -103,11 +114,15 @@ fn select_cpu_with(task: &Thread, affinity: CpuAffinity, rotate: bool) -> CpuId 
 }
 
 pub(super) fn ready_entry(task: Arc<Thread>, generation: u64) -> RunQueueEntry {
-    let vruntime = task.scheduling.policy.lock().vruntime;
+    let key = task
+        .scheduling
+        .policy
+        .lock()
+        .ready_key(crate::execution::timer::get_time_ns);
     RunQueueEntry {
         thread: task,
         generation,
-        vruntime,
+        key,
     }
 }
 

@@ -46,6 +46,7 @@ impl TaskControlBlock {
         pid: ProcessId,
         parameters: &CloneParameters,
         resources: &ProcessCloneResources,
+        child_policy: super::Sched,
     ) -> Result<Self, MemoryError> {
         let identity = pid.identity().clone();
         // 1. 先构造地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
@@ -87,7 +88,6 @@ impl TaskControlBlock {
                 .map_err(|_| MemoryError::OutOfMemory)?;
         let io_accounting =
             Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
-        let child_policy = self.scheduling.policy.lock().forked();
         let last_cpu = self
             .scheduling
             .last_cpu

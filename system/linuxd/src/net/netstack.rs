@@ -13,8 +13,8 @@ use alloc::sync::Arc;
 
 use crate::sync::{Mutex, Once};
 use device_protocol::{ActivityBinding, EventHub};
-use native_runtime::Event;
 use native_runtime::native_abi::{self, signals};
+use native_runtime::{Channel, Event};
 use network_protocol::{NetworkClient, RemoteNamespace, SocketError};
 
 use super::NetNamespace;
@@ -131,6 +131,7 @@ pub(super) fn protocol(scope: &NetNamespace) -> Result<Arc<RemoteNamespace>, Soc
 /// 分派登记或闭包分配失败返回 `NoMemory`。
 pub(super) fn bind_readiness(
     event: Event,
+    peer: &Channel,
     notify: &Arc<PipeEnd>,
 ) -> Result<ActivityBinding, SocketError> {
     let hub = EVENTS.get().ok_or(SocketError::NetworkDown)?;
@@ -139,6 +140,12 @@ pub(super) fn bind_readiness(
     let activity: device_model::Activity =
         Arc::try_new(move || notify.signal_readiness()).map_err(|_| SocketError::NoMemory)?;
     binding.bind(activity);
+    hub.on_closed(
+        peer.duplicate(native_abi::rights::SAME)
+            .map_err(|_| SocketError::NoMemory)?,
+        &binding,
+    )
+    .map_err(|_| SocketError::NoMemory)?;
     Ok(binding)
 }
 

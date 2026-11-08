@@ -269,14 +269,14 @@ mod placement_policy_tests {
     fn a_recent_migrant_does_not_take_the_next_balancing_turn() {
         // 两核负载并列时，刚迁入的线程只运行了半个窗口，驻留更久的线程接过轮转机会。
         let after_a_leaves = [(0, 1), (1, 1)];
-        let quantum_us = 10_000;
-        let window = quantum_us * u64::from(ROTATION_INTERVAL_PREEMPTIONS);
+        let quantum_ns = 10_000_000;
+        let window = quantum_ns * u64::from(ROTATION_INTERVAL_PREEMPTIONS);
         assert_eq!(
-            choose(&after_a_leaves, Some(0), can_rotate(window / 2, quantum_us)),
+            choose(&after_a_leaves, Some(0), can_rotate(window / 2, quantum_ns)),
             Some(0)
         );
         assert_eq!(
-            choose(&after_a_leaves, Some(0), can_rotate(window, quantum_us)),
+            choose(&after_a_leaves, Some(0), can_rotate(window, quantum_ns)),
             Some(1)
         );
     }

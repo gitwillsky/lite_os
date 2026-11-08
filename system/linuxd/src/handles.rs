@@ -54,7 +54,7 @@ pub(crate) fn job() -> &'static Job {
     &handles().job
 }
 
-/// 仅覆盖日志、串口、UTC 设置和电源的 system resource，不含设备 authority。
+/// 覆盖日志、串口、UTC、电源、内存观测与调度的 system resource，不含设备 authority。
 pub(crate) fn resource() -> &'static Resource {
     &handles().resource
 }

@@ -11,3 +11,9 @@ pub(crate) mod sync {
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub(crate) enum WaitResult {}
 }
+
+pub(crate) mod timer {
+    pub(crate) fn get_time_ns() -> u64 {
+        0
+    }
+}

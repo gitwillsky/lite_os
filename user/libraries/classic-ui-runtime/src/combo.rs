@@ -96,7 +96,7 @@ impl Node {
         Rect::new(self.rect.x, y, self.rect.width, height)
     }
 
-    fn combo_list(&self) -> Rect {
+    pub(super) fn combo_list(&self) -> Rect {
         self.combo
             .as_ref()
             .map(|combo| combo.list)
@@ -367,7 +367,10 @@ impl Tree {
                 ..
             } => {
                 let mut repaint = false;
-                for node in self.nodes.values_mut() {
+                for (_, node) in self
+                    .nodes
+                    .matching_mut(|node| node.combo.as_ref().is_some_and(|combo| combo.pressed))
+                {
                     if let Some(combo) = node.combo.as_mut() {
                         repaint |= std::mem::replace(&mut combo.pressed, false);
                     }

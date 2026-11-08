@@ -86,7 +86,10 @@ pub(in crate::task) use resource_limits::{RLIMIT_NICE, RLIMIT_SIGPENDING, cpu_li
 pub(in crate::task) use scheduling::{
     CpuAffinity, runnable_task_count, uninterruptible_task_count,
 };
-pub(crate) use scheduling::{RunState, Sched, SchedulingEntity, StopResume, WaitMembership};
+pub(crate) use scheduling::{
+    DeadlineParameters, RunState, Sched, SchedulingAttributes, SchedulingEntity, StopResume,
+    WaitMembership,
+};
 pub(super) use seccomp::{RetiredSecurity, ThreadSecurityOwner, ValidatedFilter};
 pub(crate) use seccomp::{SeccompDecision, SeccompError};
 pub(in crate::task) use signal_dequeue::SignalQueue;
@@ -582,6 +585,7 @@ impl TaskControlBlock {
         identity: Arc<crate::task::pid::PidIdentity>,
         parameters: &CloneParameters,
         resources: &ThreadCloneResources,
+        policy: Sched,
     ) -> Result<Self, MemoryError> {
         if parameters.stack & 0xf != 0 {
             return Err(MemoryError::InvalidRange);
@@ -601,7 +605,6 @@ impl TaskControlBlock {
             .map_err(|_| MemoryError::OutOfMemory)?;
         let address_space = self.address_space();
         let mm = try_mm_handle(address_space.clone())?;
-        let policy = self.scheduling.policy.lock().forked();
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let scheduling = SchedulingEntity::try_new(
             policy,

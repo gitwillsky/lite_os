@@ -158,16 +158,17 @@ impl Vmo {
         let state = self.state.lock();
         let mut start = None;
         let mut end = first;
+        // 未收到 WRITEBACK_END 的页仍有未持久化内容，失败重试不能漏掉 AwaitingClean。
         for (index, page) in state.committed.iter_from(&first) {
             if index >= first + count {
                 break;
             }
             match start {
-                None if page.cleanliness() == Cleanliness::Dirty => {
+                None if page.cleanliness() != Cleanliness::Clean => {
                     start = Some(index);
                     end = index + 1;
                 }
-                Some(_) if page.cleanliness() == Cleanliness::Dirty && index == end => {
+                Some(_) if page.cleanliness() != Cleanliness::Clean && index == end => {
                     end = index + 1
                 }
                 Some(_) => break,

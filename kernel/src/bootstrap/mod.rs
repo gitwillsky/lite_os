@@ -143,14 +143,21 @@ pub(crate) fn start_component_manager(command_line: &[u8]) {
     )));
     handles.push(entry(
         Object::Vmo(bootfs),
-        rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER | rights::INSPECT,
+        // bootfs 是可信启动映像来源。段直接派生 COW 后必须继承执行能力，否则后继服务的 RX 映射被正确拒绝。
+        // 不授予父 VMO 写权限；DTB 仍只有只读数据能力。
+        rights::READ
+            | rights::EXECUTE
+            | rights::MAP
+            | rights::DUPLICATE
+            | rights::TRANSFER
+            | rights::INSPECT,
     ));
     handles.push(entry(
         Object::Vmo(device_tree),
         rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER | rights::INSPECT,
     ));
     kernel_end
-        .write(Message { bytes, handles })
+        .write(Message::new(bytes, handles))
         .unwrap_or_else(|_| panic!("bootstrap message delivery failed"));
     drop(kernel_end);
 

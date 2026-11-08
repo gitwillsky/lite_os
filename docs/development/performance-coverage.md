@@ -2,6 +2,37 @@
 
 构建和执行入口统一由[构建与验证](build-and-verify.md)维护。
 
+## 热路径能力与覆盖路由
+
+实现事实由对应领域契约拥有；下表保留原性能工作项的覆盖映射，不另存实现进度或测试命令。
+
+| 工作项 | 当前能力与事实 owner | 验证路径 |
+|---|---|---|
+| M0 | [物理页归属、RSS/PSS 与服务统计](../architecture-contract/memory.md) | procfs/VMO 用例、musl、同实例内存对账 |
+| 1 | [登记 VMO、直接 DMA 与块 SQ/CQ](../architecture-contract/devices-terminal.md) | request-owner、ext4、BusyBox 文件 I/O |
+| 2 | [内容 owner 预读与 fault-around](../architecture/memory.md) | VMO、mmap/截断及文件 I/O |
+| 3 | [单次定时器与空闲停 tick](../architecture-contract/execution.md) | timer benchmark、超时与 SMP runtime |
+| 4 | [分片 futex 与空间/桶锁序](../architecture-contract/execution.md) | 等待事务基准、musl 多线程 |
+| 5 / M6 | [共享页表子树与全 ASID 退休](../architecture-contract/memory.md) | execution_views、restricted/ASID runtime |
+| 6 / M6 | [分块页列表与压缩页槽](../architecture-contract/memory.md) | VMO COW、pin、pager、回收用例 |
+| 7 / M3 | [按需切分 span 堆](../architecture-contract/userspace-abi.md) | span-heap、native_heap、blocking benchmark |
+| 8 | [访问位分代回收、后台水位与零页](../architecture-contract/memory.md) | 页列表/淘汰用例、低内存 guest 文件负载 |
+| 9 | [ext4 延迟分配与单份内容回写](../architecture-contract/filesystem-storage.md) | ext4/e2fsck、BusyBox fsync/释放空间 |
+| P2.1 | [CBS/EDF、准入和标准调度接口](../architecture-contract/execution.md) | scheduler-unit、公平性、音频/显示 |
+| P2.2 | [restricted 绑定时固定状态页](../architecture-contract/memory.md) | restricted、musl 与体系结构静态检查 |
+| P2.3 | [channel 字节预算与存储复用](../architecture-contract/execution.md) | IPC 状态机、实际文件/音频 RPC |
+| P2.4 | [damage、buffer age 与遮挡剔除](../architecture-contract/ui-framework.md) | CPU 像素对账、atomic KMS、GPU cadence |
+| P2.5 | [socket 共享 SQ/CQ](../architecture-contract/ipc-network.md) | 12 线程 UDP、TCP/packet、poll/退出 |
+| P2.6 | [物理单页 per-CPU 缓存](../architecture-contract/memory.md) | 分配/退休、SMP 与内存压力 |
+| M1 | [共享缓冲内区域光栅](../architecture/ui-framework.md) | 1x/2x 像素对账、窗口 resize/maximize |
+| M2 | [桌面不可变子表面](../architecture/ui-framework.md) | 桌面图标/墙纸、RFB 取帧与物理内存 |
+| M4 | [弹性工作线程及栈尺寸评估](../architecture-contract/execution.md) | 并发 I/O、空闲线程退休、栈写入高水位 |
+| M5 | [bootfs 派生 ELF 与文件 VMO](../architecture-contract/boot-platform.md) | 双架构启动、服务装载/监督 |
+| M7 | [位压缩字形与共享图集](../architecture-contract/ui-framework.md) | 字体/位图边界、构建安装及实际桌面 |
+
+M4 的评估结论是保留 32 KiB 栈槽；已测写入高水位是下界，不能据此声称 16 KiB 已证明安全。
+硬件栈深、完整 HiDPI 交互和所有媒体负载不由单元测试或一份截图外推。
+
 ## 方法与覆盖
 
 稳定热路径使用 blocking microbenchmark：
@@ -9,7 +40,7 @@
 - release 构建，固定迭代数，先 warmup；
 - 每个样本使用 `black_box`，取奇数样本的 median；
 - 只设置宽但真实的绝对上限，用于阻止锁、分配、runtime dispatch 或复杂度退化；
-- 文档不记录本机测量值；阈值变化必须有实现和环境证据，不能为通过门禁直接放宽。
+- blocking 门槛不绑定某台开发机的测量值；诊断数据须附环境与范围，阈值变化须有实现证据，不能为通过门禁直接放宽。
 
 当前 blocking benchmark 覆盖 span 堆（`span-heap-bench`：小块 alloc+free、跨线程释放、16 B→64 KiB 增长）、timer deadline、AArch64 VA39 index/TLBI operand projection 与
 AArch64 semantic PTE encode/decode、production HAL MMIO window 的检查后 read/write、
@@ -174,7 +205,7 @@ maps 是显式诊断读取，不进入缺页、read/write 数据面或任务管�
 只复制标量与 Arc，不调用 VMA membership clone/drop；设备文件/缓冲租约不通过 Vec 克隆分配。
 锁外查询 inode 的无 I/O identity 与实际路径，格式化直接追加同一个可失败输出缓冲，不逐行分配临时字符串。
 新增只读 observer 使用每次 open 的 Weak MM，无全局索引、驻留 cache 或持久 VMA 镜像。成本由同实例
-映射查询诊断观察，不设宿主 wall-clock 阈值；smaps 的页级查询成本另在 M0 完整实现时评估。
+映射查询诊断观察，不设宿主 wall-clock 阈值；smaps 的页级查询成本见下述按需 RSS/PSS 观测。
 
 
 共享匿名 mmap 与 SysV 的真实 inode/path 只在对象创建和最后关闭时装配/释放；保活同一匿名 VMO，
@@ -188,7 +219,18 @@ VMAR RSS 与 PSS 是按需诊断路径，不在 fault、map/unmap、pager supply
 不以宿主微秒阈值代替页表/IPC 开销。原生观察器与 smaps 只在请求时执行，基本 maps 不查询 PSS。
 proc 每个实际 open 只格式化一次连续读取序列，offset 0 重新观测；分段读取不重复构造页索引。
 原生对象查询的布局/容量检查只有固定整数比较，属于现有诊断控制路径，不新增热路径 benchmark。
-实施阶段只做 Clippy 和代码审查；运行时采样与完整门禁集中在全部性能计划完成后执行。
+按需观测的实际成本由同实例任务快照和内存采样记录，不能由 Clippy 或宿主单元测试推断。
+
+桌面子表面的成本在最终同分辨率 M0 对账与桌面门禁比较：墙纸三种布局、纯色、缩放、图标拖动/重命名和 XOR 框选。
+不新增宿主时间阈值；实际成本是共享像素驻留、合成器首次导入与子表面提交。细小图案的整数重复块上限 256 KiB，
+替代按原始小图尺寸建立大量对象；解码私有像素退休，封印图像只读映射/服务端一次快照分别计账，不用估算声称已低于 100 MiB。
+现有 dotted-frame 用例扩展为 1x/2x 奇偶原点的局部/整幅裁剪对账，保护子表面移动后的刷相位；随用户态库单元门禁运行；不由像素对账推断目标帧率。
+
+截止调度新增准入账本只在配置/退休时取锁，wake/切换使用线程原有 Policy 锁，Ready 三组 heap 在线程接纳时预留。
+没有常驻轮询线程、每周期分配或新 tick；内存成本为有界队列 backing 和每线程 CBS 状态，不能只计预算算术而忽略它们。
+最终复用调度公平性/延迟、音频八路混音及显示节拍门禁，检查额度耗尽、跨周期债务、显式 yield、配置替换、kill 与 fork 重置。
+既有 scheduler-unit 模块补一项实际 CBS 数值状态回归，覆盖 revised wakeup 和迟到补充；避免新增 fixture、宿主墙钟阈值或复制参考调度器。
+合成/输入主循环 65% 帧周期与 mixer 10% 物理周期是初始配置；最终按无丢帧/无 underrun 和 CPU/RAM 对账校准，不能把准入成功当作实时性已验证。
 
 块 I/O 准入的 descriptor credits 与 slot 共用既有 RequestOwner/queue guard，不增加锁、全局状态或 uncontended 分配。
 空闲 slot 链把旧的 release 线性 contains 扫描改为固定索引操作；contended handoff 成本随实际授予的 waiter 数增长，
@@ -214,7 +256,7 @@ completion gate 同时约束 volatile status read 与 decode 都在 used-length 
 每轮最多 256 项提交、64 项完成，硬件完成批按目的队列分组通知，idle 队列不被其他设备 IRQ 唤醒；服务池峰值从八降至两个工作者。
 内存代价是有界完成/owner 元数据，收益包含并发线程和同步补页开销；实际常驻/峰值需最终 M0 对账，不用估算冒充测量。
 不新增 host 时间阈值：IRQ、port、DMA、SMP cacheline 和设备延迟决定该链路；固定批分组的 CPU 成本与已有 guest 块 I/O 诊断一起观察。
-退出同时覆盖未 handoff、已 handoff 未发表、已发表未完成三类 owner；扩展现有 request-owner 用例检查取消和完整额度重用，实施阶段只编译不运行。
+退出同时覆盖未 handoff、已 handoff 未发表、已发表未完成三类 owner；扩展现有 request-owner 用例检查取消和完整额度重用，随现有 request-owner 单元门禁运行。
 
 
 ## UI 辅助任务寿命
@@ -225,7 +267,7 @@ SDK Background 保留 64 项准入和最多两个并发工作者，按需启动�
 队列容量在创建时准备，准入/退休同锁，不在锁内执行用户任务、UI 唤醒或释放被拒任务；没有周期扫描。
 Benchmark 决策：这些操作发生于后台工作提交/结束，不进入光栅或输入热路径；不增加 host wall-clock 阈值。
 最终沿用真实文件对话框、墙纸切换、应用异步 I/O 与 M0 线程/内存采样，核对首次启动、持续任务吞吐和收缩后再次提交。
-代码审查覆盖结果先于通知、EOF 与结果分别处理、句柄退出排空及提交/退休交错；本阶段只有 Clippy，不声称运行通过。
+代码审查覆盖结果先于通知、EOF 与结果分别处理、句柄退出排空及提交/退休交错；实际 GUI 行为由桌面门禁与同实例操作裁决，不由代码审查推断。
 
 
 ## 共享系统图集
@@ -235,5 +277,124 @@ M7 的转换器只消费受版本管理且已校验的 BMP，产物按输入/转
 索引和未触及像素保持文件支撑；只读视图共享页缓存，不预提交整份图集。每位图只增有界的映射 owner/范围元数据。
 palette 重着色和外部视频像素仍按实际改变分配，原始下标共享；没有为不可变源建立第二个私有像素副本。
 Benchmark 决策：沿用 canvas 实际图像 blit 基线，验证绘制借用没有像素转换/分配；启动收益及物理占用由最终 M0 的 PSS/Private/Cached 对账诊断。
-不增加 host wall-clock 阈值。现有位图边界用例扩展索引越界、对齐、尺寸溢出，防止非法元数据形成 u32 视图；仅编译，不另建 fixture 或执行测试。
+不增加 host wall-clock 阈值。现有位图边界用例扩展索引越界、对齐、尺寸溢出，防止非法元数据形成 u32 视图；随现有位图单元门禁运行，不另建 fixture。
 最终安装/冷启动与 1x/2x 的图标、工具栏、地图重着色、登录位图验收仍待计划终态统一执行。
+
+
+## 原生 channel 存储复用
+
+每对 channel 用已有队列锁移交一份空消息存储，所有分配与用户缺页都在锁外；回收先清空能力，Weak 目标不保活端点。
+最多额外保留一条协议容量的空存储，任一端关闭立即移出，归还晚到的消息也不重建缓存；不按历史峰值缓存多份载荷。
+在途字节预算计入两个 Vec 容量和固定槽开销，防止句柄密集消息或大容量小长度消息绕过预算；不声称该预算等于 allocator 物理页计费。
+CallSlot 每线程最多一份懒分配的 waiter；撤销原 channel membership 后才归还唯一 Arc，执行体退出清空，不随已退出 Thread 句柄残留。
+常见串行 RPC 在容量稳定后不再为内核消息缓冲/调用 Arc 分配；并发峰值和增长仍由原有可失败堆分配满足，不增加第二个 codec 或传输入口。
+句柄表移出后在锁外统一取消旧 key，覆盖写回失败后部分已发布的句柄被其他线程观察的竞态；不为每条回滚另建取消入口。
+句柄编号使用 256 字节栈存储，仍维持 32 KiB 内核栈，最终 M4 栈评估包含此路径。
+事务号的空隙证明让常规分配保持 O(1)；边界扫描不分配，跳过仍活跃的双方事务，不按每条调用扫描全部在途项。
+
+Benchmark 决策：保留既有 guest RPC 密集的文件/pager、音频和桌面门禁，最终对照并发、取消/退出后的堆占用与响应延迟；
+不新增 host wall-clock 阈值或模拟 channel fixture，host 模型不能覆盖真实 user-copy 缺页、跨 CPU 唤醒和内核堆竞争。
+代码审查覆盖回收/关闭交错、提前完成、超时/终止与回复竞态、句柄交付失败及事务号环绕；双架构 Clippy 和现有 IPC 单元门禁覆盖静态及状态机契约；跨服务行为由 runtime gate 裁决。
+
+
+## 调度计费精度
+
+线程、restricted 执行与 CPU busy 全程使用纳秒；CFS 用预计算权重倒数乘移，不在切换热路径加入除法。
+每 CPU 的短 IRQ-safe 计费锁将累计量、活动起点和锁内时钟采样作为一个事务；没有全局锁或新增堆分配。
+CPU_BUSY 直接交付已有纳秒快照，删除第二份转换 Vec。代价是远端观察与本核边界间的有界锁竞争，
+缺少该事务会让观察混用两代区间，或在提前采样后倒退。Benchmark 决策：最终复用调度公平性、IPC/音频延迟与 CPU 统计诊断，
+不以 host 模拟时钟阈值代替 SMP 实际成本；现有 Policy 用例补纳秒短区间和活动值观察，已随 scheduler-unit 运行。
+截止时间调度已包含原生 CBS、密度准入、Linux sched_setattr/getattr 与合成器/音频服务接入；计费精度与实时负载验收分别裁决。
+
+
+## 输出增量合成
+
+损伤在 commit owner 累计到呈现；Scanout 只保存 surface 身份与几何、双缓冲有效性和一帧损伤，不复制或保活像素。
+场景比较使用排序 Vec 与二分查询；区域分割复用 Vec，128 块上界约束碎片化。CPU/GPU 共用可见区域，
+GPU 使用标准 VirGL scissor 保持原始顶点/UV，不增加 shader 或逐像素 CPU 判定；背景只需一像素纹理。
+编码固定至既有 virglrenderer 1.1.0 的 SCISSOR_STATE 与 rasterizer scissor bit；正 viewport Y scale 下由输出 owner 转换坐标。
+opaque 来自 XRGB 或标准 region 的保守覆盖证明，不为判断透明度扫描全部像素；透明混合的区域必须不重叠。
+Benchmark 决策：最终使用已有 canvas/真实输出交互 workload，对比局部提交、视频覆盖下的拖动/缩放、遮挡与重新露出，
+分别记录场景准备、绘制/exec、flip 与内存，不增加宿主墙钟阈值。新增一个直接消费生产 Frame/CPU paint 的像素对账用例是必要的：
+旧协议测试无法捕获双缓冲旧内容和透明区域重复混合；参考路径独立整幅绘制，覆盖移动、移除、重排及空损伤。
+已有 region 事务用例扩展 opaque 的 pending/current 和减法空洞。上述用例随 compositor 现有单元门禁运行；实际输出仍由图形门禁裁决。
+CPU 输出用 DIRTYFB 同步 Frame 的目标修复区，再通过原有同步凭据翻页；不新增 native 协议或驱动事务。
+区域超过现有 32-clip UAPI 上限时取外接矩形，最多多传输，不额外分配或建立多次同步状态。
+同一像素对账用例增加逐 framebuffer 的设备副本，防止误把前台 damage 当成后缓冲的完整修改集。
+成本决策：CPU 路径增加一次标准 ioctl/完成往返，换取局部更新时减少 DMA 字节；沿现有纯 2D 输出门禁诊断，
+全屏视频或首帧未声称更快。KMS FB_DAMAGE_CLIPS/GPU 区域 flush 的实现与成本见下文，不以代码检查替代实际 GPU/画面验收。
+
+
+## KMS property blob 所有权
+
+blob 在 CREATE 时复制一次不可变载荷，ID 与两个索引节点先准备、copyout 后无分配发布；GET 不复制到内部暂存，直接 user-copy。
+复用现有 device/OFD 锁，不新增全局锁/池；弱索引随最后引用退休，close/失败不分配清理列表。空表只有固定元数据。
+Benchmark 决策：blob 已用于逐帧 atomic damage；在既有显示 workload 观察每帧载荷分配/退休及区域提交延迟，不增加脱离显示硬件的 host 微基准。
+代码审查覆盖两个发布阶段之间的 DESTROY、分配/用户写回失败、查询/销毁并发和 OFD 关闭；不新增模拟生命周期 fixture，实际 ioctl 纳入最终 DRM 门禁。
+
+
+KMS plane/property 查询只在显示初始化/协商发生：静态 schema 不逐对象分配，当前值从原有 scanout owner 读取。
+UNIVERSAL_PLANES 只用 OFD 已有锁保存一个标准能力位，无新增全局锁；动态 mode object ID 与静态范围统一，避免类型间碰撞。
+user wrapper 按标准两次查询准备有限于实际 count 的数组，列表增长重试，初始化完成后不保留第二份内核可写状态。
+成本决策：不为 cold query 新建 benchmark；atomic 初始化阶段查询一次属性 ID，稳态不按名字扫描 schema。
+既有 drm-flip-probe 在其 GPU 与纯 2D 的 fdinfo 阶段加入实际 ioctl 校验，覆盖布局/计数、类型、OFD 能力隔离、blob 的跨 OFD 读取和显式销毁；运行归于现有 DRM 显示门禁，不以源码编译代替 ioctl 验收。
+同一探针继续覆盖 atomic opt-in/隔离、TEST_ONLY 不发表、inactive MODE_ID 跨 DESTROY 保活与后继退休；GPU 节拍改用产品实际 atomic flip。
+标准 framebuffer/blob 的真实 ioctl/fence/关闭语义无法由 host 审查完全证明，因此扩展既有 fixture，不新增模拟状态机或独立实例；实际运行结果由显示门禁记录。
+
+
+KMS framebuffer 发布时增加一个 fallible Arc control block，扫描事务/active 共用该不可变对象，不另建资源副本或回收线程。
+每次翻页的保活是有界引用操作；退休在 completion 锁外，随后重取既有锁推进回收，避免延迟到下一次无关 IRQ。
+close 先将实际目标移交 reset intent；busy 时继续保活，disable 被接受后移交 pending，直到其 exact completion 才退休。
+已有 disable 接管同一引用，不增加重复命令；关闭期间完成的新 scanout 替换待 reset 目标，原目标已不再被硬件引用才可释放。
+page-flip event 升级的 OFD 引用同样锁外释放，防止最后引用触发 DrmFile.Drop 重入 completion 锁。
+成本决策：沿最终 GPU/纯 2D 翻页节拍与关闭/重启 workload 检查引用及锁交接成本，不新增 host 微基准或弱引用模拟 fixture。
+代码审查覆盖发布失败、RMFB、关闭期间 completion 与 event 最后引用交错；双架构 Clippy 覆盖条件编译；退出竞态仍由实际显示门禁裁决。
+
+
+Atomic KMS 准备期在锁外解析引用；固定 schema 变更表没有每属性堆节点，提交锁内只复制配置与 Arc 引用。
+legacy SETCRTC 创建一次模式 blob，重试/翻页复用；应用端请求与 clip Vec 保留容量，逐帧只创建标准不可变 damage blob。
+GPU presentation 原命令批直接传递裁剪并集，空损伤只发绑定；CPU 上传缓冲修复集与输出损伤保持各自语义。
+成本决策：沿现有 600 帧 GPU cadence 和真实缩放/局部更新 workload 对比 blob 分配、提交锁、绘制与主机刷新；不增加脱离硬件的 blocking 墙钟阈值。
+源码审查覆盖 error/TEST_ONLY/close/master 交错，不代替最终像素、fence、内存和帧率验收。
+
+
+通知区网络/USB 的两个常驻 worker 合并为一个，同一 500 ms 等待驱动原有采样；UI 仍只应用不可变结果，不承担设备/配置 I/O。
+组合快照容量一，禁用请求容量一，没有新增锁、通用任务池或逐帧轮询；退出断开唯一请求端后 join，命令错误不阻止 USB 更新。
+成本决策：这次删除一份线程栈和一次周期唤醒，采样频率不变；代码审查覆盖队列满/断开/在途命令，不新增微基准或重复实现的测试。
+最终线程数、内存与通知区交互随原桌面 workload 统一验收。
+
+
+M1 区域光栅删除整窗哈希与像素遍历；Nodes 每次可变借用推进一个局部整数版本，Tree 仅在实际待绘制帧比较每节点的已提交版本/几何。
+每节点保存小型 Snapshot，没有像素副本、全局表或锁；损伤合并预算 32，相交子树之外跳过控件光栅，新增/非最新缓冲完整初始化。
+布局重新放置保守失效全部放置节点；普通计时扫描只为实际视觉变化推进版本，不能让无变化动画破坏局部重绘。
+Benchmark 决策：成本从整幅像素扫描转为节点元数据与损伤面积；按原窗口 workload 对比 1x/2x 普通/最大化窗口局部更新、拖动缩放、光栅/提交时间与 Pss，不增加 host 墙钟阈值。
+现有 render fixture 的单次列表标签绘制不足以发现旧覆盖漏擦，因此扩展同一 fixture，用生产 Tree 损伤区域与整帧参考逐像素对账。
+覆盖内容/焦点/移动/删除与菜单打开关闭，另确认空动画推进不标脏全树；已随生产 render fixture 运行；来宾帧率和内存分别取实际运行数据。
+
+
+Socket 数据环以现有 netstack/BusyBox ABI workload 验证真实 TCP、UDP、packet 收发与 poll；覆盖 8 槽并发/环绕、
+短读写、零长 datagram、截断/PEEK/packet info、服务终止和连接反复创建/关闭。新增共享存储算法的主要风险是
+通知交错与载荷复用，Clippy/代码审查不能证明真实调度下的行为。已有 UDP fixture 补充 12 线程共享发送端点、
+唯一序号/内容对账、零长与 PEEK/TRUNC，用真实调用者竞争 8 槽 credits。每线程独立接收端且最多一个未收报文，
+避免接收端 8 报文槽满时的合法 UDP 丢包被误判为队列故障；不降低并发、不增加产品缓存，不新增测试程序。
+Benchmark 决策：记录相同传输量/并发下吞吐、CPU、服务切换与已提交载荷页；不增加脱离 native IPC 的 host 墙钟阈值。
+8 槽固定有界，载荷惰性提交且连接退出回收；持久发送暂存只保留最大 256 KiB，稳态元数据不分配。
+共享环移除 channel_call/逐次 VMO 及消息 codec，poll 仍等待真实 netstack 结果，不声称零往返或性能已经提高。
+EventHub 的 RAII 与精确关联退休沿现有反复 socket/设备打开关闭 workload 核对登记及内存不累积，不另建模拟生命周期测试。
+
+
+ext4 原始 FUSE 接收复用 service-rpc 的弹性 Pool；RPC/自有 framing 仅增加一个静态枚举分支，原有动态 handler 调用次数不变。
+无新增热路径分配、等待桥接线程或状态锁。用既有文件密集 workload 比较每挂载空闲/峰值线程数、请求延迟和 CPU，
+不新增脱离 native channel 的 host 阈值。会话寿命 guard 用于等全部 handler 退出再 shutdown，原 fixed-worker 的首退即 shutdown 路径删除；
+创建失败、channel 关闭、卸载与在途请求沿现有 ext4/FUSE 门禁最终验收。
+
+可执行页的发布沿实际物理范围清理数据缓存，提交只合并一次指令同步，不构造物理页包围区间。
+原有 execution_views 夹具用显式 cache adapter 验证相隔近 2 GiB 的三页只维护这三页；替换原先错误要求包围区间合并的断言。
+成本随实际页数增长，无范围表、分配或新增常驻状态；实际收益通过同一 UTM 实例的 SSH 冷连接和并发 fork/文件负载作前后对照。
+
+同实例诊断（AArch64/HVF，11 CPU，2 GiB，3008×1692，USB 直通关闭）：四路各 12 轮
+BusyBox exec、16 KiB 文件创建/读校验、最终 sync 和任务快照，稀疏指令发布修复前后为 195.432/3.280 s；
+SSH 新连接执行命令为 0.220 s。该结果不是跨设备通用延迟保证，不设置依赖宿主抖动的 wall-clock 阈值。
+桌面与任务管理器打开时，`MemTotal - MemFree`（含可回收页）约 78–80 MiB，
+`MemTotal - MemAvailable` 约 61–67 MiB；两种口径均低于 100 MB。compositor/desktop/taskmgr 的 RSS 约 9.2/5.6/8.1 MiB，
+包含共享文件与窗口缓冲，不能跨行相加。截图通过原 SSH/RFB 通道取得，无 CUA 注入或独立开发虚拟机。

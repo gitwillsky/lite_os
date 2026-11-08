@@ -72,7 +72,12 @@ pub(in crate::thread) fn resume_without_switch(task: &Arc<Thread>) -> bool {
         let resumable = match scheduling.run_state() {
             RunState::Preempting { cpu: owner } | RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "handoff resumed on a different CPU");
+                let mut policy = task.scheduling.policy.lock();
                 scheduling.cpu_affinity.allows(cpu)
+                    && policy.deadline_cpu().is_none_or(|reserved| reserved == cpu)
+                    && policy
+                        .ready_key(crate::execution::timer::get_time_ns)
+                        .eligible(crate::execution::timer::get_time_ns)
             }
             _ => false,
         };

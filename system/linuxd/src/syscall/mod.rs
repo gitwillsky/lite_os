@@ -401,6 +401,10 @@ pub(crate) fn syscall(
                 sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2])
             }
             SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
+            SYSCALL_SCHED_SETATTR => sys_sched_setattr(args[0] as i32, args[1], args[2] as u32),
+            SYSCALL_SCHED_GETATTR => {
+                sys_sched_getattr(args[0] as i32, args[1], args[2] as u32, args[3] as u32)
+            }
             SYSCALL_SCHED_GETPARAM => sys_sched_getparam(args[0] as i32, args[1]),
             SYSCALL_SCHED_SETAFFINITY => {
                 sys_sched_setaffinity(args[0] as i32, args[1] as u32, args[2])

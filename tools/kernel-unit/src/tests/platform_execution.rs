@@ -12,8 +12,14 @@ mod timer_deadline_tests {
     fn only_a_new_earliest_deadline_changes_the_head() {
         let mut index = DeadlineIndex::new();
         assert!(index.insert(entry(100, 1)), "first entry is the head");
-        assert!(!index.insert(entry(200, 2)), "later deadline keeps the head");
-        assert!(index.insert(entry(50, 3)), "earlier deadline becomes the head");
+        assert!(
+            !index.insert(entry(200, 2)),
+            "later deadline keeps the head"
+        );
+        assert!(
+            index.insert(entry(50, 3)),
+            "earlier deadline becomes the head"
+        );
         assert_eq!(index.head(), Some(50));
     }
 
@@ -38,7 +44,10 @@ mod timer_deadline_tests {
         let tail = index.cancel(&(200, 2));
         assert!(tail.removed.is_some() && !tail.head_changed);
         let gone = index.cancel(&(200, 2));
-        assert!(gone.removed.is_none() && !gone.head_changed, "already expired");
+        assert!(
+            gone.removed.is_none() && !gone.head_changed,
+            "already expired"
+        );
         let head = index.cancel(&(100, 1));
         assert!(head.removed.is_some() && head.head_changed);
         assert_eq!(index.head(), None);
@@ -88,7 +97,10 @@ mod futex_queue_tests {
         assert_eq!(woken, [10, 20], "oldest registrations first");
         assert_eq!(wake_locked(&mut table, a, usize::MAX, |w| woken.push(w)), 1);
         assert_eq!(woken, [10, 20, 50]);
-        assert_eq!(wake_locked(&mut table, a, 1, |_| panic!("no waiter left")), 0);
+        assert_eq!(
+            wake_locked(&mut table, a, 1, |_| panic!("no waiter left")),
+            0
+        );
         assert_eq!(table.len(), 1, "the other key is untouched");
     }
 
@@ -129,8 +141,16 @@ mod futex_queue_tests {
         }
         enqueue(&mut to, target, 7, 70);
         let mut hooks = hooks();
-        let plan = Requeue { source, target, wake: 1, requeue: 2 };
-        assert_eq!(requeue_locked(&mut from, Some(&mut to), &plan, &mut hooks), 2);
+        let plan = Requeue {
+            source,
+            target,
+            wake: 1,
+            requeue: 2,
+        };
+        assert_eq!(
+            requeue_locked(&mut from, Some(&mut to), &plan, &mut hooks),
+            2
+        );
         assert_eq!(hooks.woken, [1]);
         assert_eq!(hooks.moved.iter().map(|m| m.0).collect::<Vec<_>>(), [2, 3]);
         assert_eq!(from.len(), 1, "the fourth waiter stays on the source");
@@ -148,9 +168,17 @@ mod futex_queue_tests {
             enqueue(&mut table, source, ticket, ticket as u32);
         }
         let mut hooks = hooks();
-        let plan = Requeue { source, target, wake: 0, requeue: usize::MAX };
+        let plan = Requeue {
+            source,
+            target,
+            wake: 0,
+            requeue: usize::MAX,
+        };
         assert_eq!(requeue_locked(&mut table, None, &plan, &mut hooks), 3);
-        assert_eq!(wake_locked(&mut table, source, 1, |_| panic!("source drained")), 0);
+        assert_eq!(
+            wake_locked(&mut table, source, 1, |_| panic!("source drained")),
+            0
+        );
         let mut order = Vec::new();
         wake_locked(&mut table, target, usize::MAX, |w| order.push(w));
         assert_eq!(order, [1, 2, 3]);
@@ -159,7 +187,10 @@ mod futex_queue_tests {
     #[test]
     fn a_key_always_maps_to_the_same_bucket_and_buckets_spread() {
         let buckets = 1024;
-        let key = FutexKey::Shared { vmo: 9, offset: 0x40 };
+        let key = FutexKey::Shared {
+            vmo: 9,
+            offset: 0x40,
+        };
         assert_eq!(key.bucket(buckets), key.bucket(buckets));
         let mut seen = std::collections::HashSet::new();
         for address in (0..4096usize).map(|i| 0x10_0000 + i * 4) {
@@ -167,7 +198,10 @@ mod futex_queue_tests {
             assert!(index < buckets);
             seen.insert(index);
         }
-        assert!(seen.len() > buckets * 9 / 10, "adjacent futex words must spread");
+        assert!(
+            seen.len() > buckets * 9 / 10,
+            "adjacent futex words must spread"
+        );
     }
 }
 

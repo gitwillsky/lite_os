@@ -87,6 +87,11 @@ impl MenuBar {
         }
     }
 
+    /// 当前实际绘制的弹出层矩形；用于窗口失效，不暴露可变菜单状态。
+    pub fn popup_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.popups.iter().map(|popup| popup.rect)
+    }
+
     /// 设置子菜单定位边界（窗口客户区）。
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = Some(bounds);

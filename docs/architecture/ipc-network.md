@@ -26,6 +26,10 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
    VirtIO 按协商的 STATUS 和 SPEED_DUPLEX 读取同一配置代际，未协商速率时显示未知。
 
 
+socket 控制与数据分离：低频配置/关闭走 channel，send/receive/poll 只走 `LSOCK001` 共享 SQ/CQ 与持久载荷槽。
+复用现有 native VMO/Event/Port；调用者领队推进完成，不增加逐 socket 转发线程。netstack 的独立 dispatcher
+也按需增长并收缩空闲 worker。完整布局、所有权、失败与顺序边界见[传输契约](../architecture-contract/ipc-network.md#socket-服务传输)。
+
 ## 当前设计
 
 - `ipc::IpcNamespace` 拥有实际 System V message/semaphore/shared-memory registry、标准 key/ID/权限与限额；

@@ -49,10 +49,11 @@ impl DrmFile {
                 generation: completion.adapter_generation,
             }));
         }
-        if completion
-            .active
-            .is_some_and(|active| active.framebuffer == id)
-        {
+        if completion.active.as_ref().is_some_and(|active| {
+            active
+                .framebuffer()
+                .is_some_and(|framebuffer| framebuffer.id == id)
+        }) {
             return match self.submit_disable(&mut completion) {
                 Ok(wait) => Ok(FramebufferRemoval::Wait(wait)),
                 Err(DrmError::Busy) => Ok(FramebufferRemoval::Retry(DrmRetry {
@@ -94,9 +95,7 @@ impl DrmFile {
                 .expect("published DRM release fence exceeded completion timeline");
             completion.pending = Some(PendingDisplay {
                 fence,
-                operation: PendingOperation::Release {
-                    owner: self.file_identity,
-                },
+                operation: PendingOperation::Release,
             });
             return Ok(FramebufferRemoval::Wait(DrmWait {
                 device: self.device.clone(),
@@ -117,59 +116,62 @@ impl DrmFile {
         Ok(FramebufferRemoval::Removed)
     }
 
-    pub(super) fn submit_scanout(
+    pub(super) fn submit_configuration_locked(
         &self,
         completion: &mut CompletionState,
-        mode: DisplayMode,
-        framebuffer_id: u32,
+        configuration: &super::kms::Configuration,
         event: Option<PendingEvent>,
     ) -> Result<DrmWait, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Err(DrmError::Busy);
         }
-        let (backing, owner) = {
+        if event.is_some() && self.events.lock().len() == EVENT_QUEUE_CAPACITY {
+            return Err(DrmError::OutOfMemory);
+        }
+        configuration.validate()?;
+        if let Some(framebuffer) = configuration.framebuffer() {
             let state = self.device.state.lock();
-            let framebuffer = state
+            if state
                 .framebuffers
-                .get(&framebuffer_id)
-                .ok_or(DrmError::NotFound)?;
-            if framebuffer.owner != self.file_identity {
+                .get(&framebuffer.id)
+                .is_none_or(|live| !Arc::ptr_eq(live, framebuffer))
+            {
                 return Err(DrmError::NotFound);
             }
-            if framebuffer.width != mode.width
-                || framebuffer.height != mode.height
-                || framebuffer.pitch != mode.pitch
-            {
-                return Err(DrmError::Invalid);
+        }
+
+        let fence = if configuration.is_scanning() {
+            let mode = configuration.native_mode().ok_or(DrmError::Invalid)?;
+            let framebuffer = configuration.framebuffer().ok_or(DrmError::Invalid)?;
+            match &framebuffer.backing {
+                FramebufferBacking::Dumb(buffer) => self.device.display.submit_scanout(
+                    u64::from(framebuffer.id),
+                    mode,
+                    buffer.backing.clone(),
+                ),
+                FramebufferBacking::Virgl(buffer) => self.device.display.submit_virgl_scanout(
+                    mode,
+                    buffer.resource_id,
+                    configuration.flush_damage(completion.active.as_ref()),
+                ),
             }
-            let backing = match &framebuffer.backing {
-                FramebufferBacking::Dumb(buffer) => ScanoutBacking::Dumb(buffer.backing.clone()),
-                FramebufferBacking::Virgl(buffer) => ScanoutBacking::Virgl(buffer.resource_id),
-            };
-            (backing, self.file_identity)
-        };
-        let fence = match backing {
-            ScanoutBacking::Dumb(backing) => {
-                self.device
-                    .display
-                    .submit_scanout(u64::from(framebuffer_id), mode, backing)
-            }
-            ScanoutBacking::Virgl(resource_id) => {
-                self.device.display.submit_virgl_scanout(mode, resource_id)
-            }
+        } else {
+            self.device.display.disable_scanout()
         }
         .map_err(display_error)?;
         completion
             .timeline
             .submit(fence)
-            .expect("published DRM scanout fence exceeded completion timeline");
+            .expect("published DRM commit fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
-            operation: PendingOperation::Scanout {
-                mode,
-                framebuffer: framebuffer_id,
-                owner,
+            operation: PendingOperation::Commit {
+                next: Some(configuration.clone()),
                 event,
+                retiring: None,
             },
         });
         Ok(DrmWait {
@@ -187,15 +189,12 @@ impl DrmFile {
         if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Err(DrmError::Busy);
         }
-        let (mode, backing, owner) = {
+        let (mode, backing, framebuffer) = {
             let state = self.device.state.lock();
             let framebuffer = state
                 .framebuffers
                 .get(&framebuffer_id)
                 .ok_or(DrmError::NotFound)?;
-            if framebuffer.owner != self.file_identity {
-                return Err(DrmError::NotFound);
-            }
             (
                 DisplayMode {
                     width: framebuffer.width,
@@ -208,7 +207,7 @@ impl DrmFile {
                     }
                     FramebufferBacking::Virgl(buffer) => ScanoutBacking::Virgl(buffer.resource_id),
                 },
-                framebuffer.owner,
+                framebuffer.clone(),
             )
         };
         let fence = match backing {
@@ -235,7 +234,7 @@ impl DrmFile {
             .expect("published DRM damage fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
-            operation: PendingOperation::Damage { owner },
+            operation: PendingOperation::Damage { framebuffer },
         });
         Ok(DrmWait {
             device: self.device.clone(),
@@ -261,7 +260,11 @@ impl DrmFile {
             .expect("published DRM disable fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
-            operation: PendingOperation::Disable,
+            operation: PendingOperation::Commit {
+                next: None,
+                event: None,
+                retiring: None,
+            },
         });
         Ok(DrmWait {
             device: self.device.clone(),
@@ -272,40 +275,80 @@ impl DrmFile {
 
 impl Drop for DrmFile {
     fn drop(&mut self) {
+        // blob 最后引用的析构会摘除 device 弱索引；须先移出 OFD 锁再释放。
+        let blobs = core::mem::take(&mut self.state.lock().blobs);
+        drop(blobs);
         let identity = self.file_identity;
+        // 非活动配置只持 mode/blob，不需要硬件 reset；所有最终载荷析构仍移到锁外。
+        let mut retired = (None, None);
         {
             let mut completion = self.device.completion.lock();
             let owned_active = completion
                 .active
-                .is_some_and(|active| active.owner == identity);
-            let pending_owned_scanout = completion.pending.as_ref().is_some_and(|pending| {
-                matches!(
-                    &pending.operation,
-                    PendingOperation::Scanout { owner, .. } if *owner == identity
-                )
-            });
-            let pending_damage_on_owned = completion.pending.as_ref().is_some_and(|pending| {
-                matches!(&pending.operation, PendingOperation::Damage { owner } if *owner == identity)
-            });
-            let pending_release_on_owned = completion.pending.as_ref().is_some_and(|pending| {
-                matches!(&pending.operation, PendingOperation::Release { owner } if *owner == identity)
-            });
-            if pending_owned_scanout
-                || pending_damage_on_owned
-                || pending_release_on_owned
-                || owned_active
-            {
-                // OWNER: 既有 reset intent 跨过 adapter backpressure；close 不能等待或把 Busy 当设备故障。
-                // 新 master 必须等 reset 完成，避免旧 OFD 的迟到 disable 覆盖新 scanout。
-                completion.reset_after_owner = Some(identity);
-                advance_scanout_reset(&self.device, &mut completion);
+                .as_ref()
+                .is_some_and(|active| active.owner() == identity);
+            let incoming =
+                completion
+                    .pending
+                    .as_ref()
+                    .and_then(|pending| match &pending.operation {
+                        PendingOperation::Commit {
+                            next: Some(next), ..
+                        } if next.owner() == identity => Some(next.is_scanning()),
+                        _ => None,
+                    });
+            if incoming == Some(true) {
+                // 已发表的扫描目标不能撤销；先保活旧目标，完成后 reset 新目标。
+                assert!(
+                    completion.reset_after_owner.is_none(),
+                    "closed scanout reset owner replaced"
+                );
+                let retiring = completion.active.take();
+                completion.reset_after_owner = Some(ClosedScanout {
+                    owner: identity,
+                    retiring,
+                });
+            } else if incoming == Some(false) {
+                let active = completion.active.take();
+                let Some(PendingDisplay {
+                    operation: PendingOperation::Commit { next, retiring, .. },
+                    ..
+                }) = &mut completion.pending
+                else {
+                    unreachable!()
+                };
+                assert!(retiring.is_none(), "commit already owns the closed scanout");
+                *retiring = active;
+                retired.0 = next.take(); // disable 已在途，不能再安排一次 reset。
+            } else if owned_active {
+                let active = completion.active.take();
+                if let Some(PendingDisplay {
+                    operation: PendingOperation::Commit { retiring, .. },
+                    ..
+                }) = &mut completion.pending
+                {
+                    // 后继所有者的替换会自然退休旧画面，关闭旧 fd 不得清除它的新输出。
+                    assert!(retiring.is_none(), "commit already owns the closed scanout");
+                    *retiring = active;
+                } else if active
+                    .as_ref()
+                    .is_some_and(super::kms::Configuration::is_scanning)
+                {
+                    assert!(
+                        completion.reset_after_owner.is_none(),
+                        "closed scanout reset owner replaced"
+                    );
+                    completion.reset_after_owner = Some(ClosedScanout {
+                        owner: identity,
+                        retiring: active,
+                    });
+                } else {
+                    retired.1 = active;
+                }
             }
-            if owned_active {
-                // close 后 object ID 立即离开可查询 namespace；hardware 可能仍显示旧
-                // backing 到已排队 transaction 完成，但不得发布指向已删除 object 的 ID。
-                completion.active = None;
-            }
+            advance_scanout_reset(&self.device, &mut completion);
         }
+        drop(retired);
         {
             let mut state = self.device.state.lock();
             if state.master == Some(identity) {
@@ -314,6 +357,8 @@ impl Drop for DrmFile {
         }
         loop {
             let removed = {
+                // 与提交的 namespace 复核串行；引用摘除后仍在 completion 锁外析构。
+                let _completion = self.device.completion.lock();
                 let mut state = self.device.state.lock();
                 let id = state
                     .framebuffers
@@ -360,11 +405,18 @@ fn advance_scanout_reset(device: &DrmDevice, completion: &mut CompletionState) {
         .timeline
         .submit(fence)
         .expect("close reset exceeded completion timeline");
+    let closed = completion
+        .reset_after_owner
+        .take()
+        .expect("accepted reset lost owner");
     completion.pending = Some(PendingDisplay {
         fence,
-        operation: PendingOperation::Disable,
+        operation: PendingOperation::Commit {
+            next: None,
+            event: None,
+            retiring: closed.retiring,
+        },
     });
-    completion.reset_after_owner = None;
 }
 
 pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState) {
@@ -587,7 +639,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
         state: Mutex::new(DrmDeviceState {
             buffer_identities: PublicationIdAllocator::new(1),
             next_file_identity: 1,
-            framebuffer_ids: PublicationIdAllocator::new(4),
+            object_ids: PublicationIdAllocator::new(super::kms::FIRST_DYNAMIC_ID),
             context_ids: PublicationIdAllocator::new(1),
             // adapter 唯一声明其保留前缀，包括仍存活的 crash framebuffer。
             graphics_resource_ids: PublicationIdAllocator::new(resource_start),
@@ -597,6 +649,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
             master: None,
             mode,
             framebuffers: FallibleMap::new(),
+            blobs: FallibleMap::new(),
         }),
     })
     .map_err(|_| ())?;
@@ -650,9 +703,12 @@ pub(super) fn open(render_node: bool) -> Result<Arc<DrmFile>, ()> {
         state: Mutex::new(DrmFileState {
             handle_ids: PublicationIdAllocator::new(1),
             buffers: FallibleMap::new(),
+            blobs: FallibleMap::new(),
             context: None,
             graphics_buffers: FallibleMap::new(),
             was_master: false,
+            universal_planes: false,
+            atomic: false,
         }),
         events: Mutex::new(EventQueue::new()),
     })
@@ -755,40 +811,61 @@ fn dispatch_display_work(timestamp_ns: u64) {
         .timeline
         .complete(fence)
         .expect("unknown or duplicate DRM completion fence");
-    let reset_after_close = match &pending.operation {
-        PendingOperation::Scanout { owner, .. } => state.reset_after_owner == Some(*owner),
-        PendingOperation::Damage { owner } => state.reset_after_owner == Some(*owner),
-        PendingOperation::Release { owner } => state.reset_after_owner == Some(*owner),
-        PendingOperation::Disable => false,
-    };
-    match pending.operation {
-        PendingOperation::Scanout {
-            mode,
-            framebuffer,
-            owner,
+    // OWNER: completion 中升级的 OFD 引用必须活到锁外；最后一个引用的 Drop 会重新取得 completion 锁。
+    let mut event_file = None;
+    let mut retired_framebuffer = None;
+    let retired = match pending.operation {
+        PendingOperation::Commit {
+            next,
             event,
+            retiring,
         } => {
-            state.sequence = state.sequence.wrapping_add(1);
-            if let Some(event) = event
-                && let Some(file) = event.file.upgrade()
-            {
-                file.events.lock().push(DrmEvent {
-                    user_data: event.user_data,
-                    seconds: (timestamp_ns / 1_000_000_000) as u32,
-                    microseconds: (timestamp_ns % 1_000_000_000 / 1_000) as u32,
-                    sequence: state.sequence,
-                });
+            if next.is_some() || event.is_some() {
+                state.sequence = state.sequence.wrapping_add(1);
             }
-            state.active = (!reset_after_close).then_some(ActiveScanout {
-                framebuffer,
-                owner,
-                mode,
-            });
+            if let Some(event) = event {
+                event_file = event.file.upgrade();
+                if let Some(file) = &event_file {
+                    file.events.lock().push(DrmEvent {
+                        user_data: event.user_data,
+                        seconds: (timestamp_ns / 1_000_000_000) as u32,
+                        microseconds: (timestamp_ns % 1_000_000_000 / 1_000) as u32,
+                        sequence: state.sequence,
+                    });
+                }
+            }
+            match next {
+                Some(next)
+                    if state
+                        .reset_after_owner
+                        .as_ref()
+                        .is_some_and(|closed| closed.owner == next.owner()) =>
+                {
+                    // 候选目标已经实际选中，接替 reset intent 中原来的硬件目标。
+                    let previous = state
+                        .reset_after_owner
+                        .as_mut()
+                        .expect("closed scanout lost reset intent")
+                        .retiring
+                        .replace(next);
+                    (state.active.take(), previous, retiring)
+                }
+                Some(next) => (state.active.replace(next), None, retiring),
+                None => (state.active.take(), None, retiring),
+            }
         }
-        PendingOperation::Damage { .. } => {}
-        PendingOperation::Release { .. } => {}
-        PendingOperation::Disable => state.active = None,
-    }
+        PendingOperation::Damage { framebuffer, .. } => {
+            retired_framebuffer = Some(framebuffer);
+            (None, None, None)
+        }
+        PendingOperation::Release => (None, None, None),
+    };
+    drop(state);
+    drop(retired);
+    drop(retired_framebuffer);
+    drop(event_file);
+    // 退休后才推进 UNREF：否则新释放的最后一个 framebuffer pin 要等无关 IRQ 才能被回收。
+    let mut state = drm.completion.lock();
     advance_graphics_cleanup(drm, &mut state);
     drop(state);
     drm.completion_write.signal_readiness();

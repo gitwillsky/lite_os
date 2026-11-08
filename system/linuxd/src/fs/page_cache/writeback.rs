@@ -1,4 +1,4 @@
-//! 回写：查询脏区间、清除脏标记、读出内容并写入存储；失败时把内容写回缓存重新标脏。
+//! 回写：先准备缓冲，再把脏页转为待确认并读出；失败保留可查询内容，不覆盖映射的新写入。
 
 use alloc::vec::Vec;
 
@@ -27,13 +27,13 @@ impl CachedFile {
                 break;
             };
             let chunk = dirty.min((WRITEBACK_BATCH_PAGES * PAGE_SIZE) as u64);
-            // 先清脏再读：读出之后的并发写入会重新标脏，不会被本次回写吞掉。
-            pager::begin_writeback(&self.object, start, chunk);
             let valid = (size.saturating_sub(start)).min(chunk) as usize;
             data.clear();
             data.try_reserve_exact(valid)
                 .map_err(|_| FileSystemError::OutOfMemory)?;
             data.resize(valid, 0);
+            // 读出之后的映射写会重新标脏；只有存储确认后才清除仍待确认的页。
+            pager::begin_writeback(&self.object, start, chunk);
             self.object
                 .vmo()
                 .read(&mut data, start)
@@ -46,11 +46,7 @@ impl CachedFile {
                         }
                         Ok(())
                     });
-            if let Err(error) = written {
-                // 重新写入同样的字节以恢复脏标记，内容不变。
-                let _ = self.object.vmo().write(&data, start);
-                return Err(error);
-            }
+            written?;
             // 存储已接收这批内容：之后淘汰这些页、再从存储读回不会丢修改。
             pager::end_writeback(&self.object, start, chunk);
             cursor = start + chunk;

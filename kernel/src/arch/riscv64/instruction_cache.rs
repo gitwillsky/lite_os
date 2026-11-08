@@ -8,13 +8,9 @@ pub(crate) fn publish_local() {
     unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack)) };
 }
 
-/// 发布给定物理范围内的新 executable view。
-///
-/// RISC-V `fence.i` 不编码地址范围；参数只维持 generic transaction 的静态 seam，生产指令
-/// 序列仍严格复用原有 `fence rw, rw; fence.i`。
-pub(crate) fn publish_range(_physical_start: usize, _size: usize) {
-    publish_local();
-}
+/// RISC-V 的一致数据缓存不需要按范围清理；提交末尾统一执行数据屏障和 `fence.i`。
+/// 参数维持编译期 seam，不把分散物理页扩成覆盖无关内存的区间。
+pub(crate) fn prepare_range(_physical_start: usize, _size: usize) {}
 
 /// 在 CPU 上线前丢弃 firmware/boot 阶段可能保留的 instruction-cache state。
 pub(crate) fn initialize_local() {

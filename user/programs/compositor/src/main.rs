@@ -52,6 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let scale = output_scale(scanout.height());
+    let frame_period = scanout.frame_period_ns()?;
     let input = input::Input::open(
         Path::new(INPUT_DIRECTORY),
         scanout.width() as i32,
@@ -91,6 +92,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     session.boot_milestone(600);
     session.spawn_shell(Path::new(SHELL))?;
     session.boot_milestone(800);
+    // 帧内预留 65% CPU 给输入/合成主循环；音频独立准入，保留公平类余量。子进程不能继承预算。
+    linux_uapi::process::set_deadline(frame_period * 65 / 100, frame_period, frame_period)
+        .map_err(|error| format!("compositor deadline admission: {error}"))?;
     Ok(session.run()?)
 }
 

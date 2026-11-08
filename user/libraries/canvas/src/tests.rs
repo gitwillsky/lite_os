@@ -193,6 +193,38 @@ fn dotted_frame_is_dotted_border_only_and_self_erasing() {
         .unwrap()
         .invert_dotted_frame(Rect::new(0, 0, 6, 6), 1);
     assert!(pixels.iter().all(|&p| p == BLACK.0));
+    // 子表面只存边缘局部像素；1x/2x 和奇偶原点必须与完整画面的同一裁剪完全一致。
+    for scale in [1, 2] {
+        let width = 10 * scale;
+        let mut full = canvas(width as usize, width as usize);
+        Surface::new(&mut full, width, width, width as usize)
+            .unwrap()
+            .invert_dotted_frame(Rect::new(scale, scale, 8 * scale, 8 * scale), scale);
+        for (x, y) in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+            let size = 6 * scale;
+            let mut edge = canvas(size as usize, size as usize);
+            Surface::new(&mut edge, size, size, size as usize)
+                .unwrap()
+                .invert_dotted_frame_at(
+                    Rect::new((1 - x) * scale, (1 - y) * scale, 8 * scale, 8 * scale),
+                    scale,
+                    (x, y),
+                );
+            for row in 0..size {
+                for column in 0..size {
+                    assert_eq!(
+                        at(&edge, size as usize, column as usize, row as usize),
+                        at(
+                            &full,
+                            width as usize,
+                            (x * scale + column) as usize,
+                            (y * scale + row) as usize
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -292,7 +324,14 @@ fn mask_blends_coverage_with_color() {
 #[test]
 fn bit_mask_draws_exactly_what_the_equivalent_eight_bit_mask_draws() {
     // 10×3 的黑白图案：每行 2 字节，最后一个字节里 width 之外的位被忽略（故意置位）。
-    let bits = [0b1010_0110, 0b1100_0000 | 0b0011_1111, 0b0000_1111, 0b0100_0000, 0xff, 0xff];
+    let bits = [
+        0b1010_0110,
+        0b1100_0000 | 0b0011_1111,
+        0b0000_1111,
+        0b0100_0000,
+        0xff,
+        0xff,
+    ];
     let (width, height) = (10, 3);
     let mut gray = Vec::new();
     for row in 0..height {
@@ -305,13 +344,23 @@ fn bit_mask_draws_exactly_what_the_equivalent_eight_bit_mask_draws() {
         let mut expected = canvas(12, 5);
         let mut actual = canvas(12, 5);
         Surface::new(&mut expected, 12, 5, 12).unwrap().draw_mask(
-            Mask { coverage: &gray, width: width as i32, height: height as i32, stride: width },
+            Mask {
+                coverage: &gray,
+                width: width as i32,
+                height: height as i32,
+                stride: width,
+            },
             1,
             1,
             color,
         );
         Surface::new(&mut actual, 12, 5, 12).unwrap().draw_bit_mask(
-            BitMask { bits: &bits, width: width as i32, height: height as i32, stride: 2 },
+            BitMask {
+                bits: &bits,
+                width: width as i32,
+                height: height as i32,
+                stride: 2,
+            },
             1,
             1,
             color,
@@ -320,17 +369,29 @@ fn bit_mask_draws_exactly_what_the_equivalent_eight_bit_mask_draws() {
     }
     // 布局错误（缓冲不足）不绘制。
     let mut untouched = canvas(4, 4);
-    Surface::new(&mut untouched, 4, 4, 4).unwrap().draw_bit_mask(
-        BitMask { bits: &bits[..1], width: 10, height: 3, stride: 2 },
-        0,
-        0,
-        WHITE,
-    );
+    Surface::new(&mut untouched, 4, 4, 4)
+        .unwrap()
+        .draw_bit_mask(
+            BitMask {
+                bits: &bits[..1],
+                width: 10,
+                height: 3,
+                stride: 2,
+            },
+            0,
+            0,
+            WHITE,
+        );
     assert!(untouched.iter().all(|&p| p == BLACK.0));
     // 部分在目标之外：只画可见部分。
     let mut clipped = canvas(2, 2);
     Surface::new(&mut clipped, 2, 2, 2).unwrap().draw_bit_mask(
-        BitMask { bits: &[0xff], width: 8, height: 1, stride: 1 },
+        BitMask {
+            bits: &[0xff],
+            width: 8,
+            height: 1,
+            stride: 1,
+        },
         -6,
         0,
         WHITE,

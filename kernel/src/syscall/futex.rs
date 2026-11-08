@@ -1,7 +1,7 @@
 //! native futex 参数、地址身份与用户值比较；等待索引属于 execution::sync::futex。
 //!
-//! 私有 key 使用实际地址空间的 context，共享 key 使用全局 context。桶内只 try-lock 地址空间读取，
-//! 锁忙或翻译缺失时先放桶锁，普通读取等待/缺页后重新比较；不会在 IRQ-safe 桶锁内睡眠或分配。
+//! 私有 key 使用实际地址空间的 context，共享 key 使用全局 context。空间锁先于桶锁取得，
+//! 先在桶锁外稳定用户映射，再在桶锁内原子比较和登记；不会在 IRQ-safe 桶锁内睡眠或分配。
 //! requeue 按 (context 身份, 桶下标) 全序加锁；超时取消在快照对应的桶内复核当前位置。
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -64,17 +64,17 @@ fn location(
     }
 }
 
-/// 桶内只有无等待读取；None 要求放锁后完成普通读取再重试。
-fn read_word(call: &Call<'_>, address: usize) -> Result<Option<u32>, Status> {
+/// 可阻塞的映射稳定先于桶事务；闭包只在拿到桶锁后读取，封闭值改变/唤醒与入队的窗口。
+fn with_word<R>(
+    call: &Call<'_>,
+    address: usize,
+    operation: impl FnOnce(&core::sync::atomic::AtomicU32) -> R,
+) -> Result<R, Status> {
     call.thread
         .address_space()
         .ok_or(native_abi::ERR_BAD_STATE)?
-        .read_resident_word(address)
+        .with_resident_word(address, operation)
         .map_err(|_| native_abi::ERR_INVALID_POINTER)
-}
-
-fn fault_in(call: &Call<'_>, address: usize) -> Result<(), Status> {
-    call.read::<u32>(address).map(drop)
 }
 
 pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
@@ -84,23 +84,16 @@ pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
     let waiter = Arc::try_new(Waiter::new(&context, (key, ticket)))
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     // 唯一可失败的节点准备在 IRQ-safe guard 之外；requeue 转移这个节点，不重新分配。
-    let mut entry = Some(
-        Bucket::prepare((key, ticket), waiter.clone()).map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    );
-    loop {
+    let entry =
+        Bucket::prepare((key, ticket), waiter.clone()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    with_word(call, address, |word| {
         let mut table = context.lock(key);
-        match read_word(call, address)? {
-            Some(value) if value != call.arg_u32(1) => return Err(native_abi::ERR_BAD_STATE),
-            Some(_) => {
-                table.enqueue(entry.take().expect("futex waiter committed twice"));
-                break;
-            }
-            None => {
-                drop(table);
-                fault_in(call, address)?;
-            }
+        if word.load(Ordering::Acquire) != call.arg_u32(1) {
+            return Err(native_abi::ERR_BAD_STATE);
         }
-    }
+        table.enqueue(entry);
+        Ok(())
+    })??;
     let result = waiter.wait(super::deadline(call.arg(2)));
     if waiter.is_woken() {
         return Ok(());
@@ -189,17 +182,9 @@ pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
     let options = call.arg_u32(5);
     let (source_context, source) = location(call, call.arg(0), options)?;
     let (target_context, target) = location(call, call.arg(3), options)?;
-    loop {
+    with_word(call, call.arg(0), |word| {
         let mut buckets = lock_pair(&source_context, source, &target_context, target);
-        let value = match read_word(call, call.arg(0))? {
-            Some(value) => value,
-            None => {
-                drop(buckets);
-                fault_in(call, call.arg(0))?;
-                continue;
-            }
-        };
-        if value != call.arg_u32(2) {
+        if word.load(Ordering::Acquire) != call.arg_u32(2) {
             return Err(native_abi::ERR_BAD_STATE);
         }
         queue::requeue_locked(
@@ -213,6 +198,6 @@ pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
             },
             &mut WaiterHooks(&target_context),
         );
-        return Ok(());
-    }
+        Ok(())
+    })?
 }

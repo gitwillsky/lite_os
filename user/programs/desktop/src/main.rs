@@ -3,12 +3,11 @@ extern crate liteos_runtime as _;
 mod clipboard;
 mod dialogs;
 mod icons;
-mod network;
 mod paint;
 mod popups;
 mod start;
 mod taskbar;
-mod usb;
+mod tray;
 use classic_ui::{
     Display, Edit, Event, EventKind, ITEM_DOUBLE_CLICK, ItemClick, KeyboardInteractivity, Layer,
     LayerSettings, ToplevelRequest, WindowId,
@@ -120,8 +119,7 @@ struct Desktop {
     home: PathBuf,
     message: String,
     volume: sndvol::Volume,
-    network: network::Network,
-    usb: usb::Usb,
+    tray: tray::Tray,
     /// 每用户桌面设置（任务栏选项、背景色）与它被读取时的修改时间；控制面板改写文件后据此重新应用。
     settings: desktop_settings::Settings,
     settings_stamp: Option<std::time::SystemTime>,
@@ -193,8 +191,7 @@ impl Desktop {
             home,
             message: String::new(),
             volume: sndvol::Volume::open(),
-            network: network::Network::new()?,
-            usb: usb::Usb::new()?,
+            tray: tray::Tray::new()?,
             settings,
             settings_stamp: desktop_settings::Settings::stamp(),
             taskbar_hidden: false,
@@ -304,7 +301,7 @@ impl Desktop {
     }
 
     fn network_status(&mut self, index: u32) {
-        let Some(link) = self.network.link(index) else {
+        let Some(link) = self.tray.network.link(index) else {
             self.message = "网络连接已移除".into();
             return;
         };
@@ -377,7 +374,7 @@ impl Desktop {
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
             Action::NetworkStatus(index) => self.network_status(index),
             Action::DisableNetwork(index) => {
-                if let Err(error) = self.network.disable(index) {
+                if let Err(error) = self.tray.network.disable(index) {
                     self.message = format!("无法禁用连接：{error}");
                 }
             }
@@ -512,6 +509,19 @@ impl Desktop {
         pending: &mut HashSet<WindowId>,
     ) -> io::Result<()> {
         let window = event.window;
+        if window == self.background
+            && let EventKind::Configure(configuration) = event.kind
+        {
+            display.set_opaque_region(
+                window,
+                Some(canvas::Rect::new(
+                    0,
+                    0,
+                    configuration.width,
+                    configuration.height,
+                )),
+            )?;
+        }
         let motion = matches!(
             event.kind,
             EventKind::PointerEnter { .. } | EventKind::PointerMove { .. }
@@ -959,7 +969,7 @@ impl Desktop {
                                         Some(ItemClick::new((window, paint::CLOCK), point, now));
                                 }
                             }
-                            paint::NETWORK => match self.network.current(&self.settings) {
+                            paint::NETWORK => match self.tray.network.current(&self.settings) {
                                 Some(link) if link.state != network_config::LinkState::Disabled => {
                                     self.network_status(link.index);
                                 }
@@ -1244,19 +1254,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 pending.insert(*window);
             }
         }
-        match state.network.poll() {
+        match state.tray.poll() {
             Ok(changed) => dirty |= changed,
             Err(error) => {
                 state.message = format!("无法禁用连接：{error}");
                 dirty = true;
             }
         }
-        dirty |= state.usb.poll();
         if state.icons.poll_trash() {
             pending.insert(state.background);
         }
         dirty |= state.poll_settings(&mut display)?;
-        if art.update_wallpaper(state.settings.wallpaper.as_deref())? {
+        if art.update_wallpaper(&mut display, state.settings.wallpaper.as_deref())? {
             pending.insert(state.background);
         }
         state.tick_auto_hide(&mut display)?;
@@ -1351,16 +1360,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .configuration(id)
                 .ok_or("missing desktop configure")?;
             if id == state.background {
-                display.paint_frame(id, |pixels, configuration, preserved, display| {
-                    paint::background_frame(
-                        &state,
-                        display,
-                        configuration,
-                        &mut art,
-                        pixels,
-                        preserved,
-                    )
-                })?;
+                if !art.present_background(&state, &mut display)? {
+                    continue;
+                }
             } else {
                 let pixels = paint::frame(&state, &display, id, c, &mut art, minute)?;
                 display.present(id, &pixels)?;

@@ -35,6 +35,8 @@ pub(crate) enum SchedulerPolicyError {
     NotFound,
     OutOfMemory,
     Permission,
+    Busy,
+    Unsupported,
 }
 
 /// Linux get/setpriority 的 task collection selector。
@@ -274,52 +276,32 @@ pub(crate) fn scheduler_policy(
     tid: usize,
     request: SchedulerPolicyRequest,
 ) -> Result<i32, SchedulerPolicyError> {
-    // 1. 先解析 target，保持 Linux 对已复制参数的 ESRCH 优先级。
-    let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
-    let target = scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
-    if request == SchedulerPolicyRequest::Query {
-        let reset = target.scheduling.policy.lock().reset_on_fork(None);
-        return Ok(if reset {
-            SCHED_RESET_ON_FORK
-        } else {
-            SCHED_OTHER
-        });
-    }
-
-    // 2. 当前 scheduler 只可表达 SCHED_OTHER/priority 0；参数错误必须先于权限错误。
-    let requested_reset = match request {
-        SchedulerPolicyRequest::Query => unreachable!(),
+    update_attributes(tid, |old| match request {
+        SchedulerPolicyRequest::Query => Ok(None),
         SchedulerPolicyRequest::SetParameters { priority } => {
-            if priority != 0 {
+            if priority != 0 || old.policy != SCHED_OTHER as u32 {
                 return Err(SchedulerPolicyError::Invalid);
             }
-            None
+            Ok(Some(old))
         }
         SchedulerPolicyRequest::Replace { policy, priority } => {
             if priority != 0 || policy & !SCHED_RESET_ON_FORK != SCHED_OTHER {
                 return Err(SchedulerPolicyError::Invalid);
             }
-            Some(policy & SCHED_RESET_ON_FORK != 0)
+            Ok(Some(crate::task::model::SchedulingAttributes {
+                flags: u64::from(policy & SCHED_RESET_ON_FORK != 0),
+                nice: old.nice,
+                ..Default::default()
+            }))
         }
-    };
-    let privileged = caller
-        .scheduler_privilege_for(&target)
-        .ok_or(SchedulerPolicyError::Permission)?;
-
-    // 3. policy lock 同时完成不可由普通 owner 清除的 reset flag 检查与替换。
-    let mut policy = target.scheduling.policy.lock();
-    let previous_reset = policy.reset_on_fork(None);
-    if previous_reset && requested_reset == Some(false) && !privileged {
-        return Err(SchedulerPolicyError::Permission);
-    }
-    if let Some(reset) = requested_reset {
-        policy.reset_on_fork(Some(reset));
-    }
-    let reset = policy.reset_on_fork(None);
-    Ok(if reset {
-        SCHED_RESET_ON_FORK
-    } else {
-        SCHED_OTHER
+    })
+    .map(|attributes| {
+        attributes.policy as i32
+            | if attributes.flags & 1 != 0 {
+                SCHED_RESET_ON_FORK
+            } else {
+                0
+            }
     })
 }
 
@@ -338,6 +320,130 @@ pub(crate) fn scheduler_policy(
 /// calling Thread 或目标不存在时返回 `NotFound`。
 pub(crate) fn scheduler_rr_interval(tid: usize) -> Result<u64, SchedulerPolicyError> {
     let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
-    scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
-    Ok(crate::time::scheduler_quantum_ns())
+    let target = scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
+    Ok(if target.scheduling.policy.lock().deadline().is_some() {
+        0
+    } else {
+        crate::time::scheduler_quantum_ns()
+    })
+}
+
+/// 标准 sched_attr 的配置事务；Linux 权限/flags 在此，动态 CBS 状态和带宽只由原生调度器拥有。
+/// 查询返回当前已提交 Linux 配置；替换失败保留旧配置。用户复制不在任何策略锁内。
+/// # Errors
+/// ESRCH/EPERM/EACCES/EINVAL、未开放扩展 Unsupported、原生准入容量不足 Busy。
+pub(crate) fn scheduler_attributes(
+    tid: usize,
+    replacement: Option<crate::task::model::SchedulingAttributes>,
+) -> Result<crate::task::model::SchedulingAttributes, SchedulerPolicyError> {
+    update_attributes(tid, |_| Ok(replacement))
+}
+
+fn update_attributes(
+    tid: usize,
+    prepare: impl FnOnce(
+        crate::task::model::SchedulingAttributes,
+    ) -> Result<
+        Option<crate::task::model::SchedulingAttributes>,
+        SchedulerPolicyError,
+    >,
+) -> Result<crate::task::model::SchedulingAttributes, SchedulerPolicyError> {
+    use crate::task::model::{DeadlineParameters, RLIMIT_NICE};
+    use linux_abi::capability::Capability;
+    use native_runtime::native_abi;
+    let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
+    let target = scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
+    let authority = caller.scheduler_privilege_for(&target);
+    let mut policy = target.scheduling.policy.lock();
+    let old = policy.attributes();
+    let Some(mut requested) = prepare(old)? else {
+        return Ok(old);
+    };
+    if requested.flags & !0x7f != 0 || requested.policy > i32::MAX as u32 {
+        return Err(SchedulerPolicyError::Invalid);
+    }
+    // RECLAIM/OVERRUN/util-clamp 不伪装支持；KEEP_POLICY/PARAMS 在真实目标快照上解析。
+    if requested.flags & (2 | 4 | 32 | 64) != 0 {
+        return Err(SchedulerPolicyError::Unsupported);
+    }
+    if requested.flags & 8 != 0 {
+        requested.policy = old.policy;
+    }
+    if requested.flags & 16 != 0 {
+        requested.nice = old.nice;
+        requested.priority = old.priority;
+        requested.runtime = old.runtime;
+        requested.deadline = old.deadline;
+        requested.period = old.period;
+    }
+    requested.flags &= 1;
+    if requested.priority != 0 || !matches!(requested.policy, 0 | 6) {
+        return Err(SchedulerPolicyError::Invalid);
+    }
+    if requested.policy == 6 {
+        if requested.period == 0 {
+            requested.period = requested.deadline;
+        }
+        if requested.runtime < 1024
+            || requested.runtime > requested.deadline
+            || requested.deadline > requested.period
+            || !(100_000..=4_194_304_000).contains(&requested.period)
+        {
+            return Err(SchedulerPolicyError::Invalid);
+        }
+    }
+    let privileged = authority.ok_or(SchedulerPolicyError::Permission)?;
+    let deadline = if requested.policy == 6 {
+        if !caller.has_initial_capability(Capability::SYS_NICE) {
+            return Err(SchedulerPolicyError::Permission);
+        }
+        // 一个原生分区就是已准入 CPU；Linux root domain 为全部 online CPU，避免掩码缩小破坏承诺。
+        if target.scheduling.state.lock().cpu_affinity.effective_bits()
+            != crate::cpu::active().native_word()
+        {
+            return Err(SchedulerPolicyError::Permission);
+        }
+        requested.nice = old.nice;
+        Some(DeadlineParameters {
+            runtime: requested.runtime,
+            deadline: requested.deadline,
+            period: requested.period,
+        })
+    } else {
+        requested.nice = requested.nice.clamp(-20, 19);
+        let limit = target
+            .resource_limit(RLIMIT_NICE)
+            .expect("RLIMIT_NICE must exist")
+            .soft;
+        if requested.nice < old.nice && !privileged && (20 - requested.nice) as u64 > limit {
+            return Err(SchedulerPolicyError::Permission);
+        }
+        requested.runtime = 0;
+        requested.deadline = 0;
+        requested.period = 0;
+        None
+    };
+    if old.flags & 1 != 0 && requested.flags & 1 == 0 && !privileged {
+        return Err(SchedulerPolicyError::Permission);
+    }
+    if deadline != policy.deadline() {
+        let carrier = target.carrier().ok_or(SchedulerPolicyError::NotFound)?;
+        let times = deadline.map_or((0, 0, 0), |parameters| {
+            (parameters.runtime, parameters.deadline, parameters.period)
+        });
+        carrier
+            .handle()
+            .set_deadline(crate::handles::resource(), times.0, times.1, times.2)
+            .map_err(|status| match status {
+                native_abi::ERR_NO_RESOURCES => SchedulerPolicyError::Busy,
+                native_abi::ERR_ACCESS_DENIED => SchedulerPolicyError::Permission,
+                native_abi::ERR_BAD_STATE => SchedulerPolicyError::NotFound,
+                _ => SchedulerPolicyError::Invalid,
+            })?;
+    }
+    policy.set_attributes(requested);
+    let result = policy.attributes();
+    drop(policy);
+    request_task_reschedule(&target);
+    Ok(result)
 }

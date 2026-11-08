@@ -292,11 +292,11 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 ## 后续计划的依赖
 
 [路由系统计划](router.md)依赖本计划的阶段 1（DMA 直写服务 VMO）、阶段 3（高精度定时器）与 P2 第 1 项
-（截止时间调度类）；P2 第 5 项（网络数据面）由路由计划的 netstack 重写按终态实现，本计划不单独做。
+（截止时间调度类）及本计划 P2 第 5 项的共享 socket 数据传输；路由计划负责后续转发引擎，不重复保留旧 RPC。
 
 ## 进度
 
-- M0 进行中：物理页 owner 的匿名/pager/连续/bootfs 分类与 pager dirty/writeback/reclaimable 子计数已实现；
+- M0 已实现待运行验收：物理页 owner 的匿名/pager/连续/bootfs 分类与 pager dirty/writeback/reclaimable 子计数已实现；
   linuxd Cached/MemAvailable 改为全系统 pager 来源，删除局部缓存扫描。内存供页由实际内容 owner 标明，避免混入存储脏页。
   修正 slice pin 的 backing owner 登记。
   此前 AArch64/HVF 基线三次对账均为 0 页差额（内核堆/栈/页表 + VMO 匿名/pager/bootfs/连续）；
@@ -310,7 +310,7 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   task-observer 升级 LTASK002，原生 TASK_STATS 增加 private/shared/scaled shared；服务页显示专用/共享内存。
   共享次数来自现有 COW 树与实际逻辑映射，同一服务映射的硬件镜像只计一次；无新增全局页索引或 fault 热路径 mapcount。
   分段读取复用 per-open 文本，offset 0 刷新，不反复全量扫描。
-  当前只完成 Clippy 与代码审查，尚未更新运行实例或运行时验收；完整归属对账与最终端到端仍待完成，M0 不标完成。
+  源码已通过 Clippy 与代码审查并更新同一产品运行实例；启动与诊断链路暴露的问题正在逐项修复，完整归属对账与最终端到端仍待完成，不标运行验收通过。
   接口派生清单和最终门禁在实现终态统一生成/执行。
 - 1 已实现待运行验收：request owner 同时预留 slot/descriptor credits，O(1) 空闲槽释放；header/status 共用一张 metadata VMO。
   登记 VMO 与区间直接 DMA、按 virtqueue 容量协商槽数、virtio-blk 批内并发发布/收割、ext4 extent 合并和 journal 连续写已接通。
@@ -331,14 +331,15 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   清除无消费者的 `TIMER_FROM_USER`/`last_user_return`/tick 相位计算。kernel-unit 4 项 `DeadlineIndex` 单测、
   architecture-bench `timer deadline index` 基准、双架构 Clippy 通过，未运行调度/计时运行时测试。
 - 4 已实现待运行验收：私有 context 按地址空间延迟建立，共享 VMO 使用全局 context；等待索引迁入 `execution::sync::futex`，
-  syscall 保留参数/地址/状态码职责；共享 key 解析 slice 别名，不混同 COW 身份。桶改为 IRQ 安全锁，桶内空间锁只 try-lock；锁忙/缺页先退出整个事务再等待。
+  syscall 保留参数/地址/状态码职责；共享 key 解析 slice 别名，不混同 COW 身份。桶改为 IRQ 安全锁；先在桶外阻塞取得实际空间 owner 并补齐翻译，guard 保活用户字，随后取得桶锁再原子比较与入队，避免 try-lock 重试活锁。
   节点锁外准备，跨 context requeue 按身份/桶序加锁，外层 IRQ guard 最后释放；取消复核弱引用登记位置。
   同 key requeue 不反复搬动队尾，保留 FIFO。复用原队列用例与基准，运行验收待最终统一执行。
 - 6 与 M6 元数据部分已实现待运行验收：已提交页压缩为非零 8 字节槽（页号/pin/回写/内容归属，预留回收代位）；
   补页请求复用 `PageList<T>` 的分块索引，不再逐页建 AVL 节点。空块预留失败回滚、`ceiling` 跨空块、稀疏失败请求扫描均补齐。
   扩展既有页列表用例与 snapshot-retirement 诊断的 1024/65536 页规模；没有运行测试，双架构 kernel 与 host Clippy 验证。
-- M4 部分实现：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
-  并发容量不变，块设备会话、FUSE、netstack 等的常驻空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
+- M4 已实现并完成栈尺寸评估：`service-rpc::serve` 改为弹性线程池（始终保留一个空闲读者，忙时按需增长到原上限，空闲 5 s 收缩到 1 个；
+  并发容量不变，服务 RPC 的常驻多余空闲线程消失）；pager-pool 工作线程空闲 5 s 退出。
+  netstack 独立的多 channel dispatcher 原先未覆盖，现已补齐同样的弹性准入与收缩，并保留原四线程并发上限。
   最后一个空闲 RPC 读者永久等真实通知，取消每 5 s 的周期检查；只为多余空闲读者武装收缩截止，忙线程不占读者名额。
   停止 Event 的每 worker 预留登记无分配广播，保证无限等待的读者也能在 source 失败时退出；空闲收缩自动退订。
   该缺口已在源码补齐：BlockProvider/BlockIoQueue 原生非阻塞准入与完成 FIFO，块服务直接等待提交/设备完成两个来源，峰值两个 worker、空闲一个。
@@ -348,23 +349,33 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   完成按目的队列分组通知、逐请求交付结果，不扫描在途集合或广播无关会话；扩展现有取消/额度用例，尚未运行块 I/O 或性能验收。
   UI 辅助任务已继续收敛：PictureLoader 解码/通知后退出，最后一个文件对话框关闭时退休队列/watch；
   SDK Background 保持 64 项队列、至多两个并发任务，按需启动、空闲 5 s 收缩至零，提交/退休同锁防止遗留任务。
-  仍缺：桌面网络/USB 托盘的周期采样线程整合（当前仍各每 500 ms 扫描），以及最终内核栈尺寸评估。
-  内核栈尺寸评估：已修正 `stack_probe` 为非零栈染色并排除 guard/context reserve，日志只报告可用区写入深度下界；
-  零初始化扫描不能可靠识别零写入。32 KiB 槽位保持不变；最终工作负载采样与深栈帧审查后再决定是否缩小，不把测量留给用户补做。
+  桌面网络/USB 托盘已整合到同一通知区 worker 与 500 ms 截止，组合快照容量一；读取/禁用仍在 UI 外，删除两个专用线程与重复退出逻辑。
+  命令完成会刷新通知区可用状态，命令失败不妨碍 USB 快照应用；源码审查与 user Clippy，不新增测试实体。
+  非零染色已排除 guard/context reserve；11 CPU 产品实例的完整桌面、四路并发 fork/文件读写/同步及 12 线程 socket 负载
+  峰值写入深度为 4120 字节，但仍是下界。16 KiB 槽在 AArch64 仅余 8 KiB，未证明所有平台/硬中断深路径的余量，
+  因此评估结论保留 32 KiB。通过移除大栈帧和多余线程降内存，不靠缩小未证明安全的边界；桌面内存目标已独立达到。
 - M5 已实现待运行验收：bootfs 文件内容按页对齐（打包器把填充放进路径名字段，标准 cpio 读取器兼容）；`Image::from_vmo`
   让 ELF 段成为 bootfs VMO 的写时复制子对象（末页清零，bss 为独立零页），不再逐段复制；ext4 映像与 driver-host 映像
   以 `Bootfs::file_vmo` 子对象交付，不再 `bootfs_copy`；客户端提供的替换映像仍复制（防止之后被改写）。
 - P2.6 已实现待运行验收：物理页单页分配/释放经每 CPU 缓存（32 页上限、16 页补充、压力下停用、连续分配失败先还缓存）。
-- P2.2 已实现：restricted 状态 VMO 绑定时固定，进出经 direct map 拷贝。P2.3 部分实现：channel 积压改为按字节限额
-  （4 MiB，含每消息 64 B 开销）；消息缓冲与 `CallWaiter` 的分配由内核堆每 CPU 缓存承担，未另建池。
+- P2.2 已实现：restricted 状态 VMO 绑定时固定，进出经 direct map 拷贝。
+- P2.3 已实现待运行验收：channel 积压仍为 4 MiB 字节预算，补齐两个 Vec 的容量及队列槽开销，句柄密集消息不再漏计。
+  每对 channel 由原队列锁移交一份空消息存储，任一端关闭清空，迟到归还不重建；没有新增全局池。
+  原生 Thread 保有一个懒分配 CallSlot，撤销登记且回复取空后复用唯一 Arc，退出时清空；没有增加通用调度 Thread 的 IPC 职责。
+  句柄编号改为有界栈存储，批量移入/移出保留消息 Vec 容量，单句柄插入删除两个临时 Vec；原有原子转移与锁外清理语义保留。
+  单次/批量移出在表锁外统一注销旧 key，修复发布/交付写回失败回滚中遗漏的等待取消，删除 syscall 重复注销。
+  事务号环绕跳过双方活跃 ID，空隙证明保持普通分配 O(1)；已完成代码审查，运行/性能与并发取消验收留待计划终态。
 - 7 与 M3 已实现待运行验收：`libraries/span-heap`（线程本地分片空闲链、增量切分、远端释放原子栈 + pending 队列、
   线程退出孤儿化/认领、空 span decommit 不 unmap、12.5% 级别、大对象独立映射）替换原全局单锁分级分配器；
   host 并发单测 9 项、`span-heap-bench`、kernel-unit `native_heap` 接线夹具 4 项通过，双架构 Clippy 通过。
   顺带修复 `netstack-unit` 夹具缺少 `NetworkDevice::link` 实现导致 architecture-bench 无法编译。
-- M1 部分实现：`WindowHost` 删除私有画布与 `present` 整窗复制，经 `Display::render_frame` 直接在已释放的共享缓冲中整幅重绘；
-  损伤由上一次提交画面的分块哈希推导；稳定状态只留一块空闲缓冲，第二块 release 后立即退休。classic-ui 单测与 Clippy 通过。
-  尚缺：区域级光栅裁剪（只重画失效区）。控件树的 `nodes` 是公开 map、到处直接 `get_mut`，没有统一的变更入口，
-  需要先给控件树引入节点变更版本（封装可变访问）才能安全地由它推导失效区。
+- M1 已实现待运行验收：WindowHost 已删除私有画布/整窗复制，经 Display.paint_frame 在释放后的共享缓冲中按区域重绘。
+  Nodes 封装可变访问并推进局部版本；Tree 对上次成功提交的版本/几何/焦点/按压求旧新覆盖，移除节点保留退休区域。
+  菜单、组合框下拉和工具提示复用实际绘制几何；异步图片完成显式使依赖 Canvas 失效，空动画检查不标脏全树。
+  WindowHost 合并损伤、重建局部底色与相交子树，发送物理 damage；非最新缓冲、新规格、装饰/主题变化完整初始化。
+  删除 render_frame 和整窗分块哈希；稳定状态只留一块空闲缓冲，等待/失败不消费 Tree 基线，失败缓冲下一次完整修复。
+  callback 延后到绘制/分配/写入准备成功后才登记，失败不遗留永不完成的 callback ID。
+  原 render fixture 增加生产 Tree 局部/整帧像素对账，覆盖文字、焦点、移动、菜单覆盖层关闭、删除与 1x/2x；只 Clippy 编译，未执行。
 - M7 已实现待运行验收：字形缓存满时由整体清空改为 LRU（批量淘汰最久未用的四分之一）；点阵与不抗锯齿轮廓字形（只含 0/255）
   改为 1 位/像素存储（`typeface::Coverage::Mono`，BDF 位图直接沿用），canvas 新增 `BitMask`/`draw_bit_mask`，
   先前单测覆盖与 8 位蒙版逐像素一致。
@@ -391,11 +402,62 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   被借用的顶层子表不再空表剪枝，较低层表仍按全 CPU/ASID fence 退休；新根分支按需接入，不预分配空子树。
   共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
   双架构 kernel 与 kernel-unit（含现有用例的编译）Clippy 通过；没有运行测试或更新来宾。
-- 尚未完成：
-  P2.1（截止时间调度类）、
-  P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
-  M4 线程整合与内核栈尺寸评估、P2.3 缓冲复用；
-  P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
+- P2.1 已实现待运行验收：计费已统一为纳秒，CFS vruntime 使用加权纳秒倒数乘移；native runtime/CPU_BUSY 不再经过微秒截断。
+  per-CPU 累计量与活动区间在同一 IRQ-safe 锁内取时钟并发表，修复切换边界的重复计数/跨代观察；CPU_BUSY 删除转换 Vec。
+  原生分区 EDF、CBS/约束截止 revised wakeup、95% 密度准入与预算补充队列已接通；耗尽和显式 yield 均不能立即重入。
+  超额债务跨周期保留，终止先撤销预算，配置替换使旧 Ready generation 失效；远端 checkpoint 结算 active 区间实际 CPU。
+  原生设置经 system::SCHEDULE resource + MANAGE，普通应用只使用标准 sched_setattr/getattr；Linux 处理 CAP_SYS_NICE、
+  版本化尺寸/尾部零、KEEP_POLICY/PARAMS、reset-on-fork/EAGAIN、root-domain affinity 与 EBUSY 准入失败。
+  合成/输入主循环按实际 KMS 周期申请 65%，音频混音按实际 PCM 周期申请 10%；音频 RPC 只通知已有端口，不绕过预算执行混音。
+  这些是待真实负载校准的初始配置，不作为已满足帧率/音频截止的证据；拒绝准入显式报错，不伪装普通类为已获得保证。
+  现有 scheduler-unit 扩展生产 CBS 的隐式/约束截止、让出、迟到补充与超额债务对账；仅 Clippy 编译，未执行。
+- P2.4 已实现待运行验收：commit/同步缓存的损伤累计到呈现，opaque 提示按双缓冲状态生效；XRGB/ARGB 格式切换不复用旧 alpha 快照。
+  Scanout 按旧新几何、层序、仿射源和客户端损伤求输出并集，双缓冲按年龄补画；CPU/GPU 共用不重叠可见区域，跳过完全遮挡项。
+  GPU 用标准 scissor 保持原顶点/UV，删除整屏 clear；背景仅一像素纹理，未损伤活视图不反复创建，关闭 overlay 释放局部画布。
+  新增生产区域/CPU 绘制与整帧参考的像素对账用例，扩展既有 region 事务覆盖 opaque 空洞；只作 Clippy 编译，未执行。
+  CPU 输出已接入标准 DIRTYFB：同步完整后缓冲修复集再翻页，复用既有 adapter 同步凭据跳过全幅 transfer；32 clip 之外合并外接矩形。
+  KMS property blob 创建/查询/销毁已接入标准 ioctl，framebuffer/blob 共用对象 ID；OFD 创建者引用与全局弱索引分离，锁外退休与 copyout 失败回滚已接通。
+  已接通 per-OFD UNIVERSAL_PLANES、primary plane/属性标准查询与 typed user wrapper；schema、对象 ID/type、计数及枚举由两端标准 ABI 对接。
+  复用 drm-flip-probe 增加真实查询/格式/OFD 隔离、blob 全局读取/销毁覆盖，只编译未运行；无新增 runtime fixture。
+  现有 legacy/pending/active scanout 已改为持有真实不可变 framebuffer 对象；close 的 reset intent 到 pending disable 接力保活，完成后锁外退休。
+  修复 event 临时 OFD 最后引用在 completion 锁内释放的重入自锁；已有 disable 接管 close 引用，关闭期间新 scanout 完成不提前丢掉硬件目标。
+  原子提交已接通：per-OFD opt-in、固定 schema 的逐项校验/最后赋值、TEST_ONLY/NONBLOCK/ALLOW_MODESET/EVENT、逻辑候选与 exact completion。
+  legacy/atomic/disable 共用不可变配置；mode/ACTIVE/路由/plane 分开表达，模式与 damage 引用跨 DESTROY 保活，错误/覆盖/close 锁外退休。
+  合成器两后端改用标准 atomic KMS，初始化查询属性 ID，稳态复用请求与 clip 暂存；CPU 上传完整后缓冲修复区，FB_DAMAGE_CLIPS 描述相对前台的输出差异。
+  GPU 原 presentation 批接收裁剪后的损伤并集，空损伤省略 RESOURCE_FLUSH；旧 master 关闭不能 reset 后继 master 已接受的替换，非扫描配置不重复 reset。
+  标准 timing 提示归一化、损伤 16-byte s32 布局及 master 复核锁序已对照固定 Linux 源码；实际 ioctl/保活覆盖并入原 drm-flip-probe，GPU cadence 使用 atomic。
+  当前仅 Clippy 与代码审查，未运行像素/退出竞态/帧率验收，不把源码实现记作运行通过。
+- M2 已实现待运行验收：Display 接通标准同步子表面、空输入 region 与不可变原尺寸共享图像，桌面根只提交单像素底色。
+  墙纸居中/拉伸/平铺均由子表面几何表达；小平铺源增加最多 256 KiB 的整数重复块，避免海量协议对象，像素相位不变。
+  图标按实际覆盖包围盒光栅，框选仅四条细边，保持根坐标 XOR 相位与输入路由；替换经父 commit 原子撤下后才销毁旧角色。
+  解码私有像素在发布后退休，客户端只保留封印只读映射；合成器仅对真实封印 pool 懒建一次共享快照，不信任可变客户端。
+  多表面使用不可变 buffer 不依赖 release；没有新增私有协议或整屏应用像素副本。Clippy/审查通过，内存与视觉尚待最终来宾验收。
+- P2.5 已实现待运行验收：socket send/receive/poll 迁移到版本化固定 SQ/CQ、持久惰性载荷槽。
+  两端批量领取并合并通知；客户端调用者领队处理完成，不增加转发线程；旧数据 RPC、逐次 payload VMO 与 codec 删除。
+  credit 保留到完成载荷复制后，单调 ticket/有界距离与同宽原子访问防止复用和损坏对端造成越界/数据竞争。
+  协议引擎仍决定短读写、截断、PEEK、元数据与错误；poll 查询实际状态，不用复制的就绪缓存换取虚假的无往返。
+  一并补齐 CLOSE 退休、peer 关闭唤醒与 EventHub RAII 关联清理；具体边界见 IPC/网络和设备契约。
+  双架构 netstack/linuxd/DHCP/device-protocol 与 host kernel-unit/netstack-unit Clippy 通过；已有 UDP fixture
+  增加 12 线程共享发送 socket 内容/唯一性对账及零长、PEEK/TRUNC，接收端各自独立，避免合法 UDP 满队列丢包。
+  单/双 CPU musl 全部通过；此前同一产品实例的并发调用耗时为 0.238 s。
+- M4 原始 FUSE 接收已补齐源码：复用 service-rpc 弹性消息分派，不再固定四个 worker；FUSE 线格式不变。
+  最后一个 handler 退出后由 FuseSession 执行 finish，空闲 worker 退休不再提前关闭仍有在途请求的挂载。
+- 最终启动发现并修复：M5 bootfs 派生 ELF 缺少执行能力；P1 到期队首在 IRQ 内重复编程造成 level 风暴、deferred 看门狗停机；
+  M4 裸探针参数误传 init argv。前两者已有相同入口红/绿证据，探针改为 native 命名空间并同步文档。
+  清零 syscall 删除整页栈 staging，编译器帧由 4256 降至 288 字节，字节/COW/pager/dirty 路径仍归原写解析。
+- 同实例运行诊断已确认：完整桌面与任务管理器驻留后，物理已分配内存低于 100 MB；显示、壁纸与控件经 SSH/RFB 取帧确认。
+  可执行数据清理改为 Zircon 的实际范围准备/末尾指令同步；同一四路进程/文件负载从 195.432 s 降到 3.282 s，SSH 命令为 0.220 s。
+  futex 桶/空间锁重试活锁、PL011 有限预算误清 RX 电平同时修复；均保留红/绿日志，临时内核/服务探针已删除。
+- 最终文件回收审查已补齐：最后 FORGET 的无链接内容不再先分配块回写；现有 BusyBox 删除/最后关闭归还空间验收通过。
+  Content 复用预留锁串行写入与回写确认，失败只撤销新增预留；pager 查询包含尚未确认页以便重试，不以旧快照覆盖并发新写。
+  VMO 19 项与 ext4 70 项现有用例通过，双架构 Clippy 通过。所有计划源码与 M4 评估已完成；最终剩余门禁继续执行。
 
+原生 channel 存储/等待对象复用的双架构 kernel Clippy 与 architecture-check 已通过。
 分代索引的双架构 kernel 与 kernel-unit Clippy 已通过；共享块环及其 driver-host/ext4/fshost/linuxd 依赖的双架构 Clippy 已通过。
-接口派生清单由唯一生成器更新。没有运行本轮测试、基准、来宾采样或 `make verify`；全部计划实现后统一运行验收。
+UI 辅助任务与图集相关的 user workspace Clippy（含现有用例编译）及 architecture-check 已通过；图集生成器只作语法与代码审查。
+接口派生清单由唯一生成器更新。已运行针对真实回归的现有夹具与同一产品实例诊断；最终统一执行一次 `make verify`，不把历史验证记录当作当前树的验收。
+
+截止调度、计费与 linuxd/audio-core/component-manager 的双架构 Clippy、scheduler-unit/kernel-unit Clippy 已通过；
+桌面子表面与输出增量合成的 user Clippy（含用例编译）通过。
+
+atomic KMS、GPU 区域刷新与通知区线程整合已完成源码实现；双架构/用户侧 Clippy 与结构检查分别记录，来宾验收待计划终态统一执行。

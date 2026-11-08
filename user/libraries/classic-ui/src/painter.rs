@@ -24,6 +24,8 @@ pub struct Painter<'a> {
     pub(crate) scale: i32,
     /// 是否画助记键下划线，由窗口的键盘提示状态决定。
     cues: bool,
+    /// 虚线刷在完整逻辑画布中的原点；子表面平移不能改变图案相位。
+    brush_origin: (i32, i32),
 }
 
 pub(crate) fn to_color(rgb: Rgb) -> Color {
@@ -40,6 +42,7 @@ impl<'a> Painter<'a> {
             typeface: fonts.role(FontRole::Message),
             scale: scale.max(1),
             cues: false,
+            brush_origin: (0, 0),
         }
     }
 
@@ -81,6 +84,7 @@ impl<'a> Painter<'a> {
             typeface: font,
             scale: self.scale,
             cues: self.cues,
+            brush_origin: self.brush_origin,
         };
         draw(&mut painter)
     }
@@ -96,6 +100,25 @@ impl<'a> Painter<'a> {
 
     pub fn theme(&self) -> &Theme {
         self.theme
+    }
+
+    /// 当前裁剪的逻辑包围盒；边界向外取整，用于跳过完全不相交的控件子树。
+    pub fn clip(&self) -> Rect {
+        let physical = self.surface.clip();
+        let (x, y) = (
+            physical.x.div_euclid(self.scale),
+            physical.y.div_euclid(self.scale),
+        );
+        let right = (i64::from(physical.right()) + i64::from(self.scale) - 1)
+            .div_euclid(i64::from(self.scale));
+        let bottom = (i64::from(physical.bottom()) + i64::from(self.scale) - 1)
+            .div_euclid(i64::from(self.scale));
+        Rect::new(
+            x,
+            y,
+            (right - i64::from(x)) as i32,
+            (bottom - i64::from(y)) as i32,
+        )
     }
 
     /// 逻辑像素换算成物理像素。
@@ -176,7 +199,13 @@ impl<'a> Painter<'a> {
     /// 异或绘制的点状焦点框（每隔一个逻辑像素一点）。
     pub fn focus_rect(&mut self, rect: Rect) {
         let physical = self.physical(rect);
-        self.surface.invert_dotted_frame(physical, self.scale);
+        self.surface
+            .invert_dotted_frame_at(physical, self.scale, self.brush_origin);
+    }
+
+    /// 设置当前表面在完整逻辑画布中的虚线刷原点；不移动绘图坐标或改变几何。
+    pub fn set_brush_origin(&mut self, origin: (i32, i32)) {
+        self.brush_origin = origin;
     }
 
     /// 当前字体基线到行盒顶部的距离（逻辑像素向上取整）；下划线等装饰据此定位。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""将桌面 PNG 导出为标准 BITMAPV4HEADER top-down BMP（RGBA 或 8 位调色板）；普通构建只安装已提交产物。"""
+"""经典界面资源转换：导入 PNG 为 BMP V4，普通构建从已提交 BMP 生成只读图集。"""
 from pathlib import Path
 import struct
 

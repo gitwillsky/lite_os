@@ -664,6 +664,7 @@ impl Client {
                     height,
                     stride,
                     format,
+                    snapshot: Default::default(),
                 };
                 self.create(
                     id,
@@ -803,7 +804,8 @@ impl Client {
                 Ok(())
             }
             R::SetOpaqueRegion { region } => {
-                self.region_snapshot(region)?;
+                let region = self.region_snapshot(region)?;
+                self.surface_mut(object)?.pending.opaque_region = Some(region);
                 Ok(())
             }
             R::Commit => self.commit(object),

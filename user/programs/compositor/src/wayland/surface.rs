@@ -42,6 +42,9 @@ pub struct Content {
     pub size: (i32, i32),
     pub source: ImageSource,
     pub offset: (i64, i64),
+    // OWNER: 构造/格式替换时由真实缓冲格式赋值，SHM 格式变化禁止局部沿用旧像素；
+    // 误置 true 会让遮挡剔除露出未定义底色，省略此证明只能保留背景绘制。ARGB 提示属于 surface 状态。
+    pub(super) opaque: bool,
 }
 impl Content {
     #[cfg(test)]
@@ -55,6 +58,7 @@ impl Content {
             size: (width as i32, height as i32),
             source: ImageSource::full(width as i32, height as i32),
             offset: (0, 0),
+            opaque: false,
             pixels: Rc::new(pixels),
         }
     }
@@ -63,7 +67,8 @@ impl Content {
         texture: Rc<linux_uapi::drm::VirglResource>,
     ) -> Self {
         let (width, height) = (texture.width() as usize, texture.height() as usize);
-        Self::with(
+        let opaque = texture.format() == linux_uapi::drm::FORMAT_B8G8R8X8_UNORM;
+        let mut content = Self::with(
             width,
             height,
             Pixels::Dma {
@@ -71,7 +76,9 @@ impl Content {
                 texture,
                 readback: OnceCell::new(),
             },
-        )
+        );
+        content.opaque = opaque;
+        content
     }
     /// SHM 提交：可原地更新的上一份内容只重读 `damage`，否则整幅读取成新快照。
     ///
@@ -85,15 +92,24 @@ impl Content {
     ///
     /// 客户端截断了共享内存、无法分配，或纹理建立/上传失败。
     pub(super) fn from_shm(
-        previous: Option<Self>,
+        mut previous: Option<Self>,
         spec: &super::shm::BufferSpec,
         damage: &[canvas::Rect],
         gpu: Option<&linux_uapi::drm::VirglContext>,
     ) -> Result<Self, super::shm::ReadError> {
         use super::shm::ReadError::Upload;
+        if spec.pool.immutable() {
+            if let Some(content) = spec.snapshot.get() {
+                return Ok(content.as_ref().clone());
+            }
+            // 首次必须读完整文件，不能将另一个 buffer 的损伤外像素缓存为该不可变 buffer 的内容。
+            previous = None;
+        }
+
         if let Some(mut content) = previous
             && content.update(spec, damage, gpu)?
         {
+            content.opaque = spec.format == wayland_wire::protocol::wl_shm::Format::Xrgb8888;
             return Ok(content);
         }
         let (width, height) = (spec.width, spec.height);
@@ -120,7 +136,16 @@ impl Content {
                 }
             }
         };
-        Ok(Self::with(width, height, pixels))
+        let mut content = Self::with(width, height, pixels);
+        content.opaque = spec.format == wayland_wire::protocol::wl_shm::Format::Xrgb8888;
+        if spec.pool.immutable() {
+            // Client 固定选择一次 CPU/GPU 后端；同线程、同 buffer 只发表一次，不混合两类 backing。
+            assert!(
+                spec.snapshot.set(Rc::new(content.clone())).is_ok(),
+                "immutable snapshot initialized twice"
+            );
+        }
+        Ok(content)
     }
     /// 尺寸与存储方式相同且没有其他持有者时，原地重读损伤矩形；返回是否已更新。
     fn update(
@@ -130,7 +155,10 @@ impl Content {
         gpu: Option<&linux_uapi::drm::VirglContext>,
     ) -> Result<bool, super::shm::ReadError> {
         use super::shm::ReadError::Upload;
-        if (self.width, self.height) != (spec.width, spec.height) {
+        // XRGB 强制 alpha=255；格式变化时不能把旧 ARGB 的未损伤透明像素当成不透明。
+        if (self.width, self.height) != (spec.width, spec.height)
+            || self.opaque != (spec.format == wayland_wire::protocol::wl_shm::Format::Xrgb8888)
+        {
             return Ok(false);
         }
         let width = self.width;
@@ -266,6 +294,7 @@ pub struct Pending {
     pub transform: Option<i32>,
     pub order: Option<Vec<ObjectId>>,
     pub input_region: Option<Option<Rc<super::region::Region>>>,
+    pub opaque_region: Option<Option<Rc<super::region::Region>>>,
     pub offset: Option<(i32, i32)>,
     pub damage: super::damage::Damage,
 }
@@ -281,6 +310,7 @@ pub(super) struct State {
     /// 已提交的堆叠顺序，含父 surface 标记；初始只有父，新孩子默认置于最上。
     pub order: Vec<ObjectId>,
     pub input_region: Option<Rc<super::region::Region>>,
+    pub opaque_region: Option<Rc<super::region::Region>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -292,6 +322,7 @@ impl Default for State {
             offset: (0, 0),
             order: Vec::new(),
             input_region: None,
+            opaque_region: None,
         }
     }
 }
@@ -303,6 +334,8 @@ pub(super) struct Committed {
     /// 同步缓存必须保留该请求含义，否则父应用时无法区分初始协商与撤销映射。
     pub unmapping: bool,
     pub callbacks: Vec<ObjectId>,
+    /// 自上次应用之前累计的 buffer 像素损伤；同步缓存不得丢掉中间提交。
+    pub damage: super::damage::Damage,
     /// 这些位置请求已由该父的 commit 冻结；之后的新请求仍留在 Subsurface.pending 中。
     pub positions: std::collections::BTreeMap<ObjectId, (i32, i32)>,
 }
@@ -312,6 +345,8 @@ pub struct Surface {
     pub pending: Pending,
     pub current: State,
     pub cached: Option<Committed>,
+    /// 已应用但尚未交给输出的损伤；stage_frame 后清空，不能在 commit 间提前清空。
+    pub damage: super::damage::Damage,
     /// 已提交、等下一帧呈现后发 `done` 的 frame callback。
     pub queued_callbacks: Vec<ObjectId>,
     /// 当前已提交显示帧的 callback；flip 完成不能误消费随后新 commit 的回调。

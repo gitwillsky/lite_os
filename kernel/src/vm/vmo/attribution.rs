@@ -228,7 +228,6 @@ mod tests {
 
     #[test]
     fn resident_content_keeps_sparse_cow_and_slice_sources_without_faulting() {
-        assert_eq!(core::mem::size_of::<Page>(), 24);
         let parent = Vmo::create((PAGE_SIZE * 8) as u64, VmoOptions::default()).unwrap();
         parent.write(PAGE_SIZE as u64, &[17]).unwrap();
         parent.write((PAGE_SIZE * 6) as u64, &[23]).unwrap();

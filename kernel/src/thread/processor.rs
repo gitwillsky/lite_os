@@ -4,12 +4,14 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
+    num::NonZeroU64,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use super::Thread;
+use super::scheduler::deadline::Parameters;
 
-use super::scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry};
+use super::scheduler::run_queue::{RunQueue, RunQueueEntry};
 use super::scheduling::{CpuAffinity, RunState, WaitMembership};
 use crate::arch::context::KernelContext;
 use crate::execution::cpu::{self, CpuId, CpuSet};
@@ -21,6 +23,8 @@ mod handoff;
 mod placement;
 mod ready_membership;
 mod ready_queue;
+pub(crate) use admission::DeadlineError;
+pub(super) use admission::DeadlineReservation;
 pub(super) use admission::ThreadSlot;
 pub(super) use handoff::{publish_pending_handoff, resume_without_switch, take_pending_handoff};
 pub(super) use placement::enqueue_new;
@@ -44,7 +48,7 @@ pub(super) struct Processor {
     cpu_id: CpuId,
     pub(super) current: Option<Arc<Thread>>,
     idle_context: KernelContext,
-    runqueue: CfsRunQueue,
+    runqueue: RunQueue,
     pending_handoff: Option<handoff::PendingHandoff>,
     deferred_reap: Option<Arc<Thread>>,
 }
@@ -57,7 +61,7 @@ impl Processor {
             cpu_id,
             current: None,
             idle_context,
-            runqueue: CfsRunQueue::new(),
+            runqueue: RunQueue::new(),
             pending_handoff: None,
             deferred_reap: None,
         }
@@ -118,11 +122,9 @@ struct PerCpuProcessor {
     reschedule_requested: AtomicBool,
     // OWNER: 本 CPU 单调前进的虚拟时间下限；New 不得插队，真实睡眠者只保留有界信用。
     placement_vruntime: AtomicU64,
-    // OWNER: 本 CPU 已提交的线程运行时间。
-    busy_us: AtomicU64,
-    // OWNER: 当前尚未提交的运行区间的起点（微秒，0 = 本 CPU 空闲）。观察者据此把正在运行的线程的存量叠加到
-    // `busy_us`；缺少它，没有周期 tick 时长时间运行的线程在观察中看起来 CPU 空闲。
-    busy_anchor_us: AtomicU64,
+    // OWNER: 已提交量与 active 区间是一个复合状态，IRQ-safe 锁同时发表；远端读取不能混合两代。
+    // 只锁固定整数操作，不取 policy/queue 锁、不分配；拆成独立原子会在 commit 间隙重复计入旧区间。
+    busy: IrqMutex<CpuRuntime>,
     // OWNER: 只有本 CPU 读写，记录自上次放宽亲和偏置以来的抢占次数（见 `placement_policy`）。
     preemptions_since_rotation: AtomicU32,
     // timer softirq 可远端投递；IRQ-safe 锁防止打断本 CPU drain 后再入。
@@ -133,7 +135,7 @@ struct PerCpuProcessor {
 struct Inbound {
     entries: VecDeque<RunQueueEntry>,
     spare_entries: VecDeque<RunQueueEntry>,
-    spare_runqueue: CfsRunQueue,
+    spare_runqueue: RunQueue,
 }
 
 impl PerCpuProcessor {
@@ -154,13 +156,12 @@ impl PerCpuProcessor {
             running_entries: AtomicUsize::new(0),
             reschedule_requested: AtomicBool::new(false),
             placement_vruntime: AtomicU64::new(0),
-            busy_us: AtomicU64::new(0),
-            busy_anchor_us: AtomicU64::new(0),
+            busy: IrqMutex::new(CpuRuntime::default()),
             preemptions_since_rotation: AtomicU32::new(0),
             inbound: IrqMutex::new(Inbound {
                 entries: VecDeque::new(),
                 spare_entries: VecDeque::new(),
-                spare_runqueue: CfsRunQueue::new(),
+                spare_runqueue: RunQueue::new(),
             }),
         }
     }
@@ -169,55 +170,97 @@ impl PerCpuProcessor {
 // SAFETY: `local` 只由所属 CPU 在关中断时访问；远端只触及原子投影与 inbound IrqMutex。
 unsafe impl Sync for PerCpuProcessor {}
 
-pub(super) fn account_current_cpu_runtime(runtime_us: u64) {
-    current_per_cpu()
-        .busy_us
-        .fetch_add(runtime_us, Ordering::Relaxed);
+/// 本 CPU 实际执行区间的唯一计费投影；时间是纳秒，零起点用 NonZero niche 编码。
+#[derive(Default)]
+struct CpuRuntime {
+    committed_ns: u64,
+    active_from: Option<NonZeroU64>,
+}
+fn runtime_anchor(now_ns: u64) -> NonZeroU64 {
+    now_ns
+        .checked_add(1)
+        .and_then(NonZeroU64::new)
+        .expect("runtime clock exhausted")
+}
+/// 持有计费锁后读取边界时间，同时发布已提交量和后续区间，返回实际边界。
+/// `continuing` 表示 checkpoint，否则本次 finish 结束 active 区间。
+/// `sample` 必须是无阻塞的单调时钟读取，延迟到锁内调用；提前取时间会让跨 CPU 快照倒退。
+pub(super) fn commit_runtime_interval(
+    cpu_index: usize,
+    start_ns: u64,
+    continuing: bool,
+    sample: impl FnOnce() -> u64,
+) -> u64 {
+    let mut busy = processor_at(cpu_index).busy.lock();
+    assert_eq!(
+        busy.active_from.map(|start| start.get() - 1),
+        Some(start_ns),
+        "CPU and policy runtime intervals diverged"
+    );
+    let now_ns = sample();
+    let elapsed = now_ns
+        .checked_sub(start_ns)
+        .expect("runtime clock moved backwards");
+    busy.committed_ns = busy.committed_ns.saturating_add(elapsed);
+    busy.active_from = continuing.then(|| runtime_anchor(now_ns));
+    now_ns
 }
 
-/// 本 CPU 的未提交运行区间从 `now_us` 开始；切换入线程与 checkpoint 之后调用。
-pub(super) fn note_busy_from(now_us: u64) {
-    current_per_cpu()
-        .busy_anchor_us
-        .store(now_us, Ordering::Relaxed);
+/// 只有当前 CPU 在 dispatch 边界调用；取时钟与发布 active 区间同锁，不与读者交换顺序。
+pub(super) fn begin_runtime_interval(sample: impl FnOnce() -> u64) -> u64 {
+    let mut busy = current_per_cpu().busy.lock();
+    assert!(
+        busy.active_from.is_none(),
+        "CPU dispatched overlapping runtime intervals"
+    );
+    let now_ns = sample();
+    busy.active_from = Some(runtime_anchor(now_ns));
+    now_ns
 }
 
 /// 本 CPU 进入 idle：没有未提交的运行区间，也不再需要时间片截止。
 pub(super) fn enter_idle() {
-    current_per_cpu().busy_anchor_us.store(0, Ordering::Relaxed);
-    crate::execution::timer::disarm_slice();
+    assert!(
+        current_per_cpu().busy.lock().active_from.is_none(),
+        "idle entered with uncommitted runtime"
+    );
+    with_current_processor(|processor| rearm_slice(processor));
 }
 
 /// 按本 CPU 当前状态重新武装时间片截止：有运行线程且 runqueue 有竞争者才需要，否则撤销。
 ///
 /// 调用者在 IRQ 屏蔽下已更新 floor（过期 root 已丢弃）。
 pub(super) fn rearm_slice(processor: &Processor) {
-    if processor.current.is_some() && processor.runqueue.minimum_vruntime().is_some() {
-        crate::execution::timer::arm_slice();
-    } else {
-        crate::execution::timer::disarm_slice();
-    }
+    let budget = processor
+        .current
+        .as_ref()
+        .and_then(|thread| thread.scheduling.policy.lock().budget_limit());
+    let replenishment = processor.runqueue.next_replenishment();
+    let deadline = match (budget, replenishment) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    crate::execution::timer::set_scheduler_deadline(
+        processor.current.is_some() && budget.is_none() && processor.runqueue.has_eligible(),
+        deadline,
+    );
 }
 
-/// 每个 CPU 的累计忙碌时间（微秒），按逻辑 CPU 序。
+/// 每个 CPU 的累计执行时间（纳秒），按逻辑 CPU 序。
 ///
 /// # Errors
 /// 分配失败返回 `Err(())`。
 pub(crate) fn cpu_busy_snapshot() -> Result<Vec<u64>, ()> {
     let slots = &PROCESSOR_TOPOLOGY.wait().slots;
-    let now = crate::execution::timer::get_time_us();
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(slots.len()).map_err(|_| ())?;
-    snapshot.extend(
-        slots
-            .iter()
-            .map(|slot| {
-                // 先读锚点再读已提交量：commit 在两次读之间发生时最多少算一小段，不会多算。
-                let anchor = slot.processor.busy_anchor_us.load(Ordering::Relaxed);
-                let committed = slot.processor.busy_us.load(Ordering::Relaxed);
-                committed + if anchor == 0 { 0 } else { now.saturating_sub(anchor) }
-            }),
-    );
+    snapshot.extend(slots.iter().map(|slot| {
+        let busy = slot.processor.busy.lock();
+        let active = busy.active_from.map_or(0, |start| {
+            crate::execution::timer::get_time_ns().saturating_sub(start.get() - 1)
+        });
+        busy.committed_ns.saturating_add(active)
+    }));
     Ok(snapshot)
 }
 
@@ -234,6 +277,9 @@ struct ProcessorTopology {
     // OWNER: 每个 ThreadSlot 恰好计入一次（包括尚未发布和仍被旧 generation 保活的线程）。
     // Drop 可发生在队列锁内，所以不能反向获取 admission 锁。
     thread_slots: AtomicUsize,
+    // OWNER: 各 CPU 已承诺的 Q32 截止密度；凭据归还也取此锁，不取线程/队列锁。
+    // 缺失会使并发准入超售。同一事务扣旧添新，分配/唤醒/队列投递均在锁外。
+    deadline_bandwidth: IrqMutex<Box<[u64]>>,
 }
 
 // OWNER: 每个平台 CPU 的调度状态。
@@ -256,6 +302,7 @@ pub(super) fn init_topology() {
         });
     }
     PROCESSOR_TOPOLOGY.call_once(|| ProcessorTopology {
+        deadline_bandwidth: IrqMutex::new(alloc::vec![0; cpu::count()].into_boxed_slice()),
         slots: slots.into_boxed_slice(),
         admitted_capacity: IrqMutex::new(0),
         thread_slots: AtomicUsize::new(0),
@@ -355,10 +402,15 @@ pub(super) fn dispatch_inbound_ready() {
 
 /// 时间片到期时，本 CPU 有竞争者才请求重新调度。
 pub(super) fn request_slice_reschedule() {
-    let slot = current_per_cpu();
-    if slot.running_entries.load(Ordering::Relaxed) != 0
-        && slot.ready_entries.load(Ordering::Relaxed) != 0
-    {
+    let running = with_current_processor(|processor| {
+        ready_queue::replenish(processor);
+        let running = processor.current.is_some();
+        if !running {
+            rearm_slice(processor);
+        }
+        running
+    });
+    if running {
         request_reschedule();
     }
 }
@@ -400,11 +452,20 @@ fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry, cause: ReadyCause) {
 /// 原子替换线程 affinity，并迁移位于已禁止 CPU 的 Ready membership。
 ///
 /// 正在已禁止 CPU 上运行的线程被请求重新调度：抢占后的 CPU 选择遵守新 affinity。
-pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
+pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) -> Result<(), ()> {
     let mut replacement = None;
     let mut running_elsewhere = None;
     {
         let mut scheduling = thread.scheduling.state.lock();
+        if thread
+            .scheduling
+            .policy
+            .lock()
+            .deadline_cpu()
+            .is_some_and(|cpu| !affinity.allows(cpu))
+        {
+            return Err(());
+        }
         scheduling.cpu_affinity = affinity;
         match scheduling.run_state() {
             RunState::Ready { cpu, .. } if !affinity.allows(cpu) => {
@@ -429,6 +490,7 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
     if let Some(cpu) = running_elsewhere {
         publish_reschedule_at(cpu);
     }
+    Ok(())
 }
 
 /// 消费精确等待身份并使线程可运行。
@@ -459,6 +521,7 @@ pub(super) fn wake_waiting(
                 let target = if prefer_current_cpu
                     && cpu::is_active(local)
                     && scheduling.cpu_affinity.allows(local)
+                    && thread.scheduling.policy.lock().deadline_cpu().is_none()
                 {
                     local
                 } else {
@@ -470,12 +533,16 @@ pub(super) fn wake_waiting(
                     .expect("blocked thread has no execution CPU");
                 placement::rebase_for_migration(&thread, source, target);
                 // 实际睡眠才获得有界 I/O 响应额度；早到 wake 不曾离开 CPU，不走此分支。
-                thread.scheduling.policy.lock().place_waking(
-                    processor_at(target.index())
-                        .placement_vruntime
-                        .load(Ordering::Acquire),
-                    crate::execution::timer::scheduler_quantum_ns() / 1000,
-                );
+                {
+                    let mut policy = thread.scheduling.policy.lock();
+                    policy.place_waking(
+                        processor_at(target.index())
+                            .placement_vruntime
+                            .load(Ordering::Acquire),
+                        crate::execution::timer::scheduler_quantum_ns(),
+                    );
+                    policy.activate_deadline(crate::execution::timer::get_time_ns);
+                }
                 let generation = commit_ready_transition(scheduling.transition_to_ready(target));
                 Some((target, generation))
             }
@@ -509,7 +576,14 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending thread returned on another CPU");
                 scheduling.voluntary_switches += 1;
-                let target = if scheduling.cpu_affinity.allows(cpu) {
+                let target = if scheduling.cpu_affinity.allows(cpu)
+                    && thread
+                        .scheduling
+                        .policy
+                        .lock()
+                        .deadline_cpu()
+                        .is_none_or(|reserved| reserved == cpu)
+                {
                     cpu
                 } else {
                     select_cpu(thread, scheduling.cpu_affinity)
@@ -538,4 +612,60 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
     if let Some((target, generation, cause)) = ready {
         deliver_ready_entry(target, ready_entry(thread.clone(), generation), cause);
     }
+}
+
+/// 修改策略并使旧 Ready 键失效；state -> policy -> bandwidth，任何账本路径都不反向取线程锁。
+/// 运行体先按原配置 checkpoint（允许远端），再替换预算；目标 CPU 通过 IPI 重排并重装截止。
+pub(in crate::thread) fn replace_deadline(
+    thread: &Arc<Thread>,
+    parameters: Option<Parameters>,
+) -> Result<(), DeadlineError> {
+    let mut ready = None;
+    let mut reschedule = None;
+    {
+        let mut state = thread.scheduling.state.lock();
+        if state.run_state() == RunState::Exited || (parameters.is_some() && thread.is_killed()) {
+            return Err(DeadlineError::Terminated);
+        }
+        let mut policy = thread.scheduling.policy.lock();
+        if !policy
+            .replace_deadline(parameters, state.cpu_affinity)
+            .map_err(|()| DeadlineError::Capacity)?
+        {
+            return Ok(());
+        }
+        if parameters.is_none() {
+            let index = match state.run_state() {
+                RunState::Ready { cpu, .. } | RunState::Running { cpu } => cpu.index(),
+                _ => thread.scheduling.last_cpu.load(Ordering::Relaxed),
+            };
+            policy.vruntime = policy.vruntime.max(
+                processor_at(index)
+                    .placement_vruntime
+                    .load(Ordering::Acquire),
+            );
+        }
+        match state.run_state() {
+            RunState::Ready { cpu, .. } => {
+                let target = policy.deadline_cpu().unwrap_or(cpu);
+                drop(policy);
+                placement::rebase_for_migration(thread, cpu, target);
+                let generation = commit_ready_transition(state.transition_to_ready(target));
+                ready = Some((target, generation));
+            }
+            RunState::Running { cpu } => reschedule = Some(cpu),
+            _ => {}
+        }
+    }
+    if let Some((cpu, generation)) = ready {
+        deliver_ready_entry(
+            cpu,
+            ready_entry(thread.clone(), generation),
+            ReadyCause::Wake,
+        );
+    }
+    if let Some(cpu) = reschedule {
+        publish_reschedule_at(cpu);
+    }
+    Ok(())
 }

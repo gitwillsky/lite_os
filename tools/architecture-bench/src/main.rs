@@ -7,17 +7,17 @@ use std::time::{Duration, Instant};
 
 #[path = "../../../kernel/src/arch/aarch64/pte.rs"]
 mod aarch64_pte;
-#[allow(dead_code)]
-#[path = "../../../system/linuxd/src/task/model/syscall_restart.rs"]
-mod syscall_restart;
-#[path = "../../../kernel/src/thread/timer_queue/index.rs"]
-mod timer_deadline;
 #[expect(
     dead_code,
     reason = "基准只执行入队与唤醒；共享 key 与 requeue 由 kernel-unit 单测覆盖"
 )]
 #[path = "../../../kernel/src/execution/sync/futex/queue.rs"]
 mod futex_queue;
+#[allow(dead_code)]
+#[path = "../../../system/linuxd/src/task/model/syscall_restart.rs"]
+mod syscall_restart;
+#[path = "../../../kernel/src/thread/timer_queue/index.rs"]
+mod timer_deadline;
 #[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;
 
@@ -367,8 +367,9 @@ fn main() {
     // 约束 O(log n) 的真实成本（预分配节点属于阻塞路径之外，计入以免低估）。
     let mut timers = timer_deadline::DeadlineIndex::<u64>::new();
     for resident in 0..64u64 {
-        let entry = timer_deadline::DeadlineIndex::prepare((1_000_000 + resident, resident), resident)
-            .expect("benchmark entry");
+        let entry =
+            timer_deadline::DeadlineIndex::prepare((1_000_000 + resident, resident), resident)
+                .expect("benchmark entry");
         timers.insert(entry);
     }
     let mut ticket = 1_000u64;
@@ -395,7 +396,10 @@ fn main() {
     // 锁、用户值读取与睡眠属于上层，不在此计入。
     let mut futex_table = futex_queue::Bucket::<u64>::new();
     for resident in 0..32u64 {
-        let key = futex_queue::FutexKey::Private { space: 1, address: 0x4000 + resident as usize * 4 };
+        let key = futex_queue::FutexKey::Private {
+            space: 1,
+            address: 0x4000 + resident as usize * 4,
+        };
         futex_table.enqueue(
             futex_queue::Bucket::prepare((key, resident), resident).expect("benchmark entry"),
         );

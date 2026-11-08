@@ -273,6 +273,13 @@ fn main(mut startup: Startup) -> i64 {
     });
     let audio_job = job.duplicate(rights::SAME).expect("root job duplicate");
     let audio_devices = devices_root.clone();
+    let audio_scheduler = Resource::create(
+        resource,
+        native_abi::resource::SYSTEM,
+        native_abi::resource::system::SCHEDULE,
+        1,
+    )
+    .expect("audio scheduling resource");
     executor.spawn(async move {
         supervise(
             executor,
@@ -286,6 +293,10 @@ fn main(mut startup: Startup) -> i64 {
                         .scope(Class::Pcm.bit())
                         .expect("audio-core device scope")
                         .into_channel()
+                        .into_handle(),
+                    audio_scheduler
+                        .duplicate(rights::SAME)
+                        .expect("audio scheduling resource duplicate")
                         .into_handle(),
                 ]
             },

@@ -16,7 +16,9 @@ mod user_context;
 mod va39;
 
 pub(crate) use instruction_cache::broadcast_instruction_cache;
-pub(crate) use instruction_cache::publish_range as publish_instruction_range;
+pub(crate) use instruction_cache::{
+    prepare_range as prepare_instruction_range, publish_local as publish_instruction_local,
+};
 pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_context};
 pub(crate) use mmu::{
     AddressSpaceToken, KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken,

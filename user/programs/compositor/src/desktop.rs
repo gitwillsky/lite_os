@@ -97,9 +97,9 @@ impl Stack {
                 let mut parent = active.parent;
                 for _ in 0..before.len() {
                     let surface = parent?;
-                    let owner = before
-                        .iter()
-                        .find(|placed| placed.client == active.client && placed.surface == surface)?;
+                    let owner = before.iter().find(|placed| {
+                        placed.client == active.client && placed.surface == surface
+                    })?;
                     if is_mapped(owner) {
                         return (!owner.minimized).then_some((owner.client, owner.surface));
                     }

@@ -338,6 +338,36 @@ impl Thread {
         })
     }
 
+    /// 为已启动系统线程设置 CBS/EDF 预算，三个时间全零恢复公平类。
+    ///
+    /// # Parameters
+    /// resource 必须覆盖 system::SCHEDULE；runtime/deadline/period 单位纳秒。
+    /// # Returns
+    /// 准入并替换成功返回 Ok；失败保留旧配置。
+    /// # Errors
+    /// 无授权、线程未启动/已退出、参数非法或带宽不足。
+    pub fn set_deadline(
+        &self,
+        resource: &crate::Resource,
+        runtime: u64,
+        deadline: u64,
+        period: u64,
+    ) -> Result<(), Status> {
+        // SAFETY: 无指针参数；系统 resource 与线程句柄由借用 owner 保活。
+        check(unsafe {
+            invoke(
+                call::THREAD_SET_DEADLINE,
+                &[
+                    resource.raw() as usize,
+                    self.raw() as usize,
+                    runtime as usize,
+                    deadline as usize,
+                    period as usize,
+                ],
+            )
+        })
+    }
+
     /// 限制可运行的逻辑 CPU（bit N = CPU N）；未启动的线程在启动时应用。
     ///
     /// # Errors

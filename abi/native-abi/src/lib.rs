@@ -315,8 +315,10 @@ pub mod resource {
         pub const POWER: u64 = 3;
         /// 观察内存压力事件。
         pub const MEMORY: u64 = 4;
+        /// 设置系统线程的截止时间预算。
+        pub const SCHEDULE: u64 = 5;
         /// 有效 system operation 范围的结束（不含）。
-        pub const COUNT: u64 = 5;
+        pub const COUNT: u64 = 6;
     }
 }
 
@@ -510,6 +512,16 @@ pub struct SystemMemoryStats {
     pub pager_writeback_pages: u64,
     /// pager 页中干净且未固定的可淘汰页，是 vmo_pager_pages 的子集。
     pub pager_reclaimable_pages: u64,
+    /// 内存压力触发的前台回收尝试，包含扫描器竞争失败的尝试。
+    pub foreground_reclaim_runs: u64,
+    /// 前台回收实际检查的页样本，包含随后晋升或保留的页。
+    pub foreground_scanned_pages: u64,
+    /// 前台回收已完成翻译退休并释放的页。
+    pub foreground_evicted_pages: u64,
+    /// 后台回收实际检查的页样本。
+    pub background_scanned_pages: u64,
+    /// 后台回收已完成翻译退休并释放的页。
+    pub background_evicted_pages: u64,
 }
 
 /// BTI 的诊断状态：设备经该 BTI 的 stream 被 IOMMU 中止的访问数，与隔离区中的固定区间数。

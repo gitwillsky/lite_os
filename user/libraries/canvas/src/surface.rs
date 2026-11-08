@@ -184,7 +184,13 @@ impl<'a> Surface<'a> {
     ///
     /// 点的奇偶按绝对坐标计算，因此同一矩形调用两次即可擦除。
     pub fn invert_dotted_frame(&mut self, rect: Rect, cell: i32) {
+        self.invert_dotted_frame_at(rect, cell, (0, 0));
+    }
+
+    /// 同一虚线刷的另一视图：origin 以 cell 为单位，子表面必须保留完整画面的点阵相位。
+    pub fn invert_dotted_frame_at(&mut self, rect: Rect, cell: i32, origin: (i32, i32)) {
         let cell = cell.max(1);
+        let phase = (origin.0 & 1) ^ (origin.1 & 1);
         for (x, y, row) in self.visible_rows(rect) {
             for (column, pixel) in row.iter_mut().enumerate() {
                 let px = x + column as i32;
@@ -192,7 +198,7 @@ impl<'a> Surface<'a> {
                     || px >= rect.right() - cell
                     || y < rect.y + cell
                     || y >= rect.bottom() - cell;
-                if on_edge && (px / cell + y / cell) & 1 == 0 {
+                if on_edge && (px / cell + y / cell) & 1 == phase {
                     *pixel ^= 0x00FF_FFFF;
                 }
             }
@@ -354,7 +360,11 @@ impl<'a> Surface<'a> {
             for (column, pixel) in row.iter_mut().enumerate() {
                 let sx = (left + column as i32 - x) as usize;
                 if source[sx / 8] & (0x80 >> (sx % 8)) != 0 {
-                    *pixel = if opaque { color.0 } else { over(color.0, *pixel) };
+                    *pixel = if opaque {
+                        color.0
+                    } else {
+                        over(color.0, *pixel)
+                    };
                 }
             }
         }

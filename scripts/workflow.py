@@ -411,6 +411,8 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "fallible-tree",
             "-p",
+            "span-heap",
+            "-p",
             "scheduler-unit",
             "-p",
             "linux-abi",
@@ -449,6 +451,7 @@ def verify_architecture_benchmark(environment: Mapping[str, str] | None = None) 
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "inotify-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "realtime-signals-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "blocked-load-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "span-heap-bench"], environment=environment)
 
 
 def verify_architecture_release(environment: Mapping[str, str] | None = None) -> None:
@@ -622,6 +625,8 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "netstack-unit",
             "-p",
             "fallible-tree",
+            "-p",
+            "span-heap",
             "-p",
             "scheduler-unit",
             "--all-targets",

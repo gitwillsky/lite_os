@@ -666,16 +666,22 @@ impl Context {
         if self.pictures.update(referenced)? {
             // 完成只改变 Canvas 像素，不作废布局，也不向应用发虚假 Configure。
             for host in self.windows.values_mut() {
-                if host.controls().is_ok_and(|tree| {
-                    tree.nodes
-                        .values()
-                        .any(|node| node.drawing.iter().any(|command| command.kind == 7))
-                }) {
+                let tree = host.controls_mut()?;
+                if tree
+                    .nodes
+                    .values()
+                    .any(|node| node.drawing.iter().any(|command| command.kind == 7))
+                {
+                    tree.nodes.invalidate_where(|node| {
+                        node.drawing.iter().any(|command| command.kind == 7)
+                    });
                     host.frame.invalidate();
                 }
             }
         }
+
         let canvas = super::render::CanvasAssets {
+            now: std::time::Instant::now(),
             mono: mono.as_deref(),
             pictures: &self.pictures,
             screen: self.display.screen_size(),
@@ -683,36 +689,54 @@ impl Context {
         for host in self.windows.values_mut() {
             let protocol = host.frame.window();
             layout_record(host, &mut self.display, &mut self.resources)?;
-            let body = &mut host.body;
-            host.frame.paint(
+            if !host.frame.needs_paint(&self.display, &self.resources) {
+                continue;
+            }
+            let configuration = self
+                .display
+                .configuration(protocol)
+                .expect("ready window configuration");
+            let keyboard_focus = self.display.keyboard_focus() == Some(protocol);
+            let font = self.resources.fonts(configuration.scale)?;
+            let tree = match &mut host.body {
+                WindowBody::Widgets(tree) => tree,
+                WindowBody::Sheet(sheet) => &mut sheet.tree,
+                WindowBody::Dialog(dialog) => &mut dialog.tree,
+            };
+            let damage = {
+                let mut scratch = [0];
+                let surface =
+                    canvas::Surface::new(&mut scratch, 1, 1, 1).expect("damage probe surface");
+                let probe = classic_ui::Painter::new(
+                    surface,
+                    self.resources.theme(),
+                    &font,
+                    configuration.scale,
+                );
+                tree.damage(&probe, keyboard_focus, canvas.now)
+            };
+            let presented = host.frame.paint(
                 &mut self.display,
                 &mut self.resources,
                 &host.title,
-                |painter, _client, _, display| {
-                    match body {
-                        WindowBody::Widgets(tree) => {
-                            tree.paint(
-                                painter,
-                                display.keyboard_focus() == Some(protocol),
-                                &canvas,
-                            );
-                        }
-                        WindowBody::Sheet(sheet) => {
-                            sheet.tree.paint(
-                                painter,
-                                display.keyboard_focus() == Some(protocol),
-                                &canvas,
-                            );
-                        }
-                        WindowBody::Dialog(dialog) => dialog.tree.paint(
-                            painter,
-                            display.keyboard_focus() == Some(protocol),
-                            &canvas,
-                        ),
-                    }
+                &damage,
+                |painter, _client, _, _| {
+                    tree.paint(painter, keyboard_focus, &canvas);
                     Ok(())
                 },
             )?;
+            if presented {
+                let mut scratch = [0];
+                let surface =
+                    canvas::Surface::new(&mut scratch, 1, 1, 1).expect("damage probe surface");
+                let probe = classic_ui::Painter::new(
+                    surface,
+                    self.resources.theme(),
+                    &font,
+                    configuration.scale,
+                );
+                tree.presented(&probe, keyboard_focus, canvas.now);
+            }
         }
         Ok(())
     }

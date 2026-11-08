@@ -21,10 +21,10 @@ pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) {
 /// 以前进的 current/有效 Ready root 更新本 CPU 的虚拟时间基准；idle 不重置时钟。
 pub(super) fn update_floor(processor: &mut Processor) {
     discard_stale_ready_roots(processor);
-    let current_vruntime = processor
-        .current
-        .as_ref()
-        .map(|current| current.scheduling.policy.lock().vruntime);
+    let current_vruntime = processor.current.as_ref().and_then(|current| {
+        let policy = current.scheduling.policy.lock();
+        policy.deadline_cpu().is_none().then_some(policy.vruntime)
+    });
     let floor = match (current_vruntime, processor.runqueue.minimum_vruntime()) {
         (Some(current), Some(ready)) => Some(current.min(ready)),
         (current, ready) => current.or(ready),
@@ -36,7 +36,7 @@ pub(super) fn update_floor(processor: &mut Processor) {
 
 #[cold]
 #[inline(never)]
-fn make_runqueue_room(processor: &mut Processor, additional: usize, spare: &mut CfsRunQueue) {
+fn make_runqueue_room(processor: &mut Processor, additional: usize, spare: &mut RunQueue) {
     processor.runqueue.adopt_spare(spare);
     let cpu = processor.cpu_id;
     processor
@@ -50,6 +50,34 @@ fn discard_stale_ready_roots(processor: &mut Processor) {
     processor
         .runqueue
         .discard_stale_roots(|candidate| candidate.is_current_ready(cpu));
+}
+
+/// 将到期的预算等待者转回 EDF；不触碰应用等待身份，不分配，也不重置尚未偿还的执行债务。
+pub(super) fn replenish(processor: &mut Processor) {
+    discard_stale_ready_roots(processor);
+    if processor.runqueue.next_replenishment().is_none() {
+        return;
+    }
+    let now = crate::execution::timer::get_time_ns();
+    while let Some(mut entry) = processor.runqueue.take_due(now) {
+        let state = entry.thread.scheduling.state.lock();
+        if state.run_state()
+            != (RunState::Ready {
+                cpu: processor.cpu_id,
+                generation: entry.generation,
+            })
+        {
+            continue;
+        }
+        entry.key = entry.thread.scheduling.policy.lock().ready_key(|| now);
+        drop(state);
+        if !processor.runqueue.has_room(1) {
+            let mut spare = core::mem::take(&mut current_per_cpu().inbound.lock().spare_runqueue);
+            make_runqueue_room(processor, 1, &mut spare);
+        }
+        processor.runqueue.push(entry);
+        discard_stale_ready_roots(processor);
+    }
 }
 
 #[cold]
@@ -78,8 +106,12 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
         "CPU already owns a current task"
     );
     let slot = current_per_cpu();
+    replenish(processor);
     loop {
-        let entry = processor.runqueue.pop()?;
+        let Some(entry) = processor.runqueue.pop() else {
+            rearm_slice(processor);
+            return None;
+        };
         let mut scheduling = entry.thread.scheduling.state.lock();
         match scheduling.run_state() {
             RunState::Ready { cpu, generation }
@@ -112,6 +144,7 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
 /// # Returns
 /// 本次接管的有效 entry 是否早于已计费 current；空/过期 batch 返回 false。
 pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
+    replenish(processor);
     let slot = current_per_cpu();
     // 锁内只消费进入本轮时的 snapshot；后续 delivery 等待锁，
     // 解锁后留给下一轮。
@@ -124,16 +157,18 @@ pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
             .scheduling
             .policy
             .lock()
-            .checkpoint_for_wakeup(crate::execution::timer::get_time_us())
+            .checkpoint_for_wakeup(crate::execution::timer::get_time_ns)
     });
+    // 耗尽预算的 current 不能靠 EDF 类优先级压住公平任务；只有非空预算补充时刻才读取时钟。
+    let current = current.map(|key| (!key.eligible(crate::execution::timer::get_time_ns), key));
     let mut preempt = false;
     inbound.entries.retain(|candidate| {
         let live = candidate.is_current_ready(processor.cpu_id);
         if live {
             preempt |= crate::thread::scheduler::preemption_policy::local_ready_preempts(
                 current,
-                Some(candidate.vruntime),
-            );
+                Some((false, candidate.key)),
+            ) && candidate.key.eligible(crate::execution::timer::get_time_ns);
         }
         live
     });
@@ -187,14 +222,16 @@ fn deliver_local(entry: RunQueueEntry, cause: ReadyCause) {
             && entry.is_current_ready(processor.cpu_id)
             && crate::thread::scheduler::preemption_policy::local_ready_preempts(
                 processor.current.as_ref().map(|thread| {
-                    thread
+                    let key = thread
                         .scheduling
                         .policy
                         .lock()
-                        .checkpoint_for_wakeup(crate::execution::timer::get_time_us())
+                        .checkpoint_for_wakeup(crate::execution::timer::get_time_ns);
+                    (!key.eligible(crate::execution::timer::get_time_ns), key)
                 }),
-                Some(entry.vruntime),
-            );
+                Some((false, entry.key)),
+            )
+            && entry.key.eligible(crate::execution::timer::get_time_ns);
         processor.add_ready_entry(entry);
         preempt
     });

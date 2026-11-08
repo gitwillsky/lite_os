@@ -112,7 +112,11 @@ fn main() {
             SMALL_PAIR_LIMIT_NS,
         );
     }
-    check("cross-thread free 64B", remote_free(&heap), REMOTE_FREE_LIMIT_NS);
+    check(
+        "cross-thread free 64B",
+        remote_free(&heap),
+        REMOTE_FREE_LIMIT_NS,
+    );
     check("grow 16B..64KiB", growth(&heap), GROWTH_LIMIT_NS);
     if failed {
         std::process::exit(1);

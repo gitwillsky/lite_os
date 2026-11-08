@@ -173,30 +173,27 @@ impl Call<'_> {
         Ok(bytes)
     }
 
-    /// 读取用户内存中的值数组。
-    pub(super) fn read_array<T: Plain>(
+    /// 从用户地址读取 Plain 数组到已准备的存储，不分配；空数组不访问用户指针。
+    /// # Errors
+    /// 地址空间失效或源不可读时返回原生状态，目标可能已部分覆盖。
+    pub(super) fn read_array_into<T: Plain>(
         &self,
         address: usize,
-        count: usize,
-    ) -> Result<Vec<T>, Status> {
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        values.resize(count, T::default());
-        if count != 0 {
-            // SAFETY: Plain 数组按字节连续，长度为 count * size_of::<T>()。
+        values: &mut [T],
+    ) -> Result<(), Status> {
+        if !values.is_empty() {
+            // SAFETY: Plain 允许全部位模式；切片连续且独占，长度取自其实际存储，不另作乘法。
             let bytes = unsafe {
                 core::slice::from_raw_parts_mut(
                     values.as_mut_ptr().cast::<u8>(),
-                    count * core::mem::size_of::<T>(),
+                    core::mem::size_of_val(values),
                 )
             };
             self.space()?
                 .copy_from_user(address, bytes)
                 .map_err(|_| native_abi::ERR_INVALID_POINTER)?;
         }
-        Ok(values)
+        Ok(())
     }
 
     /// 写回用户字节。
@@ -327,6 +324,7 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::THREAD_EXIT => Outcome::Exit,
         call::TASK_KILL => task::task_kill(call),
         call::THREAD_SET_PRIORITY => task::thread_set_priority(call).into(),
+        call::THREAD_SET_DEADLINE => task::thread_set_deadline(call).into(),
         call::TASK_CREATE_EXCEPTION_CHANNEL => task::create_exception_channel(call).into(),
         call::EXCEPTION_RESOLVE => task::exception_resolve(call).into(),
         call::FUTEX_WAIT => futex::wait(call).into(),

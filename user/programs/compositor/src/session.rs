@@ -58,8 +58,6 @@ struct Animation {
     from: (i32, i32, i32, i32),
     to: (i32, i32, i32, i32),
     start: Instant,
-    /// 还原结束才把窗口提升回输入栈；动画中的 surface 只参与合成，不抢占输入。
-    restoring: bool,
 }
 
 /// 动画时长。
@@ -432,14 +430,8 @@ impl Session {
             }
             let timeout = self.step_boot(shell_visible)?;
             if let Some(animation) = &self.animation {
-                if animation.finished()
-                    && let Some((client, surface)) = self
-                        .animation
-                        .take()
-                        .filter(|animation| animation.restoring)
-                        .map(|animation| (animation.client, animation.surface))
-                {
-                    self.stack.raise(client, surface);
+                if animation.finished() {
+                    self.animation = None;
                 }
                 // 每次 DRM flip 完成后合成下一帧，不再叠加 16 ms 定时等待。
                 self.dirty = true;
@@ -892,7 +884,7 @@ impl Session {
             // 缺少它，旧尺寸的缓冲会先跳到新位置，等客户端提交新尺寸才撑满，观感是先移动再拉伸。
             if let (Some(from), Some(placed)) = (before, self.stack.placement(client, surface)) {
                 let to = (placed.x, placed.y, placed.width, placed.height);
-                self.start_animation(client, surface, from, to, false);
+                self.start_animation(client, surface, from, to);
             }
             // 回到普通模式时要带上还原尺寸：普通窗口默认的 0×0 会让客户端留在最大化时的大小。
             self.send_configure(client, surface, Some(size), false);

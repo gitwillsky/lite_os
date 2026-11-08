@@ -64,7 +64,8 @@ pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake, fu
 pub(crate) use parent_death::parent_death_signal;
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
-    SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
+    SchedulerPolicyError, SchedulerPolicyRequest, scheduler_attributes, scheduler_io_priority,
+    scheduler_policy,
 };
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::exit_current_kernel_thread;

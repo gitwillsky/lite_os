@@ -1,5 +1,50 @@
 use super::{DisplayMode, DrmFile, DrmMode};
 
+impl DrmMode {
+    /// 编码为标准 68-byte drm_mode_modeinfo；保留字段清零，名字按当前 CVT 几何生成。
+    pub(super) fn encode(self) -> [u8; 68] {
+        let mut bytes = [0u8; 68];
+        bytes[..4].copy_from_slice(&self.clock.to_ne_bytes());
+        for (offset, value) in [
+            (4, self.hdisplay),
+            (6, self.hsync_start),
+            (8, self.hsync_end),
+            (10, self.htotal),
+            (14, self.vdisplay),
+            (16, self.vsync_start),
+            (18, self.vsync_end),
+            (20, self.vtotal),
+        ] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
+        }
+        for (offset, value) in [(24, self.vrefresh), (28, self.flags), (32, self.mode_type)] {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+        let mut cursor = 36;
+        cursor += decimal(&mut bytes[cursor..], u32::from(self.hdisplay));
+        bytes[cursor] = b'x';
+        cursor += 1;
+        decimal(&mut bytes[cursor..], u32::from(self.vdisplay));
+        bytes
+    }
+}
+fn decimal(output: &mut [u8], mut value: u32) -> usize {
+    let mut reversed = [0u8; 10];
+    let mut length = 0;
+    loop {
+        reversed[length] = b'0' + (value % 10) as u8;
+        length += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for index in 0..length {
+        output[index] = reversed[length - index - 1];
+    }
+    length
+}
+
 pub(super) fn cvt_mode(mode: DisplayMode) -> DrmMode {
     const HV_FACTOR: u64 = 1000;
     const MIN_VSYNC_BACK_PORCH_US: u64 = 550;
@@ -117,16 +162,20 @@ impl DrmFile {
         Ok((mode, cvt_mode(mode)))
     }
 
-    /// 原子读取 completion 已确认的 active CRTC framebuffer 与 mode。
+    /// 原子读取 已接受逻辑配置的 CRTC framebuffer 与 mode。
     ///
     /// # Returns
     ///
     /// 尚未由 userspace modeset 时返回 `None`。
-    pub(crate) fn active_crtc(&self) -> Option<(u32, DrmMode)> {
+    pub(super) fn active_crtc(&self) -> Option<(u32, [u8; 68])> {
         self.device
             .completion
             .lock()
-            .active
-            .map(|active| (active.framebuffer, cvt_mode(active.mode)))
+            .configuration()
+            .and_then(|configuration| {
+                configuration
+                    .encoded_mode()
+                    .map(|mode| (configuration.primary_binding().1, mode))
+            })
     }
 }

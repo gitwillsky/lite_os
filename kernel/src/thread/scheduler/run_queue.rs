@@ -1,4 +1,4 @@
-//! 每 CPU 的就绪队列：按 vruntime 排序的最小堆，过期项惰性删除。
+//! 每 CPU 的公平/EDF/预算补充队列；过期 generation 惰性删除，稳态入队不分配。
 //!
 //! # 它解决什么问题
 //!
@@ -8,7 +8,7 @@
 //! # vruntime 怎么来
 //!
 //! 任务每结束一段 CPU 时间片，就把运行时间按权重等级对应的权重折算后加到 vruntime 上（默认权重时
-//! 1 µs 对应 1024 个单位，权重越大涨得越慢，见 `thread/scheduling.rs`）。新建任务放置到某个
+//! 1 ns 对应 1 个单位，权重越大涨得越慢，见 `thread/scheduling.rs`）。新建任务放置到某个
 //! CPU 时，vruntime 不得低于该 CPU 已发布的单调下限；真实睡眠唤醒最多保留一个时间片的归一化信用。
 //! 不截断旧信用会让长睡眠的服务重新唤醒后压过已经运行的线程，信用调整不计入 CPU 使用时间。
 //!
@@ -38,7 +38,7 @@
 //!
 //! # 抢占与负载均衡
 //!
-//! `local_ready_preempts` 只在队首 vruntime **严格小于**当前任务时才抢占，相等不抢。
+//! 可运行 EDF 优先于公平类；类内键严格更早才请求唤醒抢占，相等不抢。无预算者等待补充，不能压住公平任务。
 //!
 //! 每个 CPU 一个队列，任务被抢占后重新入队时按各 CPU 的负载重新选核，所以大的负载差会被自动修正。负载并列时
 //! 倾向留在原 CPU，这会把 N+1 个任务在 N 个 CPU 上的分布锁死；因此每隔固定次数的抢占会放宽这个倾向，让任务在
@@ -58,140 +58,162 @@ use crate::thread::Thread;
 
 use super::preallocated_heap::PreallocatedHeap;
 
-/// 每 CPU 的 vruntime runqueue。
-pub(crate) struct CfsRunQueue {
-    tasks: PreallocatedHeap<RunQueueEntry>,
+use super::deadline::ReadyKey;
+
+/// 每 CPU 三个有序集合：公平、可运行 EDF、等待补充的 EDF。所有 backing 在线程接纳时预留。
+pub(crate) struct RunQueue {
+    fair: PreallocatedHeap<RunQueueEntry>,
+    deadline: PreallocatedHeap<RunQueueEntry>,
+    throttled: PreallocatedHeap<Throttled>,
 }
 
-/// 带 enqueue generation 的唯一 runqueue membership token。
+/// 带 enqueue generation 的唯一 Ready membership；策略替换推进 generation，迟到 token 无效。
 pub(crate) struct RunQueueEntry {
     pub(crate) thread: Arc<Thread>,
     pub(crate) generation: u64,
-    pub(crate) vruntime: u64,
+    pub(crate) key: ReadyKey,
 }
-
-impl CfsRunQueue {
-    /// 创建尚未接管 backing 的空 Ready 队列。
+struct Throttled(RunQueueEntry);
+impl Throttled {
+    fn time(&self) -> u64 {
+        match self.0.key {
+            ReadyKey::Deadline {
+                not_before: Some(time),
+                ..
+            } => time,
+            _ => panic!("unthrottled entity in replenishment queue"),
+        }
+    }
+}
+impl PartialEq for Throttled {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for Throttled {}
+impl Ord for Throttled {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .time()
+            .cmp(&self.time())
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+impl PartialOrd for Throttled {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl RunQueue {
     pub(crate) const fn new() -> Self {
         Self {
-            tasks: PreallocatedHeap::new(),
+            fair: PreallocatedHeap::new(),
+            deadline: PreallocatedHeap::new(),
+            throttled: PreallocatedHeap::new(),
         }
     }
-
-    /// 在创建线程时为本地 Ready 队列准备替换存储。
-    ///
-    /// # Parameters
-    ///
-    /// - `capacity`: 本次准备接纳的存活线程数上界。
-    ///
-    /// # Returns
-    ///
-    /// 成功返回空 runqueue；heap OOM 返回错误。
+    /// 线程创建可失败阶段准备全部排序集合，切换/补充路径不分配。
     pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, ()> {
         Ok(Self {
-            tasks: PreallocatedHeap::try_with_capacity(capacity)?,
+            fair: PreallocatedHeap::try_with_capacity(capacity)?,
+            deadline: PreallocatedHeap::try_with_capacity(capacity)?,
+            throttled: PreallocatedHeap::try_with_capacity(capacity)?,
         })
     }
-
-    /// 是否能在当前 backing 中直接容纳新增条目。
     pub(crate) fn has_room(&self, additional: usize) -> bool {
-        self.tasks.has_room(additional)
+        self.fair.has_room(additional)
+            && self.deadline.has_room(additional)
+            && self.throttled.has_room(additional)
     }
-
-    /// 在当前 backing 已满时接管更大的备用队列；没有备用存储时维持现状。
     pub(crate) fn adopt_spare(&mut self, spare: &mut Self) {
         if spare.has_room(1) {
-            self.tasks.grow(core::mem::take(spare).tasks);
+            let spare = core::mem::take(spare);
+            self.fair.grow(spare.fair);
+            self.deadline.grow(spare.deadline);
+            self.throttled.grow(spare.throttled);
         }
     }
-
-    /// 仅在 backing capacity 不足时原地清理失效 generation。
-    ///
-    /// # Parameters
-    ///
-    /// - `additional`: 即将插入的 entry 数。
-    /// - `keep`: 判定 entry 是否仍拥有 Ready membership。
-    ///
-    /// # Returns
-    ///
-    /// 删除的 stale entry 数；有 spare capacity 时固定为零且不调用 keep。
-    #[inline(always)]
+    /// 只在容量不足时清理失效 token；三个集合各自容量可容纳全部存活线程。
     pub(crate) fn make_room(
         &mut self,
         additional: usize,
-        keep: impl FnMut(&RunQueueEntry) -> bool,
+        mut keep: impl FnMut(&RunQueueEntry) -> bool,
     ) -> usize {
-        self.tasks.make_room(additional, keep)
+        self.fair.make_room(additional, &mut keep)
+            + self.deadline.make_room(additional, &mut keep)
+            + self.throttled.make_room(additional, |entry| keep(&entry.0))
     }
-
-    /// 清除连续 stale heap root，使 minimum vruntime 对应 live token。
-    ///
-    /// # Parameters
-    ///
-    /// - `keep`: 判定 root 是否仍拥有 Ready membership。
-    ///
-    /// # Returns
-    ///
-    /// 删除的 stale root 数。
-    #[inline(always)]
     pub(crate) fn discard_stale_roots(
         &mut self,
-        keep: impl FnMut(&RunQueueEntry) -> bool,
+        mut keep: impl FnMut(&RunQueueEntry) -> bool,
     ) -> usize {
-        self.tasks.discard_invalid_roots(keep)
+        self.fair.discard_invalid_roots(&mut keep)
+            + self.deadline.discard_invalid_roots(&mut keep)
+            + self.throttled.discard_invalid_roots(|entry| keep(&entry.0))
     }
-
-    /// 插入已经完成 capacity proof 的 Ready token。
     pub(crate) fn push(&mut self, entry: RunQueueEntry) {
-        self.tasks.push(entry);
+        match entry.key {
+            ReadyKey::Fair(_) => self.fair.push(entry),
+            ReadyKey::Deadline {
+                not_before: None, ..
+            } => self.deadline.push(entry),
+            ReadyKey::Deadline {
+                not_before: Some(_),
+                ..
+            } => self.throttled.push(Throttled(entry)),
+        }
     }
-
-    /// 取出 vruntime 最小的 task。
-    ///
-    /// # Returns
-    ///
-    /// 队列为空时为 None，否则返回被移除的 membership owner。
     pub(crate) fn pop(&mut self) -> Option<RunQueueEntry> {
-        self.tasks.pop()
+        self.deadline.pop().or_else(|| self.fair.pop())
     }
-
-    /// 返回当前 Ready heap 的最小 vruntime，用于新 task 的公平 placement。
-    ///
-    /// # Returns
-    ///
-    /// 队列为空时为 `None`。
+    pub(crate) fn take_due(&mut self, now: u64) -> Option<RunQueueEntry> {
+        if self
+            .throttled
+            .peek()
+            .is_some_and(|entry| entry.time() <= now)
+        {
+            self.throttled.pop().map(|entry| entry.0)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn next_replenishment(&self) -> Option<u64> {
+        self.throttled.peek().map(Throttled::time)
+    }
+    pub(crate) fn has_eligible(&self) -> bool {
+        self.deadline.peek().is_some() || self.fair.peek().is_some()
+    }
+    /// CFS 虚拟时钟不能被 EDF 的真实纳秒截止推进。
     pub(crate) fn minimum_vruntime(&self) -> Option<u64> {
-        self.tasks.peek().map(|entry| entry.vruntime)
+        self.fair.peek().map(|entry| match entry.key {
+            ReadyKey::Fair(vruntime) => vruntime,
+            _ => unreachable!(),
+        })
     }
 }
-
-impl Default for CfsRunQueue {
+impl Default for RunQueue {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl PartialEq for RunQueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.vruntime == other.vruntime
+        self.key == other.key
             && self.generation == other.generation
             && self.thread.id() == other.thread.id()
     }
 }
-
 impl Eq for RunQueueEntry {}
-
 impl PartialOrd for RunQueueEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-
 impl Ord for RunQueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // 1. vruntime 小者优先；2. 线程 id/generation 形成稳定全序，避免 Ord 与 Eq 不一致。
-        let by_vruntime = other.vruntime.cmp(&self.vruntime);
-        by_vruntime
+        other
+            .key
+            .cmp(&self.key)
             .then_with(|| other.thread.id().cmp(&self.thread.id()))
             .then_with(|| other.generation.cmp(&self.generation))
     }

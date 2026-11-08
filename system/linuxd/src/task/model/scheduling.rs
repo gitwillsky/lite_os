@@ -177,11 +177,32 @@ impl Drop for SchedulingState {
 }
 
 /// Linux 调度属性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeadlineParameters {
+    pub(crate) runtime: u64,
+    pub(crate) deadline: u64,
+    pub(crate) period: u64,
+}
+
+/// Linux sched_attr 的领域值，不包含用户地址、原始尺寸或内核动态预算。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SchedulingAttributes {
+    pub(crate) policy: u32,
+    pub(crate) flags: u64,
+    pub(crate) nice: i32,
+    pub(crate) priority: u32,
+    pub(crate) runtime: u64,
+    pub(crate) deadline: u64,
+    pub(crate) period: u64,
+}
+
+/// Linux 策略配置；原生调度器独占动态预算/队列与准入，不镜像它的运行状态。
 #[derive(Debug, Clone)]
 pub(crate) struct Sched {
     pub(crate) nice: i32,
     reset_on_fork: bool,
     io_priority: u16,
+    deadline: Option<DeadlineParameters>,
 }
 
 impl Sched {
@@ -190,12 +211,16 @@ impl Sched {
             nice,
             reset_on_fork: false,
             io_priority: 0,
+            deadline: None,
         }
     }
 
     /// Linux `sched_fork`：reset-on-fork 时负 nice 归零，子线程清除该标志。
-    pub(super) fn forked(&self) -> Self {
-        Self {
+    pub(in crate::task) fn forked(&self) -> Option<Self> {
+        if self.deadline.is_some() && !self.reset_on_fork {
+            return None;
+        }
+        Some(Self {
             nice: if self.reset_on_fork {
                 self.nice.max(0)
             } else {
@@ -203,15 +228,47 @@ impl Sched {
             },
             reset_on_fork: false,
             io_priority: self.io_priority,
+            deadline: None,
+        })
+    }
+
+    pub(in crate::task) fn deadline(&self) -> Option<DeadlineParameters> {
+        self.deadline
+    }
+
+    pub(in crate::task) fn attributes(&self) -> SchedulingAttributes {
+        let (policy, runtime, deadline, period) =
+            self.deadline.map_or((0, 0, 0, 0), |parameters| {
+                (
+                    6,
+                    parameters.runtime,
+                    parameters.deadline,
+                    parameters.period,
+                )
+            });
+        SchedulingAttributes {
+            policy,
+            flags: u64::from(self.reset_on_fork),
+            nice: self.nice,
+            priority: 0,
+            runtime,
+            deadline,
+            period,
         }
     }
 
-    pub(in crate::task) fn reset_on_fork(&mut self, replacement: Option<bool>) -> bool {
-        let previous = self.reset_on_fork;
-        if let Some(replacement) = replacement {
-            self.reset_on_fork = replacement;
+    pub(in crate::task) fn set_attributes(&mut self, attributes: SchedulingAttributes) {
+        self.reset_on_fork = attributes.flags & 1 != 0;
+        if attributes.policy == 6 {
+            self.deadline = Some(DeadlineParameters {
+                runtime: attributes.runtime,
+                deadline: attributes.deadline,
+                period: attributes.period,
+            });
+        } else {
+            self.deadline = None;
+            self.nice = attributes.nice;
         }
-        previous
     }
 
     /// 查询或替换 nice（-20..=19）。
@@ -234,7 +291,11 @@ impl Sched {
 
     /// `/proc` 的动态优先级。
     pub(crate) fn get_dynamic_priority(&self) -> i32 {
-        (20 + self.nice).clamp(0, 39)
+        if self.deadline.is_some() {
+            -101
+        } else {
+            (20 + self.nice).clamp(0, 39)
+        }
     }
 
     /// 内核权重等级（0..40，小者权重大）。
@@ -274,11 +335,15 @@ impl TaskControlBlock {
     ///
     /// # Returns
     ///
-    /// `(start_time_us, nice, priority, runtime_us)`；CPU 时间来自承载线程的内核记账，退出后为冻结值。
-    pub(in crate::task) fn thread_statistics(&self) -> (u64, i32, i32, u64) {
-        let (nice, priority) = {
+    /// `(start_time_us, nice, priority, class, runtime_us)`；CPU 时间来自承载线程的内核记账，退出后为冻结值。
+    pub(in crate::task) fn thread_statistics(&self) -> (u64, i32, i32, u32, u64) {
+        let (nice, priority, class) = {
             let policy = self.scheduling.policy.lock();
-            (policy.nice, policy.get_dynamic_priority())
+            (
+                policy.nice,
+                policy.get_dynamic_priority(),
+                policy.attributes().policy,
+            )
         };
         let start_time_us = if !self.is_kernel_thread() && self.tid() == self.tgid() {
             self.process().start_time_us
@@ -289,19 +354,20 @@ impl TaskControlBlock {
             u64::MAX => self.thread_cpu_time().0,
             retired => retired,
         };
-        (start_time_us, nice, priority, runtime_us)
+        (start_time_us, nice, priority, class, runtime_us)
     }
 }
 
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
-    /// leader 的 `(nice, priority, last_cpu, 退出时冻结的 CPU 时间)`，供僵尸 leader 的投影。
-    pub(in crate::task) fn process_scheduler_snapshot(&self) -> (i32, i32, usize, u64) {
+    /// leader 的 `(nice, priority, policy, last_cpu, 退出时冻结的 CPU 时间)`，供僵尸 leader 的投影。
+    pub(in crate::task) fn process_scheduler_snapshot(&self) -> (i32, i32, u32, usize, u64) {
         let scheduler = self.leader_scheduler.lock().clone();
         let policy = scheduler.policy.lock();
         (
             policy.nice,
             policy.get_dynamic_priority(),
+            policy.attributes().policy,
             scheduler.last_cpu.load(Ordering::Relaxed),
             match scheduler.retired_runtime_us.load(Ordering::Acquire) {
                 u64::MAX => 0,

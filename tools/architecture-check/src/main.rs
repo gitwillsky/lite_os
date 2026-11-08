@@ -108,7 +108,7 @@ fn main() -> ExitCode {
     fallible_map_cost::check(&sources, &mut errors);
     fp_context_contract::check(&root, &mut errors);
     terminal_contract::check_terminal_contract(&sources, &mut errors);
-    terminal_contract::check_pl011_clears_before_draining(&sources, &mut errors);
+    terminal_contract::check_pl011_receive_ack(&sources, &mut errors);
     timer_transaction_cost::check(&root, &mut errors);
     translation_fence_contract::check(&sources, &mut errors);
     unix_connect_contract::check(&sources, &mut errors);

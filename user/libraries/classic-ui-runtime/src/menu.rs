@@ -95,7 +95,7 @@ impl Tree {
         let closed = popup.is_some() && was_active && !menu.state.active();
         if closed {
             // 工具栏下拉按钮在菜单打开期间保持按下外观，菜单关闭时一并恢复。
-            for node in self.nodes.values_mut() {
+            for (_, node) in self.nodes.matching_mut(|node| node.toolbar.is_some()) {
                 node.release_toolbar();
             }
         }

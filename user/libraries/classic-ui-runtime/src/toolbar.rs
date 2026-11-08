@@ -118,14 +118,24 @@ impl Toolbar {
             .filter(|text| !text.is_empty())
     }
 
-    /// 画已到期的工具提示；位置在指针下方，超出 `bounds` 时向内平移。
-    pub fn paint_tip(&self, p: &mut Painter<'_>, pointer: (i32, i32), bounds: Rect, now: Instant) {
-        let Some(text) = self.tip(now) else {
-            return;
-        };
+    /// 绘制与窗口损伤使用同一提示几何；没有到期提示时不覆盖任何像素。
+    pub(super) fn tip_bounds(
+        &self,
+        p: &Painter<'_>,
+        pointer: (i32, i32),
+        bounds: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let text = self.tip(now)?;
         let width = p.measure_role(classic_ui::FontRole::Status, text, false) + 8;
         let x = pointer.0.min(bounds.right() - width).max(bounds.x);
-        p.tooltip(x, pointer.1 + TIP_OFFSET, text);
+        Some(p.tooltip_bounds(x, pointer.1 + TIP_OFFSET, text))
+    }
+    /// 画已到期的工具提示；位置在指针下方，超出 bounds 时向内平移。
+    pub fn paint_tip(&self, p: &mut Painter<'_>, pointer: (i32, i32), bounds: Rect, now: Instant) {
+        if let Some(rect) = self.tip_bounds(p, pointer, bounds, now) {
+            p.tooltip(rect.x, rect.y, self.tip(now).expect("visible tooltip"));
+        }
     }
 
     /// 工具栏的图像高度（comctl32 的位图尺寸对整条工具栏统一）。

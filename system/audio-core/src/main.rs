@@ -108,6 +108,7 @@ fn discover(
     hub: &Arc<EventHub>,
     outputs: &Outputs,
     last: &mut u64,
+    scheduler: &Arc<native_runtime::Resource>,
 ) -> Result<bool, Status> {
     loop {
         let (enumerated, entries) = directory.list(*last)?;
@@ -122,7 +123,7 @@ fn discover(
             let attached = directory
                 .open(&entry)
                 .and_then(|opened| device_protocol::pcm::connect(opened, hub))
-                .and_then(|device| Output::attach(entry.id, device));
+                .and_then(|device| Output::attach(entry.id, device, scheduler.clone()));
             match attached {
                 Ok(output) => outputs.add(output),
                 Err(status) => error!(
@@ -137,6 +138,9 @@ fn discover(
 fn main(mut startup: Startup) -> i64 {
     use launch_protocol::audio_core;
     let outgoing = Channel::from_handle(startup.take(audio_core::OUTGOING));
+    let scheduler = Arc::new(native_runtime::Resource::from_handle(
+        startup.take(audio_core::SCHEDULER),
+    ));
     let directory = DirectoryClient::new(Channel::from_handle(
         startup.take(audio_core::DEVICE_DIRECTORY),
     ));
@@ -150,7 +154,9 @@ fn main(mut startup: Startup) -> i64 {
     // 启动枚举完成后才提供服务：使用者第一次列出输出就看到启动时的全部声卡。
     loop {
         let _ = watch.signal(signals::USER_0, 0);
-        if discover(&directory, &hub, &outputs, &mut last).expect("PCM device directory") {
+        if discover(&directory, &hub, &outputs, &mut last, &scheduler)
+            .expect("PCM device directory")
+        {
             break;
         }
         let _ = watch.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE);
@@ -173,7 +179,7 @@ fn main(mut startup: Startup) -> i64 {
     loop {
         let _ = watch.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE);
         let _ = watch.signal(signals::USER_0, 0);
-        if discover(&directory, &hub, &outputs, &mut last).is_err() {
+        if discover(&directory, &hub, &outputs, &mut last, &scheduler).is_err() {
             native_runtime::task::exit_thread();
         }
     }

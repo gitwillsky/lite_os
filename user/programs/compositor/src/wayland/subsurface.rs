@@ -29,6 +29,8 @@ pub struct ChildView<'a> {
     pub x: i32,
     pub y: i32,
     pub content: &'a Content,
+    pub damage: &'a [canvas::Rect],
+    pub opaque: bool,
 }
 
 /// 子树深度上限：恶意客户端不能用深层嵌套拖慢每帧遍历。
@@ -411,6 +413,21 @@ impl Client {
                     x: origin.0,
                     y: origin.1,
                     content,
+                    damage: state.damage.buffer_rects(),
+                    opaque: content.opaque
+                        || state.current.opaque_region.as_ref().is_some_and(|region| {
+                            i32::try_from(content.offset.0)
+                                .ok()
+                                .zip(i32::try_from(content.offset.1).ok())
+                                .is_some_and(|(x, y)| {
+                                    region.covers(canvas::Rect::new(
+                                        x,
+                                        y,
+                                        content.size.0,
+                                        content.size.1,
+                                    ))
+                                })
+                        }),
                 });
             } else if let Some(Entry {
                 data: Data::Surface(child),

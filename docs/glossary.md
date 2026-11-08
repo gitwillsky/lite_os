@@ -23,7 +23,7 @@
 | IrqMutex / TaskMutex | `IrqMutex` 先关本地中断再自旋，用于中断路径也会访问的数据，临界区内不得睡眠；`TaskMutex` 只能在 task 上下文使用，等待时睡眠，用于需要跨可睡眠 I/O 持有的状态。见 `sync/mod.rs`。 |
 | RAII owner | 用 Rust 值的生命周期持有资源、drop 时归还，例如 `FrameTracker`（物理页区间）。 |
 | Buddy order | 伙伴系统中块大小 2ⁿ 页的指数 n。order n 的块只有一个伙伴，页号为 `B ^ (1 << n)`。见 `memory/frame_allocator.rs`。 |
-| vruntime | 虚拟运行时间。调度器总是运行 vruntime 最小的任务；运行时间按权重折算后累加，nice 越小涨得越慢。见 `task/scheduler/cfs_scheduler.rs`。 |
+| vruntime | 虚拟运行时间。公平类按 vruntime 排序；运行时间按权重折算，nice 越小涨得越慢。可运行截止类优先；见 `kernel/src/thread/scheduler/run_queue.rs`。 |
 | PPN / VPN | 物理页号 / 虚拟页号：地址除以页大小。 |
 | VMA | Virtual Memory Area：进程地址空间里一段权限与后备相同的连续区域。 |
 | COW | Copy-on-write：fork 后父子共享只读页，第一次写入时才复制。 |

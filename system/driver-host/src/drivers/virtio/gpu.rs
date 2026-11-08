@@ -776,6 +776,7 @@ impl GraphicsDevice for VirtIOGpuDevice {
         &self,
         mode: DisplayMode,
         resource_id: u32,
+        damage: Option<DisplayRect>,
     ) -> Result<u64, DisplayError> {
         let mut control = self.control.lock();
         if control.capset.is_none()
@@ -790,6 +791,35 @@ impl GraphicsDevice for VirtIOGpuDevice {
             });
         }
         if mode != control.mode || resource_id == 0 {
+            return Err(DisplayError::InvalidRectangle);
+        }
+        let Some(damage) = damage else {
+            // 提示的损伤全部在输出之外：仍按 exact fence 完成绑定，但无需通知主机重画。
+            let slot = control
+                .commands
+                .idle_index()
+                .ok_or(DisplayError::WouldBlock)?;
+            let capacity = usize::from(control.queue.size);
+            let mut prepared = graphics_command::prepare(
+                VirglCommand::SetScanout { mode, resource_id },
+                control.commands.request_mut(slot).as_mut_slice(),
+                self.device.bti(),
+                capacity,
+            )?;
+            prepared.stage = sequence_policy::RuntimeStage::VirglPresent;
+            return self.publish_prepared(&mut control, slot, prepared, None);
+        };
+        if damage.width == 0
+            || damage.height == 0
+            || damage
+                .x
+                .checked_add(damage.width)
+                .is_none_or(|right| right > mode.width)
+            || damage
+                .y
+                .checked_add(damage.height)
+                .is_none_or(|bottom| bottom > mode.height)
+        {
             return Err(DisplayError::InvalidRectangle);
         }
         let [set_slot, flush_slot] = control
@@ -810,18 +840,13 @@ impl GraphicsDevice for VirtIOGpuDevice {
         let mut flush = graphics_command::prepare(
             VirglCommand::Flush {
                 resource_id,
-                rectangle: DisplayRect {
-                    x: 0,
-                    y: 0,
-                    width: mode.width,
-                    height: mode.height,
-                },
+                rectangle: damage,
             },
             control.commands.request_mut(flush_slot).as_mut_slice(),
             self.device.bti(),
             descriptor_capacity,
         )?;
-        flush.stage = sequence_policy::RuntimeStage::VirglFlush;
+        flush.stage = sequence_policy::RuntimeStage::VirglPresent;
         set_scanout
             .stage
             .validate_successor(flush.stage)

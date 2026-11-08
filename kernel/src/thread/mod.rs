@@ -24,12 +24,14 @@ use spin::{Mutex, Once};
 mod context_switch;
 mod processor;
 mod scheduler;
+pub(crate) use processor::DeadlineError;
+pub(crate) use scheduler::deadline::Parameters as DeadlineParameters;
 mod scheduling;
 mod timer_queue;
 mod user_context;
 mod wait;
 
-pub(crate) use context_switch::yield_current;
+pub(crate) use context_switch::{yield_current, yield_current_period};
 pub(crate) use processor::{cpu_busy_snapshot, take_reschedule};
 pub(crate) use scheduling::{DEFAULT_PRIORITY, PRIORITY_LEVELS};
 use scheduling::{RunState, SchedulingEntity};
@@ -39,7 +41,7 @@ use crate::arch::context::{KernelContext, KernelResume, UserContext};
 use crate::arch::trap::UserTrapEntry;
 use crate::execution::deferred::{self, DeferredWork};
 use crate::execution::sync::LocalIrqGuard;
-use crate::execution::timer::{get_time_ns, get_time_us};
+use crate::execution::timer::get_time_ns;
 use crate::vm::{AddressSpace, KERNEL_SPACE, KernelStack};
 
 const KILLED: u32 = 1 << 0;
@@ -48,8 +50,8 @@ const KICKED: u32 = 1 << 1;
 /// 线程（或进程内全部存活线程之和）的 CPU 时间与上下文切换计数。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Runtime {
-    pub(crate) cpu_us: u64,
-    pub(crate) restricted_us: u64,
+    pub(crate) cpu_ns: u64,
+    pub(crate) restricted_ns: u64,
     pub(crate) voluntary_switches: u64,
     pub(crate) involuntary_switches: u64,
     pub(crate) restricted_faults: u64,
@@ -58,12 +60,20 @@ pub(crate) struct Runtime {
 
 impl Runtime {
     pub(crate) fn add(&mut self, other: Self) {
-        self.cpu_us += other.cpu_us;
-        self.restricted_us += other.restricted_us;
-        self.voluntary_switches += other.voluntary_switches;
-        self.involuntary_switches += other.involuntary_switches;
-        self.restricted_faults += other.restricted_faults;
-        self.restricted_pager_waits += other.restricted_pager_waits;
+        self.cpu_ns = self.cpu_ns.saturating_add(other.cpu_ns);
+        self.restricted_ns = self.restricted_ns.saturating_add(other.restricted_ns);
+        self.voluntary_switches = self
+            .voluntary_switches
+            .saturating_add(other.voluntary_switches);
+        self.involuntary_switches = self
+            .involuntary_switches
+            .saturating_add(other.involuntary_switches);
+        self.restricted_faults = self
+            .restricted_faults
+            .saturating_add(other.restricted_faults);
+        self.restricted_pager_waits = self
+            .restricted_pager_waits
+            .saturating_add(other.restricted_pager_waits);
     }
 }
 
@@ -294,6 +304,8 @@ impl Thread {
     /// 要求线程退出；可中断等待立即结束。
     pub(crate) fn kill(self: &Arc<Self>) {
         self.flags.fetch_or(KILLED, Ordering::Release);
+        // 终止必须能运行清理，不能等一个任意长的 CBS 补充周期；撤销也归还带宽凭据。
+        let _ = processor::replace_deadline(self, None);
         wait::interrupt(self);
         processor::request_thread_reschedule(self);
     }
@@ -323,20 +335,28 @@ impl Thread {
         cpus: crate::execution::cpu::CpuSet,
     ) -> Result<(), ()> {
         let affinity = scheduling::CpuAffinity::restricted_to(cpus).ok_or(())?;
-        processor::replace_affinity(self, affinity);
+        processor::replace_affinity(self, affinity)?;
         Ok(())
+    }
+
+    /// 设置或撤销已验证的 deadline 配置；准入失败不改变原策略。
+    pub(crate) fn set_deadline(
+        self: &Arc<Self>,
+        parameters: Option<scheduler::deadline::Parameters>,
+    ) -> Result<(), DeadlineError> {
+        processor::replace_deadline(self, parameters)
     }
 
     /// CPU 时间与上下文切换计数。
     pub(crate) fn runtime(&self) -> Runtime {
-        let (cpu_us, restricted_us) = {
+        let (cpu_ns, restricted_ns) = {
             let policy = self.scheduling.policy.lock();
-            policy.runtime_at(get_time_us())
+            policy.runtime_at(get_time_ns())
         };
         let state = self.scheduling.state.lock();
         Runtime {
-            cpu_us,
-            restricted_us,
+            cpu_ns,
+            restricted_ns,
             voluntary_switches: state.voluntary_switches,
             involuntary_switches: state.involuntary_switches,
             restricted_faults: state.restricted_faults,
@@ -358,7 +378,7 @@ impl Thread {
         self.scheduling
             .policy
             .lock()
-            .set_restricted(crate::execution::timer::get_time_us(), restricted);
+            .set_restricted(crate::execution::timer::get_time_ns, restricted);
     }
 
     /// 设置权重等级（`0..PRIORITY_LEVELS`，数值越小权重越大）。
@@ -421,7 +441,11 @@ pub(crate) fn exit_current() -> ! {
     let (save, idle) = {
         let thread = processor::with_current_processor(processor::Processor::take_current)
             .expect("exiting thread lost current ownership");
-        thread.scheduling.policy.lock().finish(get_time_us());
+        {
+            let mut policy = thread.scheduling.policy.lock();
+            policy.finish(get_time_ns);
+            policy.retire_deadline();
+        }
         {
             let mut scheduling = thread.scheduling.state.lock();
             assert!(
@@ -463,7 +487,7 @@ pub(crate) fn dispatch_deferred() {
     }
     if work.contains(DeferredWork::TIMER) {
         if let Some(thread) = current() {
-            thread.scheduling.policy.lock().checkpoint(get_time_us());
+            thread.scheduling.policy.lock().checkpoint(get_time_ns);
         }
         crate::crash::note_deferred_progress();
         timer_queue::expire(get_time_ns());

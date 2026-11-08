@@ -264,7 +264,12 @@ impl MemoryFile {
         // 失败不会）；清零后再移交，不能把别的文件内容交给内存文件。
         buffer.bytes(length).fill(0);
         buffer
-            .supply(pager, self.object.vmo(), index * PAGE_SIZE as u64, length as u64)
+            .supply(
+                pager,
+                self.object.vmo(),
+                index * PAGE_SIZE as u64,
+                length as u64,
+            )
             .map_err(|_| FileSystemError::OutOfMemory)
     }
 

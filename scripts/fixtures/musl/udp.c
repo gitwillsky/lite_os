@@ -5,6 +5,8 @@
 #include <net/if.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -373,6 +375,93 @@ static int native_proc_network(void)
     if(fd>=0 || errno!=EACCES) {if(fd>=0) close(fd);return 194;}
     return 0;
 }
+/* 多个 Linux 线程共享同一发送/接收 socket，覆盖数据环 credit 争用与完成载荷复用。
+ * 不依赖 host 模拟 IPC；重复/损坏报文由接收内容和唯一序号共同捕获。 */
+enum { DATA_WORKERS = 12, DATA_ROUNDS = 16 };
+struct data_ring_run {
+    int tx, rx;
+    atomic_int start;
+    atomic_uint seen[DATA_WORKERS];
+};
+struct data_ring_worker { struct data_ring_run *run; unsigned id; int rx; struct sockaddr_in address; };
+static size_t data_length(unsigned id, unsigned sequence)
+{
+    return 31 + (sequence * 179 + id * 13) % 1024;
+}
+static void *data_ring_worker(void *argument)
+{
+    struct data_ring_worker *worker = argument;
+    struct data_ring_run *run = worker->run;
+    int start;
+    while (!(start = atomic_load_explicit(&run->start, memory_order_acquire))) usleep(1000);
+    if (start < 0) return (void *)1;
+    for (unsigned sequence = 0; sequence < DATA_ROUNDS; ++sequence) {
+        unsigned char bytes[1088];
+        size_t length = data_length(worker->id, sequence);
+        bytes[0] = worker->id; bytes[1] = sequence;
+        for (size_t offset = 2; offset < length; ++offset)
+            bytes[offset] = worker->id * 31 + sequence * 17 + offset;
+        if (sendto(run->tx, bytes, length, 0, (void *)&worker->address, sizeof worker->address) != (ssize_t)length) return (void *)1;
+        ssize_t count = recv(worker->rx, bytes, sizeof bytes, 0);
+        if (count < 2 || bytes[0] >= DATA_WORKERS || bytes[1] >= DATA_ROUNDS
+            || bytes[0] != worker->id || (size_t)count != data_length(bytes[0], bytes[1])) return (void *)1;
+        for (size_t offset = 2; offset < (size_t)count; ++offset)
+            if (bytes[offset] != (unsigned char)(bytes[0] * 31 + bytes[1] * 17 + offset)) return (void *)1;
+        unsigned bit = 1u << bytes[1];
+        if (atomic_fetch_or_explicit(&run->seen[bytes[0]], bit, memory_order_relaxed) & bit) return (void *)1;
+    }
+    return 0;
+}
+static int native_data_ring(void)
+{
+    struct data_ring_run run = { .tx = -1, .rx = -1 };
+    atomic_init(&run.start, 0);
+    for (unsigned i = 0; i < DATA_WORKERS; ++i) atomic_init(&run.seen[i], 0);
+    run.rx = socket(AF_INET, SOCK_DGRAM, 0);
+    run.tx = socket(AF_INET, SOCK_DGRAM, 0);
+    int result = 0;
+    if (run.rx < 0 || run.tx < 0) { result = 221; goto done; }
+    struct sockaddr_in local = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    if (bind(run.rx, (void *)&local, sizeof local)) { result = 222; goto done; }
+    local = local_address(run.rx);
+    if (!local.sin_port || connect(run.tx, (void *)&local, sizeof local)) { result = 223; goto done; }
+    /* 零长度也必须进队；PEEK/TRUNC 不得提前归还协议消息。 */
+    unsigned char bytes[97]; memset(bytes, 0x5a, sizeof bytes);
+    unsigned char output[97];
+    if (send(run.tx, bytes, 0, 0) != 0 || recv(run.rx, output, sizeof output, 0) != 0
+        || send(run.tx, bytes, sizeof bytes, 0) != sizeof bytes
+        || recv(run.rx, output, 7, MSG_PEEK | MSG_TRUNC) != sizeof bytes
+        || memcmp(output, bytes, 7) || recv(run.rx, output, sizeof output, 0) != sizeof bytes
+        || memcmp(output, bytes, sizeof bytes)) { result = 224; goto done; }
+    pthread_t threads[DATA_WORKERS];
+    struct data_ring_worker workers[DATA_WORKERS];
+    unsigned created = 0;
+    for (; created < DATA_WORKERS; ++created) {
+        /* UDP 不保证满队列不丢包；每线程只留一个未收报文，仍以 12 个调用者竞争同一 SQ/CQ。 */
+        int rx = socket(AF_INET, SOCK_DGRAM, 0);
+        local.sin_port = 0;
+        if (rx < 0 || bind(rx, (void *)&local, sizeof local)) {
+            if (rx >= 0) close(rx);
+            result = 225; break;
+        }
+        workers[created] = (struct data_ring_worker){ .run = &run, .id = created, .rx = rx, .address = local_address(rx) };
+        if (pthread_create(&threads[created], 0, data_ring_worker, &workers[created])) {
+            close(rx); result = 225; break;
+        }
+    }
+    atomic_store_explicit(&run.start, result ? -1 : 1, memory_order_release);
+    for (unsigned i = 0; i < created; ++i) {
+        void *failure;
+        if (pthread_join(threads[i], &failure) || failure) result = 226;
+        close(workers[i].rx);
+    }
+    for (unsigned i = 0; !result && i < DATA_WORKERS; ++i)
+        if (atomic_load_explicit(&run.seen[i], memory_order_relaxed) != (1u << DATA_ROUNDS) - 1) result = 227;
+done:
+    if (run.tx >= 0) close(run.tx);
+    if (run.rx >= 0) close(run.rx);
+    return result;
+}
 int verify_udp_native(void)
 {
     int control=socket(AF_INET,SOCK_DGRAM,0); if(control<0) return 235;
@@ -398,7 +487,8 @@ int verify_udp_native(void)
     inet_pton(AF_INET,"10.0.2.16",&peer.sin_addr);
     struct ifreq up=saved_flags; up.ifr_flags|=IFF_UP;
     if(configure(control,SIOCSIFADDR,&address) || configure(control,SIOCSIFNETMASK,&mask) || ioctl(control,SIOCSIFFLAGS,&up)) return 237;
-    result=native_options();
+    result=native_data_ring();
+    if(!result) result=native_options();
     if(!result) result=native_raw_header();
     if(!result) result=native_pktinfo();
     if(!result) result=native_proc_network();

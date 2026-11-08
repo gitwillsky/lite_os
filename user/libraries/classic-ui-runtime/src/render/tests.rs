@@ -64,3 +64,142 @@ fn pending_or_cancelled_label_editor_restores_the_original_label() {
         assert_eq!(paint_labels(mode, Some(true), 1), original);
     }
 }
+
+// 原有标签用例只覆盖单次绘制；这里用生产 Tree 损伤与整帧光栅逐像素对账，
+// 捕获移除/移动控件或关闭覆盖层后残影，以及无变化定时推进导致全树失效的回归。
+#[test]
+fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_popup_changes() {
+    for scale in [1, 2] {
+        let bounds = Rect::new(0, 0, 220, 130);
+        let theme = Theme::classic();
+        let catalog = typeface::FontCatalog::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts"),
+        )
+        .unwrap();
+        let fonts = Fonts::new(Rc::new(catalog), &theme.fonts, scale as u32);
+        let pictures = PictureLoader::default();
+        let now = std::time::Instant::now();
+        let assets = CanvasAssets {
+            mono: None,
+            pictures: &pictures,
+            screen: None,
+            now,
+        };
+        let mut scratch = [0];
+        let probe = Painter::new(
+            Surface::new(&mut scratch, 1, 1, 1).unwrap(),
+            &theme,
+            &fonts,
+            scale,
+        );
+        let spec = |kind| classic_ui_abi::Widget {
+            kind,
+            state: 0,
+            group: 0,
+            layout: Default::default(),
+            text: classic_ui_abi::Text {
+                data: std::ptr::null(),
+                len: 0,
+            },
+        };
+        let mut tree = Tree::new();
+        tree.layout_bounds = Some((bounds, scale));
+        let button = tree.insert(0, spec(widget::BUTTON), "确定".into()).unwrap();
+        let label = tree
+            .insert(0, spec(widget::LABEL), "原始文本".into())
+            .unwrap();
+        let popup = tree
+            .insert(0, spec(widget::POPUP_MENU), String::new())
+            .unwrap();
+        for (id, rect) in [
+            (button, Rect::new(8, 8, 70, 24)),
+            (label, Rect::new(8, 50, 100, 22)),
+        ] {
+            let node = tree.nodes.get_mut(&id).unwrap();
+            node.rect = rect;
+            node.clip = rect;
+        }
+        tree.nodes
+            .get_mut(&popup)
+            .unwrap()
+            .menu
+            .as_mut()
+            .unwrap()
+            .entries = vec![classic_ui::DropMenu {
+            title: String::new(),
+            items: vec![classic_ui::DropItem::new("打开".into(), String::new(), 1)],
+        }];
+        let (width, height) = (bounds.width * scale, bounds.height * scale);
+        let paint = |tree: &Tree, pixels: &mut [u32], regions: &[Rect]| {
+            let mut painter = Painter::new(
+                Surface::new(pixels, width, height, width as usize).unwrap(),
+                &theme,
+                &fonts,
+                scale,
+            );
+            for region in regions {
+                painter.clipped(*region, |painter| {
+                    painter.fill(bounds, C::ButtonFace);
+                    tree.paint(painter, true, &assets);
+                });
+            }
+        };
+        let mut retained = vec![0; (width * height) as usize];
+        paint(&tree, &mut retained, &[bounds]);
+        tree.presented(&probe, true, now);
+        for step in 0..6 {
+            match step {
+                0 => tree.nodes.get_mut(&label).unwrap().text = "新的内容".into(),
+                1 => tree.focus = Some(button),
+                2 => {
+                    let node = tree.nodes.get_mut(&button).unwrap();
+                    node.rect = Rect::new(125, 8, 70, 24);
+                    node.clip = node.rect;
+                }
+                3 => {
+                    let menu = tree.nodes.get_mut(&popup).unwrap().menu.as_mut().unwrap();
+                    menu.state
+                        .show_popup(&probe, &menu.entries, (50, 40), bounds);
+                }
+                4 => tree
+                    .nodes
+                    .get_mut(&popup)
+                    .unwrap()
+                    .menu
+                    .as_mut()
+                    .unwrap()
+                    .state
+                    .close(),
+                5 => tree.remove(label).unwrap(),
+                _ => unreachable!(),
+            }
+            let damage = tree.damage(&probe, true, now);
+            assert!(
+                !damage.is_empty(),
+                "missing damage: step={step}, scale={scale}"
+            );
+            if step == 0 {
+                assert!(
+                    damage
+                        .iter()
+                        .all(|rect| rect.intersect(Rect::new(8, 8, 70, 24)).is_empty()),
+                    "text update invalidated unrelated button"
+                );
+            }
+            paint(&tree, &mut retained, &damage);
+            let mut reference = vec![0; retained.len()];
+            paint(&tree, &mut reference, &[bounds]);
+            assert_eq!(
+                retained, reference,
+                "incomplete damage: step={step}, scale={scale}"
+            );
+            tree.presented(&probe, true, now);
+            assert!(tree.damage(&probe, true, now).is_empty());
+            assert!(!tree.animate(now + std::time::Duration::from_millis(10)));
+            assert!(
+                tree.damage(&probe, true, now).is_empty(),
+                "idle animation check dirtied nodes"
+            );
+        }
+    }
+}

@@ -18,13 +18,13 @@
 
 /// 同一 CPU 在多少次抢占后允许放宽亲和偏置。
 ///
-/// 时间片是一个 scheduler tick（10 ms），所以约每 100 ms 轮转一次；再短会让缓存亲和形同虚设，
+/// 竞争时间片为 10 ms，所以约每 100 ms 轮转一次；再短会让缓存亲和形同虚设，
 /// 再长则公平性收敛太慢。
 pub(crate) const ROTATION_INTERVAL_PREEMPTIONS: u32 = 10;
 
 /// 线程在本核执行满一个轮转窗口后，才可为负载并列再次迁移。
-pub(crate) const fn can_rotate(runtime_on_cpu_us: u64, quantum_us: u64) -> bool {
-    runtime_on_cpu_us >= quantum_us.saturating_mul(ROTATION_INTERVAL_PREEMPTIONS as u64)
+pub(crate) const fn can_rotate(runtime_on_cpu_ns: u64, quantum_ns: u64) -> bool {
+    runtime_on_cpu_ns >= quantum_ns.saturating_mul(ROTATION_INTERVAL_PREEMPTIONS as u64)
 }
 
 /// 推进一个 CPU 的抢占计数。

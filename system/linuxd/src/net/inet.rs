@@ -1,7 +1,7 @@
 //! AF_INET：协议状态（TCP/UDP/ICMP/RAW endpoint、接口与 FIB）属于 netstack。
 //!
-//! 1. socket 的每个操作经它的 socket channel 转发，netstack 侧全部不阻塞；阻塞、超时与信号中断由本层
-//!    的调用者经本地 wait source 完成；
+//! 1. 控制操作经 socket channel，send/receive/poll 经该 socket 的固定共享 SQ/CQ；netstack 不等待网络进展。
+//!    Linux 阻塞、超时与信号中断由本层调用者经本地 wait source 完成；
 //! 2. netstack 在就绪状态可能变化时置位 socket 的就绪 Event，分派线程据此唤醒本地 notification，
 //!    等待者被唤醒后重新查询电平状态；
 //! 3. 接口与路由的查询和配置经所在网络域的域 channel 转发。
@@ -58,9 +58,9 @@ impl InetSocket {
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
         namespace: Arc<NetNamespace>,
     ) -> Result<Arc<Self>, SocketError> {
-        let readiness = netstack::bind_readiness(endpoint.readiness, &notify.1)?;
+        let readiness = netstack::bind_readiness(endpoint.readiness, &endpoint.channel, &notify.1)?;
         Arc::try_new(Self {
-            remote: RemoteInetSocket::new(endpoint.channel),
+            remote: RemoteInetSocket::new(endpoint.channel)?,
             namespace,
             stream,
             readiness,

@@ -75,7 +75,11 @@ mod tests {
         assert_eq!(cache.get(&0), Some(0));
         assert_eq!(cache.get(&1), Some(10));
         cache.insert(100, 1000);
-        assert_eq!(cache.len(), 7, "a quarter of eight entries is evicted, then one is added");
+        assert_eq!(
+            cache.len(),
+            7,
+            "a quarter of eight entries is evicted, then one is added"
+        );
         assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), None);
         for hot in [0, 1, 4, 5, 6, 7, 100] {

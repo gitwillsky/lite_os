@@ -19,7 +19,7 @@ pub(super) enum RuntimeStage {
     UnrefDisabled(u8),
     Virgl,
     VirglSetScanout,
-    VirglFlush,
+    VirglPresent,
 }
 
 /// completion 与 next command 不属于同一合法 GPU protocol chain。
@@ -39,8 +39,8 @@ impl RuntimeStage {
             | (Self::TransferScanout, Self::SetScanout)
             | (Self::SetScanout, Self::FlushScanout)
             | (Self::FlushScanout, Self::UnrefBoot)
-            | (Self::VirglFlush, Self::UnrefBoot)
-            | (Self::VirglSetScanout, Self::VirglFlush)
+            | (Self::VirglPresent, Self::UnrefBoot)
+            | (Self::VirglSetScanout, Self::VirglPresent)
             | (Self::DisableScanout, Self::UnrefDisabled(_)) => true,
             (Self::UnrefDisabled(previous), Self::UnrefDisabled(next)) => next > previous,
             _ => false,
@@ -131,8 +131,8 @@ mod tests {
 
     #[test]
     fn virgl_scanout_requires_flush_as_the_visibility_edge() {
-        assert!(RuntimeStage::VirglSetScanout.allows(RuntimeStage::VirglFlush));
-        assert!(RuntimeStage::VirglFlush.allows(RuntimeStage::UnrefBoot));
+        assert!(RuntimeStage::VirglSetScanout.allows(RuntimeStage::VirglPresent));
+        assert!(RuntimeStage::VirglPresent.allows(RuntimeStage::UnrefBoot));
         assert!(!RuntimeStage::VirglSetScanout.allows(RuntimeStage::UnrefBoot));
         assert!(
             RuntimeStage::VirglSetScanout
@@ -140,7 +140,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            RuntimeStage::VirglFlush
+            RuntimeStage::VirglPresent
                 .validate_successor(RuntimeStage::VirglSetScanout)
                 .is_err()
         );

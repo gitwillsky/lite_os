@@ -26,6 +26,8 @@ use super::{
 use crate::vm::{AddressSpace, Vmar, Vmo};
 use fallible_tree::FallibleMap;
 
+mod scheduling;
+
 const NAME_CAPACITY: usize = 32;
 
 /// 定长对象名。
@@ -723,6 +725,7 @@ pub(crate) struct Thread {
     signals: SignalState,
     execution: Mutex<Execution>,
     restricted: Mutex<Restricted>,
+    channel_call: super::channel::CallSlot,
 }
 
 impl Thread {
@@ -740,6 +743,7 @@ impl Thread {
             process: process.clone(),
             signals: SignalState::new(0),
             execution: Mutex::new(Execution::Created(PendingScheduling::default())),
+            channel_call: super::channel::CallSlot::new(),
             restricted: Mutex::new(Restricted {
                 state: None,
                 mode: Mode::Normal,
@@ -747,6 +751,22 @@ impl Thread {
             }),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)
+    }
+
+    /// 使用本线程的调用槽执行同步 channel 事务；仅当前执行体可调用。
+    /// # Parameters
+    /// `channel` 是目标端点，`message` 是独占请求；`deadline` 是单调绝对截止时刻，None 为无限等待。
+    /// # Returns
+    /// 成功交付回复；失败状态与尚未发表的请求一同返回，完成/取消后归还空闲槽。
+    /// # Errors
+    /// 与 Channel::call 相同；准备失败时交还请求，完成/取消后才归还空闲槽。
+    pub(crate) fn channel_call(
+        &self,
+        channel: &super::Channel,
+        message: super::Message,
+        deadline: Option<u64>,
+    ) -> Result<super::Message, (Status, Option<super::Message>)> {
+        channel.call(&self.channel_call, message, deadline)
     }
 
     /// 所属进程。
@@ -842,6 +862,7 @@ impl Thread {
 
     /// 执行体退出后调用一次（由 `ThreadOwner::exited`）。
     pub(crate) fn exited(&self) {
+        self.channel_call.retire();
         self.restricted.lock().state = None;
         self.signals.update(0, signals::TERMINATED);
         self.process.complete_thread(self);
@@ -855,62 +876,13 @@ impl Thread {
         }
     }
 
-    /// 设置权重等级；未启动的线程在启动时应用。
-    ///
-    /// # Errors
-    /// 等级越界返回 `ERR_INVALID_ARGS`；已退出返回 `ERR_BAD_STATE`。
-    pub(crate) fn set_priority(&self, priority: u8) -> Result<(), Status> {
-        if priority >= crate::thread::PRIORITY_LEVELS {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        match &mut *self.execution.lock() {
-            Execution::Created(pending) => pending.priority = Some(priority),
-            Execution::Running(thread) => thread
-                .set_priority(priority)
-                .map_err(|()| native_abi::ERR_INVALID_ARGS)?,
-            Execution::Exited => return Err(native_abi::ERR_BAD_STATE),
-        }
-        Ok(())
-    }
-
-    /// 限制可运行的 CPU；未启动的线程在启动时应用。
-    ///
-    /// # Errors
-    /// 集合与 possible CPU 不相交返回 `ERR_INVALID_ARGS`；已退出返回 `ERR_BAD_STATE`。
-    pub(crate) fn set_affinity(&self, cpus: crate::execution::cpu::CpuSet) -> Result<(), Status> {
-        if (cpus & crate::execution::cpu::possible()).is_empty() {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        let running = match &mut *self.execution.lock() {
-            Execution::Created(pending) => {
-                pending.affinity = Some(cpus);
-                None
-            }
-            Execution::Running(thread) => Some(thread.clone()),
-            Execution::Exited => return Err(native_abi::ERR_BAD_STATE),
-        };
-        // 迁移在执行状态锁外进行：调度器锁不嵌套在对象锁内。
-        if let Some(thread) = running {
-            thread
-                .set_affinity(cpus)
-                .map_err(|()| native_abi::ERR_INVALID_ARGS)?;
-        }
-        Ok(())
-    }
-
-    /// 已消耗的 CPU 时间。
-    pub(crate) fn runtime(&self) -> crate::thread::Runtime {
-        self.execution()
-            .map_or_else(Default::default, |thread| thread.runtime())
-    }
-
     /// 绑定 restricted 状态 VMO。
     ///
     /// # Errors
     /// 固定状态页或分配失败。
     pub(crate) fn bind_restricted_state(&self, vmo: Arc<Vmo>) -> Result<(), Status> {
-        let binding =
-            Arc::try_new(RestrictedStateBinding::new(vmo)?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let binding = Arc::try_new(RestrictedStateBinding::new(vmo)?)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         self.restricted.lock().state = Some(binding);
         Ok(())
     }

@@ -1,6 +1,6 @@
 //! AF_PACKET：链路层 tap、接收队列与发送属于 netstack（帧在协议栈解析前镜像给匹配的 endpoint）。
 //!
-//! 操作经 socket channel 转发；就绪经 netstack 置位的 Event 唤醒本地 notification，见 [`super::netstack`]。
+//! 控制经 socket channel、收发与 poll 经固定共享 SQ/CQ；就绪经 netstack 置位的 Event 唤醒本地 notification，见 [`super::netstack`]。
 
 use alloc::sync::Arc;
 
@@ -42,9 +42,9 @@ impl PacketSocket {
         };
         let endpoint = netstack::protocol(&namespace)?.packet_socket(kind, protocol)?;
         // 失败时 channel 随之关闭，netstack 关闭该 endpoint。
-        let readiness = netstack::bind_readiness(endpoint.readiness, &notify.1)?;
+        let readiness = netstack::bind_readiness(endpoint.readiness, &endpoint.channel, &notify.1)?;
         Arc::try_new(Self {
-            remote: RemotePacketSocket::new(endpoint.channel),
+            remote: RemotePacketSocket::new(endpoint.channel)?,
             readiness,
             notify_read: notify.0,
             notify_write: notify.1,

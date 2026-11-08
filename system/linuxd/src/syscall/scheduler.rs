@@ -40,6 +40,8 @@ fn policy_error(error: SchedulerPolicyError) -> isize {
         SchedulerPolicyError::NotFound => -errno::ESRCH,
         SchedulerPolicyError::OutOfMemory => -errno::ENOMEM,
         SchedulerPolicyError::Permission => -errno::EPERM,
+        SchedulerPolicyError::Busy => -errno::EBUSY,
+        SchedulerPolicyError::Unsupported => -errno::EOPNOTSUPP,
     }
 }
 
@@ -416,5 +418,142 @@ pub(crate) fn sys_sched_getaffinity(tid: i32, length: u32, output: usize) -> isi
 pub(crate) fn sys_sched_yield() -> isize {
     // 截止时间已过的 nanosleep 即让出 CPU。
     let _ = native_runtime::system::sleep_until(0);
+    0
+}
+
+const SCHED_ATTR_SIZE: usize = 56;
+const SCHED_ATTR_MIN: usize = 48;
+
+/// Linux sched_setattr：复制版本化 sched_attr，未知尾部必须全零；不在持有任务策略锁时访问用户页。
+/// # Parameters
+/// tid 使用当前 PID namespace，address 指向 sched_attr，flags 必须为零。
+/// # Returns
+/// 成功为零；尺寸不兼容写回支持尺寸并返回 E2BIG，用户页错误 EFAULT，领域错误按标准 errno 返回。
+pub(crate) fn sys_sched_setattr(tid: i32, address: usize, flags: u32) -> isize {
+    if tid < 0 || address == 0 || flags != 0 {
+        return -errno::EINVAL;
+    }
+    let task = current_task().expect("sched_setattr requires current task");
+    let mut header = [0u8; 4];
+    if task.copy_from_user(address, &mut header).is_err() {
+        return -errno::EFAULT;
+    }
+    let size = match u32::from_ne_bytes(header) {
+        0 => SCHED_ATTR_MIN,
+        size => size as usize,
+    };
+    let bad_size = || {
+        let _ = task.copy_to_user(address, &(SCHED_ATTR_SIZE as u32).to_ne_bytes());
+        -errno::E2BIG
+    };
+    if !(SCHED_ATTR_MIN..=4096).contains(&size) {
+        return bad_size();
+    }
+    let mut bytes = [0u8; SCHED_ATTR_SIZE];
+    if task
+        .copy_from_user(address, &mut bytes[..size.min(SCHED_ATTR_SIZE)])
+        .is_err()
+    {
+        return -errno::EFAULT;
+    }
+    let mut offset = SCHED_ATTR_SIZE;
+    let mut tail = [0u8; 128];
+    while offset < size {
+        let count = (size - offset).min(tail.len());
+        let Some(position) = address.checked_add(offset) else {
+            return -errno::EFAULT;
+        };
+        if task.copy_from_user(position, &mut tail[..count]).is_err() {
+            return -errno::EFAULT;
+        }
+        if tail[..count].iter().any(|&byte| byte != 0) {
+            return bad_size();
+        }
+        offset += count;
+    }
+    let u32_at = |offset| {
+        u32::from_ne_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("sched_attr field"),
+        )
+    };
+    let u64_at = |offset| {
+        u64::from_ne_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("sched_attr field"),
+        )
+    };
+    let flags = u64_at(8);
+    if u32_at(4) > i32::MAX as u32 {
+        return -errno::EINVAL;
+    }
+    if flags & (32 | 64) != 0 && size < SCHED_ATTR_SIZE {
+        return -errno::EINVAL;
+    }
+    crate::task::scheduler_attributes(
+        tid as usize,
+        Some(crate::task::SchedulingAttributes {
+            policy: u32_at(4),
+            flags,
+            nice: (u32_at(16) as i32).clamp(-20, 19),
+            priority: u32_at(20),
+            runtime: u64_at(24),
+            deadline: u64_at(32),
+            period: u64_at(40),
+        }),
+    )
+    .map(|_| 0)
+    .unwrap_or_else(policy_error)
+}
+
+/// Linux sched_getattr：返回配置，不把 CBS 当前剩余额度当作 runtime 配置值。
+/// # Parameters
+/// tid 为 namespace TID，address 是输出，size 必须在 48..=PAGE_SIZE；当前仅支持零 flags。
+/// # Returns
+/// 成功零，尺寸/flags 非法 EINVAL、目标不存在 ESRCH、copyout 错误 EFAULT。
+pub(crate) fn sys_sched_getattr(tid: i32, address: usize, size: u32, flags: u32) -> isize {
+    let size = size as usize;
+    if tid < 0 || address == 0 || !(SCHED_ATTR_MIN..=4096).contains(&size) {
+        return -errno::EINVAL;
+    }
+    let attributes = match crate::task::scheduler_attributes(tid as usize, None) {
+        Ok(attributes) => attributes,
+        Err(error) => return policy_error(error),
+    };
+    if flags != 0 {
+        return -errno::EINVAL;
+    }
+    let mut bytes = [0u8; SCHED_ATTR_SIZE];
+    bytes[..4].copy_from_slice(&(size.min(SCHED_ATTR_SIZE) as u32).to_ne_bytes());
+    bytes[4..8].copy_from_slice(&attributes.policy.to_ne_bytes());
+    bytes[8..16].copy_from_slice(&attributes.flags.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&attributes.nice.to_ne_bytes());
+    bytes[20..24].copy_from_slice(&attributes.priority.to_ne_bytes());
+    bytes[24..32].copy_from_slice(&attributes.runtime.to_ne_bytes());
+    bytes[32..40].copy_from_slice(&attributes.deadline.to_ne_bytes());
+    bytes[40..48].copy_from_slice(&attributes.period.to_ne_bytes());
+    // 未启用 util clamp，按标准默认范围投影，不宣称具有调频或任务夹紧机制。
+    bytes[52..56].copy_from_slice(&1024u32.to_ne_bytes());
+    let task = current_task().expect("sched_getattr requires current task");
+    if task
+        .copy_to_user(address, &bytes[..size.min(SCHED_ATTR_SIZE)])
+        .is_err()
+    {
+        return -errno::EFAULT;
+    }
+    let zero = [0u8; 128];
+    let mut offset = SCHED_ATTR_SIZE;
+    while offset < size {
+        let count = (size - offset).min(zero.len());
+        let Some(position) = address.checked_add(offset) else {
+            return -errno::EFAULT;
+        };
+        if task.copy_to_user(position, &zero[..count]).is_err() {
+            return -errno::EFAULT;
+        }
+        offset += count;
+    }
     0
 }

@@ -75,37 +75,39 @@ impl HandleTable {
 
     /// 插入一组句柄；全部成功或全部失败。
     ///
+    /// # Parameters
+    /// - `entries`: 消息独占的句柄存储；成功后长度为零，失败不变。
+    /// - `output`: 写入与 entries 原顺序一致的句柄值，长度至少为 entries.len()。
     /// # Returns
-    /// 与输入顺序一致的句柄值。
-    ///
+    /// 成功时返回空值，原元素全部移入目标表，保留输入 Vec 的容量。
     /// # Errors
-    /// 超过上限返回 `ERR_NO_RESOURCES`，分配失败返回 `ERR_NO_MEMORY`，表已关闭返回 `ERR_BAD_STATE`；
-    /// 失败时 entries 原样交还调用者以便在锁外释放。
+    /// 输出不足返回 `ERR_BUFFER_TOO_SMALL`，超过上限返回 `ERR_NO_RESOURCES`，分配失败返回 `ERR_NO_MEMORY`，表已关闭返回 `ERR_BAD_STATE`；
+    /// 失败时 entries 保持原样，调用者在锁外释放；成功只移出元素，保留消息缓冲容量。
     pub(crate) fn insert_all(
         &self,
-        entries: Vec<HandleEntry>,
-        output: &mut Vec<Handle>,
-    ) -> Result<(), (Status, Vec<HandleEntry>)> {
-        if output.try_reserve_exact(entries.len()).is_err() {
-            return Err((native_abi::ERR_NO_MEMORY, entries));
+        entries: &mut Vec<HandleEntry>,
+        output: &mut [Handle],
+    ) -> Result<(), Status> {
+        if output.len() < entries.len() {
+            return Err(native_abi::ERR_BUFFER_TOO_SMALL);
         }
         let count = entries.len();
         let guard = lock_with_spare(
             &self.inner,
-            |inner| count.saturating_sub(inner.free_count),
+            |inner| inner.additional_slots(count),
             |inner| &mut inner.slots,
         );
         let Ok(mut inner) = guard else {
-            return Err((native_abi::ERR_NO_MEMORY, entries));
+            return Err(native_abi::ERR_NO_MEMORY);
         };
         if inner.closed {
-            return Err((native_abi::ERR_BAD_STATE, entries));
+            return Err(native_abi::ERR_BAD_STATE);
         }
         if inner.slots.len() - inner.free_count + count > MAX_HANDLES {
-            return Err((native_abi::ERR_NO_RESOURCES, entries));
+            return Err(native_abi::ERR_NO_RESOURCES);
         }
-        for entry in entries {
-            output.push(inner.insert(entry));
+        for (output, entry) in output.iter_mut().zip(entries.drain(..)) {
+            *output = inner.insert(entry);
         }
         Ok(())
     }
@@ -115,15 +117,19 @@ impl HandleTable {
     /// # Errors
     /// 同 [`Self::insert_all`]；失败时 entry 在锁外释放。
     pub(crate) fn insert(&self, entry: HandleEntry) -> Result<Handle, Status> {
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(1)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        entries.push(entry);
-        let mut output = Vec::new();
-        self.insert_all(entries, &mut output)
-            .map_err(|(status, _)| status)?;
-        Ok(output[0])
+        let mut inner = lock_with_spare(
+            &self.inner,
+            |inner| inner.additional_slots(1),
+            |inner| &mut inner.slots,
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        if inner.closed {
+            return Err(native_abi::ERR_BAD_STATE);
+        }
+        if inner.slots.len() - inner.free_count == MAX_HANDLES {
+            return Err(native_abi::ERR_NO_RESOURCES);
+        }
+        Ok(inner.insert(entry))
     }
 
     /// 读取句柄引用的对象。
@@ -139,22 +145,31 @@ impl HandleTable {
             .expect("located handle slot is live"))
     }
 
-    /// 移出句柄；调用者在锁外释放返回值。
+    /// 移出句柄并在表锁外取消其旧 key 的等待；调用者独占返回的能力。
     ///
     /// # Errors
     /// 句柄不存在返回 `ERR_BAD_HANDLE`。
     pub(crate) fn remove(&self, handle: Handle) -> Result<HandleEntry, Status> {
-        let mut inner = self.inner.lock();
-        let index = inner.locate(handle)?;
-        Ok(inner.release(index))
+        let entry = {
+            let mut inner = self.inner.lock();
+            let index = inner.locate(handle)?;
+            inner.release(index)
+        };
+        entry.object.kernel_object().cancel(self.cancel_key(handle));
+        Ok(entry)
     }
 
-    /// 按顺序移出一组句柄；任一无效或重复时不移出任何句柄。
+    /// 按顺序把句柄追加到调用者准备的 entries；任一无效或重复时不移出任何句柄。
+    /// entries 在取表锁前准备容量，成功保留其分配以供后续消息复用；旧 key 的等待在表锁外统一取消。
     ///
     /// # Errors
     /// `ERR_BAD_HANDLE`（不存在）、`ERR_INVALID_ARGS`（重复）、`ERR_NO_MEMORY`。
-    pub(crate) fn remove_all(&self, handles: &[Handle]) -> Result<Vec<HandleEntry>, Status> {
-        let mut entries = Vec::new();
+    pub(crate) fn remove_all(
+        &self,
+        handles: &[Handle],
+        entries: &mut Vec<HandleEntry>,
+    ) -> Result<(), Status> {
+        let first = entries.len();
         entries
             .try_reserve_exact(handles.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
@@ -169,7 +184,11 @@ impl HandleTable {
             let index = inner.locate(handle).expect("validated handle remains live");
             entries.push(inner.release(index));
         }
-        Ok(entries)
+        drop(inner);
+        for (&handle, entry) in handles.iter().zip(&entries[first..]) {
+            entry.object.kernel_object().cancel(self.cancel_key(handle));
+        }
+        Ok(())
     }
 
     /// 关闭表并移出全部句柄；之后的插入返回 `ERR_BAD_STATE`。调用者在锁外释放返回值。
@@ -196,6 +215,15 @@ impl ClosedHandles {
 }
 
 impl TableInner {
+    /// 拒绝关闭/超额事务时不先分配；取得 guard 后由调用者返回准确的错误状态。
+    fn additional_slots(&self, count: usize) -> usize {
+        if self.closed || count > MAX_HANDLES - (self.slots.len() - self.free_count) {
+            0
+        } else {
+            count.saturating_sub(self.free_count)
+        }
+    }
+
     fn locate(&self, handle: Handle) -> Result<usize, Status> {
         let index = (handle >> GENERATION_BITS)
             .checked_sub(1)

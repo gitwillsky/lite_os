@@ -150,7 +150,12 @@ impl Tree {
     /// 到期的自动重复：步进并发出 CHANGED；返回是否需要重绘。
     pub fn repeat_updowns(&mut self, window: u64, now: Instant, out: &mut Vec<abi::Event>) -> bool {
         let mut repaint = false;
-        for (id, node) in &mut self.nodes {
+        for (id, node) in self.nodes.matching_mut(|node| {
+            node.updown
+                .as_ref()
+                .and_then(|updown| updown.held)
+                .is_some_and(|(_, due)| due <= now)
+        }) {
             let Some((direction, due)) = node.updown.as_ref().and_then(|updown| updown.held) else {
                 continue;
             };

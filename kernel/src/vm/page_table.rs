@@ -122,12 +122,13 @@ impl PageTable {
         permissions: PagePermissions,
         commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
-        self.0
-            .map(usize::from(vpn), usize::from(ppn), permissions)?;
-        commit.record(vpn.as_usize(), TranslationTransition::Publish);
+        // Clean actual instruction data before publishing an executable PTE; commit batches I-cache invalidation.
         if permissions.contains(PagePermissions::EXECUTE) {
             commit.record_instruction_publication(ppn.as_usize(), 1);
         }
+        self.0
+            .map(usize::from(vpn), usize::from(ppn), permissions)?;
+        commit.record(vpn.as_usize(), TranslationTransition::Publish);
         Ok(())
     }
 
@@ -140,6 +141,9 @@ impl PageTable {
         commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
         let virtual_start = virtual_start.as_usize();
+        if permissions.contains(PagePermissions::EXECUTE) {
+            commit.record_instruction_publication(physical_start.as_usize(), page_count);
+        }
         self.0.map_contiguous_range(
             virtual_start,
             physical_start.as_usize(),
@@ -147,9 +151,6 @@ impl PageTable {
             permissions,
         )?;
         commit.record_range(virtual_start, page_count, TranslationTransition::Publish);
-        if permissions.contains(PagePermissions::EXECUTE) {
-            commit.record_instruction_publication(physical_start.as_usize(), page_count);
-        }
         Ok(())
     }
 
@@ -175,6 +176,10 @@ impl PageTable {
     ) -> Result<(), PageTableError> {
         let old_entry = self.translate(vpn).ok_or(PageTableError::NotMapped)?;
         let old = old_entry.permissions();
+        if permissions.contains(PagePermissions::EXECUTE) && !old.contains(PagePermissions::EXECUTE)
+        {
+            commit.record_instruction_publication(old_entry.ppn().as_usize(), 1);
+        }
         self.0.set_flags(usize::from(vpn), permissions)?;
         if permissions != old {
             commit.record(
@@ -185,11 +190,6 @@ impl PageTable {
                     TranslationTransition::Revoke
                 },
             );
-            if permissions.contains(PagePermissions::EXECUTE)
-                && !old.contains(PagePermissions::EXECUTE)
-            {
-                commit.record_instruction_publication(old_entry.ppn().as_usize(), 1);
-            }
         }
         Ok(())
     }

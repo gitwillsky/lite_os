@@ -198,13 +198,30 @@ pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) ->
     + Sync
     + 'a;
 
+/// 自有线格式的一条消息处理器；服务端负责自己的回复/单向语义，借用的 channel 由线程池保活。
+pub type MessageHandler<'a> =
+    dyn Fn(&Channel, native_runtime::Message) -> Result<(), Status> + Send + Sync + 'a;
+
+enum MessageDispatch {
+    Rpc(Arc<Handler<'static>>),
+    Unframed(Arc<MessageHandler<'static>>),
+}
+impl MessageDispatch {
+    fn handle(&self, channel: &Channel, message: native_runtime::Message) -> Result<(), Status> {
+        match self {
+            Self::Rpc(handler) => respond(channel, message, &**handler),
+            Self::Unframed(handler) => handler(channel, message),
+        }
+    }
+}
+
 /// 空闲工作线程的存活时间（纳秒）；之后收缩到只剩一个读者。
 const IDLE_TIMEOUT_NS: i64 = 5_000_000_000;
 
 /// 一个服务 channel 的弹性工作线程池状态。
 struct Pool {
     channel: Channel,
-    handler: Arc<Handler<'static>>,
+    handler: MessageDispatch,
     name: Vec<u8>,
     max: usize,
     // OWNER: 控制、可选数据面与停止统一进入此 port，不靠周期轮询检查停止。
@@ -325,7 +342,29 @@ pub fn serve(
     name: &[u8],
     handler: Arc<Handler<'static>>,
 ) -> Result<(), Status> {
-    start(channel, workers, name, handler, None)
+    start(channel, workers, name, MessageDispatch::Rpc(handler), None)
+}
+
+/// 用相同弹性线程池承载已有自有线格式（如 FUSE），不额外套 RPC 头或保留固定线程循环。
+///
+/// - `channel`/`workers`/`name`: 连接、并发上限与线程名，语义同 [`serve`]。
+/// - `handler`: 逐消息处理/回复；错误停止接收。最后一个在途处理和读者退出后才释放它的会话凭据。
+///
+/// # Errors
+/// port、停止/就绪登记、内存或初始线程创建失败；失败时 handler 同样按 RAII 退休。
+pub fn serve_messages(
+    channel: Channel,
+    workers: usize,
+    name: &[u8],
+    handler: Arc<MessageHandler<'static>>,
+) -> Result<(), Status> {
+    start(
+        channel,
+        workers,
+        name,
+        MessageDispatch::Unframed(handler),
+        None,
+    )
 }
 
 /// 在同一弹性线程池中消费 channel 控制消息与共享数据面的 Event 通知。
@@ -353,7 +392,7 @@ pub fn serve_events(
         channel,
         workers,
         name,
-        handler,
+        MessageDispatch::Rpc(handler),
         Some(Activity {
             events,
             handler: activity,
@@ -365,7 +404,7 @@ fn start(
     channel: Channel,
     workers: usize,
     name: &[u8],
-    handler: Arc<Handler<'static>>,
+    handler: MessageDispatch,
     activity: Option<Activity>,
 ) -> Result<(), Status> {
     let mut owned_name = Vec::new();
@@ -458,7 +497,7 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
         } else {
             match work {
                 Work::Message(message) => {
-                    respond(&pool.channel, message, &*pool.handler).and_then(|()| {
+                    pool.handler.handle(&pool.channel, message).and_then(|()| {
                         if pool.activity.is_some() {
                             pool.arm_channel()
                         } else {

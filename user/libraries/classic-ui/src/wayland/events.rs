@@ -386,6 +386,8 @@ mod tests {
                 transport: Transport::new(stream).unwrap(),
                 compositor: id(2),
                 shm: id(3),
+                subcompositor: None,
+                images: HashMap::new(),
                 viewporter: None,
                 wm_base: id(4),
                 seat: id(5),

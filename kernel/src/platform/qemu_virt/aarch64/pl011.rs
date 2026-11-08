@@ -18,7 +18,8 @@ const INTERRUPT_CLEAR: usize = 0x44;
 const RX_FIFO_EMPTY: u32 = 1 << 4;
 const FIFO_ENABLE: u32 = 1 << 4;
 const RX_FIFO_LEVEL_MASK: u32 = 0b111 << 3;
-const RX_INTERRUPT: u32 = (1 << 4) | (1 << 6);
+const RX_TIMEOUT_INTERRUPT: u32 = 1 << 6;
+const RX_INTERRUPT: u32 = (1 << 4) | RX_TIMEOUT_INTERRUPT;
 const HARDIRQ_RX_BUDGET: usize = 64;
 
 struct Pl011(MmioBus);
@@ -45,11 +46,11 @@ impl Pl011 {
 impl InterruptHandler for Pl011InterruptHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
         let uart = UART.wait();
-        // 1. 先清 RX/timeout 中断，再读空 FIFO。QEMU 的 PL011 只在 FIFO 由空变为 1 字节时置位 RX
-        //    中断；若先读空再清除，恰好在“最后一次检查为空”与“清除”之间到达的字节会把刚置位的
-        //    中断一并清掉，该字节留在 FIFO 且不会再有“空→1”的跳变，之后整个输入流永久停滞。
-        // 2. 先清后读时，读空之后才到达的字节置位的中断不会被清除，handler 返回后立即再次触发。
-        uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);
+        // 1. 只确认 timeout；RX 电平由 DATA 读取使 FIFO 降到阈值以下时自动撤销。
+        // 2. 每次读 DATA 都可能让宿主继续填 FIFO。预算耗尽时必须保留 RX 电平，否则 FIFO
+        //    仍满却没有新的阈值跳变，剩余输入永久滞留；EOI 后由电平再次触发下一批读取。
+        // 3. timeout 在读取前确认，避免读空后到达的字节所产生的新 timeout 被一并清掉。
+        uart.write(INTERRUPT_CLEAR, RX_TIMEOUT_INTERRUPT);
         let mut bytes = [0u8; HARDIRQ_RX_BUDGET];
         let mut count = 0usize;
         while count < bytes.len() && uart.read(FLAGS) & RX_FIFO_EMPTY == 0 {
@@ -81,7 +82,7 @@ pub(super) fn enable_receive() {
     // PL011 resets in one-byte character mode. QEMU stdio has no hardware flow control, so a
     // multi-byte host write can overrun that holding register while another device IRQ runs.
     // Enable the architected 16-byte FIFO and select its lowest RX threshold before unmasking
-    // receive/timeout IRQs; the hardirq still drains every available byte in one bounded pass.
+    // receive/timeout IRQs; a nonempty FIFO retains RX across bounded hardirq passes.
     let line_control = uart.read(LINE_CONTROL);
     uart.write(LINE_CONTROL, line_control | FIFO_ENABLE);
     let fifo_level = uart.read(INTERRUPT_FIFO_LEVEL);

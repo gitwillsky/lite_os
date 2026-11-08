@@ -13,6 +13,7 @@ use wayland_wire::{
 impl Client {
     pub(super) fn stage_surface_frame(&mut self, object: ObjectId) {
         if let Ok(surface) = self.surface_mut(object) {
+            surface.damage = super::damage::Damage::default();
             surface
                 .in_flight_callbacks
                 .append(&mut surface.queued_callbacks);
@@ -36,6 +37,7 @@ impl Client {
                 state,
                 unmapping: false,
                 callbacks: Vec::new(),
+                damage: super::damage::Damage::default(),
                 positions: BTreeMap::new(),
             }
         });
@@ -66,6 +68,9 @@ impl Client {
         if let Some(region) = pending.input_region {
             commit.state.input_region = region;
         }
+        if let Some(region) = pending.opaque_region {
+            commit.state.opaque_region = region;
+        }
         if let Some(order) = pending.order {
             commit.state.order = order;
         }
@@ -81,6 +86,34 @@ impl Client {
             }
             Some(Some(attachment)) => {
                 commit.unmapping = false;
+                let dimensions = match attachment.buffer.as_ref() {
+                    Buffer::Dma(dma) => {
+                        (dma.texture.width() as usize, dma.texture.height() as usize)
+                    }
+                    Buffer::Shm(spec) => (spec.width, spec.height),
+                };
+                let damage = pending.damage.resolve(
+                    dimensions,
+                    commit.state.scale,
+                    commit.state.transform,
+                    commit.state.viewport != (None, None),
+                );
+                if commit
+                    .state
+                    .content
+                    .as_ref()
+                    .is_none_or(|content| (content.width, content.height) != dimensions)
+                {
+                    commit.damage.add_buffer(canvas::Rect::new(
+                        0,
+                        0,
+                        dimensions.0 as i32,
+                        dimensions.1 as i32,
+                    ));
+                }
+                for rect in &damage {
+                    commit.damage.add_buffer(*rect);
+                }
                 if let Buffer::Dma(dma) = attachment.buffer.as_ref() {
                     commit.state.content = Some(dma.content(
                         attachment.object,
@@ -88,12 +121,6 @@ impl Client {
                         &self.buffer_releases,
                     ));
                 } else if let Buffer::Shm(spec) = attachment.buffer.as_ref() {
-                    let damage = pending.damage.resolve(
-                        (spec.width, spec.height),
-                        commit.state.scale,
-                        commit.state.transform,
-                        commit.state.viewport != (None, None),
-                    );
                     let content = Content::from_shm(
                         commit.state.content.take(),
                         spec,
@@ -170,6 +197,7 @@ impl Client {
         let surface = self.surface_mut(object)?;
         let mapping = commit.state.content.is_some();
         surface.current = commit.state;
+        surface.damage.append(commit.damage);
         surface.queued_callbacks.extend(commit.callbacks);
         let first = mapping && !std::mem::replace(&mut surface.entered, true);
         for (child, position) in commit.positions {

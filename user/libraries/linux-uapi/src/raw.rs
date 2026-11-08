@@ -36,6 +36,15 @@ const fn drm_iowr(number: usize, size: usize) -> usize {
     ioc(IOC_READ | IOC_WRITE, b'd' as usize, number, size)
 }
 
+pub(crate) const DRM_IOCTL_SET_CLIENT_CAP: usize = ioc(IOC_WRITE, b'd' as usize, 0x0d, 16);
+pub(crate) const DRM_IOCTL_MODE_ATOMIC: usize = drm_iowr(0xbc, 56);
+pub(crate) const DRM_IOCTL_MODE_GETPROPERTY: usize = drm_iowr(0xaa, 64);
+pub(crate) const DRM_IOCTL_MODE_GETPROPBLOB: usize = drm_iowr(0xac, 16);
+pub(crate) const DRM_IOCTL_MODE_CREATEPROPBLOB: usize = drm_iowr(0xbd, 16);
+pub(crate) const DRM_IOCTL_MODE_DESTROYPROPBLOB: usize = drm_iowr(0xbe, 4);
+pub(crate) const DRM_IOCTL_MODE_GETPLANERESOURCES: usize = drm_iowr(0xb5, 16);
+pub(crate) const DRM_IOCTL_MODE_GETPLANE: usize = drm_iowr(0xb6, 32);
+pub(crate) const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: usize = drm_iowr(0xb9, 32);
 pub(crate) const DRM_IOCTL_SET_MASTER: usize = ioc(0, b'd' as usize, 0x1e, 0);
 pub(crate) const DRM_IOCTL_DROP_MASTER: usize = ioc(0, b'd' as usize, 0x1f, 0);
 pub(crate) const DRM_IOCTL_GEM_CLOSE: usize = ioc(IOC_WRITE, b'd' as usize, 0x09, 8);
@@ -69,6 +78,96 @@ pub(crate) const TIOCSPTLCK: usize = 0x4004_5431;
 #[cfg(target_os = "linux")]
 pub(crate) const TIOCSCTTY: usize = 0x540e;
 pub(crate) const TIOCSWINSZ: usize = 0x5414;
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmClientCap {
+    pub capability: u64,
+    pub value: u64,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmPlaneResources {
+    pub ids: u64,
+    pub count: u32,
+    pub padding: u32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmPlane {
+    pub id: u32,
+    pub crtc: u32,
+    pub framebuffer: u32,
+    pub possible_crtcs: u32,
+    pub gamma_size: u32,
+    pub format_count: u32,
+    pub formats: u64,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmObjectProperties {
+    pub ids: u64,
+    pub values: u64,
+    pub count: u32,
+    pub object: u32,
+    pub kind: u32,
+    pub padding: u32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmProperty {
+    pub values: u64,
+    pub enums: u64,
+    pub id: u32,
+    pub flags: u32,
+    pub name: [u8; 32],
+    pub value_count: u32,
+    pub enum_count: u32,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DrmPropertyEnum {
+    pub value: u64,
+    pub name: [u8; 32],
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmCreateBlob {
+    pub data: u64,
+    pub length: u32,
+    pub id: u32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmGetBlob {
+    pub id: u32,
+    pub length: u32,
+    pub data: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmAtomic {
+    pub flags: u32,
+    pub count: u32,
+    pub objects: u64,
+    pub counts: u64,
+    pub properties: u64,
+    pub values: u64,
+    pub reserved: u64,
+    pub user_data: u64,
+}
+const _: () = {
+    assert!(size_of::<DrmClientCap>() == 16);
+    assert!(size_of::<DrmAtomic>() == 56);
+    assert!(size_of::<DrmPlaneResources>() == 16);
+    assert!(size_of::<DrmPlane>() == 32);
+    assert!(size_of::<DrmObjectProperties>() == 32);
+    assert!(size_of::<DrmProperty>() == 64);
+    assert!(size_of::<DrmPropertyEnum>() == 40);
+    assert!(size_of::<DrmCreateBlob>() == 16);
+    assert!(size_of::<DrmGetBlob>() == 16);
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

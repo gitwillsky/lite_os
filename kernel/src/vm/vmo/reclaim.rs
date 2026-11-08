@@ -20,8 +20,43 @@ static SCANNER: TaskMutex<Scanner> = TaskMutex::new(Scanner {
 // OWNER: 窗口的唯一规范值。高 61 位 youngest，低 3 位 youngest-oldest；写者持 SCANNER，
 // 页访问只读此快照。只有旧队列完整排空后才推进 oldest，至多八代，不靠截断值猜年龄。
 static WINDOW: AtomicU64 = AtomicU64::new(0);
-// OWNER: 累计已完成 fence 且释放的页数，只作 vmstat 观测。
-static EVICTED: AtomicUsize = AtomicUsize::new(0);
+// OWNER: 扫描器按实际执行来源累计批次样本与 fence 后释放页；Relaxed 只供观测，不参与回收或唤醒。
+// 缺少来源拆分会把后台回收伪报成前台分配停顿；计数不增加锁或逐页状态。
+struct Counters {
+    scanned: AtomicUsize,
+    evicted: AtomicUsize,
+}
+impl Counters {
+    const fn new() -> Self {
+        Self {
+            scanned: AtomicUsize::new(0),
+            evicted: AtomicUsize::new(0),
+        }
+    }
+    fn record(&self, result: &Reclaimed) {
+        if result.examined != 0 {
+            self.scanned.fetch_add(result.examined, Ordering::Relaxed);
+        }
+        if result.evicted != 0 {
+            self.evicted.fetch_add(result.evicted, Ordering::Relaxed);
+        }
+    }
+}
+// OWNER: 两种执行来源共用同一算法，计数仅在各自批次完成后累加；不保有页或参与策略。
+static FOREGROUND: Counters = Counters::new();
+// OWNER: 后台线程实际执行的扫描/释放页数，不把晋升样本混作释放成功。
+static BACKGROUND: Counters = Counters::new();
+// OWNER: 内存压力触发的前台回收尝试，包含协调器繁忙而未扫描的尝试；不伪造为零。
+static FOREGROUND_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// 回收执行来源的累计观测；各项独立取样，不是页所有权或策略状态。
+pub(crate) struct ReclaimStatistics {
+    pub(crate) foreground_runs: usize,
+    pub(crate) foreground_scanned: usize,
+    pub(crate) foreground_evicted: usize,
+    pub(crate) background_scanned: usize,
+    pub(crate) background_evicted: usize,
+}
 
 #[derive(Clone, Copy)]
 struct Window {
@@ -88,8 +123,15 @@ struct Step {
     changed: bool,
 }
 
-pub(crate) fn evicted_pages() -> usize {
-    EVICTED.load(Ordering::Relaxed)
+/// 读取前台/后台扫描和释放的累计页数，不等待扫描器，不触发回收。
+pub(crate) fn reclaim_statistics() -> ReclaimStatistics {
+    ReclaimStatistics {
+        foreground_runs: FOREGROUND_RUNS.load(Ordering::Relaxed),
+        foreground_scanned: FOREGROUND.scanned.load(Ordering::Relaxed),
+        foreground_evicted: FOREGROUND.evicted.load(Ordering::Relaxed),
+        background_scanned: BACKGROUND.scanned.load(Ordering::Relaxed),
+        background_evicted: BACKGROUND.evicted.load(Ordering::Relaxed),
+    }
 }
 pub(super) fn unregister(id: u64) {
     drop(PAGED.lock().remove(&id));
@@ -175,7 +217,6 @@ impl Vmo {
                     drop(state.committed.remove(&index));
                 }
                 result.evicted += end - start;
-                EVICTED.fetch_add(end - start, Ordering::Relaxed);
             }
         }
         result.nonempty = !self.state.lock().committed.generation_empty(generation);
@@ -229,7 +270,7 @@ impl Scanner {
         }
     }
 
-    fn step(&mut self) -> Step {
+    fn step(&mut self, counters: &Counters) -> Step {
         if self.sweep.is_none() {
             self.begin();
         }
@@ -255,6 +296,7 @@ impl Scanner {
             if let Some(object) = object {
                 let current = Window::load().youngest as u8 & 7;
                 let result = object.evict_generation(sweep.sequence as u8 & 7, current);
+                counters.record(&result);
                 pages -= result.examined;
                 sweep.nonempty |= result.nonempty;
                 sweep.blocked |= result.blocked;
@@ -268,20 +310,21 @@ impl Scanner {
     }
 }
 
-fn reclaim_step() -> Step {
+fn reclaim_step(counters: &Counters) -> Step {
     let Some(mut scanner) = SCANNER.try_lock() else {
         return Step {
             finished: true,
             changed: false,
         };
     };
-    scanner.step()
+    scanner.step(counters)
 }
 
 /// 用户缺页入口的有界兜底；不等待并发扫描协调器，一次最多 256 个页样本、64 个 VMO。
 pub(crate) fn relieve_memory_pressure() -> bool {
     if frame_allocator::under_pressure() {
-        reclaim_step();
+        FOREGROUND_RUNS.fetch_add(1, Ordering::Relaxed);
+        reclaim_step(&FOREGROUND);
     }
     frame_allocator::under_pressure()
 }
@@ -291,7 +334,7 @@ pub(crate) fn relieve_memory_pressure() -> bool {
 pub(crate) fn background_reclaim() {
     loop {
         while frame_allocator::under_pressure() {
-            let step = reclaim_step();
+            let step = reclaim_step(&BACKGROUND);
             crate::execution::sync::yield_current_task();
             if step.finished && !step.changed && frame_allocator::under_pressure() {
                 let deadline = crate::execution::timer::get_time_ns().saturating_add(10_000_000);

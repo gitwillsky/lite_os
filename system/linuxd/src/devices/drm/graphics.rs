@@ -474,7 +474,11 @@ impl DrmFile {
         }
         let resource = self.cursor_resource(handle)?;
         let mut completion = self.device.completion.lock();
-        if completion.active.is_none() {
+        if !completion
+            .active
+            .as_ref()
+            .is_some_and(super::kms::Configuration::is_scanning)
+        {
             return Err(DrmError::Invalid);
         }
         let generation = completion.adapter_generation;

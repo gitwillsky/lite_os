@@ -349,6 +349,8 @@ pub mod audio_core {
     pub const OUTGOING: usize = ROLE_HANDLES;
     /// 只含 PCM 输出的设备目录连接（含热插拔的 USB 声卡）。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
+    /// 只覆盖 system::SCHEDULE 的资源，用于混音线程的截止预算。
+    pub const SCHEDULER: usize = ROLE_HANDLES + 2;
 }
 
 /// 根服务。

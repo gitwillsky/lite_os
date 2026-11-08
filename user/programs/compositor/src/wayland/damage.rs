@@ -35,6 +35,19 @@ fn push(rects: &mut Vec<Rect>, rect: Rect) {
 }
 
 impl Damage {
+    /// 已换算成 buffer 坐标的待显示损伤；调用方不保留可写别名。
+    pub(super) fn buffer_rects(&self) -> &[Rect] {
+        &self.buffer
+    }
+
+    /// 合并多次 commit 的损伤，保留原有矩形数量上界。
+    pub(super) fn append(&mut self, other: Self) {
+        assert!(other.surface.is_empty(), "unresolved presentation damage");
+        for rect in other.buffer {
+            self.add_buffer(rect);
+        }
+    }
+
     pub(super) fn add_surface(&mut self, rect: Rect) {
         push(&mut self.surface, rect);
     }

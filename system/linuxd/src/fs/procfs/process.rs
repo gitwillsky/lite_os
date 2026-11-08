@@ -69,6 +69,7 @@ pub(super) fn format_process_stat(
             state: process.state,
             nice: process.nice,
             priority: process.priority,
+            policy: process.policy,
             runtime_us: process.runtime_us,
             start_time_us: process.start_time_us,
             last_cpu: process.last_cpu,
@@ -104,6 +105,7 @@ pub(super) fn format_thread_stat(
             state: thread.state,
             nice: thread.nice,
             priority: thread.priority,
+            policy: thread.policy,
             runtime_us: thread.runtime_us,
             start_time_us: thread.start_time_us,
             last_cpu: thread.last_cpu,
@@ -121,6 +123,7 @@ struct TaskStatFields<'a> {
     state: u8,
     nice: i32,
     priority: i32,
+    policy: u32,
     runtime_us: u64,
     start_time_us: u64,
     last_cpu: usize,
@@ -147,7 +150,7 @@ fn format_task_stat(
         0
     };
     proc_text(format_args!(
-        "{} ({}) {} {} {} {} {} {} {} 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
+        "{} ({}) {} {} {} {} {} {} {} 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {} 0 {}\n",
         task.pid,
         comm,
         if task.state == b'T' && task.tracer.is_some() {
@@ -180,7 +183,8 @@ fn format_task_stat(
         ),
         virtual_size,
         resident_pages,
-        task.last_cpu
+        task.last_cpu,
+        task.policy,
     ))
 }
 

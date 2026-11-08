@@ -277,7 +277,12 @@ fn simsun_collection_preserves_faces_cjk_and_native_strikes() {
         let glyph = simsun
             .embedded_bitmap(simsun.glyph_id('中').unwrap(), ppem)
             .unwrap();
-        assert!(glyph.coverage.to_gray(glyph.width, glyph.height).contains(&255));
+        assert!(
+            glyph
+                .coverage
+                .to_gray(glyph.width, glyph.height)
+                .contains(&255)
+        );
         assert!(
             glyph
                 .coverage

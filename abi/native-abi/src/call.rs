@@ -365,5 +365,11 @@ pub const SYSTEM_GET_EVENT: usize = 81;
 /// 错误：`ERR_INVALID_ARGS`（地址非法）、`ERR_BAD_STATE`（不属于成员或已登记）。
 pub const THREAD_SET_FAULT_RECOVERY: usize = 82;
 
+/// 设置存活线程的截止时间配置；不是 Linux 应用 ABI。
+/// 参数：`resource`（覆盖 system::SCHEDULE）、`thread`（MANAGE）、`runtime_ns`、`deadline_ns`、`period_ns`。
+/// 三个时间全零撤销配置；否则 0 < runtime <= deadline <= period <= i64::MAX。
+/// 错误：`ERR_INVALID_ARGS`、`ERR_BAD_STATE`（未启动/已退出）、`ERR_NO_RESOURCES`（带宽不足）。
+pub const THREAD_SET_DEADLINE: usize = 83;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 83;
+pub const COUNT: usize = 84;

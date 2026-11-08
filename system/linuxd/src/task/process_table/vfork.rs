@@ -263,6 +263,12 @@ pub(crate) fn clone_current_process(
     resources: crate::task::ProcessCloneResources,
 ) -> Result<usize, ProcessCloneError> {
     let parent = current_task().expect("process clone requires current task");
+    let policy = parent
+        .scheduling
+        .policy
+        .lock()
+        .forked()
+        .ok_or(ProcessCloneError::ResourceLimit)?;
     let mut pid = PROCESS_TABLE
         .allocate_pid(
             resources.namespaces.pid_for_children(),
@@ -279,6 +285,7 @@ pub(crate) fn clone_current_process(
                     ProcessId::from_identity(pid.identity()),
                     &parameters,
                     &resources,
+                    policy,
                 )
                 .map_err(ProcessCloneError::Memory)
         },

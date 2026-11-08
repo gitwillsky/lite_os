@@ -27,6 +27,7 @@ impl DrmFile {
         if self.render_node || (!privileged && !self.state.lock().was_master) {
             return Err(DrmError::Permission);
         }
+        let _completion = self.device.completion.lock();
         let mut device = self.device.state.lock();
         match device.master {
             Some(master) if master == self.file_identity => return Ok(()),
@@ -55,6 +56,7 @@ impl DrmFile {
         if self.render_node || (!privileged && !self.state.lock().was_master) {
             return Err(DrmError::Permission);
         }
+        let _completion = self.device.completion.lock();
         let mut device = self.device.state.lock();
         if device.master != Some(self.file_identity) {
             return Err(DrmError::Invalid);

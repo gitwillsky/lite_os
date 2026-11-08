@@ -78,7 +78,7 @@ fn snapshot(observer: &Job) -> Vec<u8> {
 }
 
 /// linuxd 所在 Job 里除 linuxd 自身外的成员是 Linux 进程（共享进程的成员）或承载映像的共享进程：
-/// 前者已由 /proc 呈现，后者没有线程，两者都不进入快照。遍历期间结束的成员按 `ERR_NOT_FOUND` 跳过；
+/// 前者已由 /proc 呈现，后者没有线程，两者都不单独进入快照；共享映像 owner 的内存组合进 linuxd 组件行。遍历期间结束的成员按 `ERR_NOT_FOUND` 跳过；
 /// Job 树深度由启动结构决定（根 Job → 服务 Job，driver-manager 下另有驱动宿主 Job 与每个宿主的 Job，
 /// 至多四层），递归不随负载增长。
 fn collect(job: &Job, linux_job: u64, linuxd: u64, records: &mut Vec<Record>) {
@@ -88,7 +88,10 @@ fn collect(job: &Job, linux_job: u64, linuxd: u64, records: &mut Vec<Record>) {
             continue;
         }
         if let Ok(handle) = job.member(process, rights::SAME) {
-            records.push(record(&Process::from_handle(handle)));
+            // linuxd 的执行成员与共享服务映像是同一组件的两个互斥地址区间；
+            // 后者没有线程，不能因过滤该进程就漏掉它实际拥有的服务内存。
+            let service_image = (current == linux_job).then(crate::handles::shared_process);
+            records.push(record(&Process::from_handle(handle), service_image));
         }
     }
     for child in job.member_koids(true).unwrap_or_default() {
@@ -98,7 +101,7 @@ fn collect(job: &Job, linux_job: u64, linuxd: u64, records: &mut Vec<Record>) {
     }
 }
 
-fn record(process: &Process) -> Record {
+fn record(process: &Process, service_image: Option<&Process>) -> Record {
     let mut record = Record {
         koid: koid(process),
         cpu_ns: UNAVAILABLE,
@@ -118,7 +121,19 @@ fn record(process: &Process) -> Record {
     if let Ok(runtime) = process.runtime() {
         record.cpu_ns = runtime.cpu_time_ns;
     }
-    if let Ok(stats) = process.stats() {
+    let stats = process.stats().and_then(|mut stats| {
+        if let Some(image) = service_image {
+            let image = image.stats()?;
+            // 成员私有区与共享 owner 区互斥；只组合实际 owner，不把每个 Linux 成员的镜像重复相加。
+            stats.resident_bytes += image.resident_bytes;
+            stats.private_bytes += image.private_bytes;
+            stats.shared_bytes += image.shared_bytes;
+            stats.scaled_shared_bytes += image.scaled_shared_bytes;
+            stats.mapped_bytes += image.mapped_bytes;
+        }
+        Ok(stats)
+    });
+    if let Ok(stats) = stats {
         record.resident_bytes = stats.resident_bytes;
         record.private_bytes = stats.private_bytes;
         record.shared_bytes = stats.shared_bytes;

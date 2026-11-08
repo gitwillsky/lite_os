@@ -16,6 +16,8 @@ pub struct WindowHost {
     window: WindowId,
     decoration: Decoration,
     dirty: bool,
+    // OWNER: 装饰/配置/资源改变要求全幅；客户区的节点损伤不能清除这个要求。
+    full: bool,
     resource_generation: u64,
 }
 impl WindowHost {
@@ -25,6 +27,7 @@ impl WindowHost {
             window,
             decoration: Decoration::new(kind),
             dirty: true,
+            full: true,
             resource_generation: 0,
         }
     }
@@ -35,12 +38,22 @@ impl WindowHost {
     /// 使用共享资源上下文的程序图标，避免每个窗口重新读取同一素材。
     pub fn set_icon(&mut self, icon: Option<std::rc::Rc<crate::Bitmap>>) {
         self.decoration.set_icon(icon);
-        self.invalidate();
+        self.invalidate_frame();
     }
 
     /// 保留重绘请求，直到成功提交；等待 callback 或 release 时不会丢失。
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+    /// 标题、装饰或无法用控件覆盖表达的像素变化必须重绘完整窗口。
+    pub fn invalidate_frame(&mut self) {
+        self.dirty = true;
+        self.full = true;
+    }
+    /// 当前有未提交变化或资源换代，且 Display 已允许绘制；不消费失效。
+    pub fn needs_paint(&self, display: &Display, resources: &Resources) -> bool {
+        (self.dirty || self.resource_generation != resources.generation())
+            && display.ready_to_draw(self.window)
     }
     /// 当前配置下能否使用状态栏尺寸手柄；没有 configure 时为 false。
     pub fn size_grip_allowed(&self, display: &Display) -> bool {
@@ -76,7 +89,9 @@ impl WindowHost {
             configuration.height + (height - client.height).max(0),
         );
         let grown = display.grow_fixed_size(self.window, outer)?;
-        self.dirty |= grown;
+        if grown {
+            self.invalidate_frame();
+        }
         Ok(grown)
     }
 
@@ -86,6 +101,13 @@ impl WindowHost {
             return Ok(HostEvent { close: false });
         }
         let mut close = matches!(event.kind, EventKind::Close);
+        if let EventKind::Configure(configuration) = event.kind {
+            // 装饰与客户区先用不透明系统色填满；只在 configure 改变几何时发送提示，不逐帧创建 region。
+            display.set_opaque_region(
+                self.window,
+                Some(Rect::new(0, 0, configuration.width, configuration.height)),
+            )?;
+        }
         if let Some(configuration) = display.configuration(self.window) {
             let before = self.decoration.pressed_button(configuration);
             match self.decoration.event(&event.kind, configuration) {
@@ -96,29 +118,29 @@ impl WindowHost {
                 Some(DecorationAction::Close) => close = true,
                 None => {}
             }
-            self.dirty |= before != self.decoration.pressed_button(configuration);
+            if before != self.decoration.pressed_button(configuration) {
+                self.invalidate_frame();
+            }
         }
         // 窗口 owner 只为配置/焦点/装饰变化失效；客户区控件根据自身状态变化申请绘制。
         // 普通指针移动和按键释放不改变像素，不能因此触发整窗光栅、SHM 复制和合成。
-        self.dirty |= matches!(event.kind, EventKind::Configure(_) | EventKind::Focus(_));
+        if matches!(event.kind, EventKind::Configure(_) | EventKind::Focus(_)) {
+            self.invalidate_frame();
+        }
         Ok(HostEvent { close })
     }
-    /// 在需要且允许提交时绘制完整窗口；draw 只负责客户区，尺寸为逻辑像素。
-    ///
-    /// 直接在已释放的共享缓冲中整幅重绘，没有窗口私有画布：最大化窗口的绘图内存只有共享缓冲本身。
-    /// 损伤由 Display 对上一次提交画面的分块哈希比较得出，所以未变化的区域不会重复合成。
-    ///
-    /// 返回 true 表示完成提交，false 表示无失效或等待配置/callback/缓冲。
-    /// 字体、绘制与 I/O 错误保留失效并返回 Err；不执行应用事件回调。
+    /// 在释放的共享缓冲中只光栅化客户区失效；新缓冲/配置/装饰/资源变化时全幅初始化。
+    /// `damage` 是逻辑坐标的旧/新覆盖，`draw` 只负责客户区，可按不相交裁剪重复调用。
+    /// 成功提交后返回 true，等待时返回 false；失败保留失效并作废缓冲基线。
     pub fn paint(
         &mut self,
         display: &mut Display,
         resources: &mut Resources,
         title: &str,
-        draw: impl FnOnce(&mut Painter<'_>, Rect, Configuration, &Display) -> io::Result<()>,
+        damage: &[Rect],
+        mut draw: impl FnMut(&mut Painter<'_>, Rect, Configuration, &Display) -> io::Result<()>,
     ) -> io::Result<bool> {
-        self.dirty |= self.resource_generation != resources.generation();
-        if !self.dirty || !display.ready_to_draw(self.window) {
+        if !self.needs_paint(display, resources) {
             return Ok(false);
         }
         let Some(configuration) = display.configuration(self.window) else {
@@ -126,23 +148,47 @@ impl WindowHost {
         };
         let font = resources.fonts(configuration.scale)?;
         let theme = resources.theme();
+        let full = self.full || self.resource_generation != resources.generation();
         let decoration = &self.decoration;
-        let result = display.render_frame(self.window, |pixels, configuration, display| {
-            let (width, height) = configuration.pixel_size()?;
-            let surface = Surface::new(pixels, width, height, width as usize)
-                .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;
-            let mut painter = Painter::new(surface, theme, &font, configuration.scale);
-            let client = decoration.paint(&mut painter, configuration, title);
-            painter.fill(client, SystemColor::ButtonFace);
-            let mut result = Ok(());
-            painter.clipped(client, |painter| {
-                result = draw(painter, client, configuration, display)
+        let result =
+            display.paint_frame(self.window, |pixels, configuration, preserved, display| {
+                let (width, height) = configuration.pixel_size()?;
+                let surface = Surface::new(pixels, width, height, width as usize)
+                    .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;
+                let mut painter = Painter::new(surface, theme, &font, configuration.scale);
+                let bounds = Rect::new(0, 0, configuration.width, configuration.height);
+                let regions = if full || !preserved {
+                    vec![bounds]
+                } else {
+                    coalesce_damage(damage, bounds)
+                };
+                for &region in &regions {
+                    let mut result = Ok(());
+                    painter.clipped(region, |painter| {
+                        let client = decoration.paint(painter, configuration, title);
+                        painter.fill(client, SystemColor::ButtonFace);
+                        painter.clipped(client, |painter| {
+                            result = draw(painter, client, configuration, display);
+                        });
+                    });
+                    result?;
+                }
+                Ok(regions
+                    .into_iter()
+                    .map(|region| {
+                        Rect::new(
+                            region.x * configuration.scale,
+                            region.y * configuration.scale,
+                            region.width * configuration.scale,
+                            region.height * configuration.scale,
+                        )
+                    })
+                    .collect())
             });
-            result
-        });
         match result {
             Ok(()) => {
                 self.dirty = false;
+                self.full = false;
                 self.resource_generation = resources.generation();
                 Ok(true)
             }
@@ -154,4 +200,34 @@ impl WindowHost {
     pub fn close(self, display: &mut Display) -> io::Result<()> {
         display.destroy_window(self.window)
     }
+}
+
+/// 经典 damage 合并：相交区域扩大并合并到互不相交；片段超过预算只扩大绘制，不漏掉旧覆盖。
+fn coalesce_damage(rectangles: &[Rect], bounds: Rect) -> Vec<Rect> {
+    const LIMIT: usize = 32;
+    let mut result: Vec<Rect> = Vec::new();
+    for rect in rectangles {
+        let mut rect = rect.intersect(bounds);
+        if rect.is_empty() {
+            continue;
+        }
+        let mut index = 0;
+        while index < result.len() {
+            if !rect.intersect(result[index]).is_empty() || result.len() == LIMIT {
+                let previous = result.swap_remove(index);
+                let (x, y) = (rect.x.min(previous.x), rect.y.min(previous.y));
+                rect = Rect::new(
+                    x,
+                    y,
+                    rect.right().max(previous.right()) - x,
+                    rect.bottom().max(previous.bottom()) - y,
+                );
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        result.push(rect);
+    }
+    result
 }

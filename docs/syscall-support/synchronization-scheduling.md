@@ -17,11 +17,23 @@
 | 127 | `sched_rr_get_interval` | Partial | SCHED_OTHER timeslice projection |
 | 140 | `setpriority` | Partial | process/thread nice scope |
 | 141 | `getpriority` | Partial | process/thread nice scope |
+| 274 | `sched_setattr` | Partial | OTHER/DEADLINE、版本化尺寸、KEEP_POLICY/PARAMS、CAP_SYS_NICE、CBS 准入 |
+| 275 | `sched_getattr` | Partial | 静态配置与尺寸兼容，零 flags |
 | 283 | `membarrier` | Partial | query、private expedited register/execute |
 
 ## 已知缺口
 
-futex PI、PI requeue、realtime scheduler classes 与跨 process expedited membarrier 尚未开放。
+futex PI、PI requeue、FIFO/RR/BATCH/IDLE/EXT 设置与跨 process expedited membarrier 尚未开放。
+
+sched_attr 为 56 字节（最小 v0 为 48）；set 的 size=0 按 v0 处理，超大/过短或非零未知尾部返回 E2BIG 并写回支持尺寸。
+get 支持 48..=PAGE_SIZE，按实际复制长度填 size、未知尾部清零。copyin/copyout 失败 EFAULT，非零 syscall flags 非法。
+支持 RESET_ON_FORK、KEEP_POLICY、KEEP_PARAMS；RECLAIM/DL_OVERRUN/util-clamp 返回 EOPNOTSUPP，未知位 EINVAL；动态 get flags 未开放。
+DEADLINE 的 runtime 至少 1024 ns，0 < runtime <= deadline <= period，period=0 使用 deadline，周期范围按固定 Linux 默认为 100 us..4194304 us。
+需要 initial UserNS CAP_SYS_NICE，目标 affinity 必须覆盖全部 active CPU；缩小 DEADLINE affinity 返回 EINVAL，准入不足 EBUSY。
+原生采用分区 EDF 和 95% 的逐 CPU 密度上限，较 Linux 利用率准入保守；支持约束截止的 revised wakeup，不声明 GRUB 带宽回收或动态 overruns 通知。
+显式 yield 放弃剩余周期预算。未设置 RESET_ON_FORK 的 DEADLINE fork/clone 返回 EAGAIN，设置后的子执行体恢复 OTHER；rr interval 为零。
+proc stat 的 priority/policy 来自同一 Linux 配置快照；DEADLINE 显示 priority=-101、policy=6，不继续伪装为 OTHER。
+当前只有源码/Clippy 验证；实时负载、调度公平性与完整 syscall 运行验收留到性能计划全部源码完成后统一执行。
 
 get_robust_list 按当前 PID namespace 查找实际 Thread，在目标已有 Process credential_guard 下以 killable acquisition 与 exec 串行化；使用 caller real UID/GID 和 permitted capability 子集规则，FS 读取仍用 fsids/effective。授权后只复制 registration
 scalar，先写 len 再写 head；不访问 head 指向的用户页。self/null/未映射 head、copyout 错误顺序以及跨进程 REAL/FS 区别的 guest 回归已补源码。此路径是冷查询，不增加调度或 futex 热路径锁。

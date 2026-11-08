@@ -2,7 +2,7 @@
 //!
 //! The probe owns `/dev/dri/card0` alone (the host gate boots a private image that does not start
 //! the compositor, so DRM master is free) and exercises the same kernel path the product uses:
-//! VirGL context -> render target -> `EXECBUFFER` clear -> `PAGE_FLIP` -> vblank event. It reports
+//! VirGL context -> render target -> `EXECBUFFER` clear -> atomic flip -> vblank event. It reports
 //! one result line for `scripts/verify_gpu.py`; timestamps come from the kernel's monotonic event
 //! clock, so host scheduling jitter does not enter the measurement.
 
@@ -11,7 +11,9 @@ mod sharing;
 
 use std::{io, process::ExitCode};
 
-use linux_uapi::drm::{CommandEncoder, DrmDevice, ObjectKind, VirglContext, VirglResource};
+use linux_uapi::drm::{
+    AtomicRequest, CommandEncoder, DrmDevice, KmsObject, ObjectKind, VirglContext, VirglResource,
+};
 
 /// Frames submitted before measurement starts; they absorb scanout setup and host shader warmup.
 const WARMUP_FRAMES: u64 = 60;
@@ -134,14 +136,148 @@ fn verify_readback(graphics: &VirglContext, target: &mut Target) -> Result<(), S
     }
 }
 
+fn property_id(device: &DrmDevice, object: u32, kind: KmsObject, name: &str) -> io::Result<u32> {
+    for (id, _) in device.properties(object, kind)? {
+        if device.property(id)?.name == name {
+            return Ok(id);
+        }
+    }
+    Err(io::Error::other(format!("missing KMS property {name}")))
+}
+
+// 使用实际 UAPI 验证 TEST_ONLY 不发表、state 跨 DESTROY 保活及后继提交退休；无影子状态机。
+fn verify_atomic(device: &DrmDevice, other: &DrmDevice) -> io::Result<()> {
+    device.set_master()?;
+    device.set_atomic(true)?;
+    let topology = device.query_topology()?;
+    let mode_property = property_id(device, topology.crtc_id, KmsObject::Crtc, "MODE_ID")?;
+    let active_property = property_id(device, topology.crtc_id, KmsObject::Crtc, "ACTIVE")?;
+    let empty = AtomicRequest::default();
+    if !matches!(other.atomic_commit(&empty, AtomicRequest::TEST_ONLY, 0), Err(error) if error.kind() == io::ErrorKind::InvalidInput)
+        || device
+            .atomic_commit(&empty, AtomicRequest::TEST_ONLY | AtomicRequest::EVENT, 0)
+            .is_ok()
+    {
+        return Err(io::Error::other("atomic capability/flag validation failed"));
+    }
+    let mut request = AtomicRequest::default();
+    request.set(topology.crtc_id, active_property, 1)?;
+    if device
+        .atomic_commit(
+            &request,
+            AtomicRequest::TEST_ONLY | AtomicRequest::ALLOW_MODESET,
+            0,
+        )
+        .is_ok()
+    {
+        return Err(io::Error::other(
+            "active CRTC without a mode passed validation",
+        ));
+    }
+    let blob = topology.mode.property_blob(device)?;
+    let id = blob.id();
+    let payload = device.property_blob(id)?;
+    request.clear();
+    request.set(topology.crtc_id, mode_property, u64::from(id))?;
+    device.atomic_commit(
+        &request,
+        AtomicRequest::TEST_ONLY | AtomicRequest::NONBLOCK | AtomicRequest::ALLOW_MODESET,
+        0,
+    )?;
+    if device
+        .properties(topology.crtc_id, KmsObject::Crtc)?
+        .iter()
+        .any(|entry| entry.0 == mode_property && entry.1 != 0)
+    {
+        return Err(io::Error::other("TEST_ONLY published a configuration"));
+    }
+    // 即使 disabled，MODE_ID 也是独立状态；必须按实际 state 引用保活，不能假定有 FB 才持有它。
+    device.atomic_commit(&request, AtomicRequest::ALLOW_MODESET, 0)?;
+    blob.destroy()?;
+    if device.property_blob(id)? != payload {
+        return Err(io::Error::other("active state lost mode blob"));
+    }
+    request.clear();
+    request.set(topology.crtc_id, mode_property, 0)?;
+    device.atomic_commit(&request, AtomicRequest::ALLOW_MODESET, 0)?;
+    if !matches!(device.property_blob(id), Err(error) if error.kind() == io::ErrorKind::NotFound) {
+        return Err(io::Error::other(
+            "retired configuration retained a mode blob",
+        ));
+    }
+    device.set_atomic(false)
+}
+
+/// 直接验证标准查询两端的布局、OFD capability 与 blob 所有权；不另建 VM/fixture。
+fn verify_kms(device: &DrmDevice) -> io::Result<()> {
+    if !device.plane_ids()?.is_empty() {
+        return Err(io::Error::other(
+            "primary plane leaked before universal capability",
+        ));
+    }
+    device.set_universal_planes(true)?;
+    let ids = device.plane_ids()?;
+    if ids.len() != 1 {
+        return Err(io::Error::other("expected the single primary plane"));
+    }
+    let plane = device.plane(ids[0])?;
+    if plane.possible_crtcs != 1 || plane.formats != [u32::from_le_bytes(*b"XR24")] {
+        return Err(io::Error::other(
+            "invalid primary plane geometry/format metadata",
+        ));
+    }
+    let properties = device.properties(plane.id, KmsObject::Plane)?;
+    let mut primary = false;
+    for (id, value) in properties {
+        let property = device.property(id)?;
+        if property.name == "type" {
+            primary = value == 1
+                && property.flags == 12
+                && property.values == [0, 1, 2]
+                && property
+                    .enums
+                    .iter()
+                    .any(|(value, name)| *value == 1 && name == "Primary");
+        }
+    }
+    if !primary || device.properties(plane.id, KmsObject::Crtc).is_ok() {
+        return Err(io::Error::other(
+            "KMS property type or object identity mismatch",
+        ));
+    }
+    let other = DrmDevice::open("/dev/dri/card0")?;
+    if !other.plane_ids()?.is_empty() {
+        return Err(io::Error::other("universal capability escaped its OFD"));
+    }
+    let payload = b"kms immutable blob";
+    let blob = device.create_property_blob(payload)?;
+    let id = blob.id();
+    if device.property_blob(id)? != payload || other.property_blob(id)? != payload {
+        return Err(io::Error::other(
+            "property blob global lookup changed its payload",
+        ));
+    }
+    blob.destroy()?;
+    if !matches!(device.property_blob(id), Err(error) if error.kind() == io::ErrorKind::NotFound) {
+        return Err(io::Error::other(
+            "property blob retained a dead creator reference",
+        ));
+    }
+    verify_atomic(device, &other)?;
+    device.set_universal_planes(false)
+}
+
 fn run() -> Result<String, String> {
     step("fdinfo", fdinfo::verify())?;
     // fdinfo 仅依赖 dumb-buffer，用独立阶段在无 VirGL 的设备上验证统计，不跳过完整 GPU 门禁。
     if std::env::args().nth(1).as_deref() == Some("--fdinfo-only") {
+        let device = step("open /dev/dri/card0", DrmDevice::open("/dev/dri/card0"))?;
+        step("KMS objects/properties/blob", verify_kms(&device))?;
         return Ok("drm-flip-probe: fdinfo phase complete".into());
     }
     sharing::verify()?;
     let device = step("open /dev/dri/card0", DrmDevice::open("/dev/dri/card0"))?;
+    step("KMS objects/properties/blob", verify_kms(&device))?;
     let topology = step("query topology", device.query_topology())?;
     let (width, height) = (
         u32::from(topology.mode.width()),
@@ -173,6 +309,13 @@ fn run() -> Result<String, String> {
         device.set_crtc(&topology, targets[0].framebuffer_id),
     )?;
 
+    step("atomic capability", device.set_atomic(true))?;
+    let plane = step("primary plane", device.plane_ids())?[0];
+    let framebuffer_property = step(
+        "FB_ID",
+        property_id(&device, plane, KmsObject::Plane, "FB_ID"),
+    )?;
+    let mut transaction = AtomicRequest::default();
     let mut front = 0;
     let mut completions = Vec::with_capacity(MEASURED_FRAMES as usize);
     for frame in 0..WARMUP_FRAMES + MEASURED_FRAMES {
@@ -183,9 +326,22 @@ fn run() -> Result<String, String> {
             "frame exec",
             graphics.exec(commands.words(), &[&targets[back].resource]),
         )?;
+        transaction.clear();
         step(
-            "page flip",
-            device.page_flip(&topology, targets[back].framebuffer_id, frame),
+            "framebuffer assignment",
+            transaction.set(
+                plane,
+                framebuffer_property,
+                u64::from(targets[back].framebuffer_id),
+            ),
+        )?;
+        step(
+            "atomic flip",
+            device.atomic_commit(
+                &transaction,
+                AtomicRequest::NONBLOCK | AtomicRequest::EVENT,
+                frame,
+            ),
         )?;
         let event = step("flip event", device.read_flip_event())?;
         if event.user_data != frame {

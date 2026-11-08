@@ -12,7 +12,6 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use native_abi::{ChannelActual, Status, signals};
 use spin::Mutex;
@@ -26,36 +25,13 @@ use crate::execution::sync::{TaskEvent, WaitResult};
 /// 防止失控的发送者耗尽内存。按字节而非条数限额：条数上限对 64 KiB 的整消息会放大到数百 MiB，
 /// 对小消息又过紧（Fuchsia/Linux 套接字缓冲同样按字节记账）。
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
-/// 每条积压消息的固定开销（队列槽与 `Vec` 头）；让海量空消息也受同一个字节上限约束。
-const MESSAGE_OVERHEAD: usize = 64;
 const KERNEL_TXID_BIT: u32 = 1 << 31;
 
-/// 一条 channel 消息。
-pub(crate) struct Message {
-    /// 消息字节。
-    pub(crate) bytes: Vec<u8>,
-    /// 随消息转移的句柄。
-    pub(crate) handles: Vec<HandleEntry>,
-}
-
-impl Message {
-    fn actual(&self) -> ChannelActual {
-        ChannelActual {
-            bytes: self.bytes.len() as u32,
-            handles: self.handles.len() as u32,
-        }
-    }
-
-    /// 在端点队列中占用的字节数。
-    fn charge(&self) -> usize {
-        self.bytes.len() + MESSAGE_OVERHEAD
-    }
-
-    fn txid(&self) -> Option<u32> {
-        let bytes = self.bytes.get(..native_abi::CHANNEL_TXID_BYTES)?;
-        Some(u32::from_ne_bytes(bytes.try_into().expect("txid width")))
-    }
-}
+mod call;
+mod message;
+pub(in crate::object) use call::CallSlot;
+use message::Buffers;
+pub(crate) use message::Message;
 
 struct CallWaiter {
     txid: u32,
@@ -75,9 +51,18 @@ struct Side {
 
 struct ChannelShared {
     // OWNER: 两个端点的队列、开闭与事务登记同锁发布；拆开会让关闭与写入交错后把消息留在已关闭端点。
-    state: Mutex<[Side; 2]>,
+    state: Mutex<ChannelState>,
     signals: [SignalState; 2],
-    next_txid: AtomicU32,
+}
+
+struct ChannelState {
+    sides: [Side; 2],
+    // OWNER: 唯一空消息存储，与队列同锁移交；不含句柄，不保留超过一条消息的容量。
+    spare: Buffers,
+    next_txid: u32,
+    // CACHE: (next_txid, free_until) 已证明无在途事务；新调用只在游标后方登记，退休只扩大空隙。
+    // 不保留空隙证明就必须每次扫描全部等待者；环绕或碰到旧边界时才重新求证。
+    free_until: u32,
 }
 
 /// channel 端点。
@@ -108,12 +93,16 @@ impl Channel {
             calls: Vec::new(),
         };
         let shared = Arc::try_new(ChannelShared {
-            state: Mutex::new([side(), side()]),
+            state: Mutex::new(ChannelState {
+                sides: [side(), side()],
+                spare: Buffers::default(),
+                next_txid: 0,
+                free_until: KERNEL_TXID_BIT,
+            }),
             signals: [
                 SignalState::new(signals::WRITABLE),
                 SignalState::new(signals::WRITABLE),
             ],
-            next_txid: AtomicU32::new(0),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         Ok((
@@ -143,36 +132,42 @@ impl Channel {
     ///
     /// # Errors
     /// `ERR_PEER_CLOSED`、`ERR_NO_RESOURCES`、`ERR_NO_MEMORY`；失败时消息交还调用者在锁外释放。
-    pub(crate) fn write(&self, message: Message) -> Result<(), (Status, Message)> {
+    pub(crate) fn write(&self, mut message: Message) -> Result<(), (Status, Message)> {
+        message.bind(&self.shared);
         let peer = self.peer();
-        let Ok(mut state) =
-            lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[peer].inbound)
-        else {
+        let Ok(mut state) = lock_with_spare(
+            &self.shared.state,
+            |_| 1,
+            |state| &mut state.sides[peer].inbound,
+        ) else {
             return Err((native_abi::ERR_NO_MEMORY, message));
         };
         self.publish(&mut state, message)
     }
 
-    fn publish(&self, state: &mut [Side; 2], message: Message) -> Result<(), (Status, Message)> {
+    fn publish(&self, state: &mut ChannelState, message: Message) -> Result<(), (Status, Message)> {
         let peer = self.peer();
-        if !state[peer].open {
+        if !state.sides[peer].open {
             return Err((native_abi::ERR_PEER_CLOSED, message));
         }
         if let Some(txid) = message.txid()
-            && let Some(position) = state[peer].calls.iter().position(|call| call.txid == txid)
+            && let Some(position) = state.sides[peer]
+                .calls
+                .iter()
+                .position(|call| call.txid == txid)
         {
-            let call = state[peer].calls.swap_remove(position);
+            let call = state.sides[peer].calls.swap_remove(position);
             *call.reply.lock() = Some(Ok(message));
             // 同步调用的 caller 接着消费本回复；留在 reply CPU 可复用即将再次等待请求的 server 时间片。
             // 不绕过 waiter identity、affinity 或正常 CFS；peer close 等批量通知仍用普通 placement。
             call.event.signal_on_current_cpu();
             return Ok(());
         }
-        if state[peer].queued_bytes + message.charge() > MAX_PENDING_BYTES {
+        if message.charge() > MAX_PENDING_BYTES - state.sides[peer].queued_bytes {
             return Err((native_abi::ERR_NO_RESOURCES, message));
         }
-        state[peer].queued_bytes += message.charge();
-        state[peer].inbound.push_back(message);
+        state.sides[peer].queued_bytes += message.charge();
+        state.sides[peer].inbound.push_back(message);
         self.shared.signals[peer].update(0, signals::READABLE);
         Ok(())
     }
@@ -187,8 +182,8 @@ impl Channel {
         handles_capacity: usize,
     ) -> Result<Message, ReadError> {
         let mut state = self.shared.state.lock();
-        let peer_open = state[self.peer()].open;
-        let side = &mut state[self.side];
+        let peer_open = state.sides[self.peer()].open;
+        let side = &mut state.sides[self.side];
         let Some(front) = side.inbound.front() else {
             let status = if peer_open {
                 native_abi::ERR_SHOULD_WAIT
@@ -200,7 +195,9 @@ impl Channel {
                 actual: ChannelActual::default(),
             });
         };
-        if front.bytes.len() > bytes_capacity || front.handles.len() > handles_capacity {
+        if front.actual().bytes as usize > bytes_capacity
+            || front.actual().handles as usize > handles_capacity
+        {
             return Err(ReadError {
                 status: native_abi::ERR_BUFFER_TOO_SMALL,
                 actual: front.actual(),
@@ -217,56 +214,64 @@ impl Channel {
     /// 写请求并等待匹配事务号的回复。
     ///
     /// # Parameters
+    /// - `slot`: 当前原生线程独占的调用存储，只有撤销登记后才能复用。
     /// - `message`: 请求，至少 4 字节；首 4 字节被覆盖为内核事务号。
     /// - `deadline_ns`: 单调时钟绝对截止时间。
     ///
     /// # Errors
     /// `ERR_INVALID_ARGS`（不足 4 字节）、写入错误、`ERR_TIMED_OUT`、`ERR_CANCELED`（进程终止）、
     /// `ERR_PEER_CLOSED`。写入失败时请求交还调用者。
-    pub(crate) fn call(
+    pub(in crate::object) fn call(
         &self,
+        slot: &CallSlot,
         mut message: Message,
         deadline_ns: Option<u64>,
     ) -> Result<Message, (Status, Option<Message>)> {
-        if message.bytes.len() < native_abi::CHANNEL_TXID_BYTES {
+        message.bind(&self.shared);
+        if message.bytes().len() < native_abi::CHANNEL_TXID_BYTES {
             return Err((native_abi::ERR_INVALID_ARGS, Some(message)));
         }
-        let txid = self.shared.next_txid.fetch_add(1, Ordering::Relaxed) | KERNEL_TXID_BIT;
-        message.bytes[..native_abi::CHANNEL_TXID_BYTES].copy_from_slice(&txid.to_ne_bytes());
-        let waiter = match Arc::try_new(CallWaiter {
-            txid,
-            event: TaskEvent::new(),
-            reply: Mutex::new(None),
-        }) {
+        let mut waiter = match slot.acquire() {
             Ok(waiter) => waiter,
-            Err(_) => return Err((native_abi::ERR_NO_MEMORY, Some(message))),
+            Err(status) => return Err((status, Some(message))),
         };
         let peer = self.peer();
         let own = self.side;
         // 请求入队与事务登记需要两处空位；交替扩容直到同一临界区内两者都满足。
         let mut state = loop {
-            let Ok(state) =
-                lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[own].calls)
-            else {
+            let Ok(state) = lock_with_spare(
+                &self.shared.state,
+                |_| 1,
+                |state| &mut state.sides[own].calls,
+            ) else {
                 return Err((native_abi::ERR_NO_MEMORY, Some(message)));
             };
-            if has_spare(&state[peer].inbound) {
+            if has_spare(&state.sides[peer].inbound) {
                 break state;
             }
             drop(state);
-            let Ok(state) =
-                lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[peer].inbound)
-            else {
+            let Ok(state) = lock_with_spare(
+                &self.shared.state,
+                |_| 1,
+                |state| &mut state.sides[peer].inbound,
+            ) else {
                 return Err((native_abi::ERR_NO_MEMORY, Some(message)));
             };
-            if has_spare(&state[own].calls) {
+            if has_spare(&state.sides[own].calls) {
                 break state;
             }
         };
+        // 两端同锁分配并跳过仍登记的事务；低 31 位环绕不能命中另一侧的存活调用。
+        let txid = match state.next_txid() {
+            Ok(txid) => txid,
+            Err(status) => return Err((status, Some(message))),
+        };
+        waiter.set_txid(txid);
+        message.bytes_mut()[..native_abi::CHANNEL_TXID_BYTES].copy_from_slice(&txid.to_ne_bytes());
         if let Err((status, message)) = self.publish(&mut state, message) {
             return Err((status, Some(message)));
         }
-        state[own].calls.push(waiter.clone());
+        state.sides[own].calls.push(Arc::clone(&waiter));
         drop(state);
 
         let result = match deadline_ns {
@@ -275,12 +280,12 @@ impl Channel {
         };
         {
             let mut state = self.shared.state.lock();
-            if let Some(position) = state[own]
+            if let Some(position) = state.sides[own]
                 .calls
                 .iter()
                 .position(|call| Arc::ptr_eq(call, &waiter))
             {
-                state[own].calls.swap_remove(position);
+                state.sides[own].calls.swap_remove(position);
             }
         }
         if let Some(reply) = waiter.reply.lock().take() {
@@ -322,15 +327,16 @@ impl Drop for Channel {
         let peer = self.peer();
         let retired = {
             let mut state = self.shared.state.lock();
-            state[self.side].open = false;
-            let retired = core::mem::take(&mut state[self.side].inbound);
-            state[self.side].queued_bytes = 0;
-            for call in state[peer].calls.drain(..) {
+            state.sides[self.side].open = false;
+            let retired = core::mem::take(&mut state.sides[self.side].inbound);
+            let spare = core::mem::take(&mut state.spare);
+            state.sides[self.side].queued_bytes = 0;
+            for call in state.sides[peer].calls.drain(..) {
                 *call.reply.lock() = Some(Err(native_abi::ERR_PEER_CLOSED));
                 call.event.signal();
             }
             self.shared.signals[peer].update(signals::WRITABLE, signals::PEER_CLOSED);
-            retired
+            (retired, spare)
         };
         // 入站消息可能携带其他 channel 端点，其 Drop 会取得各自的锁，必须在本锁外释放。
         drop(retired);

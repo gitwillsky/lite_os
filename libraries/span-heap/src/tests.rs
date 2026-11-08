@@ -3,7 +3,6 @@ use super::*;
 use crate::host::{HostBacking, thread_slot as slot};
 use std::sync::Arc;
 
-
 fn heap() -> Arc<Heap<HostBacking>> {
     // 每个测试用独立的堆；Heap 很大（表与数组），放在堆上避免栈溢出。
     Arc::new(Heap::new(HostBacking::new()))
@@ -72,7 +71,11 @@ fn realloc_grows_in_place_within_the_block_and_copies_across_classes() {
         assert_eq!(same, pointer);
         let moved = heap.realloc(same, layout(112, 8), 4000);
         assert!(!moved.is_null());
-        assert!(std::slice::from_raw_parts(moved, 100).iter().all(|b| *b == 7));
+        assert!(
+            std::slice::from_raw_parts(moved, 100)
+                .iter()
+                .all(|b| *b == 7)
+        );
         heap.dealloc(moved, layout(4000, 8));
     }
 }
@@ -143,7 +146,10 @@ fn blocks_freed_by_other_threads_return_to_the_owner_without_loss() {
     drop(sender);
     assert_eq!(consumer.join().unwrap(), ROUNDS * BATCH);
     // 远端释放的块被所属线程收回复用：地址总数远小于总分配数。
-    assert!(seen.len() < ROUNDS * BATCH, "remote frees were never reused");
+    assert!(
+        seen.len() < ROUNDS * BATCH,
+        "remote frees were never reused"
+    );
 }
 
 #[test]
@@ -194,7 +200,8 @@ fn concurrent_mixed_workload_never_hands_out_a_live_block_twice() {
                         let index = (state >> 40) as usize % live.len();
                         let (address, size, tag) = live.swap_remove(index);
                         // SAFETY: 块仍存活，内容完整。
-                        let bytes = unsafe { std::slice::from_raw_parts(address as *const u8, size) };
+                        let bytes =
+                            unsafe { std::slice::from_raw_parts(address as *const u8, size) };
                         assert!(bytes.iter().all(|byte| *byte == tag), "block corrupted");
                         unsafe { heap.dealloc(address as *mut u8, layout(size, 8)) };
                     } else {

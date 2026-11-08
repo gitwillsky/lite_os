@@ -1,16 +1,21 @@
-//! 整帧合成：桌面背景加按栈序排列的窗口。每帧整屏重画，所以前后缓冲的陈旧内容不影响结果。
+//! 输出合成：CPU/GPU 共用损伤、缓冲年龄修复与从上向下的遮挡裁剪。
 
 use canvas::{Color, Image, Rect, Surface};
 use classic_theme::{SystemColor, Theme};
 use linux_uapi::drm::DumbBuffer;
 
 use crate::wayland::Content;
+pub(crate) mod damage;
 pub(crate) mod gpu;
 
 /// 一个已提交 surface 在输出上的物理目标矩形；CPU/GPU 消费同一几何。
 pub struct Drawable<'a> {
     pub rect: Rect,
     pub content: &'a Content,
+    /// 真实连接/surface 身份；命中测试的临时几何不参与输出历史。
+    pub identity: Option<(u64, u32)>,
+    pub damage: &'a [Rect],
+    pub opaque: bool,
 }
 impl<'a> Drawable<'a> {
     pub fn surface(x: i32, y: i32, content: &'a Content, output_scale: i32) -> Self {
@@ -24,6 +29,9 @@ impl<'a> Drawable<'a> {
         Self {
             rect: Rect::new(x, y, width, height),
             content,
+            identity: None,
+            damage: &[],
+            opaque: false,
         }
     }
     /// 把本项从整个窗口的 source 坐标系映射到目标矩形；窗口与所有子 surface 共用同一变换。
@@ -57,34 +65,61 @@ impl<'a> Drawable<'a> {
 /// # Returns
 ///
 /// `false` 表示缓冲尺寸与行距不能构成绘制面（不应发生，由 DRM 保证）；此时没有绘制。
-pub fn compose(
+pub(super) fn compose(
     target: &mut DumbBuffer,
     theme: &Theme,
     windows: &[Drawable<'_>],
-    overlay: impl FnOnce(Surface<'_>, (i32, i32)),
+    frame: &damage::Frame,
+    overlay: impl FnMut(Surface<'_>, (i32, i32)),
 ) -> std::io::Result<bool> {
     let (width, height, stride) = (
         target.width() as i32,
         target.height() as i32,
         target.stride(),
     );
-    let Some(mut surface) = Surface::new(target.pixels_mut(), width, height, stride) else {
+    let Some(surface) = Surface::new(target.pixels_mut(), width, height, stride) else {
         return Ok(false);
     };
+    paint(surface, theme, windows, frame, overlay)?;
+    Ok(true)
+}
+
+fn paint(
+    mut surface: Surface<'_>,
+    theme: &Theme,
+    windows: &[Drawable<'_>],
+    frame: &damage::Frame,
+    mut overlay: impl FnMut(Surface<'_>, (i32, i32)),
+) -> std::io::Result<()> {
     let background = theme.color(SystemColor::Background);
-    surface.fill_rect(
-        Rect::new(0, 0, width, height),
-        Color::rgb(background.red, background.green, background.blue),
-    );
-    for window in windows {
+    for rect in frame.background.rects() {
+        surface.fill_rect(
+            *rect,
+            Color::rgb(background.red, background.green, background.blue),
+        );
+    }
+    for (window, visible) in windows.iter().zip(&frame.windows) {
+        if visible.is_empty() {
+            continue;
+        }
         let image = Image {
             pixels: window.content.pixels()?,
             width: window.content.width as i32,
             height: window.content.height as i32,
             stride: window.content.width,
         };
-        surface.blit_sampled(image, window.rect, window.content.source);
+        for rect in visible.rects() {
+            surface.set_clip(*rect);
+            surface.blit_sampled(image, window.rect, window.content.source);
+        }
     }
-    overlay(surface, (0, 0));
-    Ok(true)
+    for rect in frame.overlay.rects() {
+        surface.set_clip(*rect);
+        // 借用同一目标的独立重借用；每块区域不相交，透明叠加只执行一次。
+        overlay(surface.reborrow(), (0, 0));
+    }
+    Ok(())
 }
+
+#[cfg(test)]
+mod tests;

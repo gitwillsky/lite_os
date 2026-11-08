@@ -1,6 +1,6 @@
 //! Windows 2000 桌面墙纸的合成规则；桌面外壳与“显示属性”预览共用，保证预览与实际一致。
 use crate::{Bitmap, Painter};
-use canvas::Rect;
+use canvas::{Image, Rect};
 
 /// 墙纸显示方式；对应 `HKCU\Control Panel\Desktop` 的 TileWallpaper 与 WallpaperStyle。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,6 +31,19 @@ impl Bitmap {
         style: WallpaperStyle,
         ratio: (i32, i32),
     ) {
+        painter.wallpaper(self.image(), screen, style, ratio);
+    }
+}
+impl Painter<'_> {
+    /// 使用借用的预乘像素执行与 Bitmap 相同的墙纸定位/最近邻采样；可直接消费不可变 SHM 视图。
+    pub fn wallpaper(
+        &mut self,
+        image: Image<'_>,
+        screen: Rect,
+        style: WallpaperStyle,
+        ratio: (i32, i32),
+    ) {
+        let painter = self;
         if screen.is_empty() || ratio.0 < 1 || ratio.1 < 1 {
             return;
         }
@@ -38,11 +51,12 @@ impl Bitmap {
             (i64::from(length) * i64::from(ratio.0) / i64::from(ratio.1))
                 .clamp(1, i64::from(i32::MAX)) as i32
         };
-        let (width, height) = (scaled(self.width()), scaled(self.height()));
+        let (width, height) = (scaled(image.width), scaled(image.height));
         painter.clipped(screen, |painter| match style {
-            WallpaperStyle::Stretch => self.paint_scaled(painter, screen),
-            WallpaperStyle::Center => self.paint_scaled(
+            WallpaperStyle::Stretch => painter.surface.blit_scaled(image, painter.physical(screen)),
+            WallpaperStyle::Center => paint_image(
                 painter,
+                image,
                 Rect::new(
                     screen.x + (screen.width - width) / 2,
                     screen.y + (screen.height - height) / 2,
@@ -63,16 +77,14 @@ impl Bitmap {
                 let end_y = painter.logical_ceil(clip.bottom());
                 for y in (first_y..end_y).step_by(height as usize) {
                     for x in (first_x..end_x).step_by(width as usize) {
-                        self.paint_scaled(painter, Rect::new(x, y, width, height));
+                        paint_image(painter, image, Rect::new(x, y, width, height));
                     }
                 }
             }
         });
     }
-
-    /// 最近邻缩放到逻辑矩形；与 GDI StretchBlt 的 COLORONCOLOR 模式一样不做插值。
-    fn paint_scaled(&self, painter: &mut Painter<'_>, rect: Rect) {
-        let target = painter.physical(rect);
-        painter.surface.blit_scaled(self.image(), target);
-    }
+}
+fn paint_image(painter: &mut Painter<'_>, image: Image<'_>, rect: Rect) {
+    let target = painter.physical(rect);
+    painter.surface.blit_scaled(image, target);
 }

@@ -24,7 +24,9 @@ mod card_file;
 pub(crate) mod device;
 mod graphics;
 mod ioctl;
+mod kms;
 mod prime;
+mod property;
 pub(crate) use graphics::VirglResourceCreate;
 pub(crate) use graphics::VirglTransfer;
 mod master;
@@ -38,7 +40,7 @@ struct CompletionState {
     // OWNER: pending 同时绑定 adapter fence 与 scanout/damage/disable 领域结果；若拆分，
     // completion 与并发 RMFB/close 会把 active state 发布到错误 object。
     pending: Option<PendingDisplay>,
-    active: Option<ActiveScanout>,
+    active: Option<kms::Configuration>,
     // OWNER: timeline 按公开 submission 顺序登记 exact fence，并暂存乱序 completion；若直接
     // 取最大 fence，后完成的 command 会让尚未完成的旧 waiter 提前越过同步点。
     timeline: FenceTimeline,
@@ -54,7 +56,7 @@ struct CompletionState {
     sequence: u32,
     // close 在目标 flip 已进入 device 后不能撤销 descriptor；记录 OFD identity，最终
     // completion 到达后立即提交 fallback，避免关闭 fd 留下无 owner 的永久 scanout。
-    reset_after_owner: Option<u64>,
+    reset_after_owner: Option<ClosedScanout>,
 }
 
 struct PendingDisplay {
@@ -63,19 +65,23 @@ struct PendingDisplay {
 }
 
 enum PendingOperation {
-    Scanout {
-        mode: DisplayMode,
-        framebuffer: u32,
-        owner: u64,
+    Commit {
+        /// Some 是完整扫描目标，None 是关闭输出；候选状态与硬件 fence 同一记录发表。
+        next: Option<kms::Configuration>,
         event: Option<PendingEvent>,
+        /// close 先撤销可查询状态后，仍被硬件使用的旧目标。
+        retiring: Option<kms::Configuration>,
     },
     Damage {
-        owner: u64,
+        framebuffer: Arc<Framebuffer>,
     },
-    Release {
-        owner: u64,
-    },
-    Disable,
+    Release,
+}
+
+/// 已关闭的扫描所有者及其仍可能被硬件访问的目标；reset 接受前不丢弃实际引用。
+struct ClosedScanout {
+    owner: u64,
+    retiring: Option<kms::Configuration>,
 }
 
 struct PendingEvent {
@@ -85,21 +91,14 @@ struct PendingEvent {
     user_data: u64,
 }
 
-#[derive(Clone, Copy)]
-struct ActiveScanout {
-    framebuffer: u32,
-    owner: u64,
-    mode: DisplayMode,
-}
-
 struct DrmDeviceState {
     // OWNER: allocator 只回收 publication 前失败的 buffer identity；若仅保留 monotonic next，
     // 并发 transaction 的非尾部 copyout failure 会永久烧掉 identity。
     buffer_identities: PublicationIdAllocator<u64>,
     next_file_identity: u64,
-    // OWNER: framebuffer allocator 与 device-wide object map 同锁；rollback storage 在 reserve
+    // OWNER: framebuffer/blob 共用 device-wide KMS object ID；rollback storage 在 reserve
     // 时预留，copyout failure 可按任意并发顺序无分配回收未发布 ID。
-    framebuffer_ids: PublicationIdAllocator<u32>,
+    object_ids: PublicationIdAllocator<u32>,
     context_ids: PublicationIdAllocator<u32>,
     graphics_resource_ids: PublicationIdAllocator<u32>,
     // OWNER: 每个 context 创建时预分配 cleanup node；OFD Drop 只移动现有 AVL nodes，
@@ -118,7 +117,10 @@ struct DrmDeviceState {
     mode: DisplayMode,
     // OWNER: framebuffer IDs 是 device-wide KMS object namespace；若放进 DrmFile，
     // GETRESOURCES 与另一个 primary-node open 会观察冲突或缺失的 mode object。
-    framebuffers: FallibleMap<u32, Framebuffer>,
+    framebuffers: FallibleMap<u32, Arc<Framebuffer>>,
+    // OWNER: 不可变 property blob 的弱索引；最后一个 OFD/提交引用释放时摘除，不保活历史载荷。
+    // 与 framebuffer 共用 object_ids，防止模式对象类型之间撞号。
+    blobs: FallibleMap<u32, Weak<property::Blob>>,
 }
 
 #[derive(Debug)]
@@ -130,6 +132,8 @@ struct DumbBuffer {
 }
 
 struct Framebuffer {
+    /// 唯一不可变 mode object identity；索引 key 在创建时由同一 reservation 填入。
+    id: u32,
     owner: u64,
     width: u32,
     height: u32,
@@ -151,6 +155,8 @@ struct DrmFileState {
     // OWNER: buffers 是当前 OFD 唯一 GEM handle namespace；缺失 file-private collection
     // 会让不同 open 通过猜测 handle/offset 访问彼此 backing。
     buffers: FallibleMap<u32, Arc<DumbBuffer>>,
+    // OWNER: 本 OFD 创建的 blob 拥有引用；DESTROY/close 只移交这些引用，不撤销未来在途提交的使用期。
+    blobs: FallibleMap<u32, Arc<property::Blob>>,
     // OWNER: context 与 graphics_buffers 属于同一 OFD；缺失同锁 ownership 会让 EXECBUFFER
     // 在 close/context teardown 间向已销毁的 host context 提交。
     context: Option<graphics::VirglContext>,
@@ -158,6 +164,10 @@ struct DrmFileState {
     // Linux 允许曾经的 master 在无当前 master 时重新取得 ownership；缺失该历史位会让
     // root-less display server 在 DROP_MASTER 后永久无法恢复。
     was_master: bool,
+    // OWNER: 标准 OFD client capability，仅决定 primary plane 查询可见性；缺失时普通客户端被迫看到不支持的 universal 对象。
+    universal_planes: bool,
+    // OWNER: OFD 的标准 atomic opt-in；未协商时隐藏 atomic 属性并拒绝提交。
+    atomic: bool,
 }
 
 /// Linux DRM/KMS domain 的 primary display owner。
@@ -195,6 +205,8 @@ pub(crate) struct DrmFile {
 pub(crate) enum DrmError {
     /// UAPI 参数、尺寸或 fake offset 非法。
     Invalid,
+    /// mode clock 或 refresh 无法表示为标准有符号 timing。
+    OutOfRange,
     /// 当前 OFD namespace 中没有目标 handle。
     NotFound,
     /// 当前 OFD 已发布过不可重复创建的 context。
@@ -209,6 +221,8 @@ pub(crate) enum DrmError {
     Device,
     /// 当前 OFD 不是 KMS master，或无权重新取得 master。
     Permission,
+    /// 对象存在但不是本 OFD 创建，不能释放其创建者引用。
+    NotOwner,
     /// 等待资源保留锁被可交付 signal 中断。
     Interrupted,
 }
@@ -325,7 +339,7 @@ pub(crate) struct FramebufferInfo {
     pub(crate) height: u32,
     /// linear scanline bytes。
     pub(crate) pitch: u32,
-    /// 未建立 DRM master/CAP_SYS_ADMIN owner 时固定为零，避免泄漏 GEM handle。
+    /// 当前 GETFB 不开放 GEM handle 的授权披露，固定为零。
     pub(crate) handle: u32,
 }
 
@@ -376,7 +390,11 @@ impl DrmFile {
             return Err(DrmError::Permission);
         }
         let completion = self.device.completion.lock();
-        if completion.active.is_none() {
+        if !completion
+            .active
+            .as_ref()
+            .is_some_and(kms::Configuration::is_scanning)
+        {
             return Err(DrmError::Invalid);
         }
         let resource = handle
@@ -419,7 +437,11 @@ impl DrmFile {
             return Err(DrmError::Permission);
         }
         let completion = self.device.completion.lock();
-        if completion.active.is_none() {
+        if !completion
+            .active
+            .as_ref()
+            .is_some_and(kms::Configuration::is_scanning)
+        {
             return Err(DrmError::Invalid);
         }
         let result = self.device.display.move_cursor(x, y);
@@ -637,18 +659,18 @@ impl DrmFile {
         {
             return Err(DrmError::Invalid);
         }
-        let id = publication::FramebufferIdReservation::reserve(self)?;
-        let entry = FallibleMap::try_prepare(
-            id.id,
-            Framebuffer {
-                owner: self.file_identity,
-                width,
-                height,
-                pitch,
-                backing,
-            },
-        )
+        let id = publication::ObjectIdReservation::reserve(self)?;
+        let framebuffer = Arc::try_new(Framebuffer {
+            id: id.id,
+            owner: self.file_identity,
+            width,
+            height,
+            pitch,
+            backing,
+        })
         .map_err(|_| DrmError::OutOfMemory)?;
+        let entry =
+            FallibleMap::try_prepare(id.id, framebuffer).map_err(|_| DrmError::OutOfMemory)?;
         Ok(PreparedFramebuffer::new(id, entry))
     }
 
@@ -684,7 +706,7 @@ impl DrmFile {
     ///
     /// # Returns
     ///
-    /// owner 匹配时返回 metadata；未建模 master 权限时 handle 固定为零。
+    /// owner 匹配时返回 metadata；当前未开放 GETFB 的 GEM handle 披露，固定为零。
     ///
     /// # Errors
     ///
@@ -702,8 +724,8 @@ impl DrmFile {
             width,
             height,
             pitch,
-            // LiteOS 尚无 DRM master/CAP_SYS_ADMIN owner；按 Linux GETFB 的非特权
-            // disclosure boundary 返回零，不把 file-private GEM handle 泄漏给 query。
+            // 当前 GETFB 只发布 metadata，尚未实现按 master/权限返回 GEM handle 的披露路径；
+            // 不把 file-private handle 当作跨 OFD 的公共 identity。
             handle: 0,
         })
     }
@@ -718,7 +740,13 @@ impl DrmFile {
             .completion
             .lock()
             .active
-            .map(|active| active.framebuffer)
+            .as_ref()
+            .filter(|configuration| configuration.is_scanning())
+            .and_then(|configuration| {
+                configuration
+                    .framebuffer()
+                    .map(|framebuffer| framebuffer.id)
+            })
     }
 
     /// 异步提交一个本 OFD framebuffer 为固定 single-scanout backing。
@@ -742,40 +770,45 @@ impl DrmFile {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
+        let (framebuffer, configuration);
         let mut completion = self.device.completion.lock();
-        if user_data.is_some() && self.events.lock().len() == EVENT_QUEUE_CAPACITY {
-            return Err(DrmError::Busy);
+        let generation = completion.adapter_generation;
+        if completion.pending.is_some() || completion.reset_after_owner.is_some() {
+            return Ok(DrmSubmission::Retry(DrmRetry {
+                device: self.device.clone(),
+                generation,
+            }));
         }
+        framebuffer = self.lookup_framebuffer(id)?;
+        configuration = completion
+            .active
+            .as_ref()
+            .ok_or(DrmError::Invalid)?
+            .page_flip(self.file_identity, framebuffer.clone())?;
         let event = user_data.map(|user_data| PendingEvent {
             file: Arc::downgrade(self),
             user_data,
         });
-        let mode = completion
-            .active
-            .map(|active| active.mode)
-            .ok_or(DrmError::Invalid)?;
-        let generation = completion.adapter_generation;
         classify_submission(
             self,
             generation,
-            self.submit_scanout(&mut completion, mode, id, event),
+            self.submit_configuration_locked(&mut completion, &configuration, event),
         )
     }
 
-    /// 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
-    ///
-    /// # Parameters
-    ///
-    /// - `id`: device-wide framebuffer object ID。
-    ///
-    /// # Returns
-    ///
-    /// 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
-    ///
-    /// # Errors
-    ///
-    /// object/尺寸/权限非法或 adapter failure 返回稳定领域错误。
-    pub(crate) fn set_crtc(&self, id: u32, mode: DisplayMode) -> Result<DrmSubmission, DrmError> {
+    /// 在硬件等待前准备不可变 legacy 配置，重试不重复创建 mode blob。
+    fn prepare_crtc(&self, id: u32, mode: DisplayMode) -> Result<kms::Configuration, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
+        kms::Configuration::legacy(self, self.lookup_framebuffer(id)?, mode)
+    }
+
+    /// 发表已准备配置；硬件 busy 经现有 readiness 返回重试，候选载荷由调用者在锁外持有。
+    fn submit_configuration(
+        &self,
+        configuration: &kms::Configuration,
+    ) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
@@ -784,8 +817,19 @@ impl DrmFile {
         classify_submission(
             self,
             generation,
-            self.submit_scanout(&mut completion, mode, id, None),
+            self.submit_configuration_locked(&mut completion, configuration, None),
         )
+    }
+
+    /// 返回设备 mode object 的真实引用；master 提交不把创建者 OFD 当作对象 identity。
+    fn lookup_framebuffer(&self, id: u32) -> Result<Arc<Framebuffer>, DrmError> {
+        self.device
+            .state
+            .lock()
+            .framebuffers
+            .get(&id)
+            .cloned()
+            .ok_or(DrmError::NotFound)
     }
 
     /// 同步把任一本 OFD framebuffer 的 dirty rectangles 传输到 resident resource。
@@ -808,14 +852,17 @@ impl DrmFile {
         id: u32,
         rectangles: &[DisplayRect],
     ) -> Result<DrmSubmission, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         let mut completion = self.device.completion.lock();
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         let generation = completion.adapter_generation;
         let mode = {
             let state = self.device.state.lock();
             let framebuffer = state.framebuffers.get(&id).ok_or(DrmError::NotFound)?;
-            if framebuffer.owner != self.file_identity {
-                return Err(DrmError::NotFound);
-            }
             DisplayMode {
                 width: framebuffer.width,
                 height: framebuffer.height,
@@ -857,6 +904,9 @@ impl DrmFile {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         let generation = completion.adapter_generation;
         classify_submission(self, generation, self.submit_disable(&mut completion))
     }

@@ -22,7 +22,7 @@
 | `system/driver-manager` | 根 resource、DTB/PCI 枚举与 BAR 分配、IOMMU/BTI、节点匹配、驱动宿主监督、向根设备目录发布 | resource/IOMMU/BTI native 对象；只读设备身份与 PCI 配置，不运行驱动 |
 | `system/driver-host` | 一个节点的驱动（VirtIO、xHCI 及其 UAC2 子设备）、IRQ 完成线程、DMA、GPU 宿主的启动画面、本宿主设备目录与会话回收 | 节点 MMIO/IRQ resource 与 BTI；经 device-protocol 服务设备目录 |
 | `system/fshost` | 块设备会话、每盘 ext4 实例、原生数据卷挂载、各服务私有目录 | device-protocol、filesystem-protocol；ext4 的唯一启动者，不解释 Linux 挂载或块设备语义 |
-| `system/ext4` | ext4 inode、extent、journal、普通文件的内容 VMO（补页、直写同步、回写）、同一文件系统会话的串行化 | device-protocol、pager-pool 与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
+| `system/ext4` | ext4 inode、extent、journal、普通文件的内容 VMO（补页、直写同步、回写）、同一文件系统会话的串行化 | device-protocol、pager-pool、service-rpc 弹性消息分派与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
 | `system/audio-core` | PCM 输出会话、混音引擎、主音量、独占格式切换、USB 声卡热插拔 | device-protocol、audio-protocol；不拥有 ALSA 状态、子流编号或 Linux ioctl |
 | `system/pager-pool` | 进程内 native pager、port、key 注册与可增长补页线程池 | native-runtime；补页政策由各内容 owner 的 `PageSource` 决定 |
 | `system/netstack` | smoltcp、默认网络、IPv4 FIB/地址、端口、TCP/UDP/RAW、AF_PACKET 队列 | device-protocol 与 network-protocol；不发现网卡、不决定接口配置，不拥有 Linux syscall、信号或阻塞超时 |

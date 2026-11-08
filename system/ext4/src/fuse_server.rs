@@ -132,13 +132,11 @@ impl MountService for Ext4Service {
             },
         );
         let (client, server) = Channel::create()?;
-        let server = Arc::try_new(server).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for _ in 0..WORKERS {
-            let mount = mount.clone();
-            let server = server.clone();
-            let thread = native_runtime::thread::spawn(b"ext4-fuse", move || mount.serve(&server))?;
-            drop(thread);
-        }
+        let session = FuseSession(mount.clone());
+        let handler: Arc<service_rpc::MessageHandler<'static>> =
+            Arc::try_new(move |channel: &Channel, message| session.serve(channel, message))
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        service_rpc::serve_messages(server, WORKERS, b"ext4-fuse", handler)?;
         let writeback = mount.clone();
         let thread = native_runtime::thread::spawn(b"ext4-content-writeback", move || {
             writeback.flush_loop()
@@ -346,53 +344,53 @@ fn xattr_error(error: FileSystemError) -> i32 {
     }
 }
 
-impl Mount {
-    fn serve(&self, channel: &Channel) {
-        loop {
-            let message = match channel.read_wait(DEADLINE_INFINITE) {
-                Ok(message) => message,
-                Err(_) => break,
-            };
-            // 格式错误的帧没有可回复的请求头，丢弃（对应 Linux 读不出完整请求）。
-            let Ok(bytes) = filesystem_protocol::receive_fuse(message) else {
-                continue;
-            };
-            let mut input = Input { bytes: &bytes };
-            let Some(header) = Self::header(&mut input) else {
-                continue;
-            };
-            let reply = self.dispatch(&header, &mut input);
-            if matches!(
-                header.opcode,
-                fuse::FORGET | fuse::BATCH_FORGET | fuse::INTERRUPT
-            ) {
-                continue;
+/// FUSE 连接寿命独立于控制端点和回写线程持有的 Mount；最后一个 dispatcher 退出后才关闭文件系统。
+/// 不能让第一个空闲 reader 退出就 shutdown，也不能等 Mount 最后引用（回写线程本身持有它）。
+struct FuseSession(Arc<Mount>);
+impl Drop for FuseSession {
+    fn drop(&mut self) {
+        let _ = self.0.finish();
+    }
+}
+impl FuseSession {
+    fn serve(&self, channel: &Channel, message: native_runtime::Message) -> Result<(), Status> {
+        // 格式错误的帧没有可回复的请求头，保持既有丢弃语义。
+        let Ok(bytes) = filesystem_protocol::receive_fuse(message) else {
+            return Ok(());
+        };
+        let mut input = Input { bytes: &bytes };
+        let Some(header) = Mount::header(&mut input) else {
+            return Ok(());
+        };
+        let reply = self.0.dispatch(&header, &mut input);
+        if matches!(
+            header.opcode,
+            fuse::FORGET | fuse::BATCH_FORGET | fuse::INTERRUPT
+        ) {
+            return Ok(());
+        }
+        let mut message = Output::new();
+        match reply {
+            Ok(body) => {
+                let body = body.map_or_else(Vec::new, |body| body.0);
+                message
+                    .u32((fuse::OUT_HEADER_SIZE + body.len()) as u32)
+                    .u32(0)
+                    .u64(header.unique)
+                    .bytes(&body);
             }
-            let mut message = Output::new();
-            match reply {
-                Ok(body) => {
-                    let body = body.map_or_else(Vec::new, |body| body.0);
-                    message
-                        .u32((fuse::OUT_HEADER_SIZE + body.len()) as u32)
-                        .u32(0)
-                        .u64(header.unique)
-                        .bytes(&body);
-                }
-                Err(code) => {
-                    message
-                        .u32(fuse::OUT_HEADER_SIZE as u32)
-                        .u32((-code) as u32)
-                        .u64(header.unique);
-                }
-            }
-            if filesystem_protocol::send_fuse(channel, &message.0).is_err() {
-                break;
+            Err(code) => {
+                message
+                    .u32(fuse::OUT_HEADER_SIZE as u32)
+                    .u32((-code) as u32)
+                    .u64(header.unique);
             }
         }
-        // 使用者断开（卸载或 linuxd 失败）：未经 DESTROY 时在这里结束挂载。
-        let _ = self.finish();
+        filesystem_protocol::send_fuse(channel, &message.0)
     }
+}
 
+impl Mount {
     /// 恰好一次地拆除挂载并释放文件系统 UUID 的占用。shutdown 失败同样释放：失败后的文件系统
     /// 已停止写回，不会再写日志。
     fn finish(&self) -> Result<(), FileSystemError> {
@@ -901,17 +899,17 @@ impl Mount {
                 None
             }
         };
-        // 节点不再被使用者引用：写回并丢弃其内容 VMO，再释放 inode。最后一个引用可能触发孤儿回收（ext4 I/O），
-        // 在节点表锁外释放。
-        if let Some(node) = &removed {
+        // 最后引用可能触发孤儿回收（ext4 I/O），在节点表锁外写回/丢弃内容并释放 inode。
+        if let Some(node) = removed {
             let content = self.contents.lock().remove(&node.inode.number());
-            if let Some(content) = content
-                && let Err(error) = content.writeback()
-            {
-                warn!("ext4 content writeback on forget failed: {error:?}");
+            if let Some(content) = content {
+                // 无链接内容直接丢弃，避免先分配块再回收；未知链接状态仍保守写回。
+                let unlinked = node.inode.metadata().is_ok_and(|attrs| attrs.links == 0);
+                if !unlinked && let Err(error) = content.writeback() {
+                    warn!("ext4 content writeback on forget failed: {error:?}");
+                }
             }
         }
-        drop(removed);
     }
 
     fn set_attributes(&self, header: &Header, input: &mut Input<'_>) -> Reply {

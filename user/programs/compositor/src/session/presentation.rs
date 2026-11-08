@@ -46,6 +46,9 @@ impl Session {
                 if let Some(target) = transform {
                     drawable = drawable.transformed(source, target);
                 }
+                drawable.identity = Some((client.0, leaf.surface.get()));
+                drawable.damage = leaf.damage;
+                drawable.opaque = leaf.opaque;
                 if drawable.rect.intersect(screen).is_empty() {
                     continue;
                 }
@@ -143,12 +146,12 @@ impl Session {
             let (Some(art), Some(bounds)) = (art, overlay_bounds) else {
                 return;
             };
-            surface.set_clip(canvas::Rect::new(
+            surface.set_clip(surface.clip().intersect(canvas::Rect::new(
                 bounds.x - x,
                 bounds.y - y,
                 bounds.width,
                 bounds.height,
-            ));
+            )));
             // 菜单和切换面板的屏幕原点均按输出 scale 对齐，换到局部画布后不改变像素位置。
             let origin = (x / scale, y / scale);
             let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);

@@ -17,9 +17,9 @@ pub(in crate::task) use model::CpuAffinity;
 pub(crate) use model::{
     CapabilityError, CloneParameters, CredentialUpdateError, IoStatistics, MessageIdentityError,
     PendingSignal, ProcessCloneResources, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
-    ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalFrameRestoreError,
-    SignalStack, SignalStackError, StopResume, TaskControlBlock, ThreadCloneResources,
-    WaitMembership,
+    ResourceLimitError, RunState, SchedulingAttributes, SignalAction, SignalDelivery,
+    SignalFrameRestoreError, SignalStack, SignalStackError, StopResume, TaskControlBlock,
+    ThreadCloneResources, WaitMembership,
 };
 pub(crate) use model::{ExecError, ResourceUsage, RobustListError, SeccompDecision, SeccompError};
 pub(crate) use model::{KernelThreadBody, SyscallRestartBlock, SyscallRestartPolicy};

@@ -20,16 +20,20 @@
 - `execution::deferred` 的 per-CPU bitmap 只在空→非空时发一个软件中断；重复发布合并 bit。内核 consumer 在 user-return/IRQ-closed idle safe point 执行。
 - 截止时间等待由每 CPU 定时队列持有（`DeadlineIndex`：按（截止时间, 序号）有序，队首变化时发布；等待者入队到当前 CPU，
   令牌记录所属 CPU 供跨 CPU 取消）。每个 CPU 的硬件 deadline 是三个来源的最小值：当前线程的时间片截止（10 ms，
-  只在本 CPU 有竞争者时存在）、本 CPU 队首等待者、boot CPU 的 1 s housekeeping（崩溃看门狗与 deferred 进度）。
+  公平类只在本 CPU 有竞争者时存在；截止类还含预算耗尽和最早补充）、本 CPU 队首等待者、boot CPU 的 1 s housekeeping。
   到期精确到队首截止时间；忙碌但没有竞争者的 CPU、空闲 CPU 都没有周期中断，没有任何来源的 CPU 关闭 timer source。
-  时间片从线程切入时起算：切入与竞争者入队/接管（`add_ready_entry`、`drain_inbound`）时重新武装，队列清空或转入 idle 时撤销。
+  公平时间片从切入时起算；队列清空/idle 撤销公平片，但不能撤销耗尽预算者未来的补充事件。
   只含到期等待者的中断发布 `TIMER_BACKLOG`，不触发调度计费。
-  线程与 CPU 的运行时间在读取时叠加当前 slice 的存量（`Policy::runtime_at`、`busy_anchor_us`），不依赖周期 checkpoint。
+  线程与 CPU 的运行时间在读取时叠加当前 slice 的存量（`Policy::runtime_at`、per-CPU `CpuRuntime`），不依赖周期 checkpoint。
 - `LocalIrqGuard`/`IrqMutex` 维护本地嵌套；guard 不可跨 CPU，锁内不得阻塞或等待远端 fence。
 - native idle 在关中断窗口复查 deferred/mailbox/runqueue 后进入架构 guarded WFI。enable→WFI 间已经确认的中断由精确 PC/resume seam 跳过 WFI，避免丢失一次性唤醒。
 - outgoing 线程在汇编保存上下文前只进入 pending handoff；next/idle continuation 在保存后提交 Blocked/Ready 后果。Ready 的发布与退休均须消费线性 projection token。
 
 ## 系统服务执行
+
+内核混合公平/CBS-EDF 调度；截止配置经系统资源显式授权，按每 CPU 密度准入并保留公平类余量。
+普通应用通过 Linux sched_attr 使用已开放策略；linuxd 只拥有 Linux 配置/授权，动态预算与队列属于内核。
+具体准入、唤醒、退出和内存成本见[执行域契约](../architecture-contract/execution.md#截止预算与准入)。
 
 linuxd 的 Linux 线程由 native 服务线程承载：normal mode 执行兼容层，restricted mode 执行应用。
 restricted syscall/异常返回 linuxd，后者独占 Linux 寄存器 ABI、errno、signal、restart、ptrace 与进程政策。

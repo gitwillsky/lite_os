@@ -1,11 +1,11 @@
 use core::arch::asm;
 
-/// Publish executable writes covering one physical-address range.
+/// Clean executable writes in the actual physical range to PoU.
 ///
 /// The generic page-table transaction records the physical pages whose executable view is being
 /// published. This owner derives their unique kernel direct-map aliases, so IDC=0 never cleans a
 /// user alias that differs from the address used for the data writes.
-pub(crate) fn publish_range(physical_start: usize, size: usize) {
+pub(crate) fn prepare_range(physical_start: usize, size: usize) {
     assert_ne!(size, 0, "instruction publication range is empty");
     let physical_end = physical_start
         .checked_add(size)
@@ -14,20 +14,14 @@ pub(crate) fn publish_range(physical_start: usize, size: usize) {
         physical_end <= (1usize << 38),
         "instruction publication exceeds the AArch64 direct-map window"
     );
-    let (idc, dic) = super::startup::cache_capabilities();
-    if idc && dic {
-        // SAFETY: IDC/DIC guarantee coherency to PoU without explicit line maintenance; the
-        // barriers publish preceding writes and synchronize subsequent instruction fetch.
-        unsafe { asm!("dsb ish", "isb", options(nostack)) };
-        return;
-    }
+    let (idc, _) = super::startup::cache_capabilities();
 
-    let ctr: u64;
-    // SAFETY: CTR_EL0 is read-only at EL1.
-    unsafe {
-        asm!("mrs {value}, ctr_el0", value = out(reg) ctr, options(nomem, nostack, preserves_flags))
-    };
     if !idc {
+        let ctr: u64;
+        // SAFETY: CTR_EL0 is read-only at EL1; IDC machines need no range walk or CTR read.
+        unsafe {
+            asm!("mrs {value}, ctr_el0", value = out(reg) ctr, options(nomem, nostack, preserves_flags))
+        };
         let line = 4usize << ((ctr >> 16) & 0xf);
         let mut physical = physical_start & !(line - 1);
         while physical < physical_end {
@@ -38,21 +32,22 @@ pub(crate) fn publish_range(physical_start: usize, size: usize) {
             physical += line;
         }
     }
-    // SAFETY: data clean, when required, must complete before invalidating instruction lines.
+    // SAFETY: finish data writes/clean to PoU before publishing this PTE or migrating the task.
+    // Instruction invalidation is batched by the translation transaction after all ranges are clean.
     unsafe { asm!("dsb ish", options(nostack)) };
-    if !dic {
-        let line = 4usize << (ctr & 0xf);
-        let mut physical = physical_start & !(line - 1);
-        while physical < physical_end {
-            let address = super::mmu::physical_to_virtual(physical);
-            // SAFETY: address is the bounded direct-map alias of this physical line; IC IVAU
-            // invalidates that exact line to PoU for the calling PE.
-            unsafe { asm!("ic ivau, {address}", address = in(reg) address, options(nostack)) };
-            physical += line;
+}
+
+/// Complete the calling PE's executable publication, including unknown user virtual aliases.
+pub(crate) fn publish_local() {
+    let (_, dic) = super::startup::cache_capabilities();
+    // SAFETY: the transaction has completed data publication for every actual range. VIPT aliases
+    // cannot be enumerated from the direct map, so invalidate this PE's entire I-cache when required.
+    unsafe {
+        if !dic {
+            asm!("ic iallu", options(nostack));
         }
+        asm!("dsb ish", "isb", options(nostack));
     }
-    // SAFETY: completion and context synchronization are required before executable use.
-    unsafe { asm!("dsb ish", "isb", options(nostack)) };
 }
 
 /// Discard firmware instruction-cache state before a CPU joins shared execution.

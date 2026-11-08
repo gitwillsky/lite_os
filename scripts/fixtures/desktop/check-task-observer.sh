@@ -21,7 +21,7 @@ BEGIN {
 $1=="系统服务" {services=1; next}
 $1=="进程" {services=0; next}
 services {
-    if (NF!=7 || $2!~/^[1-9][0-9]*$/ || $3!="运行中" || $6=="—" || $7!~/^[1-9][0-9]*$/) bad=1;
+    if (NF!=8 || $2!~/^[1-9][0-9]*$/ || $3!="运行中" || $6=="—" || $7=="—" || $8!~/^[1-9][0-9]*$/) bad=1;
     if (identities[$2]++) bad=1;
     if ($1 ~ /^(virtio-(net|block|console|rng|gpu|input|sound)|xHCI)@[0-9a-f]+$/) {
         split($1, host, "@");

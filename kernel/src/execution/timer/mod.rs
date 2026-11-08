@@ -14,17 +14,18 @@ const HOUSEKEEPING_US: u64 = 1_000_000;
 
 /// 一个 logical CPU 的 timer 状态。
 ///
-/// 硬件 deadline 由三个来源取最小值合成：当前线程的时间片截止（仅在本 CPU 有竞争者时存在）、
+/// 硬件 deadline 由三个来源取最小值合成：调度截止（公平片、CBS 预算耗尽/补充）、
 /// 本 CPU 最早的截止时间等待者、boot CPU 的 housekeeping。除 `earliest_ns` 外，字段都只在本 CPU 且本地
 /// IRQ 屏蔽时读写。没有来源的 CPU 关闭 timer source：忙碌但无竞争的 CPU 也没有周期中断。
 struct CpuTimerState {
-    // OWNER: 当前线程时间片的结束时刻（counter，`u64::MAX` 为未武装）。仅当本 CPU 运行线程且 runqueue 有竞争者时
-    // 才武装；缺少它，同 CPU 的等权竞争者要等到当前线程自己进内核才有机会运行。
+    // OWNER: 调度器最早事件（counter，MAX 为无）；公平片只在有竞争者时武装，预算补充在 idle 也保留。
+    // 缺少它，公平竞争者无法抢占，或耗尽预算者永远不能补充/无竞争者可无限超额。
     slice_deadline: AtomicU64,
     // OWNER: 当前时间片开始的时刻（counter）；竞争者在时间片中途到达时据此决定截止时刻。
     slice_start: AtomicU64,
-    // OWNER: 本 CPU 定时队列队首的截止时间（纳秒，`u64::MAX` 为空）。由队列锁内的发布者写入，
-    // 远端取消只会让它变晚，因此本地读到旧值最多多一次空中断，不会丢失到期。
+    // OWNER: 定时队列发表、尚未由 timer IRQ 领取的队首截止（纳秒，MAX 为无待编程来源）。
+    // IRQ 领取后清空，deferred expire 持队列锁重新发表真实队首；队列本身仍唯一拥有等待者。
+    // 若在 EOI 前继续编程已经到期的队首，level timer 会无限重投，deferred 永远没有机会推进。
     earliest_ns: AtomicU64,
     // OWNER: boot CPU 的下一次 housekeeping 时刻；其他 CPU 不使用。
     housekeeping_deadline: AtomicU64,
@@ -127,7 +128,7 @@ pub(crate) fn get_time_ns() -> u64 {
 
 /// 一次本地 timer 中断的确认结果。
 pub(crate) struct TimerEvent {
-    /// 是否包含当前线程的时间片截止；否则只是截止时间等待者或 housekeeping 到期。
+    /// 是否包含调度截止（公平片、预算耗尽或补充）；否则只是等待者或 housekeeping 到期。
     pub(crate) slice_expired: bool,
 }
 
@@ -211,7 +212,7 @@ pub(crate) fn acknowledge_timer_interrupt() -> TimerEvent {
         slice_expired: false,
     };
     if now >= state.slice_deadline.load(Ordering::Relaxed) {
-        // 时间片是一次性来源：由 deferred 处理决定是否重新武装（仍有竞争者才需要）。
+        // 一次性来源：safe point 重新选择/补充，并按当前预算或竞争状态重装。
         state.slice_deadline.store(u64::MAX, Ordering::Relaxed);
         event.slice_expired = true;
     }
@@ -223,6 +224,10 @@ pub(crate) fn acknowledge_timer_interrupt() -> TimerEvent {
             Ordering::Relaxed,
         );
     }
+    // 1. 本次 timer IRQ 总会发布 TIMER/TIMER_BACKLOG，deferred expire 随后重发实际队首。
+    // 2. 先领取这份编程来源再 EOI；即使远端取消刚发表更晚的队首，expire 也会在队列锁内恢复它。
+    // 3. 不能沿用过期 CVAL，否则 eret 立即再次入 IRQ，形成抢在 deferred 之前的 level 中断风暴。
+    state.earliest_ns.store(u64::MAX, Ordering::Relaxed);
     reprogram_local();
     event
 }
@@ -234,24 +239,20 @@ pub(crate) fn note_slice_start() {
         .store(arch::time::counter(), Ordering::Relaxed);
 }
 
-/// 武装当前时间片的截止：`slice_start + quantum`，已经过期则立即。仅在本 CPU 有竞争者时调用。
-pub(crate) fn arm_slice() {
+/// 调度器唯一 deadline 来源：公平时间片、CBS 预算耗尽与最早预算补充取最小。
+/// 调用者屏蔽本地 IRQ；即使 idle 或无竞争者也保留预算补充，不能沿用旧线程的截止。
+pub(crate) fn set_scheduler_deadline(fair_competes: bool, scheduler_ns: Option<u64>) {
     let state = local_state();
-    let deadline = state
-        .slice_start
-        .load(Ordering::Relaxed)
-        .saturating_add(quantum_counter());
-    let armed = state.slice_deadline.load(Ordering::Relaxed);
-    if deadline < armed {
-        state.slice_deadline.store(deadline, Ordering::Relaxed);
-        reprogram_local();
-    }
-}
-
-/// 撤销时间片截止（没有竞争者，或本 CPU 转入 idle）。
-pub(crate) fn disarm_slice() {
-    let state = local_state();
-    if state.slice_deadline.swap(u64::MAX, Ordering::Relaxed) != u64::MAX {
+    let fair = if fair_competes {
+        state
+            .slice_start
+            .load(Ordering::Relaxed)
+            .saturating_add(quantum_counter())
+    } else {
+        u64::MAX
+    };
+    let deadline = fair.min(scheduler_ns.map_or(u64::MAX, counter_for_ns));
+    if state.slice_deadline.swap(deadline, Ordering::Relaxed) != deadline {
         reprogram_local();
     }
 }

@@ -100,8 +100,8 @@ impl Desktop {
                     date.year, date.month, date.day
                 ))
             }
-            paint::NETWORK => self.network.tooltip(&self.settings),
-            paint::USB => self.usb.tooltip(),
+            paint::NETWORK => self.tray.network.tooltip(&self.settings),
+            paint::USB => self.tray.usb.tooltip(),
             paint::VOLUME => Some(match self.volume.value {
                 Some(value) if value.muted => "音量：静音".to_owned(),
                 Some(value) => format!("音量：{}%", value.left.max(value.right)),

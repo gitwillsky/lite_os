@@ -37,6 +37,12 @@ handler、blocked、ptrace 与 core-dump 信号仍走 pending/dequeue。
 
 ## Owner
 
+- sched_attr 与 legacy 调度设置共用目标 policy 的同一配置事务；只在锁外复制用户数据，不建立第二张线程配置表。
+  Linux 配置包括 OTHER/DEADLINE、nice、reset-on-fork 与静态时间参数；原生调度器独占动态预算、准入与队列。
+  DEADLINE 需要 initial UserNS CAP_SYS_NICE 及覆盖 root domain 的 affinity；native 拒绝容量映射为 EBUSY，失败不发布新配置。
+  fork/clone 在准备前冻结真实策略快照：未设置 reset 的 DEADLINE 返回 EAGAIN，设置 reset 的子执行体恢复 OTHER、负 nice 归零并清 reset。
+  同一快照交给构造器，不能在资源准备后再读取一个可能已被远端修改的父策略。参数范围与 flags 缺口由 ABI 矩阵拥有。
+
 - PIDFD binding 只持 immutable PidIdentity/source，不 pin TCB/MM/files。ProcessNode 与非 leader
   ThreadIndex 各以 Weak 指向本实际 PID 的 lazy readiness source；inode admission 决定并发打开的
  唯一 source，graph final recheck 后才发表。ThreadIndex 的 retiring_task 是同一 execution 的

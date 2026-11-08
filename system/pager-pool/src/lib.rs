@@ -234,7 +234,7 @@ pub fn mark_clean(vmo: &Vmo, offset: u64, length: u64) {
     end_writeback(vmo, offset, length);
 }
 
-/// `[offset, offset + length)` 中第一段脏区间。
+/// `[offset, offset + length)` 中第一段未持久化区间，包括尚未 END 确认的回写页；失败后仍能查询重试。
 pub fn first_dirty(vmo: &Vmo, offset: u64, length: u64) -> Option<(u64, u64)> {
     shared()
         .pager
@@ -279,7 +279,8 @@ fn work() {
                 None => {
                     queue.idle.push(me.clone());
                     drop(queue);
-                    let deadline = native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
+                    let deadline =
+                        native_runtime::system::monotonic().saturating_add(IDLE_TIMEOUT_NS);
                     if me.park(deadline) == Park::TimedOut {
                         // 超时仍在空闲表里说明期间没有请求分派给本线程：退出。已被摘出空闲表的
                         // 线程有一次待消费的唤醒（请求已入队），必须继续工作而不能丢失它。

@@ -4,7 +4,7 @@ use super::*;
 use service_rpc::call;
 
 /// 传输失败的领域投影：服务内存不足为 `NoMemory`，服务不可用（已终止）为 `NetworkDown`。
-fn transport(status: Status) -> SocketError {
+pub(super) fn transport(status: Status) -> SocketError {
     if status == native_abi::ERR_NO_MEMORY {
         SocketError::NoMemory
     } else {
@@ -227,11 +227,18 @@ fn get_error(reply: &service_rpc::Reply) -> Option<SocketError> {
 /// 使用者端：一个 INET socket；drop 即关闭。
 pub struct RemoteInetSocket {
     channel: Channel,
+    data: client_queue::ClientQueue,
 }
 
 impl RemoteInetSocket {
-    pub fn new(channel: Channel) -> Self {
-        Self { channel }
+    /// 用已授权的 socket channel 协商共享数据面，返回持有 channel 与固定队列的客户端。
+    ///
+    /// # Errors
+    ///
+    /// 原生对象不足为 `NoMemory`；服务终止、版本不匹配或协商失败为 `NetworkDown`。
+    pub fn new(channel: Channel) -> Result<Self, SocketError> {
+        let data = client_queue::ClientQueue::connect(&channel).map_err(transport)?;
+        Ok(Self { channel, data })
     }
 
     fn unit(&self, writer: &Writer) -> Result<(), SocketError> {
@@ -278,36 +285,26 @@ impl RemoteInetSocket {
         target: Option<InetAddress>,
         packet_info: Option<InternetSendPacketInfo>,
     ) -> Result<usize, SocketError> {
-        let mut writer = Writer::request(ordinal::SEND);
-        put_option_inet(&mut writer, target);
-        put_send_info(&mut writer, packet_info);
-        let mut handles = Vec::new();
-        put_payload(&mut writer, &mut handles, input).map_err(transport)?;
-        let reply = request(&self.channel, &writer, handles)?;
-        body(&reply)
-            .u64()
-            .map(|count| count as usize)
-            .map_err(transport)
+        if input.len() > TRANSFER_LIMIT {
+            return Err(SocketError::MessageTooLarge);
+        }
+        let mut record = socket_io::request(socket_io::SEND, input.len(), false);
+        socket_io::inet(&mut record, target);
+        socket_io::send_info(&mut record, packet_info);
+        let (response, _) = self.data.transfer(record, input).map_err(transport)?;
+        socket_io::result(&response)?;
+        Ok(response[2] as usize)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<InetReceived, SocketError> {
-        let mut writer = Writer::request(ordinal::RECEIVE);
-        writer.u64(limit as u64).bool(peek);
-        let mut reply = request(&self.channel, &writer, Vec::new())?;
-        let (full_length, source, packet_info, data) = {
-            let (mut reader, handles) = reply.split();
-            let _ = reader.u8();
-            let full_length = reader.u64().map_err(transport)? as usize;
-            let source = get_option_inet(&mut reader).map_err(transport)?;
-            let packet_info = get_packet_info(&mut reader).map_err(transport)?;
-            let data = get_payload(&mut reader, handles).map_err(transport)?;
-            (full_length, source, packet_info, data)
-        };
+        let record = socket_io::request(socket_io::RECEIVE, limit, peek);
+        let (response, data) = self.data.transfer(record, &[]).map_err(transport)?;
+        socket_io::result(&response)?;
         Ok(InetReceived {
             data,
-            full_length,
-            source,
-            packet_info,
+            full_length: response[3] as usize,
+            source: socket_io::get_inet(&response).map_err(transport)?,
+            packet_info: socket_io::get_receive_info(&response).map_err(transport)?,
         })
     }
 
@@ -357,13 +354,14 @@ impl RemoteInetSocket {
 
     /// 服务不可用时报告错误状态。
     pub fn poll_state(&self) -> SocketPollState {
-        request(
-            &self.channel,
-            &Writer::request(ordinal::POLL_STATE),
-            Vec::new(),
-        )
-        .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
-        .unwrap_or_else(|_| SocketPollState::error())
+        self.data
+            .transfer(socket_io::request(socket_io::POLL, 0, false), &[])
+            .map_err(transport)
+            .and_then(|(response, _)| {
+                socket_io::result(&response)?;
+                socket_io::get_poll(&response).map_err(transport)
+            })
+            .unwrap_or_else(|_| SocketPollState::error())
     }
 
     pub fn set_option(&self, change: InetOptionChange) -> Result<(), SocketError> {
@@ -394,11 +392,18 @@ impl RemoteInetSocket {
 /// 使用者端：一个 packet socket；drop 即关闭。
 pub struct RemotePacketSocket {
     channel: Channel,
+    data: client_queue::ClientQueue,
 }
 
 impl RemotePacketSocket {
-    pub fn new(channel: Channel) -> Self {
-        Self { channel }
+    /// 用已授权的 socket channel 协商共享数据面，返回持有 channel 与固定队列的客户端。
+    ///
+    /// # Errors
+    ///
+    /// 原生对象不足为 `NoMemory`；服务终止、版本不匹配或协商失败为 `NetworkDown`。
+    pub fn new(channel: Channel) -> Result<Self, SocketError> {
+        let data = client_queue::ClientQueue::connect(&channel).map_err(transport)?;
+        Ok(Self { channel, data })
     }
 
     pub fn bind(&self, address: PacketAddress) -> Result<(), SocketError> {
@@ -421,33 +426,26 @@ impl RemotePacketSocket {
         input: &[u8],
         target: Option<PacketAddress>,
     ) -> Result<usize, SocketError> {
-        let mut writer = Writer::request(ordinal::SEND);
-        writer.bool(target.is_some());
-        if let Some(target) = target {
-            put_packet_address(&mut writer, target);
+        if input.len() > TRANSFER_LIMIT {
+            return Err(SocketError::MessageTooLarge);
         }
-        let mut handles = Vec::new();
-        put_payload(&mut writer, &mut handles, input).map_err(transport)?;
-        let reply = request(&self.channel, &writer, handles)?;
-        body(&reply)
-            .u64()
-            .map(|count| count as usize)
-            .map_err(transport)
+        let mut record = socket_io::request(socket_io::SEND, input.len(), false);
+        socket_io::packet(&mut record, target);
+        let (response, _) = self.data.transfer(record, input).map_err(transport)?;
+        socket_io::result(&response)?;
+        Ok(response[2] as usize)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<PacketReceived, SocketError> {
-        let mut writer = Writer::request(ordinal::RECEIVE);
-        writer.u64(limit as u64).bool(peek);
-        let mut reply = request(&self.channel, &writer, Vec::new())?;
-        let (mut reader, handles) = reply.split();
-        let _ = reader.u8();
-        let full_length = reader.u64().map_err(transport)? as usize;
-        let source = get_packet_address(&mut reader).map_err(transport)?;
-        let data = get_payload(&mut reader, handles).map_err(transport)?;
+        let record = socket_io::request(socket_io::RECEIVE, limit, peek);
+        let (response, data) = self.data.transfer(record, &[]).map_err(transport)?;
+        socket_io::result(&response)?;
         Ok(PacketReceived {
             data,
-            full_length,
-            source,
+            full_length: response[3] as usize,
+            source: socket_io::get_packet(&response)
+                .map_err(transport)?
+                .ok_or(SocketError::NetworkDown)?,
         })
     }
 
@@ -463,13 +461,14 @@ impl RemotePacketSocket {
     }
 
     pub fn poll_state(&self) -> SocketPollState {
-        request(
-            &self.channel,
-            &Writer::request(ordinal::POLL_STATE),
-            Vec::new(),
-        )
-        .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
-        .unwrap_or_else(|_| SocketPollState::error())
+        self.data
+            .transfer(socket_io::request(socket_io::POLL, 0, false), &[])
+            .map_err(transport)
+            .and_then(|(response, _)| {
+                socket_io::result(&response)?;
+                socket_io::get_poll(&response).map_err(transport)
+            })
+            .unwrap_or_else(|_| SocketPollState::error())
     }
 
     /// 关闭 socket（使用者最后一次文件关闭）；服务已终止时无事可做。

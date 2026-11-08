@@ -96,21 +96,20 @@ pub(super) fn cancel(token: TimerToken) {
 pub(super) fn expire(now_ns: u64) {
     let cpu = cpu::current_id();
     let mut batch: [Option<VacantEntry<Key, Entry>>; EXPIRE_BATCH] = core::array::from_fn(|_| None);
-    let more_due = {
+    let due = {
         let mut timers = queue(cpu).lock();
         let due = timers.take_due(now_ns, &mut batch);
-        if due.taken != 0 {
-            // 队首已前进：让硬件 deadline 对准新的队首，而不是停在刚到期的旧时刻。
-            timer::publish_timer_head(cpu, timers.head());
-        }
-        due.more_due
+        // IRQ 已领取硬件编程来源；即使本次由公平时间片提前触发、没有到期等待者，
+        // 也必须重发仍在队列中的未来截止，否则无 housekeeping 的 CPU 会漏掉后续超时。
+        timer::publish_timer_head(cpu, timers.head());
+        due
     };
-    // 唤醒会取得调度锁，必须在释放定时队列锁之后进行。
-    for entry in batch.into_iter().flatten() {
+    // 唤醒会取得调度锁，必须在释放定时队列锁之后进行；只消费本批已初始化的前缀。
+    for entry in batch.into_iter().take(due.taken).flatten() {
         let Entry { thread, membership } = entry.into_value();
         super::processor::wake_waiting(thread, membership, WaitResult::TimedOut, false);
     }
-    if more_due {
+    if due.more_due {
         deferred::raise(DeferredWork::TIMER_BACKLOG);
     }
 }

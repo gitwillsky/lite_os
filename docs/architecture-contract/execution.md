@@ -19,6 +19,12 @@
   无新锁、队列、分配或 Atomic；ReadyCause 只随调用栈传递，RUNQUEUE 复用既有 owner。
   无工作时保持原子空路径；actual deferred host fixture 验证目标隔离、合并与重新签发，CFS 测试保护条件抢占，
   音频跨服务运行时与调度公平性门禁验证延迟及公平性，不新增或放宽阈值。
+- CPU 时间与 CFS 加权虚拟时间均以纳秒计费；native ABI 直接返回纳秒，不先截成微秒再补零。
+  `Policy` 持有线程区间，per-CPU `CpuRuntime` 是其已提交量/活动区间的计费投影；两者共享同一个切换边界。
+  边界时钟在 `CpuRuntime` 的 IRQ-safe 锁内采样并发表，快照也在该锁内采样，防止新累计量叠加旧区间或观察值倒退。
+  锁序只允许 Policy → active 区间所在 CPU 的计费锁；远端配置替换也先在实际 owner CPU 结算，不能计入调用 CPU。
+  快照不取 Policy/队列锁，锁内只读无阻塞时钟和整数，不分配。
+  finish 恰好结束一次区间，idle 只验证已结束，不能静默清掉未计费区间；CFS 倒数乘移保持原权重关系。
 - 每个 CPU 的 `placement_vruntime` 是独立、单调的虚拟时钟；有效 current/Ready root 更新它，撤销 current
   前必须包含刚结束的 slice，不能让空 runqueue 把时钟停在初始值。idle 不重置该时钟。
   迁移在 SchedulingState guard 内把 `Policy.vruntime - source_floor` 换算到 target_floor，再对真正睡眠者
@@ -36,6 +42,23 @@
   不强置抢占或改变权重。peer close 与普通 event 维持正常选核，未保存的 Blocking context 仍沿原 handoff 完成。
   没有额外线程、队列、锁或状态；实际音频的原始四 CPU/八路、1024-frame 软件缓冲门禁验证端到端延迟。
 - Linux signal/restart、进程 graph、wait registry 和 process timers 只属于 linuxd；设备完成工作只属于 driver-host。service-sync 不消费内核可变 Rust 状态。
+
+## 截止预算与准入
+
+- Policy 同锁拥有 CBS 状态与唯一 DeadlineReservation；每 CPU 的 fair/EDF/补充 heap 复用 Ready generation 和创建时容量凭据。
+  可运行 EDF 先于公平类；耗尽者按下一周期开始时刻等待，不占据可运行队首，也不消费应用的等待 membership。
+  timer 调度来源取公平片、当前预算耗尽和最早补充的最小；idle 与无竞争者也保留必要的预算 timer。
+  补充不分配，延迟抢占造成的负剩余额度跨周期还债。显式 yield 放弃周期余量，抢占保留；真正阻塞才做唤醒密度测试。
+  约束截止采用 Revisited CBS：截止前只削减剩余额度，截止后到下一周期前等待，禁止反复唤醒提前取得完整预算。
+- ProcessorTopology 的 IRQ-safe 密度账本在同一事务扣旧添新，单 CPU 上限 95%；Q32 的 runtime/deadline 向上取整，
+  比只验 runtime/period 更保守。凭据不复制，睡眠不归还；终止/退出立即撤销，不等 stale Arc 最后释放。
+  配置锁序 state → Policy → 带宽账本；账本不反向取线程/队列锁，不分配或投递唤醒。失败保留原凭据、预算与 membership。
+  配置替换推进 Ready generation，执行体换 CPU 后仍按原 handoff 发布。截止线程固定在准入 CPU，不参与公平轮转或 RPC 选核提示；
+  native affinity 变更必须保留该 CPU，否则拒绝；需要重新选核先显式重新准入，不能不经容量检查迁移承诺。
+- THREAD_SET_DEADLINE 仅限已启动系统线程，需覆盖 system::SCHEDULE 的 resource 和线程 MANAGE；三项时间全零撤销。
+  object/task/scheduling 只转发线程调度操作，不复制执行体配置；相同配置不重置预算或变更 Ready generation。
+  linuxd 获系统操作范围，audio-core 只获调度子范围。Linux 用户调用走标准 sched_attr，不获得 resource 或原生 syscall。
+  不增加全局轮询或周期 tick；三组 heap 的有界 backing、一个冷准入账本与预算算术成本在最终调度/音频/显示门禁测量。
 
 ## 上下文与返回
 
@@ -83,24 +106,37 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
 - deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
+- 可执行映射在发表 PTE 前按实际连续物理范围完成数据清理；`TranslationCommit` 只保留待同步标记，
+  事务结束统一执行本地及远端指令同步。不得以物理 min/max 扫描不相邻页之间的空洞；不新增范围表或分配。
+  AArch64 按 direct-map 写别名清理至 PoU，最终失效覆盖未知用户别名；RISC-V 保持一次 `fence rw,rw; fence.i` 与远端 RFENCE。
 - futex 等待索引归 `execution::sync::futex`，`syscall::futex` 只解码 native 参数、解析地址与比较用户值。
   私有 context 由实际 AddressSpace 按需拥有（每 logical CPU 16 桶，向上取 2 的幂）；成员的服务区使用共享空间的私有 context。
   共享 VMO key 沿 slice 链累计偏移，COW 子对象保留独立逻辑身份，不按物理页归并；使用唯一全局 context（每 logical CPU 256 桶）；不同空间的私有 key 不进入全局桶。
   context 发表前准备全部桶，Once 只移动准备好的 Arc，热路径 get 不取 VM 锁；每桶一把 `IrqMutex` 和 (key, 序号) 有序树；等待节点在锁外预分配，requeue 移交原节点。
-- 桶内 `AddressSpace::read_resident_word` 只 try-lock 实际页表 owner，不排队、不分配、不缺页；
-  空间锁忙或翻译缺失先退出整个桶事务，再普通读取等待/缺页后重新比较。比较与入队同锁，唤醒不会丢失。
+- `AddressSpace::with_resident_word` 先阻塞取得实际页表 owner 的空间锁并按需补页，再进入桶事务；
+  映射 guard 保证原子字在闭包期间不会撤销或更换物理身份。闭包取得桶锁后才原子比较与登记，
+  不在 IRQ-safe 桶内等待或缺页，也不使用放锁后立即重试的 try-lock 环，以免持续争用下活锁。
   双桶按 (存活 context 地址, 桶下标) 全序加锁，相同桶只取一次；外层 IRQ guard 在两桶都解锁后最后恢复中断，
   不能依赖 source/target 的变量析构顺序。等待者只弱引用 context，取消在快照桶内复核位置，封闭跨 context requeue 的交错与引用环。
   相同 key 的 requeue 只完成 wake，不把同一批等待者反复移动至调用者提供的上限。
   Benchmark 决策：复用 `futex/queue.rs` 的现有 FIFO/requeue 用例及 architecture-bench `futex enqueue + wake`；
   争用吞吐留到统一运行验收的基线 4，不增加单独的测试实体。
-- 内核栈高水位探针：启动参数 `stack_probe` 默认关闭，在创建线程前确定。开启时新栈的可用区涂写非零标记，
+- Timer IRQ 在 EOI 前领取并清空等待队首的硬件编程来源，deferred expire 持队列锁无条件重发实际队首。
+  过期队首不能重新编程后直接 EOI，否则 level source 连续重投并饿死 deferred；公平片提前到期、没有取走等待者时也必须恢复未来截止。
+  等待者始终只由定时队列拥有，不新增第二份队列或“假完成”；远端取消与恢复由原队列锁串行。
+- 内核栈高水位探针：启动参数 `liteos.stack_probe=1` 默认关闭，在创建线程前确定。开启时新栈的可用区涂写非零标记，
   退出时扫描首个改变的字，创新高记录 `kernel stack high-water mark: X of Y usable bytes (written lower bound)`；
   guard 与 AArch64 context reserve 均排除。开销限于创建的一次写和退出的一次读，不进入 trap/调度路径。
   标记可观察普通零写入；未触及的帧空隙、恰好等于标记的写入仍不可见，因此结果是写入深度下界，不能独自证明缩栈安全。
-  缩栈还需结合深路径/编译器栈帧审查和余量；本轮保持 32 KiB，不用未经测量的估计压低内存。
-- native channel 每个���点的积压按字节限额（4 MiB，含每条消息 64 字节固定开销），超过返回 `ERR_NO_RESOURCES`；
-  条数上限会让 64 KiB 整消息放大到数百 MiB、同时对小消息过紧。字节记账与队列同锁增减，端点关闭时随队列清零。
+  缩栈还需结合深路径/编译器栈帧审查和余量。AArch64/HVF 11 CPU 的完整桌面、四路并发 fork/文件创建、
+  读校验、同步回写及 12 线程 socket 负载观察到 4120 字节；它仍不是包含所有硬件/中断嵌套的上界。
+  16 KiB 槽只剩 8 KiB 可用，不能据此证明完整平台余量；评估结论保留 32 KiB。大块清零 staging 已改为直接页操作，
+  该 syscall 的编译器帧从 4256 降到 288 字节；优先删除大帧与多余常驻线程，不以缩小安全边界凑内存指标。
+- native channel 每端点的在途消息按 4 MiB 字节预算准入；计入字节 Vec、句柄 Vec 的实际容量，
+  再加两份 Message 槽的固定开销，超过返回 `ERR_NO_RESOURCES`。不是只按载荷长度或消息条数限额。
+  计费与队列同锁增减，端点关闭时随队列清零；该预算不是堆分配器物理页舍入的精确上限。
+  每对 channel 另外只保留一份空存储，最大为一条协议消息（64 KiB 加最多 64 个 HandleEntry）；
+  任一端关闭就移出并在锁外释放，消息延迟归还时也不重新建立空闲缓存。
 - 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。
 - fault/trap、OOM、exit 和 kill 只能由对应 owner 退休 context、wait membership 与 observer；同步 fence 未确认时不得回收 backing。
 - native-runtime 的启动闭包和结果引用属于 Descriptor，执行时不把其 Box 搬到线程栈；
@@ -189,6 +225,25 @@ futex 等待/唤醒与线程描述符里的堆槽。服务堆在进程内只有�
   blocking benchmark `span-heap-bench`（小块 alloc+free、跨线程释放、16 B→64 KiB 增长，宽绝对上限）。
   实际 RPC 成本与容量分别由音频/桌面、musl 地址空间压力门禁验证。
 
+### 原生 channel 的存储与调用寿命
+
+- `object::channel::message` 拥有消息字节、转移中的句柄与空存储回收；ChannelState 只在现有端点锁内移交一份空存储。
+  Message 弱引用回收目标，避免新增队列到端点的保活环；回收前在锁外释放未交付能力并清空长度，重新发表前初始化全部有效字节。
+  分配、用户缺页、淘汰的空 Vec 释放、端点关闭的排队消息析构都不持 channel 锁，没有新的全局缓存/回收线程。
+- `object::Thread` 只保有一个 CallSlot；`channel::call` 拥有事务号、TaskEvent 和回复，不进入通用调度 Thread 的领域。
+  首次调用懒分配一份 Arc，后续复用；在途先从槽位移出，不跨等待持槽位锁。回复或关闭通知始终在原 channel 锁内完成，
+  caller 撤销登记也取得同一锁，因此归还时不可能仍有 producer 访问；只回收唯一 Arc 且回复已取空的 waiter。
+  下一次用新 TaskEvent 清除旧 pending，定时等待仍沿全局唯一 ticket。执行体退出时清空 CallSlot，即使已退出线程句柄仍存活也不保留历史 waiter。
+- 事务号由 ChannelState 在同锁分配，两端共享游标；低 31 位环绕时跳过两侧仍登记的 ID。
+  `free_until` 只缓存游标前方已证明为空的区间：新增登记在游标后方、移除只能扩大空隙，不会破坏证明。
+  常规分配 O(1)，环绕/碰到旧占用边界才扫描；至多 registered+1 个候选，有界且无额外索引。
+- syscall 只做 ABI 和用户复制：编号数组用协议上限的栈存储，复用 Plain 数组复制机制，不为临时编号分配 Vec。
+  HandleTable 批量移出到消息已准备的 Vec，批量移入只 drain 元素、保留容量，仍是全部成功或全部失败；
+  单句柄插入直接预留一个表槽。关闭/超额表在准备阶段不先尝试无用增长，错误和能力析构在表锁外处理。
+  单次 remove 与批量 remove_all 在表锁外统一取消旧 key 的等待，关闭、转移和写回失败回滚都走同一职责；
+  syscall 删除重复注销。批量 close 仍由进程生命周期 owner 在表锁外遍历退休项，保留其关闭顺序。
+  变更没有新增应用 syscall、私有协议或 Linux 语义。
+
 ## 原生任务观测
 
 - `object::Process` 的 lifecycle 锁同时保护存活线程索引与退出累计计费；最终 runtime 与线程摘除同一事务提交，
@@ -206,9 +261,16 @@ futex 等待/唤醒与线程描述符里的堆槽。服务堆在进程内只有�
   节点从发布起就是最终权限，Linux 进程无法抢先占用路径。连接与发送由 VFS socket inode 写权限按 fsuid 与附加组授权，
   组外进程得到 `EACCES`。端点放在 linuxd 自有的 devtmpfs 上（同 Linux `/dev/log`），因为 `/run` 由 init 脚本稍后挂载。只返回服务名称/运行状态/汇总资源量，
   不返回地址、寄存器、凭据、映射明细或管理 capability。请求不持久化客户端状态；socket 队列沿用现有配额，
+  linuxd 组件行组合执行成员的私有区与共享服务映像 owner 的统计；两区互斥，不枚举累加 Linux 应用的硬件镜像。
+  CPU/线程仍来自执行成员；任一必要内存查询失败表示 unavailable，不把缺失数据伪装成零。
   回复不能立即发送时丢弃，不阻塞其他客户端。快照受单个 datagram 上限约束（`LTASK002`，104 字节/记录），原生服务数量远低于该界。
 - 协议返回驻留、专用、共享与分摊内存；查询失败用 UNAVAILABLE，不能当作真实零。任务管理器服务页显示专用与共享，比例分摊值用于诊断。
 - 原生 KOID 与 Linux PID 分属不同身份空间。原生服务按自己的承载进程计费，Linux 应用及其 syscall 消耗归实际成员承载线程；
   不再把相同应用的承载线程计入服务。Linuxd 工作线程是其服务的展开明细，系统总线程数不重复加它们。
   普通 Linux 进程仍使用标准 procfs/pidfd；获授权的系统桌面工具消费只读服务协议，不新增 Linux syscall、ioctl 或伪造 PID。
 - 观测是低频、按请求执行的冷路径。锁序/稀疏驻留统计由生产 VMO fixture 与 runtime 验证；不在调度、fault 或 IPC 热路径新增采样。
+
+
+服务消息的 framing 与接收线程寿命分离：service-rpc 的 RPC 与自有线格式处理器共用同一 Pool、停止广播、并发准入和空闲退休。
+自有格式入口 `serve_messages` 的生产调用者为 ext4 FUSE；仅把接收的原生 Message 与保活 channel 交给域处理器。
+Pool 最后一个在途处理/读者退出后才释放 handler，领域会话据此 RAII 清理；不由空闲读者逐个执行领域 shutdown。

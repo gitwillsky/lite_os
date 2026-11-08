@@ -108,7 +108,8 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
 - port 出队与交付是一个事务：出队保留该 packet 的队列空位，复制给调用者在队列锁外进行，失败时无分配地放回队首；
   缺失时复制失败会永久丢失 pager 请求 packet。
 - dirty/writeback 与写保护遵循同一树/映射契约，回写开始后的新写入重新置脏。页的回写状态为 Clean → Dirty（写入）
-  → AwaitingClean（`OP_WRITEBACK_BEGIN`）→ Clean（`OP_WRITEBACK_END`，存储确认之后）；直写后同步进缓存的区间一次
+  → AwaitingClean（`OP_WRITEBACK_BEGIN`）→ Clean（`OP_WRITEBACK_END`，存储确认之后）。脏区间查询包含尚未确认的 AwaitingClean，
+  读出或写盘失败后仍可重试；内容 owner 串行回写，不允许较旧确认覆盖较新回写。直写后同步进缓存的区间一次
   完成两步。只有 Clean 且未固定的页可被淘汰；缺失 AwaitingClean 时回写读取前被淘汰的页会从存储补回旧内容，修改丢失。
 - 淘汰（`vm::vmo::reclaim`）由后台内核线程推进，用户缺页入口保留兜底；只能从无内核锁的 task context 进入。
   仅 try-lock VMO 树；先采集本对象、COW 子孙及 slice 别名的访问位，匹配物理身份，不能把 COW 遮盖页误计到祖先。
@@ -138,6 +139,9 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
   首次事件带水位快照，发表后请求一次校准；后续只在 boot CPU deferred observer 投影 MEMORY_PRESSURE/MEMORY_NORMAL，
   不再维护 syscall 层水位镜像，也不依赖“下一次用户缺页”纠正后台回收后的状态。
   Benchmark 决策：复用工作集大于内存的回收质量诊断，比较重复缺页、pager 请求和前台延迟；统一验收前不声称性能收益。
+- 回收统计由扫描器按前台/后台批次分别累计样本及 fence 后释放页数；前台压力尝试另计，包括协调器竞争失败。
+  MEMORY_STATS 与 vmstat 只读取该 owner，不把后台释放计入前台或把扫描等同释放；Relaxed 独立快照不参与策略或同步。
+  每个非空样本批次至多两次原子累加，没有逐页状态、分配或新锁；成本随压力诊断观察，不另设宿主阈值。
 - VMO 的已提交页和在途补页请求分别使用 `PageList<T>`：64 槽一块的稀疏数组，块由有序表索引。
   每个 `Option<Page>` 与请求 `Option<Arc<PageRequestCompletion>>` 槽都是 8 字节，不再每页分配 AVL 节点；
   稠密索引为每 64 槽一份块头/树节点；仅 pager 的已提交页块另有 192 字节分代位图/链，摊销约 12 字节/页。

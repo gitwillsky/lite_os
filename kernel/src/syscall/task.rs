@@ -86,10 +86,6 @@ pub(super) fn process_start(call: &Call<'_>) -> Result<(), Status> {
         handle => {
             let table = call.process().handles();
             let entry = table.remove(handle)?;
-            entry
-                .object
-                .kernel_object()
-                .cancel(table.cancel_key(handle));
             if entry.rights & rights::TRANSFER == 0 {
                 return Err(native_abi::ERR_ACCESS_DENIED);
             }
@@ -165,6 +161,26 @@ pub(super) fn thread_set_priority(call: &Call<'_>) -> Result<(), Status> {
     let thread = call.thread_handle(call.arg_handle(0), rights::MANAGE)?;
     let priority = u8::try_from(call.arg(1)).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     thread.set_priority(priority)
+}
+
+pub(super) fn thread_set_deadline(call: &Call<'_>) -> Result<(), Status> {
+    if !call
+        .resource(call.arg_handle(0), 0)?
+        .covers_system(native_abi::resource::system::SCHEDULE)
+    {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let thread = call.thread_handle(call.arg_handle(1), rights::MANAGE)?;
+    let times = [call.arg(2) as u64, call.arg(3) as u64, call.arg(4) as u64];
+    let parameters = if times == [0; 3] {
+        None
+    } else {
+        Some(
+            crate::thread::DeadlineParameters::new(times[0], times[1], times[2])
+                .ok_or(native_abi::ERR_INVALID_ARGS)?,
+        )
+    };
+    thread.set_deadline(parameters)
 }
 
 pub(super) fn thread_set_affinity(call: &Call<'_>) -> Result<(), Status> {

@@ -158,17 +158,19 @@ impl<'file> PreparedDumbBuffer<'file> {
     }
 }
 
-pub(super) struct FramebufferIdReservation<'file> {
+/// 动态 KMS mode object 的唯一编号预留；Drop 仅回滚尚未发布的编号，不回收已发布 ID。
+pub(super) struct ObjectIdReservation<'file> {
     file: &'file DrmFile,
     pub(super) id: u32,
     reservation: Option<UnpublishedId<u32>>,
 }
 
-impl<'file> FramebufferIdReservation<'file> {
+impl<'file> ObjectIdReservation<'file> {
+    /// 在 device object namespace 预留编号和回滚节点；OOM 或编号耗尽返回对应领域错误。
     pub(super) fn reserve(file: &'file DrmFile) -> Result<Self, DrmError> {
         let reservation = {
             let mut state = file.device.state.lock();
-            state.framebuffer_ids.reserve().map_err(reservation_error)?
+            state.object_ids.reserve().map_err(reservation_error)?
         };
         Ok(Self {
             file,
@@ -177,28 +179,29 @@ impl<'file> FramebufferIdReservation<'file> {
         })
     }
 
-    fn commit(mut self) {
+    /// 对象已入相应类型索引后不可失败地确认发布；之后该编号不再重用。
+    pub(super) fn commit(mut self) {
         let reservation = self
             .reservation
             .take()
-            .expect("published DRM framebuffer ID lost reservation");
+            .expect("published DRM mode object ID lost reservation");
         self.file
             .device
             .state
             .lock()
-            .framebuffer_ids
+            .object_ids
             .publish(reservation);
     }
 }
 
-impl Drop for FramebufferIdReservation<'_> {
+impl Drop for ObjectIdReservation<'_> {
     fn drop(&mut self) {
         if let Some(reservation) = self.reservation.take() {
             self.file
                 .device
                 .state
                 .lock()
-                .framebuffer_ids
+                .object_ids
                 .rollback(reservation);
         }
     }
@@ -206,14 +209,14 @@ impl Drop for FramebufferIdReservation<'_> {
 
 /// 已完成 KMS object/node 预留、尚未发布到 device namespace 的 framebuffer。
 pub(crate) struct PreparedFramebuffer<'file> {
-    id: FramebufferIdReservation<'file>,
-    entry: VacantEntry<u32, Framebuffer>,
+    id: ObjectIdReservation<'file>,
+    entry: VacantEntry<u32, Arc<Framebuffer>>,
 }
 
 impl<'file> PreparedFramebuffer<'file> {
     pub(super) fn new(
-        id: FramebufferIdReservation<'file>,
-        entry: VacantEntry<u32, Framebuffer>,
+        id: ObjectIdReservation<'file>,
+        entry: VacantEntry<u32, Arc<Framebuffer>>,
     ) -> Self {
         Self { id, entry }
     }

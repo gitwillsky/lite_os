@@ -7,17 +7,22 @@
 //! 2. 安装 channel（`service_directory::NETWORK_INSTALLER`，只路由给 netcfg）：把网卡会话安装为默认网络的接口
 //!    （[`InstallerService::install_device`]）。
 //! 3. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
-//! 4. socket channel：每个 socket 一条（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
+//! 4. socket 控制 channel 与共享 SQ/CQ：每 socket 一组（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
 //!    文件关闭发出 CLOSE，关闭 channel 同样关闭 socket（使用者终止时）；
 //!    服务端在就绪状态可能变化时置位随 socket 交出的 Event 的 `USER_0`，使用者据此重新查询
-//!    [`SocketPollState`]。全部 socket 操作都不阻塞：等待、超时与信号中断属于使用者。
+//!    [`SocketPollState`]。协议引擎操作不等待网络进展；数据面调用等待实际完成，Linux 阻塞、超时与信号中断属于使用者。
 //!
-//! 线格式与请求/回复传输见 `service_rpc`；每个回复以一个字节的结果开始（0 成功，否则 [`SocketError::code`]）。
-//! 超过 [`INLINE_PAYLOAD`] 的数据经 VMO 传递，使每条消息装进一条 channel 消息。
+//! 控制线格式见 `service_rpc`；领域结果以一字节开始（0 成功，否则 [`SocketError::code`]），QUEUE 返回版本和句柄。
+//! 数据面通过版本化固定共享 SQ/CQ 及持久载荷槽传输，控制 channel 只承载协商与低频操作。
 
 extern crate alloc;
 
 mod client;
+mod client_queue;
+mod queue;
+mod server_queue;
+mod socket_io;
+pub use server_queue::SocketQueue;
 mod types;
 
 use alloc::sync::Arc;
@@ -32,8 +37,6 @@ pub use service_rpc::{Reader, Writer};
 pub use client::{NetworkClient, RemoteInetSocket, RemoteNamespace, RemotePacketSocket};
 pub use types::*;
 
-/// 内联在消息中的最大数据量；更大的数据经 VMO 传递。
-pub const INLINE_PAYLOAD: usize = 48 * 1024;
 /// IPv4 UDP datagram 的最大负载（65535 - 20 字节 IP 头 - 8 字节 UDP 头）。
 pub const MAX_IPV4_UDP_BYTES: usize = 65_507;
 /// 一次 send/receive 传递的最大字节数：容纳最大 IPv4 datagram 与以太网帧；流式 socket 更大的读写
@@ -65,19 +68,17 @@ mod ordinal {
     pub(super) const DISCONNECT: u32 = 3;
     pub(super) const ADDRESS: u32 = 4;
     pub(super) const PEER_ADDRESS: u32 = 5;
-    pub(super) const SEND: u32 = 6;
-    pub(super) const RECEIVE: u32 = 7;
     pub(super) const IS_LISTENING: u32 = 8;
     pub(super) const LISTEN: u32 = 9;
     pub(super) const ACCEPT: u32 = 10;
     pub(super) const CONNECTION_RESULT: u32 = 11;
     pub(super) const TAKE_ERROR: u32 = 12;
     pub(super) const SHUTDOWN: u32 = 13;
-    pub(super) const POLL_STATE: u32 = 14;
     pub(super) const SET_OPTION: u32 = 15;
     pub(super) const BIND_TO_DEVICE: u32 = 16;
     pub(super) const OPTION: u32 = 17;
     pub(super) const CLOSE: u32 = 18;
+    pub(super) const QUEUE: u32 = 19;
 }
 
 /// 新建 socket 的两端：服务端持 channel 对端与 Event 原件，使用者持这里的 channel 与 Event 副本。
@@ -234,23 +235,6 @@ fn get_inet(reader: &mut Reader<'_>) -> Result<InetAddress, Status> {
     })
 }
 
-fn put_option_inet(writer: &mut Writer, address: Option<InetAddress>) {
-    writer.bool(address.is_some());
-    put_inet(
-        writer,
-        address.unwrap_or(InetAddress {
-            address: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-        }),
-    );
-}
-
-fn get_option_inet(reader: &mut Reader<'_>) -> Result<Option<InetAddress>, Status> {
-    let present = reader.bool()?;
-    let address = get_inet(reader)?;
-    Ok(present.then_some(address))
-}
-
 fn put_packet_address(writer: &mut Writer, address: PacketAddress) {
     writer
         .u16(address.protocol)
@@ -278,63 +262,6 @@ fn get_packet_address(reader: &mut Reader<'_>) -> Result<PacketAddress, Status> 
         packet_type,
         address_length,
         address,
-    })
-}
-
-fn put_send_info(writer: &mut Writer, info: Option<InternetSendPacketInfo>) {
-    writer.bool(info.is_some());
-    let info = info.unwrap_or_default();
-    put_option_u32(writer, info.interface_index);
-    put_option_ipv4(writer, info.source_address);
-}
-
-fn get_send_info(reader: &mut Reader<'_>) -> Result<Option<InternetSendPacketInfo>, Status> {
-    let present = reader.bool()?;
-    let info = InternetSendPacketInfo {
-        interface_index: get_option_u32(reader)?,
-        source_address: get_option_ipv4(reader)?,
-    };
-    Ok(present.then_some(info))
-}
-
-fn put_packet_info(writer: &mut Writer, info: Option<InternetPacketInfo>) {
-    writer.bool(info.is_some());
-    let info = info.unwrap_or(InternetPacketInfo {
-        interface_index: 0,
-        specific_address: Ipv4Addr::UNSPECIFIED,
-        destination: Ipv4Addr::UNSPECIFIED,
-    });
-    writer.u32(info.interface_index);
-    put_ipv4(writer, info.specific_address);
-    put_ipv4(writer, info.destination);
-}
-
-fn get_packet_info(reader: &mut Reader<'_>) -> Result<Option<InternetPacketInfo>, Status> {
-    let present = reader.bool()?;
-    let info = InternetPacketInfo {
-        interface_index: reader.u32()?,
-        specific_address: get_ipv4(reader)?,
-        destination: get_ipv4(reader)?,
-    };
-    Ok(present.then_some(info))
-}
-
-fn put_poll_state(writer: &mut Writer, state: SocketPollState) {
-    writer
-        .bool(state.readable)
-        .bool(state.writable)
-        .bool(state.hangup)
-        .bool(state.read_closed)
-        .bool(state.error);
-}
-
-fn get_poll_state(reader: &mut Reader<'_>) -> Result<SocketPollState, Status> {
-    Ok(SocketPollState {
-        readable: reader.bool()?,
-        writable: reader.bool()?,
-        hangup: reader.bool()?,
-        read_closed: reader.bool()?,
-        error: reader.bool()?,
     })
 }
 
@@ -474,45 +401,6 @@ fn get_route(reader: &mut Reader<'_>) -> Result<Ipv4RouteRequest, Status> {
             round_trip_time: reader.u32()?,
         },
     })
-}
-
-/// 写入数据：不超过 [`INLINE_PAYLOAD`] 时内联，否则写入新 VMO 并把句柄追加到 `handles`。
-fn put_payload(writer: &mut Writer, handles: &mut Vec<Handle>, data: &[u8]) -> Result<(), Status> {
-    if data.len() <= INLINE_PAYLOAD {
-        writer.bool(false).bytes(data);
-        return Ok(());
-    }
-    let vmo = Vmo::create(data.len() as u64, 0)?;
-    vmo.write(data, 0)?;
-    handles
-        .try_reserve(1)
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    writer
-        .bool(true)
-        .u64(data.len() as u64)
-        .u32(handles.len() as u32);
-    handles.push(vmo.into_handle());
-    Ok(())
-}
-
-/// 读出 [`put_payload`] 写入的数据。
-fn get_payload(reader: &mut Reader<'_>, handles: &mut [Handle]) -> Result<Vec<u8>, Status> {
-    let mut data = Vec::new();
-    if !reader.bool()? {
-        let bytes = reader.bytes()?;
-        data.try_reserve_exact(bytes.len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        data.extend_from_slice(bytes);
-        return Ok(data);
-    }
-    let length = usize::try_from(reader.u64()?).map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
-    let index = reader.u32()? as usize;
-    let vmo = Vmo::from_handle(take_handle(handles, index)?);
-    data.try_reserve_exact(length)
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    data.resize(length, 0);
-    vmo.read(&mut data, 0)?;
-    Ok(data)
 }
 
 fn put_result<T>(writer: &mut Writer, result: Result<T, SocketError>) -> Option<T> {
@@ -730,7 +618,7 @@ pub fn dispatch_inet(
     service: &dyn InetSocketService,
     ordinal: u32,
     request: &mut Reader<'_>,
-    mut handles: Vec<Handle>,
+    _handles: Vec<Handle>,
     reply: &mut Writer,
 ) -> Result<Vec<Handle>, Status> {
     let mut reply_handles = Vec::new();
@@ -754,24 +642,6 @@ pub fn dispatch_inet(
                 put_inet(reply, address);
             }
         }
-        ordinal::SEND => {
-            let target = get_option_inet(request)?;
-            let info = get_send_info(request)?;
-            let data = get_payload(request, &mut handles)?;
-            if let Some(count) = put_result(reply, service.send_to(&data, target, info)) {
-                reply.u64(count as u64);
-            }
-        }
-        ordinal::RECEIVE => {
-            let limit = (request.u64()? as usize).min(TRANSFER_LIMIT);
-            let peek = request.bool()?;
-            if let Some(received) = put_result(reply, service.receive(limit, peek)) {
-                reply.u64(received.full_length as u64);
-                put_option_inet(reply, received.source);
-                put_packet_info(reply, received.packet_info);
-                put_payload(reply, &mut reply_handles, &received.data)?;
-            }
-        }
         ordinal::IS_LISTENING => {
             if let Some(listening) = put_result(reply, service.is_listening()) {
                 reply.bool(listening);
@@ -793,10 +663,6 @@ pub fn dispatch_inet(
         }
         ordinal::SHUTDOWN => {
             put_result(reply, service.shutdown(request.u64()? as usize));
-        }
-        ordinal::POLL_STATE => {
-            reply.u8(0);
-            put_poll_state(reply, service.poll_state());
         }
         ordinal::SET_OPTION => {
             put_result(reply, service.set_option(get_option_change(request)?));
@@ -830,10 +696,9 @@ pub fn dispatch_packet(
     service: &dyn PacketSocketService,
     ordinal: u32,
     request: &mut Reader<'_>,
-    mut handles: Vec<Handle>,
+    _handles: Vec<Handle>,
     reply: &mut Writer,
 ) -> Result<Vec<Handle>, Status> {
-    let mut reply_handles = Vec::new();
     match ordinal {
         ordinal::BIND => {
             put_result(reply, service.bind(get_packet_address(request)?));
@@ -843,32 +708,8 @@ pub fn dispatch_packet(
                 put_packet_address(reply, address);
             }
         }
-        ordinal::SEND => {
-            let target = if request.bool()? {
-                Some(get_packet_address(request)?)
-            } else {
-                None
-            };
-            let data = get_payload(request, &mut handles)?;
-            if let Some(count) = put_result(reply, service.send_to(&data, target)) {
-                reply.u64(count as u64);
-            }
-        }
-        ordinal::RECEIVE => {
-            let limit = (request.u64()? as usize).min(TRANSFER_LIMIT);
-            let peek = request.bool()?;
-            if let Some(received) = put_result(reply, service.receive(limit, peek)) {
-                reply.u64(received.full_length as u64);
-                put_packet_address(reply, received.source);
-                put_payload(reply, &mut reply_handles, &received.data)?;
-            }
-        }
         ordinal::TAKE_ERROR => {
             reply.u8(service.take_error().map_or(0, SocketError::code));
-        }
-        ordinal::POLL_STATE => {
-            reply.u8(0);
-            put_poll_state(reply, service.poll_state());
         }
         ordinal::CLOSE => {
             service.close();
@@ -876,7 +717,7 @@ pub fn dispatch_packet(
         }
         _ => return Err(native_abi::ERR_NOT_SUPPORTED),
     }
-    Ok(reply_handles)
+    Ok(Vec::new())
 }
 
 /// 服务端持有的 socket 对象：按 channel 分派到对应服务。
@@ -886,6 +727,11 @@ pub enum ServedSocket {
 }
 
 impl ServedSocket {
+    /// 当前 socket 协议在成功回复此方法后结束连接；传输层不解释或硬编码领域 ordinal。
+    pub fn closes_connection(&self, ordinal: u32) -> bool {
+        ordinal == ordinal::CLOSE
+    }
+
     /// 分派一条请求。
     ///
     /// # Errors

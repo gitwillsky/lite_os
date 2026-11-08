@@ -520,11 +520,12 @@ impl Desktop {
                 Some(paint::VOLUME) => tray_volume_items(),
                 Some(paint::USB) => tray_usb_items(),
                 Some(paint::NETWORK) => tray_network_items(
-                    self.network
+                    self.tray
+                        .network
                         .current(&self.settings)
                         .filter(|link| link.state != network_config::LinkState::Disabled)
                         .map(|link| link.index),
-                    self.network.disabling(),
+                    self.tray.network.disabling(),
                 ),
                 Some(paint::CLOCK) => return Ok(()),
                 Some(n) if n >= paint::TASKS_FROM => {

@@ -53,7 +53,7 @@ use alloc::vec::Vec;
 pub(super) use reclaim::AccessSample;
 #[cfg(not(test))]
 pub(crate) use reclaim::background_reclaim;
-pub(crate) use reclaim::{evicted_pages, relieve_memory_pressure};
+pub(crate) use reclaim::{reclaim_statistics, relieve_memory_pressure};
 pub(crate) use residency::physical_page_statistics;
 use residency::{Cleanliness, Page, PageContent};
 use spin::Mutex;
@@ -425,19 +425,13 @@ impl Vmo {
                 let _tree = self.lock_tree()?;
                 self.release_pages(first..first + count)
             }
-            RangeOp::Zero => {
-                // 字节精确：首尾部分页只清零区间内的字节。
-                let zero = [0u8; PAGE_SIZE];
-                let end = offset.checked_add(length).ok_or(VmError::OutOfRange)?;
-                let mut cursor = offset;
-                while cursor < end {
-                    let within = (cursor % PAGE_SIZE as u64) as usize;
-                    let chunk = ((PAGE_SIZE - within) as u64).min(end - cursor) as usize;
-                    self.write(cursor, &zero[..chunk])?;
-                    cursor += chunk as u64;
-                }
-                Ok(())
-            }
+            // 直接清零可写页，复用 COW/pager/dirty 解析；不在 syscall 栈上构造整页零缓冲。
+            RangeOp::Zero => self.for_each_chunk(
+                offset,
+                usize::try_from(length).map_err(|_| VmError::OutOfRange)?,
+                true,
+                |frame, page_offset, range| frame.zero(page_offset, range.len()),
+            ),
         }
     }
 
@@ -534,6 +528,12 @@ impl PageAccess {
         // SAFETY: 同 `read`；写解析保证页属于本对象（不是共享祖先页）。
         let page = unsafe { core::slice::from_raw_parts_mut(self.0.as_page_mut_ptr(), PAGE_SIZE) };
         page[offset..offset + input.len()].copy_from_slice(input);
+    }
+
+    fn zero(&self, offset: usize, length: usize) {
+        // SAFETY: 与 write 相同，调用者持树锁且写解析保证该页可写；for_each_chunk 保证片段不跨页。
+        let page = unsafe { core::slice::from_raw_parts_mut(self.0.as_page_mut_ptr(), PAGE_SIZE) };
+        page[offset..offset + length].fill(0);
     }
 }
 

@@ -212,18 +212,6 @@ impl Tree {
     /// 推进到期的品牌动画、展开到期的子菜单并显示到期的工具提示；返回是否需要重绘。
     pub fn animate(&mut self, now: Instant) -> bool {
         let last = std::mem::replace(&mut self.animated, now);
-        let mut repaint = false;
-        for node in self.nodes.values_mut() {
-            if let Some(rebar) = node.rebar.as_mut() {
-                repaint |= rebar.tick(now);
-            }
-            if let Some(menu) = node.menu.as_mut() {
-                repaint |= menu.state.tick(now);
-            }
-            if let Some(toolbar) = node.toolbar.as_mut() {
-                repaint |= toolbar.tick(now, last);
-            }
-        }
-        repaint
+        self.nodes.animate(now, last)
     }
 }

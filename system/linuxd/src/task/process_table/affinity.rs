@@ -36,7 +36,14 @@ pub(crate) fn scheduler_affinity(
         return Err(SchedulerAffinityError::Permission);
     }
     let affinity = CpuAffinity::from_user_bits(bits).ok_or(SchedulerAffinityError::Empty)?;
+    let policy = target.scheduling.policy.lock();
+    if policy.deadline().is_some()
+        && affinity.effective_bits() != crate::cpu::active().native_word()
+    {
+        return Err(SchedulerAffinityError::Empty);
+    }
     target.scheduling.state.lock().cpu_affinity = affinity;
+    drop(policy);
     // 内核在返回前迁移调用线程自身；其他线程在下一个调度点离开已禁止的 CPU。
     crate::task::processor::apply_scheduling(&target);
     Ok(target.scheduling.state.lock().cpu_affinity.effective_bits())

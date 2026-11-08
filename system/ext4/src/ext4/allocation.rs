@@ -175,7 +175,8 @@ impl Ext4FileSystem {
             return Err(FileSystemError::IoError);
         }
         // 已向写者承诺的延迟分配 block 不能被别的分配占用；回写在分配前先归还自己的预留。
-        if self.superblock.lock().free_blocks_count() <= self.delalloc_reserved.load(Ordering::Relaxed)
+        if self.superblock.lock().free_blocks_count()
+            <= self.delalloc_reserved.load(Ordering::Relaxed)
         {
             return Err(FileSystemError::NoSpace);
         }

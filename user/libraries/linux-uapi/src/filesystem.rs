@@ -3,7 +3,7 @@
 use std::{
     fs::File,
     io,
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd, BorrowedFd},
     path::{Path, PathBuf},
     ptr::NonNull,
 };
@@ -292,6 +292,20 @@ impl ReadOnlyMapping {
         let file = File::open(path)?;
         let len = usize::try_from(file.metadata()?.len())
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        // SAFETY: open 的调用者承诺覆盖整个映射寿命的不可变文件内容。
+        unsafe { Self::from_fd(file.as_fd(), len) }
+    }
+
+    /// 从现有 fd 建立 offset=0 的只读映射，映射自己保活 backing，无须保留 fd。
+    ///
+    /// # Errors
+    /// 返回 mmap 错误；空 extent 不调用 mmap。
+    /// # Safety
+    /// fd 必须覆盖 len 可读字节，映射存活期间禁止修改/截断；Linux 封印可提供此保证。
+    pub unsafe fn from_fd(fd: BorrowedFd<'_>, len: usize) -> io::Result<Self> {
+        if len > isize::MAX as usize {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         if len == 0 {
             return Ok(Self {
                 address: NonNull::dangling(),
@@ -306,7 +320,7 @@ impl ReadOnlyMapping {
                 len,
                 crate::raw::PROT_READ,
                 crate::raw::MAP_PRIVATE,
-                file.as_raw_fd(),
+                fd.as_raw_fd(),
                 0,
             )
         };

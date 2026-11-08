@@ -13,6 +13,9 @@ use crate::{
     sync::WaitResult,
 };
 
+mod atomic;
+mod blob;
+mod kms;
 mod prime;
 mod publication;
 mod virtgpu;
@@ -20,9 +23,7 @@ mod virtgpu;
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
 const DRM_IOCTL_BASE: usize = b'd' as usize;
-const CRTC_ID: u32 = 1;
-const ENCODER_ID: u32 = 2;
-const CONNECTOR_ID: u32 = 3;
+use super::kms::{CONNECTOR_ID, CRTC_ID, ENCODER_ID};
 const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
 
 const fn drm_ioc(direction: usize, number: usize, size: usize) -> usize {
@@ -31,6 +32,7 @@ const fn drm_ioc(direction: usize, number: usize, size: usize) -> usize {
 
 const DRM_IOCTL_VERSION: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x00, 64);
 const DRM_IOCTL_GET_CAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x0c, 16);
+const DRM_IOCTL_SET_CLIENT_CAP: usize = drm_ioc(IOC_WRITE, 0x0d, 16);
 const DRM_IOCTL_SET_MASTER: usize = drm_ioc(0, 0x1e, 0);
 const DRM_IOCTL_DROP_MASTER: usize = drm_ioc(0, 0x1f, 0);
 const DRM_IOCTL_PRIME_HANDLE_TO_FD: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x2d, 12);
@@ -41,6 +43,14 @@ const DRM_IOCTL_MODE_GETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa1, 104);
 const DRM_IOCTL_MODE_SETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa2, 104);
 const DRM_IOCTL_MODE_GETENCODER: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa6, 20);
 const DRM_IOCTL_MODE_GETCONNECTOR: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa7, 80);
+const DRM_IOCTL_MODE_GETPROPERTY: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xaa, 64);
+const DRM_IOCTL_MODE_GETPLANERESOURCES: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb5, 16);
+const DRM_IOCTL_MODE_GETPLANE: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb6, 32);
+const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb9, 32);
+const DRM_IOCTL_MODE_ATOMIC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xbc, 56);
+const DRM_IOCTL_MODE_GETPROPBLOB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xac, 16);
+const DRM_IOCTL_MODE_CREATEPROPBLOB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xbd, 16);
+const DRM_IOCTL_MODE_DESTROYPROPBLOB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xbe, 4);
 const DRM_IOCTL_MODE_GETFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xad, 28);
 const DRM_IOCTL_MODE_ADDFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xae, 28);
 const DRM_IOCTL_MODE_RMFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xaf, 4);
@@ -81,13 +91,22 @@ pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, 
     let (user, argument) = (call.user, call.argument);
     if file.render_node
         && ((call.request & 0xff) >= 0xa0
-            || matches!(call.request, DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER))
+            || matches!(
+                call.request,
+                DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER | DRM_IOCTL_SET_CLIENT_CAP
+            ))
     {
         return Err(DeviceError::Errno(errno::EACCES));
     }
     let result = match call.request {
         DRM_IOCTL_VERSION => version(user, argument),
         DRM_IOCTL_GET_CAP => get_cap(user, file, argument),
+        DRM_IOCTL_SET_CLIENT_CAP => kms::set_client_cap(user, file, argument),
+        DRM_IOCTL_MODE_GETPLANERESOURCES => kms::plane_resources(user, file, argument),
+        DRM_IOCTL_MODE_GETPLANE => kms::plane(user, file, argument),
+        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => kms::object_properties(user, file, argument),
+        DRM_IOCTL_MODE_ATOMIC => atomic::commit(user, file, argument),
+        DRM_IOCTL_MODE_GETPROPERTY => kms::property(user, argument),
         DRM_IOCTL_SET_MASTER => file.set_master(call.privileged).map_err(drm_errno),
         DRM_IOCTL_DROP_MASTER => file.drop_master(call.privileged).map_err(drm_errno),
         DRM_IOCTL_PRIME_HANDLE_TO_FD => prime::handle_to_fd(user, file, argument),
@@ -98,6 +117,9 @@ pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, 
         DRM_IOCTL_MODE_SETCRTC => set_crtc(user, file, argument),
         DRM_IOCTL_MODE_GETENCODER => encoder(user, argument),
         DRM_IOCTL_MODE_GETCONNECTOR => connector(user, file, argument),
+        DRM_IOCTL_MODE_GETPROPBLOB => blob::get(user, file, argument),
+        DRM_IOCTL_MODE_CREATEPROPBLOB => blob::create(user, file, argument),
+        DRM_IOCTL_MODE_DESTROYPROPBLOB => blob::destroy(user, file, argument),
         DRM_IOCTL_MODE_GETFB => framebuffer(user, file, argument),
         DRM_IOCTL_MODE_ADDFB => publication::add_framebuffer(user, file, argument),
         DRM_IOCTL_MODE_RMFB => remove_framebuffer(user, file, argument),
@@ -223,6 +245,7 @@ fn remove_framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) ->
 pub(super) fn drm_errno(error: DrmError) -> isize {
     match error {
         DrmError::Invalid => errno::EINVAL,
+        DrmError::OutOfRange => errno::ERANGE,
         DrmError::NotFound => errno::ENOENT,
         DrmError::AlreadyExists => errno::EEXIST,
         DrmError::OutOfMemory => errno::ENOMEM,
@@ -230,6 +253,7 @@ pub(super) fn drm_errno(error: DrmError) -> isize {
         DrmError::Busy => errno::EBUSY,
         DrmError::Device => errno::EIO,
         DrmError::Permission => errno::EACCES,
+        DrmError::NotOwner => errno::EPERM,
         DrmError::Interrupted => errno::EINTR,
     }
 }
@@ -295,9 +319,7 @@ fn crtc(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), is
     if let Some((framebuffer, active_mode)) = file.active_crtc() {
         write_u32(&mut bytes, 16, framebuffer)?;
         write_u32(&mut bytes, 32, 1)?;
-        let mut mode = [0u8; 68];
-        encode_mode(&mut mode, active_mode)?;
-        bytes[36..104].copy_from_slice(&mode);
+        bytes[36..104].copy_from_slice(&active_mode);
     }
     copy_out(user, argument, &bytes)
 }
@@ -321,24 +343,26 @@ fn set_crtc(user: &dyn UserMemory, file: &Arc<DrmFile>, argument: usize) -> Resu
     if read_u32(&copy_in::<4>(user, connector_address)?, 0)? != CONNECTOR_ID {
         return Err(errno::ENOENT);
     }
+    let (display_mode, mode) = file
+        .requested_mode(
+            u32::from(read_u16(&bytes, 40)?),
+            u32::from(read_u16(&bytes, 50)?),
+        )
+        .map_err(drm_errno)?;
+    let expected_mode = mode.encode();
+    if read_u32(&bytes, 8)? != 1
+        || read_u32(&bytes, 16)? == 0
+        || read_u32(&bytes, 32)? != 1
+        || bytes[36..104] != expected_mode
+    {
+        return Err(errno::EINVAL);
+    }
+    let configuration = file
+        .prepare_crtc(read_u32(&bytes, 16)?, display_mode)
+        .map_err(drm_errno)?;
     loop {
-        let (display_mode, mode) = file
-            .requested_mode(
-                u32::from(read_u16(&bytes, 40)?),
-                u32::from(read_u16(&bytes, 50)?),
-            )
-            .map_err(drm_errno)?;
-        let mut expected_mode = [0u8; 68];
-        encode_mode(&mut expected_mode, mode)?;
-        if read_u32(&bytes, 8)? != 1
-            || read_u32(&bytes, 16)? == 0
-            || read_u32(&bytes, 32)? != 1
-            || bytes[36..104] != expected_mode
-        {
-            return Err(errno::EINVAL);
-        }
         match file
-            .set_crtc(read_u32(&bytes, 16)?, display_mode)
+            .submit_configuration(&configuration)
             .map_err(drm_errno)?
         {
             DrmSubmission::Wait(wait) => return wait_scanout(wait),
@@ -548,8 +572,7 @@ fn connector(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(
         copy_u32(user, encoder_pointer, ENCODER_ID)?;
     }
     if mode_capacity >= 1 {
-        let mut mode = [0u8; 68];
-        encode_mode(&mut mode, file.mode())?;
+        let mode = file.mode().encode();
         copy_out(
             user,
             usize::try_from(mode_pointer).map_err(|_| errno::EFAULT)?,
@@ -568,45 +591,6 @@ fn connector(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(
     write_u32(&mut bytes, 56, 1)?;
     write_u32(&mut bytes, 60, 1)?;
     copy_out(user, argument, &bytes)
-}
-
-fn encode_mode(bytes: &mut [u8; 68], mode: crate::devices::drm::DrmMode) -> Result<(), isize> {
-    write_u32(bytes, 0, mode.clock)?;
-    write_u16(bytes, 4, mode.hdisplay)?;
-    write_u16(bytes, 6, mode.hsync_start)?;
-    write_u16(bytes, 8, mode.hsync_end)?;
-    write_u16(bytes, 10, mode.htotal)?;
-    write_u16(bytes, 14, mode.vdisplay)?;
-    write_u16(bytes, 16, mode.vsync_start)?;
-    write_u16(bytes, 18, mode.vsync_end)?;
-    write_u16(bytes, 20, mode.vtotal)?;
-    write_u32(bytes, 24, mode.vrefresh)?;
-    write_u32(bytes, 28, mode.flags)?;
-    write_u32(bytes, 32, mode.mode_type)?;
-    let mut cursor = 36;
-    cursor += write_decimal(&mut bytes[cursor..68], u32::from(mode.hdisplay));
-    bytes[cursor] = b'x';
-    cursor += 1;
-    let _ = write_decimal(&mut bytes[cursor..68], u32::from(mode.vdisplay));
-    Ok(())
-}
-
-fn write_decimal(output: &mut [u8], value: u32) -> usize {
-    let mut reversed = [0u8; 10];
-    let mut value = value;
-    let mut length = 0;
-    loop {
-        reversed[length] = b'0' + (value % 10) as u8;
-        length += 1;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
-    }
-    for index in 0..length {
-        output[index] = reversed[length - index - 1];
-    }
-    length
 }
 
 fn copy_id_array(user: &dyn UserMemory, pointer: u64, capacity: u32, id: u32) -> Result<(), isize> {
@@ -679,14 +663,6 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, isize> {
             .try_into()
             .map_err(|_| errno::EFAULT)?,
     ))
-}
-
-fn write_u16(bytes: &mut [u8], offset: usize, value: u16) -> Result<(), isize> {
-    bytes
-        .get_mut(offset..offset + 2)
-        .ok_or(errno::EFAULT)?
-        .copy_from_slice(&value.to_ne_bytes());
-    Ok(())
 }
 
 fn write_u32(bytes: &mut [u8], offset: usize, value: u32) -> Result<(), isize> {

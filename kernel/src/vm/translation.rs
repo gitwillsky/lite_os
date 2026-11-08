@@ -84,8 +84,9 @@ pub(in crate::vm) struct TranslationCommit {
     first_page: usize,
     end_page: usize,
     strength: FenceStrength,
-    instruction_first_physical_page: usize,
-    instruction_end_physical_page: usize,
+    // FLAG/OWNER: 本事务已经按实际物理范围完成数据清理，提交时仍需一次本地/远端指令同步。
+    // 不保存物理 min/max：分散页之间可能有 GiB 空洞，逐缓存行遍历包围区间会放大到整机 RAM 成本。
+    instruction_pending: bool,
     // OWNER: detached table frames remain alive until every required hardware walker fence
     // completes. Dropping them at PTE clear would let a stale parent PTE walk reused memory.
     retired_table_pages: FallibleMap<usize, TableFrame>,
@@ -98,8 +99,7 @@ impl TranslationCommit {
             first_page: usize::MAX,
             end_page: 0,
             strength: FenceStrength::None,
-            instruction_first_physical_page: usize::MAX,
-            instruction_end_physical_page: 0,
+            instruction_pending: false,
             retired_table_pages: FallibleMap::new(),
         }
     }
@@ -133,14 +133,14 @@ impl TranslationCommit {
         });
     }
 
-    /// 记录本次 PTE transaction 发布 executable view 的物理页范围。
+    /// 按实际物理范围准备可执行数据，并把指令同步合并到事务末尾。
     ///
-    /// caller 必须在 synchronize 前完成 instruction bytes 写入。
+    /// 与 Zircon ICacheConsistencyManager 相同：数据清理不可跨不相邻物理页合并，
+    /// 否则少数 fault-around 页会扫描整片 RAM；完成的 PoU 清理不需要保留范围或分配列表。
     ///
     /// # Parameters
-    ///
-    /// - `first_physical_page`: 首个被写入并将变为可执行的物理页号。
-    /// - `page_count`: 连续物理页数；多个记录合并成一个保守覆盖区间。
+    /// - `first_physical_page`: 本次已写入并将变为可执行的首个物理页号。
+    /// - `page_count`: 实际连续物理页数。调用者已完成数据写入，后续变更仍须重新发布。
     pub(in crate::vm) fn record_instruction_publication(
         &mut self,
         first_physical_page: usize,
@@ -150,14 +150,14 @@ impl TranslationCommit {
             page_count, 0,
             "instruction publication range must not be empty"
         );
-        let end_physical_page = first_physical_page
-            .checked_add(page_count)
-            .expect("instruction publication page range overflow");
-        self.instruction_first_physical_page = self
-            .instruction_first_physical_page
-            .min(first_physical_page);
-        self.instruction_end_physical_page =
-            self.instruction_end_physical_page.max(end_physical_page);
+        let start = first_physical_page
+            .checked_mul(PAGE_SIZE)
+            .expect("instruction publication start overflow");
+        let size = page_count
+            .checked_mul(PAGE_SIZE)
+            .expect("instruction publication size overflow");
+        crate::arch::instruction::prepare_range(start, size);
+        self.instruction_pending = true;
     }
 
     /// 显式结束从未发布/激活的 page-table mutation，不执行 fence。
@@ -206,8 +206,8 @@ impl TranslationCommit {
             } else {
                 0
             },
-            local_instruction_fence: self.instruction_first_physical_page != usize::MAX,
-            remote_instruction_targets: if self.instruction_first_physical_page != usize::MAX {
+            local_instruction_fence: self.instruction_pending,
+            remote_instruction_targets: if self.instruction_pending {
                 online_cpus.saturating_sub(1)
             } else {
                 0
@@ -243,14 +243,7 @@ impl TranslationCommit {
                 .map_err(TranslationSynchronizationError::Translation)?;
         }
         if plan.local_instruction_fence {
-            let start = self
-                .instruction_first_physical_page
-                .checked_mul(PAGE_SIZE)
-                .expect("instruction publication start overflow");
-            let size = (self.instruction_end_physical_page - self.instruction_first_physical_page)
-                .checked_mul(PAGE_SIZE)
-                .expect("instruction publication size overflow");
-            crate::arch::instruction::publish_range(start, size);
+            crate::arch::instruction::publish_local();
             let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
             targets.remove(crate::execution::cpu::current_id());
             crate::platform::synchronize_instruction_cache(targets)
@@ -360,18 +353,6 @@ mod tests {
         assert_eq!(plan.remote_targets, 0);
         assert!(plan.local_instruction_fence);
         assert_eq!(plan.remote_instruction_targets, 3);
-        assert_eq!(commit.instruction_first_physical_page, 0x81);
-        assert_eq!(commit.instruction_end_physical_page, 0x82);
-    }
-
-    #[test]
-    fn executable_publication_merges_physical_ranges_without_losing_coverage() {
-        let mut commit = TranslationCommit::new();
-        commit.record_instruction_publication(0x91, 2);
-        commit.record_instruction_publication(0x88, 1);
-        assert_eq!(commit.instruction_first_physical_page, 0x88);
-        assert_eq!(commit.instruction_end_physical_page, 0x93);
-        assert!(commit.plan(1).local_instruction_fence);
     }
 
     #[test]

@@ -22,8 +22,8 @@
 - 托盘喇叭单击弹出贴着任务栏的小音量面板（滑块与静音，点外部或 Esc 关闭）；右键喇叭选"调整音频属性"才启动完整的 `sndvol` 窗口。
 - 音量控制 `/bin/sndvol`（单列混音器：平衡、音量、全部静音；控制面板"声音和多媒体"的"声音"页可试听系统事件声音，"音频"页显示播放设备并打开它）与"关于 LiteOS"（`control-panel winver`）同样是独立程序；
   托盘小面板与它共用 `sndvol` 库的状态和布局。
-- 任务管理器是独立程序 `/bin/taskmgr`，提供应用程序、进程、性能与 GPU 四页；开始菜单、任务栏右键、Ctrl+Shift+Esc 与安全界面都只是启动它。
-  应用列表走 foreign-toplevel，进程与系统总量读 procfs；CPU 使用记录可切换总图/每个逻辑 CPU 一图，内存按量级显示单位，GPU 仅显示可读取的 DRM 统计。
+- 任务管理器是独立程序 `/bin/taskmgr`，提供应用程序、进程、系统服务、性能与 GPU 五页；开始菜单、任务栏右键、Ctrl+Shift+Esc 与安全界面都只是启动它。
+  应用列表走 foreign-toplevel，进程与系统总量读 procfs；原生系统服务经授权的 task-observer socket 查询，以 KOID 为身份；CPU 使用记录可切换总图/每个逻辑 CPU 一图，内存按量级显示单位，GPU 仅显示可读取的 DRM 统计。
 - 桌面显示四个系统图标和 `~/Desktop` 里的条目，目录变化时自动刷新。图标可拖动并吸附网格，位置保存在
   `~/.config/liteos/desktop-icons`。图像与标题参与选择和拖放，格子留白按桌面处理，可右键排列图标、刷新或新建文件夹。
 - 双击托盘时钟打开"日期/时间 属性"，按 timedate.cpl 对话框还原：“时间和日期”页有月份下拉、年份微调、CalWnd 月历、
@@ -111,7 +111,7 @@ Delete、右键“删除”与拖入桌面回收站打开独立确认框。确�
 | 外观与 HiDPI | 原版资源与整数缩放已接入，完整应用视觉验收尚未完成 | 按[设计规格](../design/classic-desktop/README.md)逐项核对 1x/2x 的字体、图标、光标、控件与裁剪；待核数值不自动提升置信度 |
 | 外壳交互 | 设计清单仍含未实现或未验收行为 | 按[交互清单](../design/classic-desktop/interaction.md)及[外壳规格](../design/classic-desktop/shell.md)核对 XOR 拖动、菜单动画、个性化菜单、拖动排序、气球提示与系统事件声音 |
 | 输入与文件操作 | 已接入标准文本选择和文件拖放，IME 仍待实现 | 协议支持范围由[设备架构](../architecture/devices-terminal.md)拥有，回收站接收本地文件 URI |
-| 媒体播放 | 当前只播放 16 位 PCM WAV | 压缩音频解码、在线来源与录音尚未实现，不把播放窗口存在视为完整媒体播放器 |
+| 媒体播放 | libmpv/FFmpeg 音视频与 ALSA 输出已接入；独立声音播放器只支持 PCM WAV，录音未实现 | 按固定解码依赖核对格式、网络来源、缩放与输出切换；源码接通不代表运行验收通过 |
 
 共享框架的生命周期、GPU 缓冲与性能证明范围见[Wayland 验证](wayland-ui-verification.md)。
 

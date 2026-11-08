@@ -13,12 +13,7 @@ pub(super) fn close(call: &Call<'_>) -> Result<(), Status> {
         return Ok(());
     }
     let handles = call.process().handles();
-    let entry = handles.remove(handle)?;
-    entry
-        .object
-        .kernel_object()
-        .cancel(handles.cancel_key(handle));
-    drop(entry);
+    drop(handles.remove(handle)?);
     Ok(())
 }
 
@@ -60,11 +55,7 @@ pub(super) fn replace(call: &Call<'_>) -> Result<(), Status> {
         drop(handles.remove(handle));
         return Err(status);
     }
-    let removed = handles.remove(old)?;
-    removed
-        .object
-        .kernel_object()
-        .cancel(handles.cancel_key(old));
+    drop(handles.remove(old)?);
     Ok(())
 }
 
@@ -160,8 +151,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             write_info(
                 call,
                 &TaskRuntime {
-                    cpu_time_ns: runtime.cpu_us.saturating_mul(1000),
-                    restricted_time_ns: runtime.restricted_us.saturating_mul(1000),
+                    cpu_time_ns: runtime.cpu_ns,
+                    restricted_time_ns: runtime.restricted_ns,
                     voluntary_switches: runtime.voluntary_switches,
                     involuntary_switches: runtime.involuntary_switches,
                     restricted_faults: runtime.restricted_faults,

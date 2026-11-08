@@ -212,6 +212,7 @@ dependencies = [
  "linux-abi",
  "native-runtime",
  "pager-pool",
+ "service-rpc",
  "service-sync",
 ]
 

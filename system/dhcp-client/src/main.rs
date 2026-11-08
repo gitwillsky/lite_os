@@ -149,7 +149,8 @@ impl Interface {
         let endpoint = network
             .packet_socket(PacketKind::Datagram, ETH_P_IP.to_be())
             .map_err(|_| native_abi::ERR_NO_RESOURCES)?;
-        let socket = RemotePacketSocket::new(endpoint.channel);
+        let socket =
+            RemotePacketSocket::new(endpoint.channel).map_err(|_| native_abi::ERR_NO_RESOURCES)?;
         socket
             .bind(Self::link(index, BROADCAST_MAC))
             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;

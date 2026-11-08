@@ -3,9 +3,12 @@
 //! 客户端可以在合成器读取时截断文件；mmap 会因此 SIGBUS，`pread` 只会短读，可转成协议错误，也不需要 unsafe。
 
 use std::{
-    cell::Cell,
+    cell::{Cell, OnceCell},
     fs::File,
-    os::{fd::OwnedFd, unix::fs::FileExt},
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::fs::FileExt,
+    },
     rc::Rc,
 };
 
@@ -15,16 +18,23 @@ use wayland_wire::protocol::wl_shm::Format;
 pub struct Pool {
     file: File,
     size: Cell<usize>,
+    // PROOF: F_SEAL_WRITE/GROW/SHRINK 不可撤销；只有真实封印的文件才可跨 surface 复用快照。
+    immutable: bool,
 }
 
 impl Pool {
     pub fn new(fd: OwnedFd, size: usize) -> Rc<Self> {
+        let immutable = linux_uapi::shared_memory::is_immutable(fd.as_fd());
         Rc::new(Self {
+            immutable,
             file: File::from(fd),
             size: Cell::new(size),
         })
     }
 
+    pub(super) fn immutable(&self) -> bool {
+        self.immutable
+    }
     pub fn size(&self) -> usize {
         self.size.get()
     }
@@ -42,6 +52,9 @@ pub struct BufferSpec {
     pub height: usize,
     pub stride: usize,
     pub format: Format,
+    // OWNER: 一个实际 wl_buffer 的不可变 SHM 快照；只在本连接线程填充，mutable SHM 永远不使用。
+    // Content 的采样元数据按 surface 复制，像素/纹理由 Rc 共享；buffer 销毁后由活动 surface 接力保活。
+    pub(super) snapshot: OnceCell<Rc<super::surface::Content>>,
 }
 
 /// 读取 buffer 内容失败：文件截断、无法分配，或 GPU 后端无法建立/上传纹理。
@@ -156,6 +169,7 @@ mod tests {
                 height,
                 stride,
                 format: Format::Argb8888,
+                snapshot: OnceCell::new(),
             };
             let read = |spec: &BufferSpec, rect: canvas::Rect| {
                 let mut pixels = Vec::new();

@@ -185,7 +185,7 @@ impl Ext4Inode {
     /// 为缓冲写入 `[offset, offset + length)` 预留尚未分配的 block（延迟分配），登记到 `reserved`。
     ///
     /// `reserved` 是调用者（内容缓存）按文件持有的“已预留的 file block”集合：已在集合里的块不重复预留，
-    /// 回写分配它们之前由调用者归还。
+    /// 回写分配它们之前由调用者归还。返回本次新加入的块，写入失败只撤销这些块，不影响已有脏数据的预留。
     ///
     /// # Errors
     /// 空闲 block 不足返回 `NoSpace`（此时 `reserved` 与文件系统预留都不变）。
@@ -194,9 +194,9 @@ impl Ext4Inode {
         offset: u64,
         length: usize,
         reserved: &mut alloc::collections::BTreeSet<u32>,
-    ) -> Result<(), FileSystemError> {
+    ) -> Result<Vec<u32>, FileSystemError> {
         if length == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let block_size = self.fs.block_size as u64;
         let first = u32::try_from(offset / block_size).map_err(|_| FileSystemError::NoSpace)?;
@@ -212,11 +212,11 @@ impl Ext4Inode {
             }
         }
         if missing.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.fs.reserve_delalloc(missing.len() as u64)?;
-        reserved.extend(missing);
-        Ok(())
+        reserved.extend(missing.iter().copied());
+        Ok(missing)
     }
 
     /// 文件系统块大小（字节）。
@@ -250,7 +250,10 @@ impl Ext4Inode {
             }
         }
         let mut mutation = self.fs.begin_mutation()?;
-        self.finish_write_locked(&mut mutation, usize::try_from(end).map_err(|_| FileSystemError::NoSpace)?)?;
+        self.finish_write_locked(
+            &mut mutation,
+            usize::try_from(end).map_err(|_| FileSystemError::NoSpace)?,
+        )?;
         mutation.commit()
     }
 

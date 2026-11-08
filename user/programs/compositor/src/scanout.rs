@@ -1,8 +1,9 @@
 //! 唯一的 DRM master：选中的 CPU/GPU 后端独占一对扫描目标与 page flip。
 
 use std::io;
+mod kms;
 
-use linux_uapi::drm::{DrmDevice, DumbBuffer, Topology, VirglResource};
+use linux_uapi::drm::{Clip, DrmDevice, DumbBuffer, Topology, VirglResource};
 
 struct Target {
     buffer: DumbBuffer,
@@ -38,11 +39,14 @@ impl Backend {
 pub struct Scanout {
     device: DrmDevice,
     topology: Topology,
+    kms: kms::Output,
     backend: Backend,
     back: usize,
     /// 在途 flip 的序号；同一时刻至多一个 flip，缺少这条约束会让第二次 `PAGE_FLIP` 被内核以 `EBUSY` 拒绝。
     pending: Option<u64>,
     sequence: u64,
+    // OWNER: 与同一对扫描目标同寿命，只存几何/损伤，不保留客户端像素。
+    history: crate::compose::damage::History,
 }
 
 impl Scanout {
@@ -55,6 +59,7 @@ impl Scanout {
         let device = DrmDevice::open(path)?;
         device.set_master()?;
         let topology = device.query_topology()?;
+        let kms = kms::Output::new(&device)?;
         let (width, height) = (
             u32::from(topology.mode.width()),
             u32::from(topology.mode.height()),
@@ -87,10 +92,12 @@ impl Scanout {
         Ok(Self {
             device,
             topology,
+            kms,
             backend,
             back: 0,
             pending: None,
             sequence: 0,
+            history: crate::compose::damage::History::default(),
         })
     }
 
@@ -108,6 +115,14 @@ impl Scanout {
 
     pub fn height(&self) -> usize {
         usize::from(self.topology.mode.height())
+    }
+
+    /// 由实际 KMS timing 得到预算周期；无时钟的 mode 不能申请截止保证。
+    pub(super) fn frame_period_ns(&self) -> io::Result<u64> {
+        self.topology
+            .mode
+            .frame_period_ns()
+            .ok_or_else(|| io::ErrorKind::InvalidData.into())
     }
 
     /// Append a validated rectangle from the last completed front buffer as BGRX.
@@ -137,6 +152,13 @@ impl Scanout {
         if self.pending.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
+        self.history.invalidate();
+        self.kms.damage(&[canvas::Rect::new(
+            0,
+            0,
+            self.width() as i32,
+            self.height() as i32,
+        )]);
         match &mut self.backend {
             Backend::Cpu(targets) => {
                 crate::boot::paint(&mut targets[self.back].buffer, scene, permille)
@@ -152,8 +174,11 @@ impl Scanout {
     ///
     /// 内核拒绝 modeset。
     pub fn show_first(&mut self) -> io::Result<()> {
-        self.device
-            .set_crtc(&self.topology, self.backend.framebuffer(self.back))?;
+        self.kms.configure(
+            &self.device,
+            &self.topology,
+            self.backend.framebuffer(self.back),
+        )?;
         self.back ^= 1;
         Ok(())
     }
@@ -173,8 +198,8 @@ impl Scanout {
             return Err(io::Error::other("a page flip is already pending"));
         }
         self.sequence += 1;
-        self.device.page_flip(
-            &self.topology,
+        self.kms.present(
+            &self.device,
             self.backend.framebuffer(self.back),
             self.sequence,
         )?;
@@ -210,24 +235,43 @@ impl Scanout {
         theme: &classic_theme::Theme,
         windows: &[crate::compose::Drawable<'_>],
         overlay_bounds: Option<canvas::Rect>,
-        overlay: impl FnOnce(canvas::Surface<'_>, (i32, i32)),
+        overlay: impl FnMut(canvas::Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
         if self.pending.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
+        let frame = self.history.prepare(
+            self.back,
+            canvas::Rect::new(0, 0, self.width() as i32, self.height() as i32),
+            theme.color(classic_theme::SystemColor::Background),
+            windows,
+            overlay_bounds,
+        );
         match &mut self.backend {
-            Backend::Gpu(gpu) => gpu.render(self.back, theme, windows, overlay_bounds, overlay)?,
+            Backend::Gpu(gpu) => {
+                gpu.render(self.back, theme, windows, &frame, overlay_bounds, overlay)?
+            }
             Backend::Cpu(targets) => {
                 if !crate::compose::compose(
                     &mut targets[self.back].buffer,
                     theme,
                     windows,
+                    &frame,
                     overlay,
                 )? {
                     return Err(io::Error::other("invalid scanout drawing surface"));
                 }
+                // 先同步该后缓冲的全部修复区，再翻页。只传相对前台的 damage 会遗漏更旧目标的变化；
+                // DIRTYFB 完成后 adapter 的单次同步凭据让随后 page flip 不再整幅 TRANSFER。
+                sync_cpu_target(
+                    &self.device,
+                    targets[self.back].framebuffer,
+                    frame.repair_rects(),
+                )?;
             }
         }
+        self.kms.damage(frame.output_rects());
+        self.history.record(self.back, frame);
         Ok(())
     }
 
@@ -262,4 +306,53 @@ impl Scanout {
     pub fn move_cursor(&self, position: (i32, i32)) -> io::Result<()> {
         self.device.move_cursor(&self.topology, position)
     }
+}
+
+/// 标准 DIRTYFB 的 32-clip 预算；片段超限只扩大同步矩形，不改变光栅范围或提交两套状态。
+fn sync_cpu_target(
+    device: &DrmDevice,
+    framebuffer: u32,
+    rectangles: &[canvas::Rect],
+) -> io::Result<()> {
+    const CLIPS: usize = 32;
+    if rectangles.is_empty() {
+        return Ok(());
+    }
+    let mut clips = [Clip {
+        x1: 0,
+        y1: 0,
+        x2: 0,
+        y2: 0,
+    }; CLIPS];
+    let convert = |rect: canvas::Rect| -> io::Result<Clip> {
+        Ok(Clip {
+            x1: u16::try_from(rect.x).map_err(io::Error::other)?,
+            y1: u16::try_from(rect.y).map_err(io::Error::other)?,
+            x2: u16::try_from(rect.right()).map_err(io::Error::other)?,
+            y2: u16::try_from(rect.bottom()).map_err(io::Error::other)?,
+        })
+    };
+    let count = if rectangles.len() > CLIPS {
+        let bounds = rectangles
+            .iter()
+            .copied()
+            .reduce(|a, b| {
+                let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                canvas::Rect::new(
+                    x,
+                    y,
+                    a.right().max(b.right()) - x,
+                    a.bottom().max(b.bottom()) - y,
+                )
+            })
+            .expect("nonempty repair region");
+        clips[0] = convert(bounds)?;
+        1
+    } else {
+        for (clip, rect) in clips.iter_mut().zip(rectangles) {
+            *clip = convert(*rect)?;
+        }
+        rectangles.len()
+    };
+    device.dirty(framebuffer, &clips[..count])
 }

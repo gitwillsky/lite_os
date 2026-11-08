@@ -36,7 +36,8 @@ pub(crate) use kernel_stack::enable_probe as enable_kernel_stack_probe;
 pub(crate) use vmo::initialize_zero_page;
 pub(crate) use vmo::{
     CachePolicy, ChildKind, FaultSource, PagerBinding, PagerRequest, PagerSink, PinnedRange,
-    RangeOp, Vmo, VmoOptions, evicted_pages, physical_page_statistics, relieve_memory_pressure,
+    RangeOp, Vmo, VmoOptions, physical_page_statistics, reclaim_statistics,
+    relieve_memory_pressure,
 };
 
 use page_table::{PagePermissions, PageTable};

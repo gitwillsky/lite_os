@@ -296,16 +296,17 @@ pub trait GraphicsDevice: DisplayDevice {
     /// `Device`。
     fn submit_virgl(&self, command: VirglCommand<'_>) -> Result<u64, DisplayError>;
 
-    /// 原子执行 GPU resource 的 SET_SCANOUT → RESOURCE_FLUSH presentation chain。
+    /// 原子执行 GPU resource 的 SET_SCANOUT 及非空损伤的 RESOURCE_FLUSH presentation chain。
     ///
     /// # Parameters
     ///
     /// - `mode`: 当前 CRTC mode；resource geometry 必须完全一致。
     /// - `resource_id`: 已由同一 VirGL context 完成渲染的 host resource。
+    /// - `damage`: 已裁剪到 mode 的非空输出损伤并集；None 表示没有像素变化，只需绑定目标。
     ///
     /// # Returns
     ///
-    /// 只在两个 command 都完成后发布的单一 operation fence。
+    /// 只在完整呈现命令序列完成后发布的单一 operation fence。
     ///
     /// # Errors
     ///
@@ -314,5 +315,6 @@ pub trait GraphicsDevice: DisplayDevice {
         &self,
         mode: DisplayMode,
         resource_id: u32,
+        damage: Option<DisplayRect>,
     ) -> Result<u64, DisplayError>;
 }

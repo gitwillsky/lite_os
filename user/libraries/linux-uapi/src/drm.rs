@@ -1,9 +1,13 @@
 //! Typed DRM dumb-buffer and modesetting resources.
 
+mod atomic;
+mod kms;
+pub use atomic::AtomicRequest;
 mod prime;
 mod shared;
 mod virgl;
 
+pub use kms::{KmsObject, Plane, Property, PropertyBlob};
 pub use shared::SharedDumbBuffer;
 pub use virgl::{
     BIND_DISPLAY_TARGET, BIND_RENDER_TARGET, BIND_SAMPLER_VIEW, BIND_SCANOUT, BIND_VERTEX_BUFFER,
@@ -33,6 +37,24 @@ impl Mode {
 
     pub fn height(self) -> u16 {
         self.0.vdisplay
+    }
+
+    /// 标准 mode timing 的完整显示周期（纳秒，向上取整），含 interlace/doublescan/vscan。
+    /// 零 pixel clock 或 totals 返回 None；不把 vrefresh 的描述性提示当作实际时钟。
+    pub fn frame_period_ns(self) -> Option<u64> {
+        if self.0.clock == 0 || self.0.htotal == 0 || self.0.vtotal == 0 {
+            return None;
+        }
+        let mut numerator = u128::from(self.0.htotal) * u128::from(self.0.vtotal) * 1_000_000;
+        let mut denominator = u128::from(self.0.clock);
+        if self.0.flags & (1 << 4) != 0 {
+            denominator *= 2;
+        }
+        if self.0.flags & (1 << 5) != 0 {
+            numerator *= 2;
+        }
+        numerator *= u128::from(self.0.vscan.max(1));
+        u64::try_from(numerator.div_ceil(denominator)).ok()
     }
 
     /// Builds the same canonical non-reduced CVT 60 Hz mode Linux uses for a

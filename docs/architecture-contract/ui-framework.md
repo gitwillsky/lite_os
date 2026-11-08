@@ -12,6 +12,10 @@
   局部绘制返回物理像素损伤，初始映射强制声明全幅损伤。失败使该缓冲的比较基线失效。
   首次直接绘制前预分配完整 memfd 存储，使限额和内存不足在绘制前返回；借用期间缓冲移出 Display 表。
 - Context 唯一拥有窗口表、控件树、资源与 FD interest；对象标识单调递增不复用，迟到事件不能命中新对象。
+- Display 的 ImageId 拥有原尺寸 SHM pool/buffer 与只读映射；发布前核验 F_SEAL_WRITE/GROW/SHRINK，失败不建立映射或发表 FD。
+  多表面共用不可变 wl_buffer 时不依赖 release 次数或顺序，不重写/复用其存储；destroy 后服务端 Content 与在途图形引用继续保活。
+  合成器 BufferSpec 的懒快照仅用于已核验封印的 pool，单连接线程、固定后端初始化一次；可变 pool 保持原 damage/COW 路径。
+  没有该缓存，平铺会逐子表面复制同一像素；缓存不复制 viewport/source 等每表面几何，也不扩大为全局图像表。
 
 ## ABI 与内存安全
 
@@ -50,16 +54,21 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   损伤行直接交给 memfd 批量校验与写入，沿用其文件描述符。每槽增加共享映射及相应的页表成本，释放原先每窗一份独立历史像素及其复制；
   内存和交互以同一输出尺寸的来宾采样裁决。
   Layer unmap 清空比较基线但保留递增序号，避免晚到 release 的缓冲跨映射代际被误判为最新画面。所有调用 `present` 的程序共用这一路径，
-  失效粒度仍是整窗光栅，只有共享内存写入、合成器读取与纹理上传按损伤缩小。
+  外部像素的 present 仍由调用者提供完整画面；WindowHost/Tree 的区域光栅使用下文 paint_frame 契约，不混同这两类内容 owner。
 - 普通桌面状态的登录兜底用一个不透明像素和 `wp_viewport.set_destination` 保持整屏映射与安全注意序列路由。
   安全页的整屏缓冲与撤销 viewport 在同一 `wl_surface.commit` 生效。尺寸切换后空闲旧缓冲立即退休，忙缓冲等待 release，
   切换到单像素帧时比较基线也切换到单像素缓冲。成本用同一分辨率下登录进程驻留、图形资源及锁屏往返测量。
 - 桌面外壳指针移动由实际交互标记受影响的图层。空白背景移动与任务栏提示计时不触发光栅，图标拖动、编辑选区及菜单变化只标记对应图层。
   成本以真实来宾同分辨率的指针移动和交互帧诊断，宿主微基准不代表重绘或显示延迟。
+- 桌面 Scene 拥有同步墙纸/图标/框选子表面；root 仅持单像素底色，子表面空输入 region 保留根的命中、键盘与拖放职责。
+  小平铺图案按整数倍预重复到接近 256×256，额外图像最多 65536 像素，避免成千上万协议对象；大图保持原尺寸。
+  图标层按实际图像/标签/编辑框包围盒分配；框选只分配四条一逻辑像素的边，按根坐标恢复墙纸/图标并保持 XOR 刷相位。
+  旧覆盖与新覆盖参与局部擦除；几何或 backing 变化完整初始化局部层。替换先提交子表面 null attach，父 commit 后销毁旧角色，避免中间空白。
 - 文件拖放由桌面按共用图像和标题几何接受回收站目标。Wayland 收到 drop 后以当时接受的 surface 交付完整 URI 列表，
   不用完成读取时的桌面布局重新命中。外部拖放只有目标高亮变化才重绘桌面；格子外直接排除，标签仍复用现有度量。
   URI 列表与文件剪贴板共用 4096 个路径及 128 KiB URI 数据的上限。桌面通过只读 memfd 作为标准输入交给独立删除确认，
   避免 exec 参数指针和环境占用缩小拖放容量。拒绝无效或超限的完整批次；资源管理器按原顺序复核、确认和回收。
+- 窗口还原/激活立即更新窗口栈与键盘目标，整窗几何动画只影响合成；不能等动画结束再撤销最小化，否则桌面兜底焦点会吞掉后继按键。
 - Desktop 唯一拥有图标焦点、排序且去重的选择索引及 Shift 锚点；焦点与选中状态独立，Shift 图标选择按网格矩形而非目录行号。
   目录刷新先结束抓取，再按 Target 身份重建焦点、选择和锚点；粘贴完成引起的刷新也遵守这一顺序。
   Drag 只能是整组移动或框选之一，框选保留原集合供 Ctrl 切换和 Esc 恢复，抓取期间不执行文件快捷命令。
@@ -146,12 +155,18 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   关闭不 join，旧结果丢弃，Context 释放 channel 后 worker 退出；共享通用控件处理输入与布局。
 - WindowHost 只因装饰、configure 和 focus 的视觉变化失效；Tree input 单独返回 repaint，普通未捕获 motion 不重绘。
   多行选择拖动、菜单、范围和表头抓取仍申请帧；WindowHost 保留尚未成功提交的失效。
-  WindowHost 不拥有画布：整幅重绘直接写入 Display 提供的已释放共享缓冲（`render_frame`），绘制闭包必须画满整个缓冲，
-  因为缓冲里是更早一帧的内容。Display 在 `History` 中只保留上一次提交画面的分块哈希（每块一个 u64），
-  损伤相对它推导；哈希分配失败或规格变化时整幅损伤，只会多传不会漏传。稳定状态每窗口只保留一块空闲缓冲，第二块
-  仅在上一块未 release 时临时分配、release 后立即退休；缺失退休会让最大化窗口长期多占整幅画面内存。
-  交互缩放期间保留空闲池以复用几何。Benchmark 决策：哈希遍历整幅像素，成本与原先逐行比较同量级，
-  按窗口交互范围分别测应用绘制、缓冲提交、合成与 flip。
+  WindowHost 不拥有画布：经 Display.paint_frame 在已释放共享缓冲中绘制，稳定态只光栅旧/新失效区；原 render_frame/整窗哈希模块已删除。
+  Nodes 只提供只读 map 投影，get_mut/匹配可变访问推进 Node 的局部版本，不能取出原始可变 BTreeMap 绕过失效。
+  每节点只保存上次成功提交的版本/覆盖/焦点与按压投影；删除时将旧覆盖移交 Tree.retired，等待/失败不确认基线。
+  菜单弹层、组合框列表与提示的覆盖使用各自绘制 owner 的同一几何；菜单助记提示改变使全部相关客户区失效。
+  异步图片完成显式使依赖的 Canvas 版本失效；普通动画计时只为真实视觉变化推进版本，不因扫描而重画全树。
+  WindowHost 将损伤合并为最多 32 个不相交逻辑矩形；超出只扩大覆盖，每个矩形重建底色/装饰和相交控件子树，再发送物理 damage_buffer。
+  布局重新计算时放置节点全部失效；颜色、选区、绘图命令和媒体帧等纯绘制变更只影响对应控件及旧/新覆盖层。
+  新缓冲/不是最新完整画面、规格/装饰/主题变化时全幅初始化；失败由 Display 作废该缓冲内容，下一次不能沿用半幅结果。
+  同次损伤、光栅与确认使用冻结的 now，防止提示在提交中途到期而被误标为已显示；成功提交后才确认 Tree 基线。
+  callback ID 在绘制/分配/像素写入准备成功后登记，避免可重试绘制失败遗留永远没有 done/delete_id 的对象。
+  稳定状态每窗口只保留一块空闲缓冲，第二块仅在上一块未 release 时临时分配、release 后退休；交互缩放保留空闲池复用几何。
+  成本与验收范围由[性能覆盖](../development/performance-coverage.md)拥有；合并/背景重建参照 [Qt 6.8 QWidget paintEvent/update](https://doc.qt.io/qt-6.8/qwidget.html#paintEvent)，缓冲内容有效性沿固定 EGL_EXT_buffer_age 语义。
 - calendar 的 OnceLock<RwLock<TimeZone>> 唯一持有已解析 TZif，文件 I/O 和解析均在锁外。
   reload 失败保留旧模型，固定偏移写入使用同目录 create_new 临时文件、sync 与 rename；没有进程环境写入。
 
@@ -294,8 +309,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - MenuMetrics 拥有经典弹出菜单三像素外框留白与字体行高加四的项高；Popup 与外壳 ContextMenu 共用度量。
   Painter 填满项的高亮行，不重复扣除外框；分隔线、文字和快捷键按共同内容矩形排布。
 - network-config::ethernet_links 唯一解释以太网接口的管理状态、载波、连接名与驱动名。连接列表、连接属性/状态页、桌面与 `ipconfig` 复用该快照。
-  链路建立不等价于互联网连通。desktop::network 独占一个采样线程、容量为一的结果通道和停止通道，500 ms 采样，
-  UI 只非阻塞取结果；Drop 断开停止通道并 join，不遗留后台线程。读取失败不继续宣称上次链路已连接。
+  链路建立不等价于互联网连通。desktop::tray 统一拥有网络/USB 的单个后台采样线程、500 ms 截止与容量为一的组合快照，UI 只非阻塞应用结果。
+  Network/Usb 只持 UI 视图，禁用接口仍有一个请求的有界准入；命令失败不阻止同轮 USB 更新，完成会失效通知区可用状态。
+  Drop 断开唯一请求端并 join，不遗留后台线程。链路读取失败清除旧连接保证；USB 读取失败保留上次列表，下一次成功采样替换。
 - 桌面通知区、时钟、音量、网络、翻页按钮与任务按钮由同一 TaskbarLayout 给出绘制/命中几何；隐藏时钟或没有接口时收回对应槽位。
 - Benchmark 决策：图标重采样只在资源加载时分配，内容测量只在布局失效时执行，网络文件 I/O 全部在后台；无新增逐帧全树扫描。
   功能由现有 host/Wayland/桌面门禁裁决；逐项样式仍由用户验收。
@@ -337,7 +353,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   轮廓字体经 linux-uapi `ReadOnlyMapping` 只读 `MAP_PRIVATE` 映射，同一 TTC 成员共享一份映射；页按需载入并跨进程共享页缓存，
   不再每进程整文件读入。字体文件只以 rename 替换，不得原地改写或截断（映射的 unsafe 前置条件）。
 - OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
-  与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
+  与已光栅化字形（上限 4096，满时按最近使用序号淘汰最旧四分之一）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
 - classic_ui::Fonts 拥有六个系统字体用途、每个 scale 的原版 Marlett 标题按钮字体与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
   sfnt 优先 Unicode cmap；仅缺少 Unicode 时采用 Windows Symbol format 4，保持原始 PUA 码位。
 - 字节码解释器只在给定指令流上执行，越界、栈错误与步数上限使本次程序失败并退回未 hinting 轮廓，从不 panic。
@@ -354,10 +370,30 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   layer_check_commit 只验证 pending，layer_after_commit 才发布角色 current 并与旧状态比较；否则首次协商或尺寸重协商会丢失。
 - Attachment 持有 attach 时真实 Buffer（SHM 或 dma-buf）的 Rc；wl_buffer 对象销毁不使引用悬空，release 只发送给仍关联同一 Rc 的活对象。
   SHM 读取完成后即允许 release；失败返回截断文件或 no_memory（含 GPU 纹理建立/上传失败），不以空图像替代。
-- damage 只在 Pending 中按 surface/buffer 坐标累计，每个坐标系最多 16 个矩形，超出合并为外接矩形；commit 时换算为 buffer 像素，
+- damage 在 Pending 中按 surface/buffer 坐标累计，每个坐标系最多 16 个矩形，超出合并为外接矩形；commit 时换算为 buffer 像素，
   surface 损伤遇到 transform 或 viewport 退化为整幅。同尺寸且唯一持有的上一份内容只重读这些矩形，其余（首次、尺寸变化、
   被缓存提交或在用光标共享）整幅读取新快照；损伤之外沿用上一次提交，这是 Wayland 允许的语义。
   非同步提交先放开 current 的像素引用再读取，保证唯一持有；同步提交的 current 仍显示旧图，因此走写时复制。
+- Committed.damage 合并同步缓存的多次提交，Surface.damage 合并已应用但尚未呈现的损伤；stage_frame 在成功合成后清空，
+  flip 在途新提交的损伤留待下一帧。均使用原有 16 矩形预算；元数据提交不伪造像素损伤，null attach/尺寸变化由场景几何处理。
+  opaque region 与 input region 一样按 commit 冻结；只采纳格式不透明或 region 可证明覆盖整块的情况，部分并集无法证明时保留绘制。
+  XRGB/ARGB 切换不能沿用旧格式的局部快照，否则旧透明像素与新不透明保证冲突。
+- Scanout.history 独占两个扫描目标的有效性、上一帧损伤和排序的 surface 身份/几何快照，不持有 Content/BufferUse。
+  首次/启动画面覆盖后整幅修复；双缓冲复用修复本帧与上一帧损伤并集；绘制失败作废目标，有效性仅成功后发布。
+  scene 比较包括层序、目标矩形与仿射源；移动/缩放/移除同时失效旧新位置，源损伤经逆变换向外取整。
+  输出 Region 保持不相交，避免透明像素因重叠损伤被混合多次；最多 128 块，损伤碎片超限扩大为外接矩形，
+  遮挡减法超限保持原区域，只增加绘制、不裁掉应显示内容。分割在现有 Vec 内复用，不逐矩形建立节点/暂存 Vec。
+  CPU/GPU 共用自上而下的可见区域；GPU 以标准 VirGL scissor 裁片段，顶点/UV 保持原始目标，避免重新插值改变采样边界。
+  scissor 按固定后端的正 viewport Y scale 转为 framebuffer 左下原点，u16 边界转换失败报错，不截断。
+  背景使用一像素纹理按未覆盖区域替换，overlay 仅混合不相交修复区，关闭时释放其画布/纹理。
+  未损伤的活 surface 保留采样视图，exec 只 pin 本帧实际使用的资源；不因局部帧反复重建视图。
+  Frame.repair 保留同一次区域计算的目标修改集；CPU 绘制后、记录历史前通过标准 DIRTYFB 同步这些区域，随后再 page flip。
+  传输的是相对该后缓冲的修复区，不能只传相对前台的 damage；首次 resident 的完整初始化由 adapter 保证。
+  DIRTYFB 超过既有 32-clip 预算时合并外接矩形，坐标必须精确表示为 u16；空修复不发 DIRTYFB，错误使目标保持无效。
+  沿用 adapter 已有的单次 synchronized 凭据，不新增可被 mmap 修改绕过的永久 clean 标记。
+  Scanout.kms 在初始化时查询标准属性 ID，初次 modeset 与后续呈现均使用 MODE_ATOMIC，没有 legacy 回退。
+  每帧 FB_DAMAGE_CLIPS 描述相对前台的输出差异；CPU DIRTYFB 仍描述该后缓冲的修复集，两者不能混同。
+  原子请求和 clip 暂存跨帧复用容量；blob 创建者引用在提交后释放，pending/active 独立保活，语义由 [DRM 契约](drm.md)维护。
 - Pixels 是 CPU 后端 SHM 的内存像素、GPU 后端 SHM 的纹理（像素只在其 guest backing），或 dma-buf BufferUse 与导入纹理；
   Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。GPU 后端的 SHM 不保留 CPU 副本，硬件光标按需从 backing 复制。
   原地写 backing 前等待该资源上一次 transfer/exec 完成，避免旧帧混入新像素；已排队采样由主机命令顺序保证读到旧纹理。
@@ -382,7 +418,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   非全屏窗口激活后恢复普通层序；全屏对话框保持所属组，不另存层级状态。成本为栈/父链遍历，无新增逐帧分配，交互由桌面验收验证。
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。
   presentation 显式登记可见树和实际呈现的客户端硬件光标，隐藏 surface 不提前获得下一帧许可。
-- GPU.overlay 缓存合成器叠加层最近一次绘制边界大小的画布与纹理。移动时复用同尺寸存储，每帧清空局部画布后直接上传连续像素。
+- GPU.overlay 缓存当前合成器叠加层边界大小的画布与纹理；关闭释放。移动时复用同尺寸存储，重画局部画布后上传连续像素。
   SHM 内容与叠加层的采样纹理只保留最小 GEM 后备，大块上传共用 VirGL context 的一块暂存。
   暂存由 context 克隆共同持有，容量随最大上传区域增长；重用前检查其最后 fence，忙时换新并由内核提交 pin 保活旧存储。
   缓存同时记录最近一次上传时间。Session 将一秒空闲期限并入原 poll：期限前继续复用，期限后仅当
@@ -399,7 +435,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
   SHM 提交的成本从“整幅 pread + 整幅 CPU 副本 + 新建纹理 + 整幅上传”降为 O(损伤像素)，复用纹理与采样视图；
   由 shm 子矩形读取与损伤/写时复制单元测试守护语义，不新增宿主墙钟阈值。
-  验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，opaque 当前只是可忽略的提示。
+  验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，opaque 只用于已证明安全的遮挡剔除。
 
 ## 键盘对象与迟绑定
 

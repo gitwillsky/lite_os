@@ -273,7 +273,7 @@ fn try_handler(channel: &Arc<Channel>, report: ExceptionReport) -> Option<Delive
             | native_abi::rights::INSPECT,
     });
     // 处理者已关闭或积压过多时交给下一级。
-    channel.write(Message { bytes, handles }).ok()?;
+    channel.write(Message::new(bytes, handles)).ok()?;
     match waiter.wait() {
         Some(ExceptionResolution::Resume(state)) => Some(Delivery::Resume(state)),
         Some(ExceptionResolution::TryNext) => None,

@@ -108,6 +108,14 @@ impl PictureLoader {
         }
     }
 
+    /// 将就绪图片移交给不可变共享存储等长期 owner；保留“已完成”状态，后续 update 不重新解码。
+    pub fn take(&mut self, path: &Path) -> Option<Bitmap> {
+        match self.pictures.get_mut(path) {
+            Some(Picture::Loaded(image)) => image.take(),
+            _ => None,
+        }
+    }
+
     /// 返回应加入 UI poll 的可读通知源；没有在途任务时返回 None。
     ///
     /// FD 只用于等待，调用方不得读取；唤醒后调用 [`Self::update`] 回收结果。

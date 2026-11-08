@@ -2,7 +2,7 @@
 use linux_uapi::filesystem::ReadOnlyMapping;
 use std::{
     fmt, io,
-    ops::{Deref, Range},
+    ops::Deref,
     path::Path,
     sync::{Arc, Mutex, Weak},
 };
@@ -18,11 +18,12 @@ struct Atlas {
     mapping: ReadOnlyMapping,
     count: usize,
 }
+/// 已验证的图集记录与映射租约；只读视图不能脱离其 Arc owner。
 #[derive(Clone)]
 pub(super) struct SharedImage {
     atlas: Arc<Atlas>,
-    pixels: Range<usize>,
-    indices: Option<Range<usize>>,
+    // OWNER: 只存已验证的固定记录编号，不在每个 Bitmap 重复保留像素/下标区间。
+    record: usize,
     pub(super) width: i32,
     pub(super) height: i32,
 }
@@ -35,18 +36,25 @@ impl fmt::Debug for SharedImage {
     }
 }
 impl SharedImage {
+    fn record(&self) -> &[u8] {
+        let start = HEADER + self.record * RECORD;
+        &self.atlas.mapping.as_ref()[start..start + RECORD]
+    }
     fn pixels(&self) -> &[u32] {
-        let bytes = &self.atlas.mapping.as_ref()[self.pixels.clone()];
+        let start = offset(self.record(), 104).expect("validated pixel offset");
+        let count = self.width as usize * self.height as usize;
+        let bytes = &self.atlas.mapping.as_ref()[start..start + count * 4];
         // SAFETY: validate 在发表映射前验证 u32 对齐、整像素长度和完整文件内范围；mmap 基址页对齐，
         // 仅允许小端像素目标。Arc 保活只读映射，生产安装使用 rename，不原地修改/截断其 inode。
-        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len() / 4) }
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), count) }
     }
     fn indices(&self) -> Option<&[u8]> {
-        self.indices
-            .as_ref()
-            .map(|range| &self.atlas.mapping.as_ref()[range.clone()])
+        let start = offset(self.record(), 112).expect("validated index offset");
+        let count = self.width as usize * self.height as usize;
+        (start != 0).then(|| &self.atlas.mapping.as_ref()[start..start + count])
     }
 }
+/// 解码结果或共享预解码像素的唯一存储 owner。
 #[derive(Debug)]
 pub(super) enum Pixels {
     Owned(Vec<u32>),
@@ -66,6 +74,7 @@ impl From<Vec<u32>> for Pixels {
         Self::Owned(pixels)
     }
 }
+/// 可被重着色结果复用的原始调色板下标，不复制映射内容。
 #[derive(Clone, Debug)]
 pub(super) enum Indices {
     Owned(Arc<[u8]>),
@@ -88,7 +97,7 @@ impl From<Vec<u8>> for Indices {
 impl SharedImage {
     pub(super) fn bitmap(self) -> super::Bitmap {
         let indices = self
-            .indices
+            .indices()
             .is_some()
             .then(|| Indices::Shared(self.clone()));
         super::Bitmap {
@@ -193,13 +202,9 @@ impl Atlas {
             })?;
         let record = &records[index];
         let (width, height) = (word(record, 96), word(record, 100));
-        let count = width as usize * height as usize;
-        let pixels = offset(record, 104)?;
-        let indices = offset(record, 112)?;
         Ok(SharedImage {
             atlas: self.clone(),
-            pixels: pixels..pixels + count * 4,
-            indices: (indices != 0).then_some(indices..indices + count),
+            record: index,
             width: width as i32,
             height: height as i32,
         })

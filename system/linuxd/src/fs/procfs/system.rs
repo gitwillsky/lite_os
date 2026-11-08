@@ -95,10 +95,16 @@ pub(super) fn format_buddyinfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileS
 
 pub(super) fn format_vmstat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
     let kernel = native_runtime::system::memory_stats();
-    // 淘汰只在缺页入口同步进行（direct reclaim），没有后台 kswapd；不单独计扫描数，scan 与 steal 相同。
+    // 原生回收器拥有实际来源和样本计数；扫描、晋升与释放不同，后台不能归到前台停顿。
     proc_text(format_args!(
-        "nr_free_pages {}\nnr_dirty {}\nallocstall 0\npgscan_direct {}\npgsteal_direct {}\npgscan_kswapd 0\npgsteal_kswapd 0\n",
-        snapshot.free_pages, kernel.pager_dirty_pages, kernel.evicted_pages, kernel.evicted_pages,
+        "nr_free_pages {}\nnr_dirty {}\nallocstall {}\npgscan_direct {}\npgsteal_direct {}\npgscan_kswapd {}\npgsteal_kswapd {}\n",
+        snapshot.free_pages,
+        kernel.pager_dirty_pages,
+        kernel.foreground_reclaim_runs,
+        kernel.foreground_scanned_pages,
+        kernel.foreground_evicted_pages,
+        kernel.background_scanned_pages,
+        kernel.background_evicted_pages,
     ))
 }
 

@@ -389,7 +389,7 @@ impl Tree {
         }
         if kind == widget::RADIO {
             let (parent, group) = (node.parent, node.group);
-            for other in self.nodes.values_mut().filter(|node| {
+            for (_, other) in self.nodes.matching_mut(|node| {
                 node.kind == widget::RADIO && node.parent == parent && node.group == group
             }) {
                 other.state &= !state::CHECKED;

@@ -26,6 +26,12 @@ pub(crate) fn clone_current_thread(
     resources: crate::task::ThreadCloneResources,
 ) -> Result<usize, ThreadCloneError> {
     let parent = current_task().expect("thread clone requires current task");
+    let policy = parent
+        .scheduling
+        .policy
+        .lock()
+        .forked()
+        .ok_or(ThreadCloneError::ResourceLimit)?;
     let namespace = resources.namespaces.pid_for_children();
     if !Arc::ptr_eq(&parent.pid_namespace(), &namespace) {
         return Err(ThreadCloneError::Pid(
@@ -48,7 +54,7 @@ pub(crate) fn clone_current_thread(
         ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
         || {
             parent
-                .clone_thread(pid.identity(), &parameters, &resources)
+                .clone_thread(pid.identity(), &parameters, &resources, policy)
                 .map_err(ThreadCloneError::Memory)
         },
     )?;

@@ -404,7 +404,11 @@ impl Journal {
         if start != 0 {
             let replay = self.scan_committed(fs, start, sequence)?;
             if let Some(replay) = replay {
-                fs.write_fs_blocks_home(replay.iter().map(|(block, bytes)| (*block, bytes.as_slice())))?;
+                fs.write_fs_blocks_home(
+                    replay
+                        .iter()
+                        .map(|(block, bytes)| (*block, bytes.as_slice())),
+                )?;
                 fs.device.flush().map_err(block_error)?;
             }
         }
@@ -499,7 +503,11 @@ impl Journal {
         let metadata_count = staged.metadata_count();
         if metadata_count == 0 {
             // 纯覆盖已映射 block 的数据没有需要排序的 metadata：写回 home 后单次 barrier 即持久。
-            fs.write_fs_blocks_home(staged.data().map(|(block, bytes)| (*block, bytes.as_slice())))?;
+            fs.write_fs_blocks_home(
+                staged
+                    .data()
+                    .map(|(block, bytes)| (*block, bytes.as_slice())),
+            )?;
             return fs.device.flush().map_err(block_error);
         }
         record_test_transaction();
@@ -513,7 +521,11 @@ impl Journal {
         self.write_state(fs, 1, sequence)?;
         // ordered data 与 descriptor/metadata image 共用 commit record 前的 durability barrier；
         // 缺失它时崩溃可留下 durable commit 与旧 data，replay 后 metadata 指向未写入的 block。
-        fs.write_fs_blocks_home(staged.data().map(|(block, bytes)| (*block, bytes.as_slice())))?;
+        fs.write_fs_blocks_home(
+            staged
+                .data()
+                .map(|(block, bytes)| (*block, bytes.as_slice())),
+        )?;
         let uuid = fs.superblock.lock().s_uuid;
         let tail = fs.block_size - JBD2_BLOCK_TAIL_SIZE;
         let mut cursor = 1;

@@ -11,6 +11,7 @@ const DRAW_VBO: u32 = 8;
 const RESOURCE_INLINE_WRITE: u32 = 9;
 const SET_SAMPLER_VIEWS: u32 = 10;
 const SET_CONSTANT_BUFFER: u32 = 12;
+const SET_SCISSOR_STATE: u32 = 15;
 const BIND_SAMPLER_STATES: u32 = 18;
 const BIND_SHADER: u32 = 31;
 const COPY_TRANSFER3D: u32 = 45;
@@ -161,10 +162,11 @@ impl CommandEncoder {
         self.words.extend([handle, 0, 0, 0, 0]);
     }
 
-    /// Creates a triangle rasterizer matching pixel-center rules.
-    pub fn create_rasterizer(&mut self, handle: u32) {
+    /// Creates a triangle rasterizer with scissor enabled and pixel-center rules.
+    /// Each draw must first define viewport-zero's scissor using [`Self::set_scissor`].
+    pub fn create_scissored_rasterizer(&mut self, handle: u32) {
         self.header(CREATE_OBJECT, ObjectKind::Rasterizer, 9);
-        let state = (1 << 1) | (1 << 29) | (1 << 30);
+        let state = (1 << 1) | (1 << 14) | (1 << 29) | (1 << 30);
         self.words.extend([
             handle,
             state,
@@ -259,6 +261,19 @@ impl CommandEncoder {
             half_height.to_bits(),
             0.5f32.to_bits(),
         ]);
+    }
+
+    /// Sets viewport-zero's scissor in Gallium framebuffer coordinates.
+    ///
+    /// # Parameters
+    /// `bounds` contains `[min_x, min_y, max_x, max_y]` pixel boundaries. With a positive
+    /// GL viewport Y scale, the origin is bottom-left; the caller converts screen coordinates.
+    /// Values use the protocol's exact u16 representation; empty rectangles produce no fragments.
+    pub fn set_scissor(&mut self, bounds: [u16; 4]) {
+        let [min_x, min_y, max_x, max_y] = bounds.map(u32::from);
+        self.header_raw(SET_SCISSOR_STATE, 0, 3);
+        self.words
+            .extend([0, min_x | (min_y << 16), max_x | (max_y << 16)]);
     }
 
     /// Selects a single interleaved position/UV vertex buffer.
@@ -504,5 +519,13 @@ mod tests {
 
         assert_eq!(f32::from_bits(encoder.words()[3]), 846.0);
         assert_eq!(f32::from_bits(encoder.words()[6]), 846.0);
+
+        encoder.create_scissored_rasterizer(7);
+        assert_ne!(encoder.words()[10] & (1 << 14), 0);
+        encoder.set_scissor([2, 7, 20, 30]);
+        assert_eq!(
+            &encoder.words()[encoder.words().len() - 4..],
+            &[15 | (3 << 16), 0, 2 | (7 << 16), 20 | (30 << 16)]
+        );
     }
 }

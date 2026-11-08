@@ -35,6 +35,7 @@
 - [文件系统与存储契约](architecture-contract/filesystem-storage.md)
 - [IPC 与网络契约](architecture-contract/ipc-network.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
+- [DRM/KMS 与图形资源契约](architecture-contract/drm.md)
 - [音频契约](architecture-contract/audio.md)
 - [io_uring 契约](architecture-contract/io-uring.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)

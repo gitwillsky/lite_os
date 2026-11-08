@@ -26,71 +26,52 @@ impl Session {
         } else {
             (target, window)
         };
-        self.start_animation(client, surface, from, to, !minimizing);
+        self.start_animation(client, surface, from, to);
     }
 
-    /// 播放整窗几何过渡：已有还原被其他窗口操作打断时先完成它；同一窗口反向操作从当前画面继续，避免位置跳回端点。
-    ///
-    /// `restoring` 为真时动画结束才把窗口提升回输入栈（最小化还原）；最大化/还原模式切换传假。
+    /// 播放整窗几何过渡；同一窗口反向操作从当前画面继续，避免跳回端点。输入状态由操作立即提交，动画不延迟激活。
     pub(super) fn start_animation(
         &mut self,
         client: ClientId,
         surface: ObjectId,
         from: (i32, i32, i32, i32),
         to: (i32, i32, i32, i32),
-        restoring: bool,
     ) {
         let previous = self.animation.take();
         let current = previous
             .as_ref()
             .filter(|animation| animation.client == client && animation.surface == surface)
             .map(Animation::frame);
-        if let Some(animation) =
-            previous.filter(|animation| animation.client != client || animation.surface != surface)
-            && animation.restoring
-        {
-            self.stack.raise(animation.client, animation.surface);
-        }
         self.animation = Some(Animation {
             client,
             surface,
             from: current.unwrap_or(from),
             to,
             start: Instant::now(),
-            restoring,
         });
         self.dirty = true;
     }
 
     /// 最小化窗口并播放动画。
     pub(super) fn minimize_window(&mut self, client: ClientId, surface: ObjectId) {
-        if self.stack.placement(client, surface).is_some_and(|placed| {
-            !placed.minimized
-                || self.animation.as_ref().is_some_and(|animation| {
-                    animation.client == client
-                        && animation.surface == surface
-                        && animation.restoring
-                })
-        }) {
+        if self
+            .stack
+            .placement(client, surface)
+            .is_some_and(|placed| !placed.minimized)
+        {
             self.animate(client, surface, true);
         }
         self.dirty |= self.stack.minimize(client, surface);
     }
 
-    /// 激活窗口；最小化窗口先显示整窗还原动画，结束时提升输入栈；重复激活不重启动画。
+    /// 立即还原并激活窗口，画面独立播放整窗过渡；重复激活不重启动画或丢弃紧接着的键盘输入。
     pub(super) fn restore_window(&mut self, client: ClientId, surface: ObjectId) {
         if self
             .stack
             .placement(client, surface)
             .is_some_and(|placed| placed.minimized)
         {
-            if self.animation.as_ref().is_some_and(|animation| {
-                animation.client == client && animation.surface == surface && animation.restoring
-            }) {
-                return;
-            }
             self.animate(client, surface, false);
-            return;
         }
         self.dirty |= self.stack.raise(client, surface);
     }

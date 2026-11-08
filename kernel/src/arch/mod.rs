@@ -157,7 +157,9 @@ pub(crate) mod trap {
 pub(crate) mod instruction {
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::broadcast_instruction_cache;
-    pub(crate) use super::selected::publish_instruction_range as publish_range;
+    pub(crate) use super::selected::{
+        prepare_instruction_range as prepare_range, publish_instruction_local as publish_local,
+    };
 }
 
 /// Device translation register/table encoding and allocation seam.

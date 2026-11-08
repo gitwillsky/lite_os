@@ -11,17 +11,7 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-/// 已绘制背景的配置与覆盖区；像素只由 Display 的已释放缓冲持有。
-struct Backdrop {
-    key: (
-        i32,
-        i32,
-        i32,
-        classic_theme::Rgb,
-        desktop_settings::WallpaperStyle,
-    ),
-    covered: Vec<Rect>,
-}
+mod background;
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
     /// 当前应用/桌面条目拥有的图标；清单刷新时整体重建，卸载后不保留失效图像。
@@ -34,7 +24,7 @@ pub struct Art {
     // OWNER: 记录合成背景所用的路径；路径变化或新图片就绪都必须清除 backdrop，避免显示旧墙纸。
     wallpaper: Option<PathBuf>,
     // OWNER: 背景配置及上次覆盖区；没有它每帧都要重新缩放/平铺整张墙纸。
-    backdrop: Option<Backdrop>,
+    backdrop: background::Scene,
 }
 impl Art {
     pub fn load() -> io::Result<Self> {
@@ -81,7 +71,7 @@ impl Art {
             resources: Resources::system()?,
             pictures: PictureLoader::default(),
             wallpaper: None,
-            backdrop: None,
+            backdrop: background::Scene::default(),
         })
     }
 
@@ -100,14 +90,21 @@ impl Art {
     ///
     /// # 错误
     /// 线程或通知通道失败时返回错误；文件/解码错误由加载器记录并保持纯背景色。
-    pub fn update_wallpaper(&mut self, path: Option<&Path>) -> io::Result<bool> {
+    pub fn update_wallpaper(
+        &mut self,
+        display: &mut Display,
+        path: Option<&Path>,
+    ) -> io::Result<bool> {
         let selected = self.wallpaper.as_deref() != path;
         let loaded = self.pictures.update(path.map(Path::to_path_buf))?;
         if selected {
             self.wallpaper = path.map(Path::to_path_buf);
         }
-        if selected || loaded {
-            self.backdrop = None;
+        if selected {
+            self.backdrop.replace_image(display, None)?;
+        }
+        if loaded && let Some(bitmap) = path.and_then(|path| self.pictures.take(path)) {
+            self.backdrop.replace_image(display, Some(&bitmap))?;
         }
         Ok(selected || loaded)
     }
@@ -347,13 +344,13 @@ struct TaskbarLayout {
     pagers: [Rect; 2],
 }
 fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
-    let network_width = if s.network.current(&s.settings).is_some() {
+    let network_width = if s.tray.network.current(&s.settings).is_some() {
         24
     } else {
         0
     };
     let clock_width = if s.settings.show_clock { 60 } else { 0 };
-    let usb_width = if s.usb.connected() { 24 } else { 0 };
+    let usb_width = if s.tray.usb.connected() { 24 } else { 0 };
     let tray_width = 4 + network_width + usb_width + 24 + clock_width;
     let tray = Rect::new((width - 2 - tray_width).max(0), 4, tray_width, 22);
     let network = Rect::new(tray.x + 2, 4, network_width, 22);
@@ -417,165 +414,6 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
 fn text(p: &mut Painter<'_>, x: i32, y: i32, text: &str) {
     p.text(x, y, text, Ink::Color(C::ButtonText), false);
 }
-/// 在已释放的共享缓冲中绘制背景层，返回物理像素损伤。
-///
-/// 配置或墙纸变化时重建背景。平时只恢复上一帧图标、标题和编辑框占用过的区域。
-/// 缺失的墙纸显示背景色；无效尺寸或字体加载失败时返回错误。
-pub fn background_frame(
-    s: &Desktop,
-    d: &Display,
-    c: Configuration,
-    art: &mut Art,
-    pixels: &mut [u32],
-    preserved: bool,
-) -> io::Result<Vec<Rect>> {
-    let theme = art.resources.theme().clone();
-    let color = s.settings.background.map_or_else(
-        || theme.color(C::Background),
-        |[red, green, blue]| classic_theme::Rgb { red, green, blue },
-    );
-    let (w, h) = c.pixel_size()?;
-    let key = (w, h, c.scale, color, s.settings.wallpaper_style);
-    let screen = Rect::new(0, 0, c.width, c.height);
-    let fonts = art.resources.fonts(c.scale)?;
-    // 暂时取出覆盖区，绘制期间还需借用 Art 的图标与墙纸。
-    let mut backdrop = match art.backdrop.take() {
-        Some(backdrop) if preserved && backdrop.key == key => backdrop,
-        _ => Backdrop {
-            key,
-            covered: vec![screen],
-        },
-    };
-    let surface = Surface::new(pixels, w, h, w as usize)
-        .ok_or_else(|| io::Error::other("invalid desktop pixels"))?;
-    let mut p = Painter::new(surface, &theme, &fonts, c.scale);
-    let image = art
-        .wallpaper
-        .as_deref()
-        .and_then(|path| art.pictures.get(path));
-    let style = match s.settings.wallpaper_style {
-        desktop_settings::WallpaperStyle::Center => classic_ui::WallpaperStyle::Center,
-        desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,
-        desktop_settings::WallpaperStyle::Stretch => classic_ui::WallpaperStyle::Stretch,
-    };
-    let mut damage = Vec::new();
-    for rect in backdrop.covered.drain(..) {
-        let rect = rect.intersect(screen);
-        if !rect.is_empty() {
-            p.clipped(rect, |p| {
-                p.fill_rgb(rect, color);
-                if let Some(image) = image {
-                    image.paint_wallpaper(p, screen, style, (c.width, c.width));
-                }
-            });
-            damage.push(rect);
-        }
-    }
-
-    let focused = d.keyboard_focus() == Some(s.background);
-    let recycle_hover =
-        s.drop_hover || matches!(s.drag, Some(super::Drag::Icons { recycle: true, .. }));
-    let delta = match &s.drag {
-        Some(super::Drag::Icons {
-            index,
-            grab,
-            pos,
-            moved: true,
-            ..
-        }) => {
-            let origin = s.icons.rect(*index);
-            (pos.0 - grab.0 - origin.x, pos.1 - grab.1 - origin.y)
-        }
-        _ => (0, 0),
-    };
-    for (i, icon) in s.icons.items.iter().enumerate() {
-        // 正在拖动的图标跟随指针，不画在原位。
-        let mut r = s.icons.rect(i);
-        if s.selection.binary_search(&i).is_ok() {
-            r = Rect::new(r.x + delta.0, r.y + delta.1, r.width, r.height);
-        }
-        // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
-        // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
-        let selected = s.selection.binary_search(&i).is_ok()
-            || (recycle_hover
-                && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
-        let bitmap = art.desktop_icon_bitmap(icon, s.icons.trash_full);
-        let editing = s.rename.as_ref().filter(|rename| {
-            matches!(&icon.target, super::icons::Target::Path(path) if path == rename.operation.path())
-        });
-        let (width, height) = bitmap.map_or((32, 32), |bitmap| (bitmap.width(), bitmap.height()));
-        if bitmap.is_some() {
-            backdrop
-                .covered
-                .push(classic_ui::large_icon_image_rect(r, width, height));
-        }
-        let label = p.with_role(FontRole::Icon, |p| {
-            let label = p.large_icon_item(
-                r,
-                bitmap,
-                editing.is_none().then_some(&icon.label),
-                classic_ui::ItemLook {
-                    selected,
-                    active: true,
-                    focused: focused && selected && s.focused == Some(i),
-                    text: C::HilightText,
-                },
-            );
-            if let Some(rename) = editing {
-                let edit = classic_ui::large_icon_edit_rect(r, height);
-                p.edit(edit, &rename.edit, focused, false);
-                edit
-            } else {
-                label
-            }
-        });
-        if !label.is_empty() {
-            backdrop.covered.push(label);
-        }
-    }
-    if let Some(area) = s
-        .drag
-        .as_ref()
-        .and_then(super::Drag::selection_rect)
-        .filter(|area| !area.is_empty())
-    {
-        p.focus_rect(area);
-        // 只恢复并提交框的四条边，不能让一次框选退化成持续的整屏背景复制。
-        backdrop.covered.extend([
-            Rect::new(area.x, area.y, area.width, 1),
-            Rect::new(area.x, area.bottom() - 1, area.width, 1),
-            Rect::new(area.x, area.y, 1, area.height),
-            Rect::new(area.right() - 1, area.y, 1, area.height),
-        ]);
-    }
-    if !s.message.is_empty() {
-        // 状态文字没有固定的绘制矩形（字体可溢出字高），下次重建背景以免残留。
-        backdrop.covered.clear();
-        backdrop.covered.push(screen);
-        p.text(
-            100,
-            40,
-            &p.fit(&s.message, c.width - 120),
-            Ink::Color(C::HilightText),
-            false,
-        );
-    }
-    damage.extend(backdrop.covered.iter().copied());
-    art.backdrop = Some(backdrop);
-    Ok(damage
-        .into_iter()
-        .map(|rect| rect.intersect(screen))
-        .filter(|rect| !rect.is_empty())
-        .map(|rect| {
-            Rect::new(
-                rect.x * c.scale,
-                rect.y * c.scale,
-                rect.width * c.scale,
-                rect.height * c.scale,
-            )
-        })
-        .collect())
-}
 
 pub fn frame(
     s: &Desktop,
@@ -637,7 +475,7 @@ pub fn frame(
             rects[VOLUME].x + 4,
             7,
         );
-        if let Some(link) = s.network.current(&s.settings) {
+        if let Some(link) = s.tray.network.current(&s.settings) {
             art.icon(
                 &mut p,
                 if link.state == network_config::LinkState::Connected {
@@ -649,7 +487,7 @@ pub fn frame(
                 7,
             );
         }
-        if s.usb.connected() {
+        if s.tray.usb.connected() {
             art.icon(&mut p, "tray-usb-16", rects[USB].x + 4, 7);
         }
         for (i, id) in task_ids(s, d, c.width).iter().enumerate() {

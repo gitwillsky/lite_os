@@ -44,7 +44,7 @@ pub(super) unsafe extern "C" fn title(pointer: *mut c_void, id: u64, value: Text
             context.display.set_title(protocol, &value)?;
             let host = context.host_mut(id)?;
             host.title = value;
-            host.frame.invalidate();
+            host.frame.invalidate_frame();
             Ok(())
         })
     }

@@ -417,9 +417,14 @@ fn handle(
         SUBMIT_VIRGL_SCANOUT => {
             let mode = get_mode(request)?;
             let resource_id = request.u32()?;
+            let damage = if request.bool()? {
+                Some(get_rect(request)?)
+            } else {
+                None
+            };
             reply.u64(
                 device
-                    .submit_virgl_scanout(mode, resource_id)
+                    .submit_virgl_scanout(mode, resource_id, damage)
                     .map_err(encode_error)?,
             );
         }
@@ -883,10 +888,14 @@ impl GraphicsDevice for RemoteDisplay {
         &self,
         mode: DisplayMode,
         resource_id: u32,
+        damage: Option<DisplayRect>,
     ) -> Result<u64, DisplayError> {
         let mut request = Writer::request(SUBMIT_VIRGL_SCANOUT);
         put_mode(&mut request, mode);
-        request.u32(resource_id);
+        request.u32(resource_id).bool(damage.is_some());
+        if let Some(damage) = damage {
+            put_rect(&mut request, damage);
+        }
         self.fence(&request, Vec::new())
     }
 }

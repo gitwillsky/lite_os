@@ -7,6 +7,8 @@ use classic_ui_abi::{state, widget};
 
 /// 一次重绘中 Canvas 命令共用的资源，由 Context 在绘制前按命令需要一次准备好。
 pub struct CanvasAssets<'a> {
+    /// 同次失效计算、光栅和确认共用时刻，防止提示在中途到期时被错误确认。
+    pub now: std::time::Instant,
     /// 等宽文字命令（kind 5）的系统终端字体。
     pub mono: Option<&'a terminal_font::TerminalFont>,
     /// 墙纸预览命令（kind 7）的异步加载器；等待或失败时只画背景。
@@ -48,7 +50,7 @@ impl Tree {
         }
         // 工具提示画在最上层。
         if let Some((bounds, _)) = self.layout_bounds {
-            let now = std::time::Instant::now();
+            let now = canvas.now;
             for node in self.nodes.values().filter(|node| node.visible()) {
                 if let Some(toolbar) = &node.toolbar {
                     toolbar.paint_tip(p, self.pointer, bounds, now);
@@ -65,7 +67,7 @@ impl Tree {
         canvas: &CanvasAssets<'_>,
     ) {
         let node = &self.nodes[&id];
-        if !node.visible() || node.clip.is_empty() {
+        if !node.visible() || node.clip.intersect(p.clip()).is_empty() {
             return;
         }
         p.clipped(node.clip, |p| {

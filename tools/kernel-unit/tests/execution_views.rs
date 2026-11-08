@@ -117,6 +117,15 @@ mod memory {
 
 #[path = "../../../kernel/src/arch/aarch64"]
 mod arch {
+    pub(crate) mod instruction {
+        std::thread_local! {
+            pub(crate) static PREPARED: core::cell::RefCell<Vec<(usize, usize)>> = const { core::cell::RefCell::new(Vec::new()) };
+        }
+        pub(crate) fn prepare_range(start: usize, size: usize) {
+            PREPARED.with_borrow_mut(|ranges| ranges.push((start, size)));
+        }
+    }
+
     #[expect(dead_code, reason = "view fixture only exercises user roots")]
     pub(crate) mod page_table;
     pub(crate) mod pte;
@@ -199,6 +208,20 @@ mod vm {
     )]
     mod execution_views;
     use execution_views::ExecutionViews;
+
+    // Host cache adapter records the real production publication ranges; sparse physical frames
+    // must cost only the touched pages, rather than maintenance over the almost-2-GiB hole.
+    #[test]
+    fn executable_publication_cleans_only_actual_physical_ranges() {
+        crate::arch::instruction::PREPARED.with_borrow_mut(Vec::clear);
+        let mut commit = translation::TranslationCommit::new();
+        commit.record_instruction_publication(0x40001, 1);
+        commit.record_instruction_publication(0xbfff0, 2);
+        crate::arch::instruction::PREPARED.with_borrow(|ranges| {
+            assert_eq!(ranges, &[(0x40001000, 4096), (0xbfff0000, 8192)]);
+        });
+        commit.finish_unpublished();
+    }
 
     #[test]
     fn partial_context_publication_oom_is_revoked_before_frame_release() {

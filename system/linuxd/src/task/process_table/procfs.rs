@@ -656,7 +656,7 @@ fn process_snapshot(
                 run_state,
                 RunState::New | RunState::Running | RunState::StopPending
             );
-            let (start_time_us, nice, priority, runtime_us) = thread.thread_statistics();
+            let (start_time_us, nice, priority, policy, runtime_us) = thread.thread_statistics();
             thread_snapshots.push(ProcThreadSnapshot {
                 tracer: super::ptrace::tracer_identity(thread.tid()),
                 comm: thread.comm_buffer(),
@@ -675,6 +675,7 @@ fn process_snapshot(
                 },
                 nice,
                 priority,
+                policy,
                 runtime_us,
                 start_time_us,
                 last_cpu: cpu::id_at(thread.scheduling.last_cpu.load(Ordering::Relaxed))
@@ -687,7 +688,8 @@ fn process_snapshot(
             .iter()
             .find(|thread| thread.tid.key() == pid.key())
             .map_or(b'Z', |leader| leader.state);
-        let (nice, priority, leader_cpu, leader_runtime_us) = process.process_scheduler_snapshot();
+        let (nice, priority, policy, leader_cpu, leader_runtime_us) =
+            process.process_scheduler_snapshot();
         let last_cpu = cpu::id_at(leader_cpu)
             .expect("leader CPU disappeared from topology")
             .index();
@@ -719,6 +721,7 @@ fn process_snapshot(
                 state: b'Z',
                 nice,
                 priority,
+                policy,
                 runtime_us: leader_runtime_us,
                 start_time_us: statistics.start_time_us,
                 last_cpu,
@@ -742,6 +745,7 @@ fn process_snapshot(
             state,
             nice,
             priority,
+            policy,
             threads: thread_snapshots,
             runtime_us,
             start_time_us: statistics.start_time_us,
@@ -849,7 +853,7 @@ fn kernel_snapshot(
         _ if idle => b'I',
         _ => b'S',
     };
-    let (start_time_us, nice, priority, runtime_us) = task.thread_statistics();
+    let (start_time_us, nice, priority, policy, runtime_us) = task.thread_statistics();
     let last_cpu = task.scheduling.last_cpu.load(Ordering::Relaxed);
     let last_cpu = cpu::id_at(last_cpu)
         .expect("kernel task CPU disappeared")
@@ -877,6 +881,7 @@ fn kernel_snapshot(
         state,
         nice,
         priority,
+        policy,
         runtime_us,
         start_time_us,
         last_cpu,
@@ -897,6 +902,7 @@ fn kernel_snapshot(
         state,
         nice,
         priority,
+        policy,
         threads,
         runtime_us,
         start_time_us,

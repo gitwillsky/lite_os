@@ -310,16 +310,24 @@ impl Painter<'_> {
 
     /// 工具提示：`INFOBK` 底、黑色 1 像素框、四周留 2 像素。
     pub fn tooltip(&mut self, x: i32, y: i32, text: &str) -> Rect {
-        self.with_role(FontRole::Status, |p| p.tooltip_in_font(x, y, text))
+        let rect = self.tooltip_bounds(x, y, text);
+        self.with_role(FontRole::Status, |p| {
+            p.fill(rect, SystemColor::InfoWindow);
+            p.outline(rect, SystemColor::WindowFrame);
+            p.text(x + 3, y + 3, text, Ink::Color(SystemColor::InfoText), false);
+        });
+        rect
     }
 
-    fn tooltip_in_font(&mut self, x: i32, y: i32, text: &str) -> Rect {
-        let width = self.logical_ceil(self.text_width(text, false)) + 2 * 3;
-        let rect = Rect::new(x, y, width, self.line_height() + 2 * 3);
-        self.fill(rect, SystemColor::InfoWindow);
-        self.outline(rect, SystemColor::WindowFrame);
-        self.text(x + 3, y + 3, text, Ink::Color(SystemColor::InfoText), false);
-        rect
+    /// 工具提示绘制与失效共用的逻辑边界，包含边框及四周留白。
+    pub fn tooltip_bounds(&self, x: i32, y: i32, text: &str) -> Rect {
+        let (ascent, descent) = self.fonts.role(FontRole::Status).metrics();
+        Rect::new(
+            x,
+            y,
+            self.measure_role(FontRole::Status, text, false) + 6,
+            (ascent + descent + self.scale - 1) / self.scale + 6,
+        )
     }
 
     /// 画滚动条，`rect` 沿轴方向为长边。`pressed` 是正被按住的部件。
