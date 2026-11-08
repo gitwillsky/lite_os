@@ -320,6 +320,7 @@ fn keycode(symbol: u32) -> Option<u16> {
         0xff08 => Some(14),
         0xff09 => Some(15),
         0xff0d => Some(28),
+        0xff13 => Some(119),
         0xff1b => Some(1),
         0xff50 => Some(102),
         0xff51 => Some(105),

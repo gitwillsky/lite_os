@@ -147,12 +147,17 @@ impl Seat {
         code == 111 && pressed && modifiers.control && modifiers.alt
     }
 
-    /// 已有修饰键与硬件事件组成的桌面快捷键；只有会话装配能选择目标外壳。
+    /// 已有修饰键与输入事件组成的桌面快捷键；只有会话装配能选择目标外壳。
     pub fn desktop_shortcut(&self, code: u16, pressed: bool) -> bool {
         let modifiers = self.keys.modifiers();
         pressed
-            && ((code == 1 && modifiers.control && !modifiers.alt)
-                || (code == 19 && modifiers.super_key))
+            && !modifiers.alt
+            && ((code == 1 && modifiers.control && !modifiers.super_key)
+                || (matches!(code, 125 | 126) && !modifiers.control && !modifiers.shift)
+                || (matches!(code, 18 | 19 | 119)
+                    && modifiers.super_key
+                    && !modifiers.control
+                    && !modifiers.shift))
     }
 
     pub fn next_serial(&mut self) -> u32 {

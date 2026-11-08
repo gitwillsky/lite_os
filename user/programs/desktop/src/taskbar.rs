@@ -62,6 +62,7 @@ impl Desktop {
             self.taskbar_hidden = false;
             self.leave_at = None;
             self.apply_taskbar(display)?;
+            self.resize_icons(display);
         }
         Ok(true)
     }

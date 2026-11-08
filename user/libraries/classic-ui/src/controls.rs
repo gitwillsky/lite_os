@@ -447,6 +447,28 @@ impl Painter<'_> {
 }
 
 impl Painter<'_> {
+    /// 绘制最后一列之后的表头填充区，不创建列或处理输入。
+    ///
+    /// `rect` 为剩余表头区域，单位为逻辑像素。按经典表头的
+    /// `EDGE_RAISED | BF_TOP | BF_LEFT | BF_BOTTOM | BF_SOFT | BF_MIDDLE`
+    /// 绘制三边，不封闭右缘；非正尺寸不绘制，无返回值或错误。
+    pub fn list_header_background(&mut self, rect: Rect) {
+        self.clipped(rect, |p| {
+            p.fill(rect, SystemColor::ButtonFace);
+            let colors = p.theme.edge(Edge::RaisedSoft);
+            let mut ring = rect;
+            for (top_left, bottom_right) in [colors.outer, colors.inner].into_iter().flatten() {
+                p.fill_rgb(Rect::new(ring.x, ring.y, ring.width, 1), top_left);
+                p.fill_rgb(Rect::new(ring.x, ring.y, 1, ring.height), top_left);
+                p.fill_rgb(
+                    Rect::new(ring.x, ring.bottom() - 1, ring.width, 1),
+                    bottom_right,
+                );
+                ring = Rect::new(ring.x + 1, ring.y + 1, ring.width - 1, ring.height - 2);
+            }
+        });
+    }
+
     /// 绘制列表表头单元格；标题与排序标记共用单元格裁剪，不能覆盖相邻列。
     /// sort 为 Some(true) 表示升序；尺寸非正时不绘制，无错误返回。
     pub fn list_header_cell(&mut self, rect: Rect, title: &str, pressed: bool) {

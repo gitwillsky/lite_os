@@ -438,7 +438,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
     }
     if !geometry.header.is_empty() {
         p.clipped(geometry.header,|p|table.header.paint(p,geometry.shifted_header,|p,index,rect|p.list_header_cell(rect,&table.columns[index].1,matches!(table.gesture,Some(super::table::Gesture::Column(column)) if column==index)))) ;
-        // 最后一列右侧到表头右缘画一个空白表头格（comctl32 表头的填充区），不露出控件背景。
+        // 剩余宽度属于填充区，不是列；经典表头只画上、左、下三边，不封闭右缘。
         let end = geometry.shifted_header.x + table.header.total();
         if end < geometry.header.right() {
             let filler = Rect::new(
@@ -447,22 +447,20 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 geometry.header.right() - end,
                 geometry.header.height,
             );
-            p.clipped(geometry.header, |p| p.list_header_cell(filler, "", false));
+            p.clipped(geometry.header, |p| p.list_header_background(filler));
         }
     }
-    // 竖向滚动条只覆盖行区。用按钮面色补齐其上下角落，表头命中范围仍只覆盖列区。
-    if geometry.vertical.width > 0 {
-        for strip in [geometry.header, geometry.horizontal] {
-            p.fill(
-                Rect::new(
-                    geometry.vertical.x,
-                    strip.y,
-                    geometry.vertical.width,
-                    strip.height,
-                ),
-                C::ButtonFace,
-            );
-        }
+    // 两根滚动条交汇的右下角不属于任一滚动条。
+    if geometry.vertical.width > 0 && geometry.horizontal.height > 0 {
+        p.fill(
+            Rect::new(
+                geometry.vertical.x,
+                geometry.horizontal.y,
+                geometry.vertical.width,
+                geometry.horizontal.height,
+            ),
+            C::ButtonFace,
+        );
     }
     p.clipped(geometry.rows, |p| {
         let count =

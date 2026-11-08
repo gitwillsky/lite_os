@@ -14,8 +14,6 @@ use std::{
 
 /// 第一个网格单元的左上角，逻辑像素；单元尺寸是主题的图标间距（IconSpacing × IconVerticalSpacing）。
 const ORIGIN: (i32, i32) = (6, 12);
-/// 未保存位置的图标按列自上而下排；每列最多这么多行（对应 768 像素高的屏幕）。
-const AUTO_ROWS: i32 = 8;
 /// 桌面文件夹里最多显示的条目数。
 const MAX_ENTRIES: usize = 256;
 
@@ -41,6 +39,9 @@ pub struct Icons {
     cell: (i32, i32),
     /// 与 `items` 一一对应的网格位置 `(列, 行)`。
     cells: Vec<(i32, i32)>,
+    // OWNER: 本布局唯一的可用列/行数，由实际 Configure 与任务栏保留区推导；None 表示尚未配置。
+    // 刷新和抓取复用它，否则各自计算边界会把新项目或整组拖放排到任务栏下；无逐帧重排。
+    grid: Option<(i32, i32)>,
     saved: HashMap<String, (i32, i32)>,
     directory: PathBuf,
     layout_file: PathBuf,
@@ -125,6 +126,7 @@ impl Icons {
             cell: (cell.0.max(1), cell.1.max(1)),
             items: Vec::new(),
             cells: Vec::new(),
+            grid: None,
             saved,
             directory,
             layout_file,
@@ -208,28 +210,58 @@ impl Icons {
                 key: name,
             });
         }
-        let mut cells: Vec<Option<(i32, i32)>> = vec![None; items.len()];
-        let mut taken = Vec::new();
-        for (index, icon) in items.iter().enumerate() {
-            if let Some(cell) = self.saved.get(&icon.key).filter(|c| !taken.contains(*c)) {
-                cells[index] = Some(*cell);
-                taken.push(*cell);
+        self.items = items;
+        self.place();
+    }
+
+    /// 按逻辑工作区更新网格；尺寸未配置或行列未变时不重排，返回是否改变布局。
+    /// 保存的位置仅在本工作区内借用，缩小屏幕不会覆盖磁盘上的首选坐标。
+    pub fn resize(&mut self, work_area: (i32, i32)) -> bool {
+        if work_area.0 <= 0 || work_area.1 <= 0 {
+            return false;
+        }
+        let grid = (
+            ((work_area.0 - ORIGIN.0) / self.cell.0).max(1),
+            ((work_area.1 - ORIGIN.1) / self.cell.1).max(1),
+        );
+        if self.grid == Some(grid) {
+            return false;
+        }
+        self.grid = Some(grid);
+        self.place();
+        true
+    }
+
+    /// 原位与自动位置共享一个占用集合；仅目录或网格改变时调用，不做文件 I/O。
+    fn place(&mut self) {
+        let Some((columns, rows)) = self.grid else {
+            // 首次 Configure 前无可展示的几何；保留索引对应关系，配置后统一放置。
+            self.cells = vec![(0, 0); self.items.len()];
+            return;
+        };
+        let mut cells = vec![None; self.items.len()];
+        let mut taken = HashSet::with_capacity(self.items.len());
+        for (index, icon) in self.items.iter().enumerate() {
+            if let Some(&cell) = self.saved.get(&icon.key)
+                && (0..columns).contains(&cell.0)
+                && (0..rows).contains(&cell.1)
+                && taken.insert(cell)
+            {
+                cells[index] = Some(cell);
             }
         }
         let mut next = 0;
         for slot in cells.iter_mut().filter(|slot| slot.is_none()) {
             let cell = loop {
-                let cell = (next / AUTO_ROWS, next % AUTO_ROWS);
+                let cell = (next / rows, next % rows);
                 next += 1;
-                if !taken.contains(&cell) {
+                if taken.insert(cell) {
                     break cell;
                 }
             };
-            taken.push(cell);
             *slot = Some(cell);
         }
         self.cells = cells.into_iter().flatten().collect();
-        self.items = items;
     }
 
     pub fn rect(&self, index: usize) -> Rect {
@@ -260,19 +292,11 @@ impl Icons {
             })
     }
 
-    /// 在 `work_area` 内按网格移动选择。方向是单轴的一格偏移。
+    /// 在当前已配置工作区内按网格移动选择。方向是单轴的一格偏移。
     /// 无选择时返回最左列的第一个项目，到达边缘时保留当前项。
-    pub fn step(
-        &self,
-        current: Option<usize>,
-        direction: (i32, i32),
-        work_area: (i32, i32),
-    ) -> Option<usize> {
-        let (width, height) = (work_area.0 - ORIGIN.0, work_area.1 - ORIGIN.1);
-        let visible = |&(column, row): &(i32, i32)| {
-            i64::from(column) * i64::from(self.cell.0) < i64::from(width)
-                && i64::from(row) * i64::from(self.cell.1) < i64::from(height)
-        };
+    pub fn step(&self, current: Option<usize>, direction: (i32, i32)) -> Option<usize> {
+        let (columns, rows) = self.grid?;
+        let visible = |&(column, row): &(i32, i32)| column < columns && row < rows;
         let candidates = self
             .cells
             .iter()
@@ -310,7 +334,6 @@ impl Icons {
         selection: &[usize],
         index: usize,
         center: (i32, i32),
-        screen: (i32, i32),
     ) -> io::Result<()> {
         if selection.binary_search(&index).is_err()
             || selection.iter().any(|i| *i >= self.cells.len())
@@ -320,8 +343,9 @@ impl Icons {
                 "无效的图标选择",
             ));
         }
-        let columns = ((screen.0 - ORIGIN.0) / self.cell.0).max(1);
-        let rows = ((screen.1 - 28 - ORIGIN.1) / self.cell.1).max(1);
+        let (columns, rows) = self
+            .grid
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "桌面尚未完成布局"))?;
         let origin = self.cells[index];
         let wanted = (
             (center.0 - ORIGIN.0) / self.cell.0 - origin.0,
@@ -427,6 +451,23 @@ impl Icons {
 
 // Desktop 保留唯一交互状态；图标动作只通过该 owner 修改选择、重命名和刷新。
 impl crate::Desktop {
+    /// Configure/任务栏设置变更时更新布局；交互身份不变，取消依赖旧坐标的抓取。
+    pub(super) fn resize_icons(&mut self, display: &classic_ui::Display) {
+        if let Some(c) = display.configuration(self.background) {
+            let reserved = Self::taskbar_layer(&self.settings, self.taskbar_hidden)
+                .exclusive_zone
+                .max(0);
+            if self
+                .icons
+                .resize((c.width, c.height.saturating_sub(reserved)))
+            {
+                self.cancel_drag();
+                self.rename_click = None;
+                self.drop_hover = false;
+            }
+        }
+    }
+
     pub(super) fn icon_kind(&self, index: usize) -> popups::IconKind {
         match self.icons.items.get(index).map(|icon| &icon.target) {
             Some(icons::Target::Path(path)) if path.is_file() => popups::IconKind::File,

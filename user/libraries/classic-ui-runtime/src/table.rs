@@ -167,11 +167,12 @@ impl Node {
             grid: None,
             header,
             rows,
+            // Windows 列表的竖滚动条占据表头旁边的完整高度；表头只缩小行区，不能下移滚动条。
             vertical: Rect::new(
                 rows.right(),
-                rows.y,
+                inner.y,
                 if vertical { SCROLLBAR_WIDTH } else { 0 },
-                rows.height,
+                (inner.height - if horizontal { SCROLLBAR_WIDTH } else { 0 }).max(0),
             ),
             horizontal: Rect::new(
                 rows.x,

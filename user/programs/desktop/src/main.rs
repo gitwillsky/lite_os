@@ -100,6 +100,8 @@ struct Desktop {
     control: UnixStream,
     pointer: (WindowId, f64, f64),
     armed: Option<(WindowId, usize)>,
+    /// 仅记录可在释放时打开开始菜单的 Win 键；其他按键、点击或失焦即撤销，避免组合键误开菜单。
+    start_key: Option<u32>,
     focused: Option<usize>,
     /// 唯一的选中集合，按条目索引排序且不重复；焦点允许独立于选择移动。
     selection: Vec<usize>,
@@ -177,6 +179,7 @@ impl Desktop {
             control,
             pointer: (background, 0., 0.),
             armed: None,
+            start_key: None,
             focused: None,
             selection: Vec::new(),
             selection_anchor: None,
@@ -204,6 +207,14 @@ impl Desktop {
     fn toggle_menu(&mut self, display: &mut Display) -> io::Result<()> {
         if let Some(menu) = self.menu.take() {
             display.destroy_window(menu)?;
+            // 栈的活动窗口由标准 foreign-toplevel 快照提供；关闭菜单后交还键盘，不另存焦点历史。
+            let active = display
+                .toplevels()
+                .find(|(_, window)| window.active)
+                .map(|(id, _)| id);
+            if let Some(active) = active {
+                display.control_toplevel(active, ToplevelRequest::Activate)?;
+            }
         } else {
             self.menu_selection = start::Selection::default();
             self.menu = Some(display.create_layer(
@@ -477,7 +488,7 @@ impl Desktop {
             }
         };
         match (code, selection.sub) {
-            (1 | 125 | 126, _) => self.toggle_menu(display)?,
+            (1, _) => self.toggle_menu(display)?,
             (103 | 108, None) => selection.top = step(selection.top, rows.len(), code == 108),
             (103 | 108, Some(sub)) => {
                 let count = rows[selection.top].submenu.len();
@@ -512,6 +523,7 @@ impl Desktop {
         if window == self.background
             && let EventKind::Configure(configuration) = event.kind
         {
+            self.resize_icons(display);
             display.set_opaque_region(
                 window,
                 Some(canvas::Rect::new(
@@ -535,6 +547,9 @@ impl Desktop {
         ) || matches!(event.kind, EventKind::Key(key) if key.pressed)
         {
             self.rename_click = None;
+        }
+        if self.shell_key(display, &event.kind)? {
+            return Ok(());
         }
         if window == self.background
             && (matches!(event.kind, EventKind::Focus(false))
@@ -925,15 +940,12 @@ impl Desktop {
                     if window == self.background && *recycle {
                         self.delete_selected("--recycle");
                     } else if window == self.background {
-                        let screen = Self::screen(display, self.background);
                         let rect = self.icons.rect(*index);
                         let center = (
                             pos.0 - grab.0 + rect.width / 2,
                             pos.1 - grab.1 + rect.height / 2,
                         );
-                        if let Err(error) =
-                            self.icons.drop_at(&self.selection, *index, center, screen)
-                        {
+                        if let Err(error) = self.icons.drop_at(&self.selection, *index, center) {
                             self.message = error.to_string();
                         }
                     }
@@ -1049,12 +1061,6 @@ impl Desktop {
                     self.menu_key(display, key.code)?;
                 } else {
                     match key.code {
-                        125 | 126 => self.toggle_menu(display)?,
-                        1 if key.modifiers.control && key.modifiers.shift => {
-                            self.launch_task_manager()
-                        }
-                        1 if key.modifiers.control => self.toggle_menu(display)?,
-                        19 if key.modifiers.super_key => self.dialog(display, Kind::Run)?,
                         103 | 105 | 106 | 108
                             if window == self.background
                                 && self.drag.is_none()
@@ -1067,12 +1073,7 @@ impl Desktop {
                                 106 => (1, 0),
                                 _ => (0, 1),
                             };
-                            let (width, height) = Self::screen(display, window);
-                            if let Some(index) = self.icons.step(
-                                self.focused,
-                                direction,
-                                (width, height - TASKBAR_HEIGHT),
-                            ) {
+                            if let Some(index) = self.icons.step(self.focused, direction) {
                                 self.select_icon(
                                     index,
                                     key.modifiers.shift,
@@ -1177,6 +1178,62 @@ impl Desktop {
             _ => {}
         }
         Ok(())
+    }
+
+    /// 外壳快捷键先于菜单与编辑控件解释；未消费的事件继续原来的输入路径。
+    fn shell_key(&mut self, display: &mut Display, event: &EventKind) -> io::Result<bool> {
+        if matches!(
+            event,
+            EventKind::Focus(false) | EventKind::Button { pressed: true, .. }
+        ) {
+            self.start_key = None;
+        }
+        let EventKind::Key(key) = event else {
+            return Ok(false);
+        };
+        if matches!(key.code, 125 | 126) {
+            if key.pressed && !key.repeat {
+                self.start_key =
+                    (!key.modifiers.control && !key.modifiers.alt && !key.modifiers.shift)
+                        .then_some(key.code);
+            } else if !key.pressed && self.start_key.take() == Some(key.code) {
+                self.toggle_menu(display)?;
+            }
+            return Ok(true);
+        }
+        if !key.pressed {
+            return Ok(false);
+        }
+        self.start_key = None;
+        let modifiers = key.modifiers;
+        let control_escape =
+            key.code == 1 && modifiers.control && !modifiers.alt && !modifiers.super_key;
+        let win_command = matches!(key.code, 18 | 19 | 119)
+            && modifiers.super_key
+            && !modifiers.alt
+            && !modifiers.control
+            && !modifiers.shift;
+        if !control_escape && !win_command {
+            return Ok(false);
+        }
+        if key.repeat {
+            return Ok(true);
+        }
+        if control_escape && !modifiers.shift {
+            self.toggle_menu(display)?;
+        } else {
+            if self.menu.is_some() {
+                self.toggle_menu(display)?;
+            }
+            match key.code {
+                1 => self.launch_task_manager(),
+                18 => self.open_place(start::Place::MyComputer),
+                19 => self.dialog(display, Kind::Run)?,
+                119 => self.control_panel("system"),
+                _ => unreachable!("matched shell shortcut"),
+            }
+        }
+        Ok(true)
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
