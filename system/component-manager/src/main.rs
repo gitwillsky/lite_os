@@ -6,11 +6,11 @@
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
 //! 3. 启动 driver-manager（持有 DTB 与设备发布能力，按节点启动驱动宿主），根服务持有汇聚目录并按设备类路由：
-//!    Network 类给 netcfg，Block 类给 fshost，Pcm 类给 audio-core，其余给 linuxd；
+//!    Network 类给 router_config，Block 类给 fshost，Pcm 类给 audio-core，其余给 linuxd；
 //! 4. 启动 fshost（交给它 ext4 实例的 Job 与映像，由它为每块盘启动 ext4），以及受监督的 netstack、dhcp-client、
-//!    netcfg、audio-core 与 linuxd；
+//!    routing-rib、router_config、audio-core 与 linuxd；
 //!    每个消费者拿到只含它声明协议的路由目录（[`ROUTES`] 与各 `*_USES`），连接转发给提供者的当前实例
-//!    （能力路由，对应 Fuchsia component_manager）；netcfg 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
+//!    （能力路由，对应 Fuchsia component_manager）；router_config 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
 //! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job），`native_runtime::task::CRASH_WINDOW` 内达到 `CRASH_LIMIT` 次
 //!    判定为崩溃循环并关机；driver-manager、fshost 终止时系统无法继续服务：记录退出状态并关机。
 
@@ -22,7 +22,9 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use device_protocol::directory::{ALL_CLASSES, Class, Directory, DirectoryClient};
-use launch_protocol::{audio_core, dhcp_client, ext4, fshost, linuxd, netcfg, netstack};
+use launch_protocol::{
+    audio_core, dhcp_client, ext4, fshost, linuxd, netstack, router_config, routing_rib,
+};
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
 use native_runtime::sync::{Mutex, Once};
@@ -37,7 +39,8 @@ native_runtime::entry!(main);
 const LINUXD_STACK_SIZE: usize = 512 * 1024;
 const NETSTACK_STACK_SIZE: usize = 256 * 1024;
 const FSHOST_STACK_SIZE: usize = 128 * 1024;
-const NETCFG_STACK_SIZE: usize = 128 * 1024;
+const ROUTER_CONFIG_STACK_SIZE: usize = 128 * 1024;
+const RIB_STACK_SIZE: usize = 128 * 1024;
 const DHCP_STACK_SIZE: usize = 128 * 1024;
 const AUDIO_STACK_SIZE: usize = 128 * 1024;
 
@@ -97,16 +100,19 @@ impl Supervised {
 #[derive(Clone, Copy)]
 enum Provider {
     Netstack,
+    RoutingRib,
     Fshost,
-    Netcfg,
+    RouterConfig,
     Dhcp,
     AudioCore,
 }
 
 // OWNER: 各提供者的唯一实例状态；路由目录线程与监督任务共享。fshost 不重启（终止即关机）。
 static NETSTACK: Once<Supervised> = Once::new();
+// OWNER: 与其他受监督提供者相同的当前 RIB 实例路由，不保存来源或执行状态副本。
+static ROUTING_RIB: Once<Supervised> = Once::new();
 static FSHOST: Once<Supervised> = Once::new();
-static NETCFG: Once<Supervised> = Once::new();
+static ROUTER_CONFIG: Once<Supervised> = Once::new();
 static DHCP: Once<Supervised> = Once::new();
 // OWNER: audio-core 的实例状态；linuxd 的音频连接经它转发给当前实例。
 static AUDIO_CORE: Once<Supervised> = Once::new();
@@ -115,8 +121,9 @@ impl Provider {
     fn instance(self) -> &'static Supervised {
         let slot = match self {
             Self::Netstack => &NETSTACK,
+            Self::RoutingRib => &ROUTING_RIB,
             Self::Fshost => &FSHOST,
-            Self::Netcfg => &NETCFG,
+            Self::RouterConfig => &ROUTER_CONFIG,
             Self::Dhcp => &DHCP,
             Self::AudioCore => &AUDIO_CORE,
         };
@@ -128,10 +135,14 @@ impl Provider {
 const ROUTES: &[(&[u8], Provider)] = &[
     (service_directory::NETWORK, Provider::Netstack),
     (service_directory::NETWORK_INSTALLER, Provider::Netstack),
+    (
+        service_directory::ROUTING_CONFIGURATOR,
+        Provider::RoutingRib,
+    ),
     (service_directory::BLOCKS, Provider::Fshost),
     (service_directory::EXT4, Provider::Fshost),
     (service_directory::STORAGE_ADMIN, Provider::Fshost),
-    (service_directory::NETWORK_SETTINGS, Provider::Netcfg),
+    (service_directory::NETWORK_SETTINGS, Provider::RouterConfig),
     (service_directory::DHCP, Provider::Dhcp),
     (service_directory::AUDIO, Provider::AudioCore),
 ];
@@ -145,10 +156,14 @@ const LINUXD_USES: &[&[u8]] = &[
     service_directory::DRIVER_UPDATE,
     service_directory::AUDIO,
 ];
-const NETCFG_USES: &[&[u8]] = &[
+const ROUTER_CONFIG_USES: &[&[u8]] = &[
+    service_directory::NETWORK,
+    service_directory::ROUTING_CONFIGURATOR,
+    service_directory::DHCP,
+];
+const ROUTING_RIB_USES: &[&[u8]] = &[
     service_directory::NETWORK,
     service_directory::NETWORK_INSTALLER,
-    service_directory::DHCP,
 ];
 const DHCP_USES: &[&[u8]] = &[service_directory::NETWORK];
 
@@ -172,11 +187,17 @@ const AUDIO_SPEC: ServiceSpec = ServiceSpec {
     image: audio_core::IMAGE,
     stack_size: AUDIO_STACK_SIZE,
 };
-const NETCFG_SPEC: ServiceSpec = ServiceSpec {
-    name: b"netcfg",
-    label: "netcfg",
-    image: netcfg::IMAGE,
-    stack_size: NETCFG_STACK_SIZE,
+const ROUTER_CONFIG_SPEC: ServiceSpec = ServiceSpec {
+    name: b"router-config",
+    label: "router-config",
+    image: router_config::IMAGE,
+    stack_size: ROUTER_CONFIG_STACK_SIZE,
+};
+const RIB_SPEC: ServiceSpec = ServiceSpec {
+    name: b"routing-rib",
+    label: "routing-rib",
+    image: routing_rib::IMAGE,
+    stack_size: RIB_STACK_SIZE,
 };
 const DHCP_SPEC: ServiceSpec = ServiceSpec {
     name: b"dhcp-client",
@@ -243,7 +264,7 @@ fn main(mut startup: Startup) -> i64 {
         .install(ServiceDirectory::new(storage));
     let devices_root = Arc::new(directory);
     let linux_devices = devices_root.clone();
-    let netcfg_devices = devices_root.clone();
+    let router_config_devices = devices_root.clone();
     let command_line: &'static [u8] =
         alloc::boxed::Box::leak(core::mem::take(&mut startup.arguments).into_boxed_slice());
     let executor = Executor::create().expect("root executor");
@@ -256,6 +277,18 @@ fn main(mut startup: Startup) -> i64 {
             &NETSTACK_SPEC,
             Provider::Netstack,
             alloc::vec::Vec::new,
+        )
+        .await;
+    });
+    let rib_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &rib_job,
+            bootfs,
+            &RIB_SPEC,
+            Provider::RoutingRib,
+            || vec![services(ROUTING_RIB_USES).into_handle()],
         )
         .await;
     });
@@ -303,24 +336,24 @@ fn main(mut startup: Startup) -> i64 {
         )
         .await;
     });
-    let netcfg_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    let router_config_job = job.duplicate(rights::SAME).expect("root job duplicate");
     executor.spawn(async move {
         supervise(
             executor,
-            &netcfg_job,
+            &router_config_job,
             bootfs,
-            &NETCFG_SPEC,
-            Provider::Netcfg,
+            &ROUTER_CONFIG_SPEC,
+            Provider::RouterConfig,
             || {
                 vec![
-                    services(NETCFG_USES).into_handle(),
-                    netcfg_devices
+                    services(ROUTER_CONFIG_USES).into_handle(),
+                    router_config_devices
                         .scope(Class::Network.bit())
-                        .expect("netcfg device scope")
+                        .expect("router-config device scope")
                         .into_channel()
                         .into_handle(),
-                    private_storage(b"netcfg").into_handle(),
-                    bootfs_copy(bootfs, netcfg::DEFAULT_CONFIG).into_handle(),
+                    private_storage(router_config::STORAGE_ID).into_handle(),
+                    bootfs_copy(bootfs, router_config::DEFAULT_CONFIG).into_handle(),
                 ]
             },
         )

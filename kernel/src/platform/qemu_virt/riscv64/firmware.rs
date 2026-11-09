@@ -285,7 +285,9 @@ pub(crate) fn synchronize_tlb(
     cpus: crate::execution::cpu::CpuSet,
     start_address: usize,
     size: usize,
+    _acknowledge_local: impl Fn(),
 ) -> Result<(), TlbShootdownError> {
+    // RFENCE 在 M-mode 完成，目标响应不依赖 S-mode IPI trap；无需执行上层的协作确认。
     for_each_hardware_mask(cpus, |mask, base| {
         let (error, value) = sbi_call(
             EID_RFENCE,

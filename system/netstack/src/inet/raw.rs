@@ -230,7 +230,24 @@ pub(super) fn send(
     if requested_source.is_some_and(|source| !network.has_local_address(source)) {
         return Err(SocketError::NetworkUnreachable);
     }
-    let route = network.route(target.address, outgoing)?;
+    let header_source = header_included
+        .then(|| Ipv4Addr::new(input[12], input[13], input[14], input[15]))
+        .filter(|source| !source.is_unspecified());
+    let bound_source = network
+        .sockets
+        .get::<raw::Socket<'static>>(handle)
+        .local_address()
+        .map(from_ip);
+    let source_key = header_source
+        .or_else(|| {
+            if packet_info.is_some() {
+                requested_source
+            } else {
+                bound_source
+            }
+        })
+        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let route = network.route(source_key, target.address, outgoing)?;
     let packet_capacity = network
         .sockets
         .get::<raw::Socket<'static>>(handle)

@@ -70,6 +70,11 @@ mod execution {
 )]
 mod vm {
     use crate::memory::PhysicalPageNumber;
+    #[derive(Clone, Copy)]
+    pub(crate) enum CachePolicy {
+        Cached,
+        Device,
+    }
     pub(crate) struct DeviceAddressSpace {
         root: alloc::boxed::Box<u8>,
         entries: alloc::vec::Vec<PhysicalPageNumber>,
@@ -93,6 +98,7 @@ mod vm {
             _: usize,
             pages: &[PhysicalPageNumber],
             _: bool,
+            _: CachePolicy,
         ) -> Result<(), Retired> {
             self.entries.try_reserve(pages.len()).map_err(|_| Retired)?;
             self.entries.extend_from_slice(pages);

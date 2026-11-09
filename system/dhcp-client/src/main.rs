@@ -3,12 +3,12 @@
 
 //! dhcp-client：DHCPv4 客户端（Fuchsia dhcp-client）。
 //!
-//! 1. netcfg 经 `liteos.network.Dhcp` 为一个接口请求 DHCP：请求携带接口序号与 MAC，回复一条租约事件
-//!    channel；netcfg 关闭该 channel 即停止该接口的 DHCP。
+//! 1. router_config 经 `liteos.network.Dhcp` 为一个接口请求 DHCP：请求携带接口序号与 MAC，回复一条租约事件
+//!    channel；router_config 关闭该 channel 即停止该接口的 DHCP。
 //! 2. 每个接口一个线程，经 netstack 默认网络的 datagram packet socket（EtherType IPv4）收发 IPv4/UDP/DHCP
 //!    报文（与 udhcpc 的 raw socket 做法相同），按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND →
-//!    RENEWING → REBINDING；取得、续租、失效时向 netcfg 发租约事件，地址由 netcfg 配置。
-//! 3. netstack 终止使 packet socket 失效：线程报告租约失效后结束，netcfg 在重新安装接口后再次请求。
+//!    RENEWING → REBINDING；取得、续租、失效时向 router_config 发租约事件，地址由 router_config 配置。
+//! 3. netstack 终止使 packet socket 失效：线程报告租约失效后结束，router_config 在重新安装接口后再次请求。
 
 extern crate alloc;
 #[macro_use]
@@ -19,14 +19,15 @@ use core::net::Ipv4Addr;
 
 use native_runtime::native_abi::{self, Status, packet, signals};
 use native_runtime::{Channel, Event, Port, Startup};
-use netcfg_protocol::{DhcpAction, Encoder, LeaseEvent, LeaseTiming};
 use network_protocol::{NetworkClient, PacketAddress, PacketKind, RemotePacketSocket, SocketError};
-use service_directory::ServiceDirectory;
-use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::wire::{
-    DHCP_CLIENT_PORT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket, DhcpRepr, EthernetAddress,
-    IpAddress, IpProtocol, Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr,
+use packet_wire::dhcpv4::{
+    CLIENT_PORT as DHCP_CLIENT_PORT, Dhcpv4Builder, Dhcpv4Header, Dhcpv4Packet,
+    MessageType as DhcpMessageType, SERVER_PORT as DHCP_SERVER_PORT,
 };
+use packet_wire::ipv4::{Ipv4Header, Ipv4Packet};
+use packet_wire::udp::{self, UdpPacket};
+use router_protocol::{DhcpAction, Encoder, LeaseEvent, LeaseTiming};
+use service_directory::ServiceDirectory;
 
 native_runtime::entry!(main);
 
@@ -82,7 +83,7 @@ fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status
         Arc::new(
             move |ordinal: u32,
                   request: &mut service_rpc::Reader<'_>,
-                  _: Vec<native_runtime::Handle>,
+                  handles: Vec<native_runtime::Handle>,
                   _: &mut service_rpc::Writer| {
                 if ordinal != START {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
@@ -92,13 +93,22 @@ fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status
                     .bytes()?
                     .try_into()
                     .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                request.finish()?;
+                if !handles.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                let mut returned = Vec::new();
+                returned
+                    .try_reserve_exact(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let (events, peer) = Channel::create()?;
                 let interface = Interface::open(&services, index, mac, events)?;
                 let thread = native_runtime::thread::spawn(b"dhcp-interface", move || {
                     interface.run();
                 })?;
                 drop(thread);
-                Ok(alloc::vec![peer.into_handle()])
+                returned.push(peer.into_handle());
+                Ok(returned)
             },
         ),
     )
@@ -186,7 +196,7 @@ impl Interface {
         self.transaction = u32::from_ne_bytes(bytes);
     }
 
-    /// 等待 packet socket 可读、netcfg 停止本接口或到达 `deadline`。
+    /// 等待 packet socket 可读、router_config 停止本接口或到达 `deadline`。
     fn wait(&mut self, deadline: i64) -> Result<Wake, Status> {
         if !self.readiness_armed {
             self.readiness.wait_async(&self.port, 0, signals::USER_0)?;
@@ -245,7 +255,7 @@ impl Interface {
         }
     }
 
-    /// 反复获取并维持租约，直到 netcfg 停止本接口（返回 `Ok`）或 socket 失效（返回错误）。
+    /// 反复获取并维持租约，直到 router_config 停止本接口（返回 `Ok`）或 socket 失效（返回错误）。
     fn lease_loop(&mut self) -> Result<(), Status> {
         let mut session = Session::Acquiring;
         let mut renewal = None;
@@ -464,59 +474,84 @@ impl Interface {
     }
 
     fn parse(&self, frame: &[u8], source_mac: [u8; 6]) -> Option<Reply> {
-        let checksums = ChecksumCapabilities::default();
-        let ip_packet = Ipv4Packet::new_checked(frame).ok()?;
-        let ip = Ipv4Repr::parse(&ip_packet, &checksums).ok()?;
-        if ip.next_header != IpProtocol::Udp {
+        let ip = Ipv4Packet::parse(frame).ok()?;
+        if ip.protocol() != 17 || ip.fragmented() {
             return None;
         }
-        let udp_packet = UdpPacket::new_checked(ip_packet.payload()).ok()?;
-        let udp = UdpRepr::parse(
-            &udp_packet,
-            &IpAddress::Ipv4(ip.src_addr),
-            &IpAddress::Ipv4(ip.dst_addr),
-            &checksums,
-        )
-        .ok()?;
-        if udp.src_port != DHCP_SERVER_PORT || udp.dst_port != DHCP_CLIENT_PORT {
+        let udp =
+            UdpPacket::parse(ip.payload(), ip.source().into(), ip.destination().into()).ok()?;
+        if udp.source_port() != DHCP_SERVER_PORT || udp.destination_port() != DHCP_CLIENT_PORT {
             return None;
         }
-        let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
-        let dhcp = DhcpRepr::parse(&dhcp_packet).ok()?;
-        if dhcp.transaction_id != self.transaction
-            || dhcp.client_hardware_address != EthernetAddress(self.mac)
-            || (dhcp.message_type == DhcpMessageType::Ack && dhcp.your_ip.is_unspecified())
+        let dhcp = Dhcpv4Packet::parse(udp.payload()).ok()?;
+        let message_type = dhcp.message_type().ok()?;
+        if dhcp.operation() != 2
+            || dhcp.hardware_type() != 1
+            || dhcp.transaction_id() != self.transaction
+            || dhcp.hardware_address() != self.mac
+            || (message_type == DhcpMessageType::Ack && dhcp.your_address().is_unspecified())
         {
             return None;
         }
+        let server = Ipv4Addr::from(dhcp.option(54)?.array::<4>().ok()?);
+        if server.is_unspecified() || server.is_broadcast() || server.is_multicast() {
+            return None;
+        }
+        let subnet = dhcp
+            .option(1)
+            .map(|value| value.array::<4>().map(Ipv4Addr::from))
+            .transpose()
+            .ok()?;
+        let router = dhcp
+            .option(3)
+            .map(|value| value.ipv4_addresses().map(|mut addresses| addresses.next()))
+            .transpose()
+            .ok()?
+            .flatten();
+        let mut dns = Vec::new();
+        if let Some(value) = dhcp.option(6) {
+            let count = value.len() / 4;
+            dns.try_reserve_exact(count).ok()?;
+            for address in value.ipv4_addresses().ok()? {
+                dns.push(address);
+            }
+        }
+        let mut suffix = [0u8; router_protocol::DNS_SUFFIX_MAX + 1];
+        let dns_suffix = dhcp
+            .option(DOMAIN_NAME)
+            .and_then(|value| value.copy_to(&mut suffix).ok())
+            .and_then(|length| {
+                let bytes = &suffix[..length];
+                router_protocol::dns_suffix(bytes.strip_suffix(b".").unwrap_or(bytes)).ok()
+            })
+            .unwrap_or_default()
+            .into();
         Some(Reply {
-            message_type: dhcp.message_type,
-            nak: dhcp.message_type == DhcpMessageType::Nak,
-            address: dhcp.your_ip,
-            server: dhcp.server_identifier.filter(|server| {
-                !server.is_unspecified() && !server.is_broadcast() && !server.is_multicast()
-            })?,
+            message_type,
+            nak: message_type == DhcpMessageType::Nak,
+            address: dhcp.your_address(),
+            server,
             source_mac,
-            subnet: dhcp.subnet_mask,
-            router: dhcp.router,
-            dns: dhcp
-                .dns_servers
-                .map(|servers| servers.iter().copied().collect())
-                .unwrap_or_default(),
-            dns_suffix: dhcp_packet
-                .options()
-                .find(|option| option.kind == DOMAIN_NAME)
-                .and_then(|option| {
-                    netcfg_protocol::dns_suffix(
-                        option.data.strip_suffix(b".").unwrap_or(option.data),
-                    )
-                    .ok()
-                })
-                .unwrap_or_default()
-                .into(),
-            lease_seconds: dhcp.lease_duration.unwrap_or(0),
-            renew_seconds: dhcp.renew_duration,
-            rebind_seconds: dhcp.rebind_duration,
+            subnet,
+            router,
+            dns,
+            dns_suffix,
+            lease_seconds: dhcp
+                .option(51)
+                .map(|value| value.array::<4>().map(u32::from_be_bytes))
+                .transpose()
+                .ok()?
+                .unwrap_or(0),
+            renew_seconds: dhcp
+                .option(58)
+                .map(|value| value.array::<4>().map(u32::from_be_bytes))
+                .transpose()
+                .ok()?,
+            rebind_seconds: dhcp
+                .option(59)
+                .map(|value| value.array::<4>().map(u32::from_be_bytes))
+                .transpose()
+                .ok()?,
         })
     }
 
@@ -530,64 +565,66 @@ impl Interface {
         server_identifier: Option<Ipv4Addr>,
         (target, destination): (Ipv4Addr, [u8; 6]),
     ) -> Result<(), Status> {
-        let dhcp = DhcpRepr {
-            message_type,
-            transaction_id: self.transaction,
-            secs: 0,
-            client_hardware_address: EthernetAddress(self.mac),
-            client_ip: client.unwrap_or(Ipv4Addr::UNSPECIFIED),
-            your_ip: Ipv4Addr::UNSPECIFIED,
-            server_ip: Ipv4Addr::UNSPECIFIED,
-            router: None,
-            subnet_mask: None,
-            relay_agent_ip: Ipv4Addr::UNSPECIFIED,
-            // 还没有地址时请服务器广播回复。
-            broadcast: client.is_none(),
-            requested_ip: requested,
-            client_identifier: Some(EthernetAddress(self.mac)),
-            server_identifier,
-            parameter_request_list: (message_type != DhcpMessageType::Release)
-                .then_some(PARAMETERS),
-            dns_servers: None,
-            max_size: (message_type != DhcpMessageType::Release).then_some(BUFFER as u16),
-            lease_duration: None,
-            renew_duration: None,
-            rebind_duration: None,
-            additional_options: &[],
-        };
         let source = client.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        let dhcp_length = dhcp.buffer_len();
-        let udp = UdpRepr {
-            src_port: DHCP_CLIENT_PORT,
-            dst_port: DHCP_SERVER_PORT,
+        // IP/UDP 固定头、BOOTP+cookie、消息类型、Ethernet client-id、requested/server IP、
+        // 参数列表、最大消息长度与 END 的总上界；不为 MTU 分配或清零堆缓冲。
+        const REQUEST_BYTES: usize = 20 + 8 + 240 + 3 + 9 + 6 + 6 + 2 + PARAMETERS.len() + 4 + 1;
+        let mut frame = [0u8; REQUEST_BYTES];
+        let header = Dhcpv4Header {
+            operation: 1,
+            hardware_type: 1,
+            hardware_address: &self.mac,
+            hops: 0,
+            transaction_id: self.transaction,
+            seconds: 0,
+            broadcast: client.is_none(),
+            client_address: source,
+            your_address: Ipv4Addr::UNSPECIFIED,
+            server_address: Ipv4Addr::UNSPECIFIED,
+            relay_address: Ipv4Addr::UNSPECIFIED,
+            server_name: &[],
+            boot_file: &[],
         };
-        let ip = Ipv4Repr {
-            src_addr: source,
-            dst_addr: target,
-            next_header: IpProtocol::Udp,
-            payload_len: 8 + dhcp_length,
-            hop_limit: 64,
+        let mut encode = || -> Result<usize, packet_wire::PacketError> {
+            let mut dhcp = Dhcpv4Builder::new(&mut frame[28..], &header)?;
+            dhcp.option(53, &[message_type as u8])?;
+            let mut identifier = [1u8; 7];
+            identifier[1..].copy_from_slice(&self.mac);
+            dhcp.option(61, &identifier)?;
+            if let Some(address) = requested {
+                dhcp.option(50, &address.octets())?;
+            }
+            if let Some(server) = server_identifier {
+                dhcp.option(54, &server.octets())?;
+            }
+            if message_type != DhcpMessageType::Release {
+                dhcp.option(55, PARAMETERS)?;
+                dhcp.option(57, &(BUFFER as u16).to_be_bytes())?;
+            }
+            let length = 28 + dhcp.finish()?.len();
+            udp::emit(
+                &mut frame[20..length],
+                source.into(),
+                target.into(),
+                DHCP_CLIENT_PORT,
+                DHCP_SERVER_PORT,
+            )?;
+            Ipv4Header {
+                source,
+                destination: target,
+                protocol: 17,
+                hop_limit: 64,
+                dscp_ecn: 0,
+                identification: 0,
+                fragment: 0,
+                options: &[],
+            }
+            .emit(&mut frame[..length])?;
+            Ok(length)
         };
-        let mut frame = alloc::vec![0u8; ip.buffer_len() + ip.payload_len];
-        let checksums = ChecksumCapabilities::default();
-        let mut ip_packet = Ipv4Packet::new_unchecked(&mut frame[..]);
-        ip.emit(&mut ip_packet, &checksums);
-        let mut udp_packet = UdpPacket::new_unchecked(ip_packet.payload_mut());
-        let mut dhcp_result = Ok(());
-        udp.emit(
-            &mut udp_packet,
-            &IpAddress::Ipv4(source),
-            &IpAddress::Ipv4(target),
-            dhcp_length,
-            |payload| {
-                let mut dhcp_packet = DhcpPacket::new_unchecked(payload);
-                dhcp_result = dhcp.emit(&mut dhcp_packet);
-            },
-            &checksums,
-        );
-        dhcp_result.map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        let length = encode().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         self.socket
-            .send_to(&frame, Some(Self::link(self.index, destination)))
+            .send_to(&frame[..length], Some(Self::link(self.index, destination)))
             .map(drop)
             .map_err(|_| native_abi::ERR_PEER_CLOSED)
     }

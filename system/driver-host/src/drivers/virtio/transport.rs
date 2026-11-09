@@ -27,6 +27,7 @@ pub(in crate::drivers::virtio) const VIRTIO_CONFIG_S_ACKNOWLEDGE: u32 = 1;
 pub(in crate::drivers::virtio) const VIRTIO_CONFIG_S_DRIVER: u32 = 2;
 pub(in crate::drivers::virtio) const VIRTIO_CONFIG_S_DRIVER_OK: u32 = 4;
 pub(in crate::drivers::virtio) const VIRTIO_CONFIG_S_FEATURES_OK: u32 = 8;
+pub(in crate::drivers::virtio) const VIRTIO_CONFIG_S_DEVICE_NEEDS_RESET: u32 = 64;
 pub(in crate::drivers::virtio) const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 pub(in crate::drivers::virtio) const VIRTIO_MMIO_INT_VRING: u32 = 1;
 pub(in crate::drivers::virtio) const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
@@ -58,6 +59,23 @@ enum Transport {
 }
 
 impl VirtIODevice {
+    /// 设备的实际 MSI-X 配置能力；native 组和队列策略属于会话 owner。
+    pub(in crate::drivers::virtio) fn message_interrupts(&self) -> Option<&super::pci::Msix> {
+        match &self.transport {
+            Transport::Mmio(_) => None,
+            Transport::Pci(pci) => pci.message_interrupts(),
+        }
+    }
+    /// 冷配置阶段指定配置变化表项。
+    pub(in crate::drivers::virtio) fn assign_config_interrupt(
+        &self,
+        vector: u16,
+    ) -> Result<(), BusError> {
+        match &self.transport {
+            Transport::Mmio(_) => Err(BusError::InvalidAddress),
+            Transport::Pci(pci) => pci.assign_config_interrupt(vector),
+        }
+    }
     /// MMIO identification 寄存器的实际 vendor；PCI transport 不使用 MMIO 布局。
     pub(in crate::drivers::virtio) fn mmio_vendor_id(&self) -> Option<u32> {
         match &self.transport {
@@ -132,9 +150,12 @@ impl VirtIODevice {
                     return Err(BusError::InvalidAddress);
                 }
             }
-            Transport::Pci(pci) => pci.initialize()?,
+            Transport::Pci(_) => {}
         }
         self.reset()?;
+        if let Transport::Pci(pci) = &self.transport {
+            pci.initialize()?;
+        }
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE)?;
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER)
     }
@@ -149,6 +170,9 @@ impl VirtIODevice {
     ///
     /// MMIO window 无效时返回 `InvalidAddress`；device 不完成 reset 时保活 DMA 并等待。
     pub(in crate::drivers::virtio) fn reset(&self) -> Result<(), BusError> {
+        if let Some(msix) = self.message_interrupts() {
+            msix.disable()?;
+        }
         self.set_status(0)?;
         while self.get_status()? != 0 {
             core::hint::spin_loop();
@@ -259,6 +283,7 @@ impl VirtIODevice {
     /// - `index`: device-defined queue index。
     /// - `requested`: driver 选择的二次幂 queue size。
     /// - `addresses`: descriptor、available 和 used ring 的设备地址。
+    /// - `interrupt`: PCI MSI-X 表索引；None 明确写 NO_VECTOR，MMIO 只接受 None。
     ///
     /// # Returns
     ///
@@ -272,14 +297,18 @@ impl VirtIODevice {
         index: u32,
         requested: u16,
         addresses: VirtQueueAddresses,
+        interrupt: Option<u16>,
     ) -> Result<(), BusError> {
         if let Transport::Pci(pci) = &self.transport {
-            return pci.configure_queue(index, requested, addresses);
+            return pci.configure_queue(index, requested, addresses, interrupt);
         }
         let bus = match &self.transport {
             Transport::Mmio(bus) => bus,
             Transport::Pci(_) => unreachable!(),
         };
+        if interrupt.is_some() {
+            return Err(BusError::InvalidAddress);
+        }
         bus.write_u32(QUEUE_SEL, index)?;
         let maximum = bus.read_u32(QUEUE_NUM_MAX)?;
         if maximum == 0

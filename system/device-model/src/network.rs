@@ -1,22 +1,21 @@
-#[path = "network/offload.rs"]
 mod offload;
 pub use offload::{
     NetworkQueueConfiguration, NetworkTcpSegmentation, NetworkTcpVersion,
     NetworkTransmitCapabilities,
 };
-#[path = "network/checksum.rs"]
 mod checksum;
 pub use checksum::NetworkChecksum;
-#[path = "network/frame.rs"]
 mod frame;
 pub use frame::{NetworkReceiveFrame, NetworkTransmit};
-#[path = "network/rss.rs"]
 mod rss;
 pub use rss::{NetworkRssCapabilities, NetworkRssConfiguration};
 
 /// 按位依次为 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6、IPv6-EX/TCPv6-EX/UDPv6-EX。
 /// 不含隧道内层散列；其他网卡驱动须从自身硬件位映射到这些语义。
 pub const RECEIVE_HASH_TYPES: u32 = 0x1ff;
+
+/// 一轮共享队列领取的有界批容量；固定栈窗口，不随积压分配或占用全部 RX 槽。
+pub const RECEIVE_BATCH_CAPACITY: usize = 32;
 
 /// network device seam 的错误分类；协议栈不得感知具体 VirtIO adapter。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +26,8 @@ pub enum NetworkError {
     InvalidConfiguration,
     /// 共享缓冲或会话元数据无法分配。
     NoMemory,
+    /// 中断槽或设备地址空间不足；准备阶段失败，没有改变当前路由。
+    NoResources,
     /// 帧超过设备或调用方 buffer 能表达的 MTU。
     FrameTooLarge,
     /// transport、queue 或设备返回了不可恢复错误。
@@ -98,11 +99,23 @@ pub trait NetworkDevice: Send + Sync {
     /// 当前活动 RX/TX queue pair 数；编号为 0..queue_count，实例寿命内固定且非零。
     fn queue_count(&self) -> u16;
 
+    /// 是否提供每个 queue pair 独立的中断 CPU 路由；来自实际硬件/adapter 能力。
+    fn supports_queue_affinity(&self) -> bool;
+
+    /// 将本 pair 的 RX/TX 中断路由到同一个在线逻辑 CPU，不改变其他 pair 或配置向量。
+    /// # Errors
+    /// 不支持、队列/CPU 无效返回 InvalidConfiguration；准备失败且未改变路由返回 NoMemory/NoResources。
+    /// 中途设备/配置失败停止整个设备并返回 Device，不能留下仍在运行的半配置 pair。
+    fn set_queue_affinity(&self, queue: u16, cpu: u32) -> Result<(), NetworkError>;
+
     /// 已协商的 TX checksum/TSO 与实际槽容量；普通帧仍按原内容发送。
     fn transmit_capabilities(&self) -> NetworkTransmitCapabilities;
 
     /// 绑定接收/发送完成时调用的活动通知；绑定前到达的完成由绑定时的一次通知补偿。
     fn bind_activity(&self, queue: u16, activity: crate::Activity);
+    /// 登记独立链路变化通知并补发一次；不得用普通收发活动冒充链路变化。
+    /// 静态链路实现无需后续通知；可变链路在状态已可读后通知，不传递第二份状态。
+    fn bind_link_activity(&self, activity: crate::Activity);
 
     /// 返回设备出厂 MAC 地址。
     ///
@@ -117,8 +130,16 @@ pub trait NetworkDevice: Send + Sync {
     /// 读取驱动拥有的链路状态，不访问数据队列。设备无法读取时返回错误。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
 
-    /// 非阻塞领取一个 RX 帧的只读 CPU 借用；无包返回 WouldBlock，协议/设备失败返回错误。
-    fn receive(&self, queue: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError>;
+    /// 非阻塞批量领取 RX，只填写 output 的前缀；每个元素开始必须为 None，零表示当前无包。
+    /// 返回数不超过 output.len 与 RECEIVE_BATCH_CAPACITY，每帧有独立的不可复制借用，不复制 payload。
+    /// # Errors
+    /// 输出含已有 token、队列无效或设备/协议失败。错误前可能已经填入部分 token，调用者必须全部归还，不能消费其 payload；
+    /// 设备错误锁存终止。不得在持有设备本地队列锁时 Drop 这些 token，否则归还会重入同一锁。
+    fn receive_batch<'a>(
+        &'a self,
+        queue: u16,
+        output: &mut [Option<NetworkReceiveFrame<'a>>],
+    ) -> Result<usize, NetworkError>;
 
     /// 预留并返回唯一的可写 payload；无容量返回 WouldBlock，设备失败返回错误。
     fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError>;
@@ -245,6 +266,8 @@ pub struct NetworkTransmitDescriptor {
 
 /// 物理网卡的创建能力；公布硬件上限，队列数由使用者而非 CPU 探测策略决定。
 pub trait NetworkController: Send + Sync {
+    /// 是否支持每个活动 pair 独立选择 IRQ 目标 CPU；不能用共享 IRQ 假装独立路由。
+    fn supports_queue_affinity(&self) -> bool;
     /// 设备可配置的最大 pair 数，非零。
     fn maximum_queue_pairs(&self) -> u16;
     /// 物理 TX checksum/TSO 与容量上限；本次实际容量由 OPEN 明确请求。
@@ -267,10 +290,16 @@ pub trait NetworkController: Send + Sync {
 /// 实际网络硬件提供者：只交换共享槽的描述，不实现客户端的 CPU 帧适配。
 /// 每个已接受 RX 完成必须归还一次；TX 槽交给 DMA owner 后只能由硬件完成或同步 stop 释放。
 pub trait NetworkProvider: Send + Sync {
+    /// 同步完成本 pair 的 RX/TX 目标 CPU 配置；中途失败必须停止数据面，错误语义见 NetworkDevice。
+    /// # Errors
+    /// 不支持/无效返回 InvalidConfiguration，无变化的准备失败返回 NoMemory/NoResources，中途失败返回 Device。
+    fn set_queue_affinity(&self, queue: u16, cpu: u32) -> Result<(), NetworkError>;
     /// 活动 pair 数，实例寿命内固定且非零。
     fn queue_count(&self) -> u16;
     /// 为 queue 登记活动通知，补偿登记前可能到达的完成。
     fn bind_activity(&self, queue: u16, activity: crate::Activity);
+    /// 独立链路通知，约束同 NetworkDevice::bind_link_activity；实现必须覆盖绑定前变化。
+    fn bind_link_activity(&self, activity: crate::Activity);
     /// 六字节出厂 MAC。
     fn mac_address(&self) -> [u8; 6];
     /// 提供者拥有的驱动名。
@@ -329,6 +358,12 @@ mod tests {
     }
 
     impl NetworkDevice for InjectedDevice {
+        fn supports_queue_affinity(&self) -> bool {
+            false
+        }
+        fn set_queue_affinity(&self, _: u16, _: u32) -> Result<(), NetworkError> {
+            Err(NetworkError::InvalidConfiguration)
+        }
         fn queue_count(&self) -> u16 {
             1
         }
@@ -343,6 +378,9 @@ mod tests {
             }
         }
         fn bind_activity(&self, _: u16, _: crate::Activity) {}
+        fn bind_link_activity(&self, activity: crate::Activity) {
+            activity();
+        }
         fn mac_address(&self) -> [u8; 6] {
             [0; 6]
         }
@@ -355,8 +393,15 @@ mod tests {
             Ok(NetworkLink::default())
         }
 
-        fn receive(&self, _queue: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError> {
-            Err(NetworkError::WouldBlock)
+        fn receive_batch<'a>(
+            &'a self,
+            _queue: u16,
+            output: &mut [Option<NetworkReceiveFrame<'a>>],
+        ) -> Result<usize, NetworkError> {
+            if output.iter().any(Option::is_some) {
+                return Err(NetworkError::InvalidConfiguration);
+            }
+            Ok(0)
         }
         fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
             let mut slot = self.slot.lock();

@@ -1,10 +1,5 @@
 use super::*;
-use smoltcp::{
-    iface::PollIngressSingleResult,
-    phy::Device,
-    socket::Socket,
-    wire::{ArpPacket, ArpRepr, EthernetFrame, EthernetProtocol, Ipv4Packet},
-};
+use smoltcp::{iface::PollIngressSingleResult, socket::Socket};
 /// 一轮有界deferred推进；同域所有设备共享唯一SocketSet/ports/cleanup。
 pub(super) struct NetworkPoll {
     pub(super) backlog: bool,
@@ -18,22 +13,44 @@ impl NetworkStack {
         self.egress_routes.clear();
         for (_, socket) in self.sockets.iter_mut() {
             let flow = match socket {
-                Socket::Udp(socket) => socket
-                    .transmit_metadata()
-                    .map(|meta| (from_ip(meta.endpoint.addr), meta.interface_index)),
-                Socket::Raw(socket) => socket
-                    .transmit_route()
-                    .map(|(destination, index)| (from_ip(destination), index)),
-                Socket::Tcp(socket) => socket
-                    .remote_endpoint()
-                    .map(|peer| (from_ip(peer.addr), socket.bound_interface())),
+                Socket::Udp(socket) => socket.transmit_metadata().map(|meta| {
+                    (
+                        meta.local_address
+                            .map(from_ip)
+                            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+                        from_ip(meta.endpoint.addr),
+                        meta.interface_index,
+                    )
+                }),
+                Socket::Raw(socket) => {
+                    socket.transmit_route().map(|(source, destination, index)| {
+                        (from_ip(source), from_ip(destination), index)
+                    })
+                }
+                Socket::Tcp(socket) => socket.remote_endpoint().map(|peer| {
+                    (
+                        socket
+                            .local_endpoint()
+                            .map(|local| from_ip(local.addr))
+                            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+                        from_ip(peer.addr),
+                        socket.bound_interface(),
+                    )
+                }),
                 #[allow(unreachable_patterns)]
                 _ => None,
             };
             self.egress_routes
-                .push(flow.and_then(|(destination, bound)| {
+                .push(flow.and_then(|(source, destination, bound)| {
                     self.routing
-                        .select(destination, bound, &self.interfaces)
+                        .select_facts(
+                            source,
+                            destination,
+                            bound,
+                            self.interfaces
+                                .iter()
+                                .map(super::route::InterfaceFacts::capture),
+                        )
                         .ok()
                 }));
         }
@@ -89,90 +106,71 @@ impl NetworkStack {
                 continue;
             }
             interface.interface.poll_maintenance(timestamp);
-            while rx_remaining != 0 {
+            'receive: while rx_remaining != 0 {
                 let (before, rest) = self.interfaces.split_at_mut(position);
                 let (interface, after) = rest
                     .split_first_mut()
                     .expect("actual device batch index disappeared");
                 let current = super::route::InterfaceFacts::capture(interface);
-                let ethernet = matches!(interface.device, device::ProtocolDevice::Ethernet(_));
-                let Some((rx, tx)) = interface.device.receive(timestamp) else {
+                let mut frames = [const { None }; device_model::network::RECEIVE_BATCH_CAPACITY];
+                let mut facts = [None; device_model::network::RECEIVE_BATCH_CAPACITY];
+                let limit = rx_remaining.min(frames.len());
+                let Some(batch) = interface
+                    .device
+                    .receive_batch(&mut frames[..limit], &mut facts[..limit])
+                else {
                     break;
                 };
-                let routing = &self.routing;
-                let replies = &mut self.route_replies;
-                let mut reply_drops = 0u64;
-                let result = interface.interface.poll_ingress_received(
-                    &mut self.sockets,
-                    rx,
-                    tx,
-                    |frame, meta| {
-                        let (source, destination) = if ethernet {
-                            let header = EthernetFrame::new_checked(frame).ok()?;
-                            match header.ethertype() {
-                                EthernetProtocol::Ipv4 => {
-                                    let packet = Ipv4Packet::new_checked(
-                                        &frame[EthernetFrame::<&[u8]>::header_len()..],
-                                    )
-                                    .ok()?;
-                                    (packet.src_addr(), packet.dst_addr())
-                                }
-                                EthernetProtocol::Arp => {
-                                    let packet = ArpPacket::new_checked(
-                                        &frame[EthernetFrame::<&[u8]>::header_len()..],
-                                    )
-                                    .ok()?;
-                                    let ArpRepr::EthernetIpv4 {
-                                        source_protocol_addr,
-                                        target_protocol_addr,
-                                        ..
-                                    } = ArpRepr::parse(&packet).ok()?
-                                    else {
-                                        return None;
-                                    };
-                                    (source_protocol_addr, target_protocol_addr)
-                                }
-                                _ => return None,
+                for received in batch {
+                    let Ok((rx, tx)) = received else {
+                        break 'receive;
+                    };
+                    let addresses = rx.addresses();
+                    let routing = &self.routing;
+                    let replies = &mut self.route_replies;
+                    let mut reply_drops = 0u64;
+                    let result = interface.interface.poll_ingress_received(
+                        &mut self.sockets,
+                        rx,
+                        tx,
+                        |_, meta| {
+                            let (source, destination) = addresses?;
+                            let index = meta.interface_index.unwrap_or(current.index);
+                            Some(
+                                routing.ingress(
+                                    source,
+                                    destination,
+                                    index,
+                                    before
+                                        .iter()
+                                        .chain(after.iter())
+                                        .map(super::route::InterfaceFacts::capture)
+                                        .chain(core::iter::once(current)),
+                                ),
+                            )
+                        },
+                        |reply| {
+                            if !replies.enqueue(reply, current.index, timestamp) {
+                                // actual tokens已借设备；丢弃计数在消费之后统一移交actual owner。
+                                reply_drops += 1;
                             }
-                        } else {
-                            let packet = Ipv4Packet::new_checked(frame).ok()?;
-                            (packet.src_addr(), packet.dst_addr())
-                        };
-                        let index = meta.interface_index.unwrap_or(current.index);
-                        Some(
-                            routing.ingress(
-                                source,
-                                destination,
-                                index,
-                                before
-                                    .iter()
-                                    .chain(after.iter())
-                                    .map(super::route::InterfaceFacts::capture)
-                                    .chain(core::iter::once(current)),
-                            ),
-                        )
-                    },
-                    |reply| {
-                        if !replies.enqueue(reply, current.index, timestamp) {
-                            // actual tokens已借设备；丢弃计数在消费之后统一移交actual owner。
-                            reply_drops += 1;
-                        }
-                        true
-                    },
-                );
-                for _ in 0..reply_drops {
-                    interface.device.record_transmit_drop();
-                }
-                match result {
-                    PollIngressSingleResult::None => break,
-                    PollIngressSingleResult::SocketStateChanged => {
-                        rx_remaining -= 1;
-                        let reset = interface.device.take_ingress_reset();
-                        tcp::maintain(self, reset);
+                            true
+                        },
+                    );
+                    for _ in 0..reply_drops {
+                        interface.device.record_transmit_drop();
                     }
-                    PollIngressSingleResult::PacketProcessed => {
-                        rx_remaining -= 1;
-                        interface.device.take_ingress_reset();
+                    match result {
+                        PollIngressSingleResult::None => break 'receive,
+                        PollIngressSingleResult::SocketStateChanged => {
+                            rx_remaining -= 1;
+                            let reset = interface.device.take_ingress_reset();
+                            tcp::maintain(&mut self.tcp_endpoints, &mut self.sockets, reset);
+                        }
+                        PollIngressSingleResult::PacketProcessed => {
+                            rx_remaining -= 1;
+                            interface.device.take_ingress_reset();
+                        }
                     }
                 }
             }
@@ -229,7 +227,7 @@ impl NetworkStack {
                 },
             );
         }
-        tcp::maintain(self, None);
+        tcp::maintain(&mut self.tcp_endpoints, &mut self.sockets, None);
         tcp::reap_orphans(self);
         for cursor in first..end {
             let interface = &self.interfaces[(rotation + cursor) % interface_count];

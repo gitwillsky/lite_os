@@ -226,7 +226,7 @@ def _configuration(
             "RTCLocalTime": False,
             "PS2Controller": False,
             "MachinePropertyOverride": (
-                "gic-version=3,its=off,secure=off,virtualization=off,acpi=off,"
+                "gic-version=3,its=on,secure=off,virtualization=off,acpi=off,"
                 "highmem-ecam=off"
             ),
             "AdditionalArguments": additional,
@@ -257,7 +257,7 @@ def _configuration(
         "Network": [
             {
                 "Mode": "Emulated",
-                "Hardware": "virtio-net-device",
+                "Hardware": "virtio-net-pci",
                 "MacAddress": "02:4C:49:54:45:01",
                 "IsolateFromHost": False,
                 "PortForward": [] if diagnostic_port is None else [{

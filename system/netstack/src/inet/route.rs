@@ -2,10 +2,19 @@
 use super::{InterfaceState, interface::NetworkInterface};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
-use fallible_tree::{FallibleMap, VacantEntry};
 use network_protocol::{
     Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, SocketError,
 };
+
+mod admission;
+mod configuration;
+mod fib;
+mod forwarding;
+use fib::{Draft, Entry, Fib};
+mod group;
+mod nexthop;
+pub(super) use configuration::PreparedRouteChange;
+use prefix_index as poptrie;
 
 pub(super) const TABLE_MAIN: u32 = 254;
 pub(super) const TABLE_LOCAL: u32 = 255;
@@ -27,18 +36,17 @@ fn transport(metrics: Ipv4RouteMetrics, mtu: usize) -> smoltcp::iface::IpRouteCo
 enum Origin {
     Interface(u32),
     User,
+    Forwarding,
 }
+/// 一次冷准入或读取投影；不作为常驻 FIB 存储，不复制设备寿命。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Record {
     request: Ipv4RouteRequest,
     origin: Origin,
-    // OWNER: gateway publication冻结实际nexthop设备；lookup仍读当前设备状态。
+    next_hop_name: Option<nexthop::Name>,
+    // 已解析的出口投影；实际绑定由 FIB 下一跳拥有，lookup 仍读取当前设备状态。
     interface_index: Option<u32>,
 }
-// prefix属于bucket；同network/table按metric及publication顺序选alias，不能按socket顺序覆盖。
-type Key = (u32, u32, u32, i128);
-type Prepared = VacantEntry<Key, Record>;
-
 /// 一次实际FIB查找结果；出口和logical iif分开，以保留原生LOCAL物理oif经lo交付。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RouteSelection {
@@ -48,6 +56,13 @@ pub(super) struct RouteSelection {
     pub(super) next_hop: Ipv4Addr,
     pub(super) kind: Ipv4RouteKind,
     pub(super) transport: smoltcp::iface::IpRouteContext,
+}
+/// 一次 L3 流查找键；明确出口只收紧同一组，不创建旁路 selector。
+#[derive(Clone, Copy)]
+pub(super) struct Flow {
+    pub(super) source: Ipv4Addr,
+    pub(super) destination: Ipv4Addr,
+    pub(super) bound: Option<u32>,
 }
 /// 本次guard内的设备窄投影；iterator即时读取actual owner，不持久复制配置。
 #[derive(Clone, Copy)]
@@ -67,17 +82,12 @@ impl InterfaceFacts {
         }
     }
 }
-/// 同一NET唯一FIB；33个prefix roots零分配，实际records各有唯一fallible节点。
+/// 唯一活动 FIB；连续记录按 prefix/table/metric/publication 排列，索引直接引用自己的 alias 区间。
 pub(super) struct RoutingTable {
-    // OWNER: table/network/metric/order alias索引；查找至多33个prefix，不扫描全部用户routes。
-    prefixes: [FallibleMap<Key, Record>; 33],
-    // OWNER: prefix roots的精确非空索引，与节点mutation同一FIB事务；省略空prefix树遍历。
-    // 位只来自实际bucket成员，不缓存route决定；若不在删除最后节点时清除会扫描退休bucket。
-    used_prefixes: u64,
+    fib: Fib,
 }
-/// 地址变更在移交actual interface之前完成全部route节点准备；失败无半次FIB publication。
 pub(super) struct PreparedInterfaceRoutes {
-    entries: Vec<(u8, Prepared)>,
+    fib: Fib,
 }
 
 fn mask(prefix: u8) -> u32 {
@@ -85,22 +95,54 @@ fn mask(prefix: u8) -> u32 {
 }
 impl RoutingTable {
     pub(super) fn new() -> Self {
-        Self {
-            prefixes: core::array::from_fn(|_| FallibleMap::new()),
-            used_prefixes: 0,
-        }
+        Self { fib: Fib::new() }
     }
+    /// 预备接口与相关路由；force 用于 MTU 失去 IPv4 能力时强制退休绑定，即使地址此前已为空。
+    /// 缺少强制退休会让无地址设备上的静态成员越过 MTU 下限继续存活。
     pub(super) fn prepare_interface(
+        &self,
         index: u32,
+        previous: InterfaceState,
         state: InterfaceState,
+        interfaces: &[NetworkInterface],
+        force: bool,
     ) -> Result<PreparedInterfaceRoutes, SocketError> {
-        let mut entries: Vec<(u8, Prepared)> = Vec::new();
+        let mut entries = Self::interface_entries(index, state)?;
+        entries.inherit_named(&self.fib)?;
+        if force || previous.address != state.address {
+            entries.retire_interface(index, true);
+        } else if previous.up && !state.up {
+            entries.retire_interface(index, false);
+        }
+        let fib = self.fib.prepare(entries, |record| {
+            record.origin == Origin::Interface(index)
+                || !self.fib.is_multipath(record.next_hop_name)
+                    && record.interface_index == Some(index)
+                    && (force
+                        || previous.address != state.address
+                        || previous.up && !state.up && record.request.scope != 254)
+        })?;
+        let mut candidate = Self { fib };
+        candidate.validate_sources(interfaces.iter().map(|interface| {
+            let selected = if interface.index == index {
+                state
+            } else {
+                interface.state
+            };
+            InterfaceFacts {
+                index: interface.index,
+                address: selected.address,
+                up: selected.up,
+                mtu: interface.device.ip_mtu(),
+            }
+        }))?;
+        Ok(PreparedInterfaceRoutes { fib: candidate.fib })
+    }
+    fn interface_entries(index: u32, state: InterfaceState) -> Result<Draft, SocketError> {
+        let mut entries = Draft::new(usize::from(state.address.is_some()) * 4)?;
         let Some(address) = state.address else {
-            return Ok(PreparedInterfaceRoutes { entries });
+            return Ok(entries);
         };
-        entries
-            .try_reserve_exact(4)
-            .map_err(|_| SocketError::NoMemory)?;
         let mut append = |destination: Ipv4Addr,
                           prefix_length: u8,
                           kind: Ipv4RouteKind|
@@ -129,24 +171,17 @@ impl RoutingTable {
                 metrics: Ipv4RouteMetrics::default(),
             };
             // explicit broadcast等于prefix broadcast时native FIB exact alias只保留一次。
-            if entries
-                .iter()
-                .any(|(prefix, entry)| *prefix == prefix_length && entry.value().request == request)
-            {
+            if entries.iter().any(|record| record.request == request) {
                 return Ok(());
             }
             let order = crate::identity::next();
             let record = Record {
+                next_hop_name: None,
                 request,
                 origin: Origin::Interface(index),
                 interface_index: Some(index),
             };
-            let node = FallibleMap::try_prepare(
-                (table, u32::from(destination), 0, i128::from(order)),
-                record,
-            )
-            .map_err(|_| SocketError::NoMemory)?;
-            entries.push((prefix_length, node));
+            entries.push(record, i128::from(order))?;
             Ok(())
         };
         // 1. fib_add_ifaddr在IFF_UP检查之前创建LOCAL /32；DOWN不删除scope HOST的本地成员。
@@ -176,82 +211,61 @@ impl RoutingTable {
                 }
             }
         }
-        Ok(PreparedInterfaceRoutes { entries })
+        Ok(entries)
     }
-    /// 单一事务替换实际地址产生的routes；预分配后无失败，不维护第二份gateway/interface索引。
-    pub(super) fn replace_interface(&mut self, index: u32, prepared: PreparedInterfaceRoutes) {
-        for aliases in &mut self.prefixes {
-            aliases.retain(|_, record| record.origin != Origin::Interface(index));
-        }
-        for (prefix, entry) in prepared.entries {
-            self.prefixes[usize::from(prefix)].commit_vacant(entry);
-        }
-        self.reindex_prefixes();
+    /// 只交换预备根；所有失败与容量准备都发生在实际接口状态发布前。
+    pub(super) fn replace_interface(&mut self, prepared: PreparedInterfaceRoutes) {
+        self.fib = prepared.fib;
     }
-    fn reindex_prefixes(&mut self) {
-        // interface事件只在冷路径，33 roots固定有界；没有全route scan重建决策或另一份route集合。
-        self.used_prefixes = self
-            .prefixes
-            .iter()
-            .enumerate()
-            .fold(0, |bits, (prefix, aliases)| {
-                bits | if aliases.is_empty() {
-                    0
-                } else {
-                    1u64 << prefix
-                }
-            });
-    }
-    fn matching(
+    fn matching<'a>(
         &self,
         table: u32,
-        destination: Ipv4Addr,
-        bound: Option<u32>,
+        flow: Flow,
+        candidates: impl Iterator<Item = &'a [Entry]>,
         minimum_scope: u8,
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
-    ) -> Option<&Record> {
-        let mut prefixes = self.used_prefixes;
-        while prefixes != 0 {
-            let prefix = (63 - prefixes.leading_zeros()) as u8;
-            prefixes &= !(1u64 << prefix);
-            let network = u32::from(destination) & mask(prefix);
-            let aliases = &self.prefixes[usize::from(prefix)];
-            let mut next = aliases.ceiling(&(table, network, 0, i128::MIN));
-            while let Some((&key, record)) = next {
-                if key.0 != table || key.1 != network {
+        include: impl Fn(&Record) -> bool,
+    ) -> Option<Record> {
+        for group in candidates {
+            let start = group.partition_point(|entry| entry.table() < table);
+            for entry in &group[start..] {
+                if entry.table() != table {
                     break;
                 }
-                let request = record.request;
-                let eligible = request.scope >= minimum_scope
-                    && bound.is_none_or(|bound| record.interface_index == Some(bound))
-                    && record.interface_index.is_none_or(|index| {
-                        interfaces
-                            .clone()
-                            .find(|interface| interface.index == index)
-                            .is_some_and(|interface| {
-                                interface.mtu >= 68
-                                    && (interface.up || request.kind == Ipv4RouteKind::Local)
-                            })
-                    });
+                let Some(record) = self.fib.select_record(entry, flow, interfaces.clone()) else {
+                    continue;
+                };
+                let eligible = include(&record) && record.request.scope >= minimum_scope;
                 if eligible {
                     return Some(record);
                 }
-                next = aliases.successor(&key);
             }
         }
         None
     }
     fn lookup_record(
         &self,
+        source: Ipv4Addr,
         destination: Ipv4Addr,
         bound: Option<u32>,
         minimum_scope: u8,
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
-    ) -> Option<&Record> {
+        include: impl Fn(&Record) -> bool,
+    ) -> Option<Record> {
+        let candidates = self.fib.matching(destination);
         for table in [TABLE_LOCAL, TABLE_MAIN] {
-            if let Some(record) =
-                self.matching(table, destination, bound, minimum_scope, interfaces.clone())
-                && record.request.kind != Ipv4RouteKind::Throw
+            if let Some(record) = self.matching(
+                table,
+                Flow {
+                    source,
+                    destination,
+                    bound,
+                },
+                candidates.clone(),
+                minimum_scope,
+                interfaces.clone(),
+                &include,
+            ) && record.request.kind != Ipv4RouteKind::Throw
             {
                 return Some(record);
             }
@@ -260,203 +274,38 @@ impl RoutingTable {
     }
     /// NETDEV_UNREGISTER：退休该接口的地址routes与全部用户routes。
     pub(super) fn remove_interface(&mut self, index: u32) {
-        for aliases in &mut self.prefixes {
-            aliases.retain(|_, record| {
-                record.origin != Origin::Interface(index) && record.interface_index != Some(index)
-            });
-        }
-        self.reindex_prefixes();
+        self.fib.retire_interface(index, true);
     }
-    /// NETDEV_DOWN/最后地址删除按native nexthop scope退休用户routes；再次UP不复活旧static配置。
-    pub(super) fn device_down(&mut self, index: u32, force: bool) {
-        for aliases in &mut self.prefixes {
-            aliases.retain(|_, record| {
-                record.interface_index != Some(index) || (!force && record.request.scope == 254)
-            });
-        }
-        self.reindex_prefixes();
-    }
-    /// 原生proc/rtnetlink只读当前actual records；名字/设备状态由同一NetworkStack guard投影。
-    pub(super) fn records(&self) -> impl Iterator<Item = Ipv4RouteRequest> + '_ {
-        self.prefixes.iter().flat_map(|aliases| {
-            aliases.iter().map(|(_, record)| Ipv4RouteRequest {
-                interface_index: record.interface_index,
-                ..record.request
-            })
-        })
+    pub(super) fn snapshot_bytes(
+        &self,
+        interfaces: &[NetworkInterface],
+    ) -> Result<Vec<u8>, SocketError> {
+        self.fib.snapshot_bytes(interfaces)
     }
 
-    /// 原生单路径配置先验证实际device/gateway/prefsrc，再准备唯一node；失败不改原FIB。
+    /// 原生单路径配置先验证实际 device/gateway/prefsrc，再准备记录及共享下一跳；失败不改原 FIB。
     pub(super) fn insert(
         &mut self,
-        mut request: Ipv4RouteRequest,
+        request: Ipv4RouteRequest,
         interfaces: &[NetworkInterface],
         replace: bool,
         create: bool,
         exclusive: bool,
         append: bool,
     ) -> Result<(), Ipv4RouteError> {
-        if request.prefix_length > 32
-            || request.table == 0
-            || request.scope > 254
-            || u32::from(request.destination) & mask(request.prefix_length)
-                != u32::from(request.destination)
-        {
-            return Err(Ipv4RouteError::Invalid);
-        }
-        // native ip_metrics_convert先规范化再比较actual alias；超大ADVMSS不是配置错误。
-        request.metrics.advertised_mss = request.metrics.advertised_mss.min(65535 - 40);
-        let rejecting = matches!(
-            request.kind,
-            Ipv4RouteKind::Unreachable | Ipv4RouteKind::Throw
-        );
-        let selected = if rejecting {
-            if request.gateway.is_some() || request.interface_index.is_some() {
-                return Err(Ipv4RouteError::Invalid);
-            }
-            None
-        } else if let Some(gateway) = request.gateway {
-            if request.scope >= 253 {
-                return Err(Ipv4RouteError::Invalid);
-            }
-            if request.on_link {
-                let index = request.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
-                let interface = interfaces
-                    .iter()
-                    .find(|interface| interface.index == index)
-                    .ok_or(Ipv4RouteError::NoDevice)?;
-                if !interface.state.up {
-                    return Err(Ipv4RouteError::NetworkDown);
-                }
-                if gateway.is_unspecified()
-                    || gateway.is_multicast()
-                    || gateway.is_broadcast()
-                    || self
-                        .lookup_record(
-                            gateway,
-                            None,
-                            0,
-                            interfaces.iter().map(InterfaceFacts::capture),
-                        )
-                        .is_some_and(|record| record.request.kind != Ipv4RouteKind::Unicast)
-                {
-                    return Err(Ipv4RouteError::Invalid);
-                }
-                Some(index)
-            } else {
-                // gateway只能经更窄scope的actual路由到达，不沿另一个default递归伪造邻居。
-                let route = self
-                    .lookup_record(
-                        gateway,
-                        request.interface_index,
-                        253,
-                        interfaces.iter().map(InterfaceFacts::capture),
-                    )
-                    .ok_or(Ipv4RouteError::NetworkUnreachable)?;
-                if !matches!(
-                    route.request.kind,
-                    Ipv4RouteKind::Local | Ipv4RouteKind::Unicast
-                ) {
-                    return Err(Ipv4RouteError::Invalid);
-                }
-                let index = route.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
-                let interface = interfaces
-                    .iter()
-                    .find(|interface| interface.index == index)
-                    .ok_or(Ipv4RouteError::NoDevice)?;
-                if !interface.state.up {
-                    return Err(Ipv4RouteError::NetworkDown);
-                }
-                Some(index)
-            }
-        } else {
-            if request.on_link {
-                return Err(Ipv4RouteError::Invalid);
-            }
-            let index = request.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
-            let interface = interfaces
-                .iter()
-                .find(|interface| interface.index == index && interface.device.ip_mtu() >= 68)
-                .ok_or(Ipv4RouteError::NoDevice)?;
-            if request.scope < 254 && !interface.state.up {
-                return Err(Ipv4RouteError::NetworkDown);
-            }
-            Some(index)
-        };
-        if let Some(source) = request.preferred_source
-            && !source.is_unspecified()
-            && !self
-                .lookup_record(
-                    source,
-                    None,
-                    0,
-                    interfaces.iter().map(InterfaceFacts::capture),
-                )
-                .is_some_and(|record| record.request.kind == Ipv4RouteKind::Local)
-        {
-            return Err(Ipv4RouteError::Invalid);
-        }
-        let aliases = &mut self.prefixes[usize::from(request.prefix_length)];
-        let network = u32::from(request.destination);
-        let mut existing = aliases.ceiling(&(request.table, network, request.metric, i128::MIN));
-        let mut first = None;
-        let mut exact = None;
-        while let Some((&key, record)) = existing {
-            if (key.0, key.1, key.2) != (request.table, network, request.metric) {
-                break;
-            }
-            first.get_or_insert(key);
-            if record.request == request && record.interface_index == selected {
-                exact = Some(key);
-                break;
-            }
-            existing = aliases.successor(&key);
-        }
-        if exclusive && first.is_some() {
-            return Err(Ipv4RouteError::Exists);
-        }
-        if !replace && exact.is_some() {
-            return Err(Ipv4RouteError::Exists);
-        }
-        if replace && exact.is_some() {
-            return if exact == first {
-                Ok(())
-            } else {
-                Err(Ipv4RouteError::Exists)
-            };
-        }
-        if !create && first.is_none() {
-            return Err(Ipv4RouteError::Missing);
-        }
-        let record = Record {
-            request,
-            origin: Origin::User,
-            interface_index: selected,
-        };
-        let order = i128::from(crate::identity::next());
-        let key = (
-            request.table,
-            network,
-            request.metric,
-            if append { order } else { -order },
-        );
-        let mut prepared =
-            FallibleMap::try_prepare(key, record).map_err(|_| Ipv4RouteError::NoMemory)?;
-        let retired = if replace {
-            first.and_then(|key| {
-                prepared.set_key(key);
-                aliases.take_entry(&key)
-            })
-        } else {
-            None
-        };
-        aliases.commit_vacant(prepared);
-        self.used_prefixes |= 1u64 << request.prefix_length;
-        // 所有值为scalar route事实，不拥有Task/NET/OFD资源；冷TaskMutex事务只销毁摘除的node。
-        drop(retired);
-        Ok(())
+        let record = self.admit(request, interfaces, Origin::User)?;
+        self.fib.insert(
+            record,
+            network_protocol::RouteChange {
+                delete: false,
+                replace,
+                create,
+                exclusive,
+                append,
+            },
+        )
     }
-    /// 原生删除匹配 prefix/table 及可选 metric、gateway、oif、protocol 的路由。没有匹配返回 ESRCH。
+    /// 原生删除指定前缀与可选 alias 属性；不分配内存。
     pub(super) fn remove(&mut self, request: Ipv4RouteRequest) -> Result<(), Ipv4RouteError> {
         if request.prefix_length > 32
             || u32::from(request.destination) & mask(request.prefix_length)
@@ -464,52 +313,13 @@ impl RoutingTable {
         {
             return Err(Ipv4RouteError::Invalid);
         }
-        let aliases = &mut self.prefixes[usize::from(request.prefix_length)];
-        let network = u32::from(request.destination);
-        let mut next = aliases.ceiling(&(request.table, network, 0, i128::MIN));
-        let mut selected = None;
-        while let Some((&key, record)) = next {
-            if key.0 != request.table || key.1 != network {
-                break;
-            }
-            if (request.metric == 0 || request.metric == record.request.metric)
-                && (request.protocol == 0 || request.protocol == record.request.protocol)
-                && request
-                    .interface_index
-                    .is_none_or(|index| record.interface_index == Some(index))
-                && request
-                    .gateway
-                    .is_none_or(|gateway| record.request.gateway == Some(gateway))
-                && (request.kind == record.request.kind)
-            {
-                selected = Some(key);
-                break;
-            }
-            next = aliases.successor(&key);
-        }
-        let retired = aliases.take_entry(&selected.ok_or(Ipv4RouteError::NotFound)?);
-        if aliases.is_empty() {
-            self.used_prefixes &= !(1u64 << request.prefix_length);
-        }
-        drop(retired);
-        Ok(())
+        self.fib.remove(request)
     }
 
     /// 原生最长前缀/metric与LOCAL→lo选择；oif/direct fallback由同一个flow入口处理。
-    pub(super) fn select(
-        &self,
-        destination: Ipv4Addr,
-        bound: Option<u32>,
-        interfaces: &[NetworkInterface],
-    ) -> Result<RouteSelection, Ipv4RouteKind> {
-        self.select_facts(
-            destination,
-            bound,
-            interfaces.iter().map(InterfaceFacts::capture),
-        )
-    }
     pub(super) fn select_facts(
         &self,
+        source: Ipv4Addr,
         destination: Ipv4Addr,
         bound: Option<u32>,
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
@@ -519,9 +329,14 @@ impl RoutingTable {
         if bound.is_some() && (destination.is_broadcast() || local_multicast) {
             return Self::direct(destination, bound, interfaces);
         }
-        if let Some(record) = self.lookup_record(destination, bound, 0, interfaces.clone()) {
+        if let Some(record) =
+            self.lookup_record(source, destination, bound, 0, interfaces.clone(), |_| true)
+        {
             let kind = record.request.kind;
-            if matches!(kind, Ipv4RouteKind::Unreachable) {
+            if matches!(
+                kind,
+                Ipv4RouteKind::Unreachable | Ipv4RouteKind::Blackhole | Ipv4RouteKind::Prohibit
+            ) {
                 // 原生explicit oif在FIB失败时使用on-link fallback，不能让kernel另写selector。
                 return if bound.is_some() {
                     Self::direct(destination, bound, interfaces)
@@ -598,13 +413,44 @@ impl RoutingTable {
     }
     /// 实际LOCAL成员用于bind与prefsrc；DOWN保留HOST record，不伪造127/8成员。
     pub(super) fn is_local(&self, address: Ipv4Addr, interfaces: &[NetworkInterface]) -> bool {
-        self.lookup_record(
-            address,
-            None,
-            0,
-            interfaces.iter().map(InterfaceFacts::capture),
-        )
+        self.is_local_facts(address, interfaces.iter().map(InterfaceFacts::capture))
+    }
+    fn is_local_facts(
+        &self,
+        address: Ipv4Addr,
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    ) -> bool {
+        self.lookup_record(Ipv4Addr::UNSPECIFIED, address, None, 0, interfaces, |_| {
+            true
+        })
         .is_some_and(|record| record.request.kind == Ipv4RouteKind::Local)
+    }
+    /// 发布前按最终候选核对 prefsrc；只有真实失效时申请一位/条的标记，不存另一份本地地址表。
+    fn validate_sources(
+        &mut self,
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    ) -> Result<(), SocketError> {
+        let mut marks = Vec::new();
+        let mut retired = 0;
+        for (position, record) in self.fib.iter().enumerate() {
+            if record.request.preferred_source.is_some_and(|source| {
+                !source.is_unspecified() && !self.is_local_facts(source, interfaces.clone())
+            }) {
+                if marks.is_empty() {
+                    let words = self.fib.iter().len().div_ceil(64);
+                    marks
+                        .try_reserve_exact(words)
+                        .map_err(|_| SocketError::NoMemory)?;
+                    marks.resize(words, 0_u64);
+                }
+                marks[position / 64] |= 1_u64 << (position % 64);
+                retired += 1;
+            }
+        }
+        if retired != 0 {
+            self.fib.retire_source_marks(&marks, retired)?;
+        }
+        Ok(())
     }
     /// ingress目的分类与broadcast/multicast spec_dst使用同一FIB；结果在RX入队冻结。
     pub(super) fn ingress(
@@ -615,13 +461,15 @@ impl RoutingTable {
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
     ) -> smoltcp::iface::Ipv4IngressFacts {
         let kind = self
-            .lookup_record(destination, None, 0, interfaces.clone())
+            .lookup_record(source, destination, None, 0, interfaces.clone(), |_| true)
             .map(|record| record.request.kind);
         let broadcast = destination.is_broadcast() || kind == Some(Ipv4RouteKind::Broadcast);
         let local = kind == Some(Ipv4RouteKind::Local);
         // 一次reverse查找同时投影spec_dst/MTU；同设备bound只收紧同一匹配，
         // 在同guard无mutation下可直接消费这个结论，不重复扫描相同FIB。
-        let reverse = self.select_facts(source, None, interfaces.clone()).ok();
+        let reverse = self
+            .select_facts(destination, source, None, interfaces.clone())
+            .ok();
         let specific_destination = if broadcast || destination.is_multicast() {
             reverse
                 .and_then(|route| route.preferred_source)
@@ -637,7 +485,7 @@ impl RoutingTable {
         let bound_reverse = match reverse {
             Some(route) if route.logical_interface_index == index => Some(route),
             _ => self
-                .select_facts(source, Some(index), interfaces.clone())
+                .select_facts(destination, source, Some(index), interfaces.clone())
                 .ok(),
         };
         let reverse_route = reverse.map(|route| route.transport);

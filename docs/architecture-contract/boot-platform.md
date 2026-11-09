@@ -5,8 +5,10 @@
 - `arch` 独占 raw register/context/MMU 编码；`execution::entry` 只构造 typed boot/trap 输入。AArch64 只接受 Image/x0 DTB/PSCI，RISC-V 只接受独立 bootloader 的 handoff/DTB/SBI。
 - `platform` 发布 immutable RAM/CPU/interrupt/serial facts；hardware identity 在 `execution::cpu` 投影为 logical identity。通用领域不得引用 concrete platform/arch adapter。
 - kernel platform DTB decoder 只解析内核启动所需事实；driver-manager 的 DTB decoder 独占通用设备、PCI 与 IOMMU 事实及节点装配。各 decoder 按 compatible 判断设备身份，不依赖任意节点标签。
+- 固件、kernel 与 driver-manager 共用唯一 vendored DTB walker。walker 保留地址/长度/中断 cell 上下文的同时输出原始属性；
+  控制器绑定可据此校验自己的 cell 数。status 使用 walker 的 typed 属性，不把被内部消费或转为 typed 的属性当作缺省事实。
 - `mmio::MmioBus` 验证非空、地址溢出、子窗口包含、每次访问边界和对齐。寄存器实际访问形态只属于静态 ISA backend；adapter 不使用裸 volatile 或自选 target 指令。
-- GIC claim/EOI 是线性 token；PLIC source 编码拒绝 0 哨兵与越过 enable bitmap 的编号。external hardirq 单次有界处理，不为探测 backlog 提前消费下一 claim。
+- GIC claim/EOI 是线性 token；IMSIC STOPEI claim 原子清除 EIP，0 是无消息哨兵；APLIC source 和 CPU 本地 EIID 分别校验范围。external hardirq 单次有界处理，不为探测 backlog 提前消费下一 claim。
 - RISC-V RFENCE sender 在 request Release 前写 start/size，target 在 Acquire 后读取，执行范围 fence 后 Release ack。sender 等待 Acquire completion 后才允许 backing 退休。
 
 ## 启动所有权

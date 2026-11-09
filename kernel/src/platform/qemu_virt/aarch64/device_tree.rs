@@ -1,7 +1,7 @@
 //! QEMU `virt` AArch64 DTB 到 immutable machine facts 的纯解码。
 //!
-//! 只解码内核自身需要的事实（内存、CPU、PL011、PL031、GICv3、timer、PSCI、initrd）；
-//! 其余设备由用户态从同一 DTB 发现。PL011/PL031/GICv3 以节点名选择候选并以 compatible 断言身份。
+//! 只解码内核自身需要的事实（内存、CPU、PL011、PL031、GICv3/ITS、timer、PSCI、initrd）；
+//! 其余设备由用户态从同一 DTB 发现。ITS 只按 compatible 识别；PL011/PL031/GICv3 沿用名称候选与 compatible 断言。
 
 use alloc::vec::Vec;
 use core::{fmt, ops::Range};
@@ -40,6 +40,8 @@ pub(crate) struct PlatformInfo {
     pub(crate) uart: MmioDevice,
     pub(crate) rtc: RangeValue,
     pub(crate) gic: GicV3Info,
+    /// 可选的 GICv3 ITS；消息中断表在首次分配时才创建。
+    pub(crate) its: Option<RangeValue>,
     /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
     pub(crate) bootargs: Vec<u8>,
     /// `/chosen` 的 initrd 物理区间（DT chosen 绑定的 `linux,initrd-start/end`）；没有 initrd 时为 `None`。
@@ -93,6 +95,9 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
         let mut uart_irq = None;
         let mut rtc = None;
         let mut gic = None;
+        let mut its = None;
+        let mut its_compatible = false;
+        let mut its_reg = None;
         let mut initrd_start = None;
         let mut initrd_end = None;
         let mut rng_seed = Vec::new();
@@ -112,33 +117,32 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                 .expect("DTB range overflow");
 
         dtb.walk(|context, object| match object {
-            DtbObj::SubNode { name, .. } => {
-                let parent = context.name();
-                if context.is_root()
-                    || (parent == Str::from("cpus") && name.starts_with("cpu@"))
-                    || (parent == Str::from("soc") && interesting_device_node(name))
-                {
-                    WalkOperation::StepInto
-                } else {
-                    WalkOperation::StepOver
-                }
+            DtbObj::SubNode { .. } => {
+                commit_its(
+                    &mut its,
+                    its_reg.take(),
+                    core::mem::take(&mut its_compatible),
+                );
+                WalkOperation::StepInto
             }
             DtbObj::Property(Property::Reg(mut registers)) => {
                 let node = context.name();
+                let first = registers.next();
+                its_reg = first.clone().map(range_value);
                 if node.starts_with("memory") {
-                    memory = registers.next();
+                    memory = first;
                 } else if node.starts_with("cpu@") {
-                    let hardware_id = registers.next().expect("CPU node lacks reg").start;
+                    let hardware_id = first.expect("CPU node lacks reg").start;
                     hardware_cpu_ids
                         .try_reserve(1)
                         .expect("CPU discovery allocation failed");
                     hardware_cpu_ids.push(hardware_id);
                 } else if is_uart_node(node) {
-                    uart_reg = registers.next();
+                    uart_reg = first;
                 } else if is_rtc_node(node) {
-                    rtc = registers.next().map(range_value);
+                    rtc = first.map(range_value);
                 } else if is_gic_node(node) {
-                    let distributor = registers.next().map(range_value);
+                    let distributor = first.map(range_value);
                     let redistributor = registers.next().map(range_value);
                     if let (Some(distributor), Some(redistributor)) = (distributor, redistributor) {
                         gic = Some(GicV3Info {
@@ -159,6 +163,9 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                     && compatible
                         .clone()
                         .any(|value| value == Str::from("arm,pl031"));
+                its_compatible |= compatible
+                    .clone()
+                    .any(|value| value == Str::from("arm,gic-v3-its"));
                 gicv3_compatible |= is_gic_node(node)
                     && compatible
                         .clone()
@@ -208,6 +215,8 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             DtbObj::Property(_) => WalkOperation::StepOver,
         });
 
+        commit_its(&mut its, its_reg, its_compatible);
+
         assert!(pl011_compatible, "QEMU virt requires arm,pl011");
         assert!(pl031_compatible, "QEMU virt requires arm,pl031");
         assert!(gicv3_compatible, "QEMU virt requires arm,gic-v3");
@@ -248,6 +257,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             uart,
             rtc,
             gic,
+            its,
             bootargs,
             initrd,
             rng_seed,
@@ -255,8 +265,17 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     }
 }
 
-fn interesting_device_node(name: Str<'_>) -> bool {
-    is_uart_node(name) || is_rtc_node(name) || is_gic_node(name)
+/// 只提交同一节点的 compatible 与 reg；不以名称猜测身份，也不混用兄弟节点的属性。
+fn commit_its(found: &mut Option<RangeValue>, reg: Option<RangeValue>, compatible: bool) {
+    if compatible {
+        let range = reg
+            .filter(|range| valid_range_value(*range))
+            .expect("ITS reg missing");
+        assert!(
+            found.replace(range).is_none(),
+            "multiple ITS controllers are not supported"
+        );
+    }
 }
 
 fn is_uart_node(name: Str<'_>) -> bool {

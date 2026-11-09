@@ -63,6 +63,8 @@ unsafe impl Plain for usize {}
 unsafe impl Plain for native_abi::ChannelActual {}
 // SAFETY: 两个 u64 字段的 repr(C) 结构，没有填充或无效位模式。
 unsafe impl Plain for native_abi::BtiInfo {}
+// SAFETY: repr(C) 的 u32/u64 字段，无无效位型和隐式 padding。
+unsafe impl Plain for native_abi::MsiInfo {}
 // SAFETY: 四个 u64 字段的 repr(C) 结构，没有填充或无效位模式。
 unsafe impl Plain for native_abi::SystemMemoryStats {}
 // SAFETY: 同上。
@@ -259,6 +261,7 @@ typed!(port, Port, crate::object::Port);
 typed!(pager, Pager, crate::object::Pager);
 typed!(resource, Resource, crate::object::Resource);
 typed!(interrupt, Interrupt, crate::object::Interrupt);
+typed!(msi, Msi, crate::object::Msi);
 typed!(iommu, Iommu, crate::object::Iommu);
 typed!(bti, Bti, crate::object::Bti);
 typed!(exception, Exception, crate::object::Exception);
@@ -337,6 +340,8 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::RESTRICTED_KICK => restricted::kick(call).into(),
         call::THREAD_SET_FAULT_RECOVERY => restricted::set_fault_recovery(call).into(),
         call::RESOURCE_CREATE => hardware::resource_create(call).into(),
+        call::MSI_ALLOCATE => hardware::msi_allocate(call).into(),
+        call::MSI_CREATE_INTERRUPT => hardware::msi_create_interrupt(call).into(),
         call::INTERRUPT_CREATE => hardware::interrupt_create(call).into(),
         call::INTERRUPT_WAIT => hardware::interrupt_wait(call).into(),
         call::INTERRUPT_ACK => hardware::interrupt_ack(call).into(),

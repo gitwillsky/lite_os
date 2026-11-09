@@ -24,13 +24,13 @@
 | `barrier` | `cpu`,`platform` | 静态机制与显式 owner 依赖 |
 | `timer` | `arch`,`cpu`,`platform` | 静态机制与显式 owner 依赖 |
 | `memory` | `arch`,`config`,`cpu`,`deferred`,`id`,`platform`,`sync` | 分配器水位在锁内只发布 deferred 边沿；上层观察者由 main 注入，不依赖 VM/object/thread |
-| `vm` | `arch`,`cpu`,`id`,`memory`,`platform`,`sync`,`timer` | 回收策略经 sync task seam 协作，读取单调时钟设无进展重试截止，不依赖 Thread |
+| `vm` | `arch`,`barrier`,`cpu`,`id`,`memory`,`platform`,`sync`,`timer` | 回收策略经 sync task seam 协作，读取单调时钟设无进展重试截止；远端翻译同步注入无阻塞 barrier 本地确认，不依赖 Thread |
 | `iommu` | `arch`,`memory`,`sync`,`vm` | 静态机制与显式 owner 依赖 |
 | `log` | `cpu`,`deferred`,`platform`,`sync`,`timer` | 静态机制与显式 owner 依赖 |
 | `crash` | `arch`,`cpu`,`log`,`memory`,`platform`,`timer`,`vm` | 静态机制与显式 owner 依赖 |
 | `random` | `arch`,`platform`,`sync` | 静态机制与显式 owner 依赖 |
 | `thread` | `arch`,`barrier`,`cpu`,`crash`,`deferred`,`id`,`log`,`memory`,`platform`,`serial`,`sync`,`timer`,`vm` | 调度安全点推进 barrier/TLB 完成，其余为静态机制与显式 owner 依赖 |
-| `object` | `cpu`,`deferred`,`id`,`interrupt`,`iommu`,`memory`,`platform`,`sync`,`thread`,`timer`,`vm` | 静态机制与显式 owner 依赖 |
+| `object` | `barrier`,`cpu`,`deferred`,`id`,`interrupt`,`iommu`,`memory`,`platform`,`sync`,`thread`,`timer`,`vm` | 静态机制与显式 owner 依赖 |
 | `syscall` | `barrier`,`cpu`,`crash`,`log`,`memory`,`object`,`platform`,`random`,`serial`,`sync`,`thread`,`timer`,`vm` | 静态机制与显式 owner 依赖 |
 | `trap` | `arch`,`barrier`,`cpu`,`crash`,`deferred`,`log`,`platform`,`serial`,`thread`,`timer`,`vm` | 静态机制与显式 owner 依赖 |
 | `entry` | `cpu`,`platform`,`trap` | 静态机制与显式 owner 依赖 |
@@ -61,9 +61,10 @@
 | `kernel/src/object/task.rs :: JobState.children` | `FallibleMap < u64 , Weak < Job > >` |
 | `kernel/src/object/task.rs :: JobState.processes` | `FallibleMap < u64 , Weak < Process > >` |
 | `kernel/src/object/task.rs :: Lifecycle.threads` | `FallibleMap < u64 , Weak < Thread > >` |
+| `kernel/src/platform/qemu_virt/aarch64/its.rs :: Properties.routes` | `IrqMutex < FallibleMap < u32 , Arc < Device > > >` |
 | `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
-| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/platform/qemu_virt/riscv64/aia.rs :: Routes.vectors` | `FallibleMap < u32 , Route >` |
+| `kernel/src/platform/qemu_virt/riscv64/aia.rs :: Cold.devices` | `FallibleMap < u32 , () >` |
 | `kernel/src/thread/timer_queue/index.rs :: DeadlineIndex.map` | `FallibleMap < Key , V >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.contexts` | `FallibleMap < VirtualPageNumber , FrameTracker >` |
 | `kernel/src/vm/address_space.rs :: SpaceInner.nodes` | `FallibleMap < u64 , VmarNode >` |
@@ -84,7 +85,7 @@
 | `system/linuxd/src/fs/procfs.rs` | 849 | fs | ProcNode 投影，目录枚举归 procfs/directory，lookup 归 procfs/lookup，MM 文本归 procfs/maps | 新增独立目录 family 前拆分 |
 | `kernel/src/vm/vmo.rs` | 577 | `vm` | COW 树、页解析与映射退休。构造归 creation，物理归属/驻留归 residency；补页归 pager，别名登记/投影归 mapping，祖先折叠/释放归 release，固定归 pin，淘汰归 reclaim | 增加新的 backing kind 前审查页解析职责 |
 | `kernel/src/vm/address_space.rs` | 917 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
-| `system/network-protocol/src/lib.rs` | 744 | `lib` | 控制线格式与分派；领域结果归 types，数据环、记录、客户端 credits 与服务端消费各归其 owner | 增加 wire family 前按控制、网络域和 socket 的边界拆分 |
+| `system/network-protocol/src/lib.rs` | 575 | `lib` | 通用线格式与控制/socket 分派；网络域归 namespace，路由字段/集合归 routes，安装及执行事务各归独立协议 owner | 增加 wire family 前继续按控制、网络域和 socket 的边界拆分 |
 | `system/ext4/src/fuse_server.rs` | 998 | `fuse_server` | FUSE 操作分派与每文件内容缓存的生命周期在同一会话事务内（lookup/forget、写回与 syncfs） | 新增 FUSE 操作 family 前把内容缓存表拆到独立 owner |
 
 ## Change contract

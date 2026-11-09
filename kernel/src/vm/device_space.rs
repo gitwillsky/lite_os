@@ -4,6 +4,7 @@
 //! first-stage 与 Sv39 相同）。CPU 从不激活这张表，因此撤销映射只需设备侧失效：调用者先完成
 //! IOMMU 的 TLB 失效，再调用 [`Retired::release`] 释放被摘下的页表页。
 
+use super::CachePolicy;
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::TranslationCommit;
 use crate::arch::mmu::AddressSpaceKind;
@@ -50,10 +51,14 @@ impl DeviceAddressSpace {
         first: usize,
         pages: &[PhysicalPageNumber],
         writable: bool,
+        cache: CachePolicy,
     ) -> Result<(), Retired> {
         let mut permissions = PagePermissions::READ | PagePermissions::USER;
         if writable {
             permissions |= PagePermissions::WRITE;
+        }
+        if cache == CachePolicy::Device {
+            permissions |= PagePermissions::DEVICE;
         }
         let mut commit = TranslationCommit::new();
         for (index, &page) in pages.iter().enumerate() {

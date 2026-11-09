@@ -4,11 +4,8 @@ use super::PciTransport;
 use crate::drivers::pci::Bar;
 use mmio::MmioBus;
 
-const CONFIG_BYTES: usize = 4096;
 const VENDOR_ID: usize = 0x00;
 const DEVICE_ID: usize = 0x02;
-const STATUS: usize = 0x06;
-const CAPABILITIES: usize = 0x34;
 const SUBSYSTEM_DEVICE_ID: usize = 0x2e;
 const PCI_VENDOR_VIRTIO: u16 = 0x1af4;
 const PCI_CAP_ID_VENDOR: u8 = 0x09;
@@ -27,7 +24,7 @@ struct Capability {
 /// One discovered modern VirtIO PCI function and its routed INTx vector.
 pub(super) struct VirtioPciFunction {
     pub(super) device_id: u32,
-    pub(super) interrupt: u32,
+    pub(super) interrupt: Option<u32>,
     pub(super) transport: PciTransport,
     pub(super) bti: &'static native_runtime::Bti,
 }
@@ -36,8 +33,9 @@ pub(super) struct VirtioPciFunction {
 ///
 /// # Returns
 ///
-/// 节点不是可用的 modern VirtIO PCI function（缺 capability 或 INTx 未路由）时为 `None`。
-pub(super) fn discover() -> Option<VirtioPciFunction> {
+/// `message_interrupts` 由实际 adapter 的绑定路径声明支持；未支持的 adapter 保持 INTx，不能因硬件有表就启用无人消费的消息。
+/// 缺 capability、非法消息表或没有实际可用中断路由时为 `None`。
+pub(super) fn discover(message_interrupts: bool) -> Option<VirtioPciFunction> {
     let function = crate::drivers::pci::function()?;
     let config = &function.config;
     if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
@@ -51,52 +49,108 @@ pub(super) fn discover() -> Option<VirtioPciFunction> {
     } else {
         return None;
     };
+    let transport = capabilities(
+        config,
+        &function.bars,
+        message_interrupts && crate::platform::node().has_msi(),
+    )?;
+    if function.interrupt.is_none() && transport.message_interrupts().is_none() {
+        return None;
+    }
     Some(VirtioPciFunction {
         device_id,
-        interrupt: function.interrupt?,
-        transport: capabilities(config, &function.bars)?,
+        interrupt: function.interrupt,
+        transport,
         bti: function.bti,
     })
 }
 
-fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6]) -> Option<PciTransport> {
-    if config.read_u16(STATUS).ok()? & 0x10 == 0 {
-        return None;
-    }
+fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6], messages: bool) -> Option<PciTransport> {
+    let snapshot = pci_config::Configuration::read(|offset| config.read_u32(offset)).ok()?;
+    let mut msix_owner = None;
     let mut common = None;
     let mut notify = None;
     let mut notify_multiplier = None;
     let mut isr = None;
     let mut device = None;
-    let mut current = usize::from(config.read_u8(CAPABILITIES).ok()? & !3);
-    for _ in 0..48 {
-        if current == 0 {
-            break;
-        }
-        if current < 0x40 || current + 16 > CONFIG_BYTES {
-            return None;
-        }
-        let next = usize::from(config.read_u8(current + 1).ok()? & !3);
-        if config.read_u8(current).ok()? == PCI_CAP_ID_VENDOR {
-            let length = usize::from(config.read_u8(current + 2).ok()?);
-            let kind = config.read_u8(current + 3).ok()?;
-            let capability = Capability {
-                bar: usize::from(config.read_u8(current + 4).ok()?),
-                offset: usize::try_from(config.read_u32(current + 8).ok()?).ok()?,
-                length: usize::try_from(config.read_u32(current + 12).ok()?).ok()?,
-            };
-            match kind {
-                VIRTIO_PCI_CAP_COMMON_CFG if common.is_none() => common = Some(capability),
-                VIRTIO_PCI_CAP_NOTIFY_CFG if notify.is_none() && length >= 20 => {
-                    notify = Some(capability);
-                    notify_multiplier = Some(config.read_u32(current + 16).ok()?);
+    for entry in snapshot.capabilities().ok()? {
+        if let Some(message) = entry.message_interrupt().ok()?
+            && let Some(msix) = message.msix()
+        {
+            msix.validate(|bar| {
+                bars.get(usize::from(bar))
+                    .copied()
+                    .flatten()
+                    .map(|bar| bar.size as u64)
+            })
+            .ok()?;
+            if messages {
+                let (bar, offset, length) = msix.table();
+                let physical = capability_physical(
+                    bars,
+                    Capability {
+                        bar: usize::from(bar),
+                        offset: offset as usize,
+                        length: length as usize,
+                    },
+                )?;
+                let (address, table_vmo, table_offset) =
+                    crate::platform::map_device_vmo(physical, length as usize).ok()?;
+                let table = MmioBus::new(address, length as usize).ok()?;
+                if msix_owner
+                    .replace(
+                        super::pci::Msix::new(
+                            *config,
+                            message.control_offset(),
+                            table,
+                            table_vmo,
+                            table_offset,
+                            msix.entries(),
+                        )
+                        .ok()?,
+                    )
+                    .is_some()
+                {
+                    return None;
                 }
-                VIRTIO_PCI_CAP_ISR_CFG if isr.is_none() => isr = Some(capability),
-                VIRTIO_PCI_CAP_DEVICE_CFG if device.is_none() => device = Some(capability),
-                _ => {}
             }
         }
-        current = next;
+        if entry.id() != PCI_CAP_ID_VENDOR {
+            continue;
+        }
+        let length = usize::from(*entry.bytes(3).ok()?.get(2)?);
+        let bytes = entry.bytes(length).ok()?;
+        if length < 4 {
+            continue;
+        }
+        let kind = bytes[3];
+        if !matches!(
+            kind,
+            VIRTIO_PCI_CAP_COMMON_CFG
+                | VIRTIO_PCI_CAP_NOTIFY_CFG
+                | VIRTIO_PCI_CAP_ISR_CFG
+                | VIRTIO_PCI_CAP_DEVICE_CFG
+        ) {
+            continue;
+        }
+        if length < 16 {
+            return None;
+        }
+        let capability = Capability {
+            bar: usize::from(bytes[4]),
+            offset: usize::try_from(u32::from_le_bytes(bytes[8..12].try_into().ok()?)).ok()?,
+            length: usize::try_from(u32::from_le_bytes(bytes[12..16].try_into().ok()?)).ok()?,
+        };
+        match kind {
+            VIRTIO_PCI_CAP_COMMON_CFG if common.is_none() => common = Some(capability),
+            VIRTIO_PCI_CAP_NOTIFY_CFG if notify.is_none() && length >= 20 => {
+                notify = Some(capability);
+                notify_multiplier = Some(u32::from_le_bytes(bytes[16..20].try_into().ok()?));
+            }
+            VIRTIO_PCI_CAP_ISR_CFG if isr.is_none() => isr = Some(capability),
+            VIRTIO_PCI_CAP_DEVICE_CFG if device.is_none() => device = Some(capability),
+            _ => {}
+        }
     }
     PciTransport::new(
         capability_bus(bars, common?)?,
@@ -104,19 +158,24 @@ fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6]) -> Option<PciTranspor
         capability_bus(bars, isr?)?,
         device.and_then(|value| capability_bus(bars, value)),
         notify_multiplier?,
+        msix_owner,
     )
 }
 
 fn capability_bus(bars: &[Option<Bar>; 6], capability: Capability) -> Option<MmioBus> {
-    let bar = bars.get(capability.bar).copied().flatten()?;
-    let end = capability.offset.checked_add(capability.length)?;
-    if capability.length == 0 || end > bar.size {
-        return None;
-    }
-    let physical = bar.address.checked_add(capability.offset)?;
+    let physical = capability_physical(bars, capability)?;
     MmioBus::new(
         crate::platform::map_device_window(physical, capability.length),
         capability.length,
     )
     .ok()
+}
+
+fn capability_physical(bars: &[Option<Bar>; 6], capability: Capability) -> Option<usize> {
+    let bar = bars.get(capability.bar).copied().flatten()?;
+    let end = capability.offset.checked_add(capability.length)?;
+    if capability.length == 0 || end > bar.size {
+        return None;
+    }
+    bar.address.checked_add(capability.offset)
 }

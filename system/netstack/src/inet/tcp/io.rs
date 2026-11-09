@@ -331,18 +331,14 @@ pub(in crate::inet) fn maintain_clocks(
             socket.maintain(timestamp);
         }
     }
-    maintain(network, None);
+    maintain(&mut network.tcp_endpoints, &mut network.sockets, None);
 }
 
 pub(in crate::inet) fn maintain(
-    network: &mut NetworkStack,
+    tcp_endpoints: &mut fallible_tree::FallibleMap<usize, TcpEndpointState>,
+    sockets: &mut SocketSet<'static>,
     reset: Option<super::super::device::TcpReset>,
 ) {
-    let NetworkStack {
-        tcp_endpoints,
-        sockets,
-        ..
-    } = network;
     tcp_endpoints.for_each_mut(|_, state| {
         if state.orphaned {
             return;

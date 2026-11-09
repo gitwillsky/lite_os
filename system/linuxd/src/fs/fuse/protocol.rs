@@ -372,26 +372,16 @@ impl<'a> Iterator for DirectoryRecords<'a> {
             } else {
                 None
             };
-            let ino = self.reader.u64()?;
-            let offset = self.reader.u64()?;
-            let length = self.reader.u32()? as usize;
-            let kind = self.reader.u32()?;
-            // Linux FUSE_NAME_MAX 是 1024；名字为空或含 `/` 都是协议错误。
-            if length == 0 || length > 1024 {
-                return Err(FileSystemError::IoError);
-            }
-            let name = self.reader.bytes(length)?;
-            if name.contains(&b'/') || name.contains(&0) {
-                return Err(FileSystemError::IoError);
-            }
-            let padding = (8 - length % 8) % 8;
-            self.reader.skip(padding.min(self.reader.remaining()))?;
+            let bytes = self.reader.bytes;
+            let decoded = filesystem_protocol::directory::Record::decode(&bytes[self.reader.at..])
+                .map_err(|_| FileSystemError::IoError)?;
+            self.reader.skip(decoded.bytes)?;
             Ok(DirectoryRecord {
                 entry,
-                ino,
-                offset,
-                kind: mode_kind(kind << 12).unwrap_or(InodeType::File),
-                name,
+                ino: decoded.inode,
+                offset: decoded.offset,
+                kind: mode_kind(decoded.kind << 12).unwrap_or(InodeType::File),
+                name: decoded.name,
             })
         };
         Some(record())

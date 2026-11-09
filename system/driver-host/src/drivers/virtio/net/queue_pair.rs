@@ -41,8 +41,19 @@ impl QueueState {
         index: u16,
         transmit_limit: usize,
     ) -> Option<Self> {
-        let mut receive = VirtIONetworkDevice::create_queue(device, u32::from(index) * 2)?;
-        let transmit = VirtIONetworkDevice::create_queue(device, u32::from(index) * 2 + 1)?;
+        let receive_index = u32::from(index) * 2;
+        let (receive_interrupt, transmit_interrupt) = if device.message_interrupts().is_some() {
+            (
+                Some(u16::try_from(receive_index + 1).ok()?),
+                Some(u16::try_from(receive_index + 2).ok()?),
+            )
+        } else {
+            (None, None)
+        };
+        let mut receive =
+            VirtIONetworkDevice::create_queue(device, receive_index, receive_interrupt)?;
+        let transmit =
+            VirtIONetworkDevice::create_queue(device, receive_index + 1, transmit_interrupt)?;
         let receive_capacity = receive.size / 2;
         if receive_capacity == 0 {
             return None;
@@ -104,11 +115,60 @@ impl QueueState {
 }
 
 impl NetworkProvider for ActiveNetwork {
+    fn set_queue_affinity(&self, queue: u16, cpu: u32) -> Result<(), NetworkError> {
+        let guard = self.interrupt_configuration.lock();
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
+            return Err(NetworkError::Device);
+        }
+        let first = usize::from(queue) * 2 + 1;
+        let interrupts = self
+            .interrupts
+            .get(first..first + 2)
+            .ok_or(NetworkError::InvalidConfiguration)?;
+        // 1. IRQ 配置串行而不锁 DMA/IRQ 回调；native 层先校验 CPU/权限再改变第一条路由。
+        if let Err(status) = interrupts[0].set_affinity(cpu) {
+            match status {
+                native_runtime::native_abi::ERR_INVALID_ARGS => {
+                    return Err(NetworkError::InvalidConfiguration);
+                }
+                native_runtime::native_abi::ERR_NO_MEMORY => return Err(NetworkError::NoMemory),
+                native_runtime::native_abi::ERR_NO_RESOURCES => {
+                    return Err(NetworkError::NoResources);
+                }
+                _ => {
+                    self.request_stop();
+                    drop(guard);
+                    return Err(self.fail_device());
+                }
+            }
+        }
+        // 2. 不保存另一份旧 CPU 用来猜测回滚。第二条失败，先关准入，再在锁外停止整个设备。
+        if interrupts[1].set_affinity(cpu).is_err() {
+            self.request_stop();
+            drop(guard);
+            return Err(self.fail_device());
+        }
+        if self.failed.load(Ordering::Acquire) != Self::LIVE {
+            return Err(NetworkError::Device);
+        }
+        Ok(())
+    }
+
     fn queue_count(&self) -> u16 {
         self.queues.len() as u16
     }
     fn bind_activity(&self, queue: u16, activity: device_model::Activity) {
         let old = self.owner.lease.lock().activity[queue as usize].replace(activity.clone());
+        drop(old);
+        activity();
+    }
+    fn bind_link_activity(&self, activity: device_model::Activity) {
+        let old = self
+            .owner
+            .lease
+            .lock()
+            .link_activity
+            .replace(activity.clone());
         drop(old);
         activity();
     }

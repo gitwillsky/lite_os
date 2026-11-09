@@ -1,5 +1,7 @@
 //! 网络服务与使用者共享的领域词汇：socket 错误与就绪状态、地址、选项、路由与接口快照。
 
+pub use crate::configuration::ConfigurationBatch;
+pub use crate::routes::snapshot::{RouteSnapshot, RoutingSnapshot};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
@@ -247,14 +249,20 @@ pub enum Ipv4RouteKind {
     Broadcast,
     Unreachable,
     Throw,
+    /// 静默丢弃；本机发送按 ABI 映射为 Invalid。
+    Blackhole,
+    /// 管理策略禁止；本机发送按 ABI 映射为 PermissionDenied。
+    Prohibit,
 }
 
-const ROUTE_KINDS: [Ipv4RouteKind; 5] = [
+const ROUTE_KINDS: [Ipv4RouteKind; 7] = [
     Ipv4RouteKind::Unicast,
     Ipv4RouteKind::Local,
     Ipv4RouteKind::Broadcast,
     Ipv4RouteKind::Unreachable,
     Ipv4RouteKind::Throw,
+    Ipv4RouteKind::Blackhole,
+    Ipv4RouteKind::Prohibit,
 ];
 
 impl Ipv4RouteKind {
@@ -298,9 +306,11 @@ pub enum Ipv4RouteError {
     Exists,
     NotFound,
     Missing,
+    /// 原生配置事务独占写入，调用者可稍后重试。
+    Again,
 }
 
-const ROUTE_ERRORS: [Ipv4RouteError; 8] = [
+const ROUTE_ERRORS: [Ipv4RouteError; 9] = [
     Ipv4RouteError::Invalid,
     Ipv4RouteError::NoDevice,
     Ipv4RouteError::NetworkDown,
@@ -309,6 +319,7 @@ const ROUTE_ERRORS: [Ipv4RouteError; 8] = [
     Ipv4RouteError::Exists,
     Ipv4RouteError::NotFound,
     Ipv4RouteError::Missing,
+    Ipv4RouteError::Again,
 ];
 
 impl Ipv4RouteError {
@@ -323,6 +334,7 @@ impl Ipv4RouteError {
             Self::Exists => 17,              // EEXIST
             Self::NotFound => 3,             // ESRCH
             Self::Missing => 2,              // ENOENT
+            Self::Again => 11,               // EAGAIN
         }
     }
 
@@ -442,13 +454,6 @@ impl InterfaceSnapshot {
 pub struct NetworkSnapshot {
     pub name: [u8; 16],
     pub statistics: NetworkStatistics,
-}
-
-/// 当前 FIB 记录及其设备名；快照没有可写路由权，也不派生缺省路由。
-#[derive(Clone, Copy, Debug)]
-pub struct RouteSnapshot {
-    pub name: [u8; 16],
-    pub route: Ipv4RouteRequest,
 }
 
 /// 捕获时的 transport checksum 状态；Partial 与 Verified 互斥。

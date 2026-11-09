@@ -96,6 +96,10 @@ pub(crate) mod interrupt {
     };
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::interrupt::{SOFTWARE_SGI, send_software_sgi};
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) use super::selected::interrupt::{
+        claim_message, enable_message, initialize_messages, take_message_pending,
+    };
 }
 
 /// Frame-pointer unwinding mechanism selected at compile time.

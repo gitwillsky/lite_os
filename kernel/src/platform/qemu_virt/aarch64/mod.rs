@@ -8,6 +8,8 @@ mod device_tree;
 mod devices;
 mod discovery;
 mod gicv3;
+mod its;
+pub(crate) use its::{MessageInterruptGroup, MessageInterruptRoute};
 mod pl011;
 mod psci;
 mod tlb_shootdown;
@@ -48,8 +50,8 @@ pub(crate) fn initialize(boot: BootInfo) {
 ///
 /// controller 或 rendezvous 初始化失败时 fail-stop。
 pub(crate) use gicv3::{
-    bind_interrupt, device_interrupt_range, set_interrupt_affinity, unbind_interrupt,
-    unmask_interrupt,
+    InterruptRetirement, bind_interrupt, bind_message_interrupt, device_interrupt_range,
+    set_interrupt_affinity, unbind_interrupt, unmask_interrupt,
 };
 
 pub(crate) fn initialize_devices() {
@@ -87,6 +89,7 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
         Some(info.rtc.range()),
         Some(info.gic.distributor.range()),
         Some(info.gic.redistributor.range()),
+        info.its.map(|its| its.range()),
     ]
     .into_iter()
     .flatten()
@@ -125,6 +128,7 @@ pub(crate) fn synchronize_tlb(
     cpus: crate::execution::cpu::CpuSet,
     start_address: usize,
     size: usize,
+    acknowledge_local: impl Fn(),
 ) -> Result<(), TlbShootdownError> {
     if cpus.is_empty() {
         return Ok(());
@@ -133,7 +137,7 @@ pub(crate) fn synchronize_tlb(
     // full broadcast 后必须逐目标取得 SGI ack，才能释放 COW frame 或 kernel stack。
     let _ = (start_address, size);
     crate::arch::mmu::broadcast_tlb();
-    tlb_shootdown::synchronize(cpus)
+    tlb_shootdown::synchronize(cpus, acknowledge_local)
 }
 
 /// 在 AArch64 SGI completion seam 消费当前 vCPU 的 TLB request。

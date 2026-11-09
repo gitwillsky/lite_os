@@ -7,6 +7,10 @@ use alloc::{
 use native_runtime::Event;
 use native_runtime::native_abi::signals;
 use native_runtime::sync::Once;
+use packet_wire::{
+    buffer::PacketBuffer,
+    ethernet::{EthernetFrame, EthernetHeader},
+};
 
 use crate::{namespace::Namespace, receive::ReceiveBuffer};
 use device_model::network::NetworkError;
@@ -15,7 +19,7 @@ use network_protocol::{
     PacketAddress, PacketChecksum, PacketInformation, PacketKind, SocketError, SocketPollState,
 };
 
-const ETH_HEADER_LENGTH: usize = 14;
+const ETH_HEADER_LENGTH: usize = packet_wire::ethernet::HEADER_LENGTH;
 const ARPHRD_ETHER: u16 = 1;
 const ETH_P_ALL: u16 = 0x0003;
 const PACKET_HOST: u8 = 0;
@@ -295,21 +299,24 @@ impl PacketSocket {
         if input.len() > interface.mtu as usize + if raw { ETH_HEADER_LENGTH } else { 0 } {
             return Err(SocketError::MessageTooLarge);
         }
-        if raw && input.len() < ETH_HEADER_LENGTH {
-            return Err(SocketError::Invalid);
-        }
         if target.address_length > 8 {
             return Err(SocketError::Invalid);
         }
         // Linuxpacket_snd的显式sockaddr可覆盖bound device/protocol；不重新绑定endpoint。
         let mut link_header = [0u8; ETH_HEADER_LENGTH];
         let payload = if raw {
-            link_header.copy_from_slice(&input[..ETH_HEADER_LENGTH]);
-            &input[ETH_HEADER_LENGTH..]
+            let frame = EthernetFrame::parse(input).map_err(|_| SocketError::Invalid)?;
+            link_header.copy_from_slice(frame.header());
+            frame.payload()
         } else {
-            link_header[..6].copy_from_slice(&target.address[..6]);
-            link_header[6..12].copy_from_slice(&interface.mac);
-            link_header[12..14].copy_from_slice(&u16::from_be(target.protocol).to_be_bytes());
+            EthernetHeader {
+                destination: target.address[..6].try_into().expect("fixed link address"),
+                source: interface.mac,
+                type_or_length: u16::from_be(target.protocol),
+                tags: &[],
+            }
+            .emit(&mut link_header)
+            .expect("fixed Ethernet header capacity");
             input
         };
         if interface.loopback {
@@ -325,9 +332,17 @@ impl PacketSocket {
         if length > transmit.capacity() {
             return Err(SocketError::MessageTooLarge);
         }
-        let frame = &mut transmit.buffer_mut()[..length];
-        frame[..ETH_HEADER_LENGTH].copy_from_slice(&link_header);
-        frame[ETH_HEADER_LENGTH..].copy_from_slice(payload);
+        // payload 一次复制到最终位置，再消费已预留的头部；加头不移动它，也不另分配 frame。
+        let mut frame = PacketBuffer::new(
+            &mut transmit.buffer_mut()[..length],
+            ETH_HEADER_LENGTH..length,
+        )
+        .expect("validated transmit extent");
+        frame.bytes_mut().copy_from_slice(payload);
+        frame
+            .prepend(ETH_HEADER_LENGTH)
+            .expect("reserved MAC headroom")
+            .copy_from_slice(&link_header);
         deliver_outgoing(
             self.namespace.id(),
             interface.index,
@@ -471,23 +486,23 @@ impl PacketSocket {
 ///
 /// 无匹配NET/interface/protocol或队列已满时跳过，不改变L3 ingress。
 pub(crate) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8], checksum_valid: bool) {
-    if frame.len() < ETH_HEADER_LENGTH {
+    let Ok(frame) = EthernetFrame::parse(frame) else {
         return;
-    }
-    let protocol = u16::from_be_bytes([frame[12], frame[13]]);
+    };
+    let protocol = frame.type_or_length();
     let source = PacketAddress {
         protocol: protocol.to_be(),
         interface_index: index as i32,
         hardware_type: ARPHRD_ETHER,
-        packet_type: packet_type(&frame[..6], mac),
+        packet_type: packet_type(&frame.destination(), mac),
         address_length: 6,
-        address: padded_address(frame[6..12].try_into().unwrap()),
+        address: padded_address(frame.source()),
     };
     deliver_packet(
         net_id,
         source,
-        frame[..ETH_HEADER_LENGTH].try_into().unwrap(),
-        &frame[ETH_HEADER_LENGTH..],
+        *frame.header(),
+        frame.payload(),
         None,
         if checksum_valid {
             PacketChecksum::Verified
@@ -498,15 +513,16 @@ pub(crate) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8], check
 }
 /// 实际IP-medium lo tap沿原生sockaddr_ll发布，不伪造Ethernet/ARP协议设备。
 pub(crate) fn deliver_loopback(net_id: u64, header: [u8; ETH_HEADER_LENGTH], packet: &[u8]) {
+    let frame = EthernetFrame::parse(&header).expect("fixed packet link header");
     deliver_packet(
         net_id,
         PacketAddress {
-            protocol: u16::from_be_bytes([header[12], header[13]]).to_be(),
+            protocol: frame.type_or_length().to_be(),
             interface_index: 1,
             hardware_type: 772,
-            packet_type: packet_type(&header[..6], [0; 6]),
+            packet_type: packet_type(&frame.destination(), [0; 6]),
             address_length: 6,
-            address: padded_address(header[6..12].try_into().unwrap()),
+            address: padded_address(frame.source()),
         },
         header,
         packet,
@@ -524,13 +540,14 @@ pub(crate) fn deliver_outgoing(
     checksum_partial: bool,
     sender: Option<usize>,
 ) {
+    let frame = EthernetFrame::parse(&header).expect("fixed packet link header");
     let source = PacketAddress {
-        protocol: u16::from_be_bytes([header[12], header[13]]).to_be(),
+        protocol: frame.type_or_length().to_be(),
         interface_index: index as i32,
         hardware_type,
         packet_type: PACKET_OUTGOING,
         address_length: 6,
-        address: padded_address(header[6..12].try_into().unwrap()),
+        address: padded_address(frame.source()),
     };
     deliver_packet(
         net_id,
@@ -688,6 +705,7 @@ fn network_error(error: NetworkError) -> SocketError {
         NetworkError::InvalidConfiguration => SocketError::Invalid,
         NetworkError::WouldBlock => SocketError::Again,
         NetworkError::NoMemory => SocketError::NoMemory,
+        NetworkError::NoResources => SocketError::NoBuffer,
         NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
         NetworkError::Device => SocketError::Device,
         NetworkError::Disconnected => SocketError::NetworkDown,

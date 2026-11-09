@@ -209,7 +209,7 @@ impl VirtIOBlockDevice {
         }
         let queue = VirtQueue::new(queue_size, device.bti())?;
         device
-            .configure_queue(0, queue_size, queue.addresses())
+            .configure_queue(0, queue_size, queue.addresses(), None)
             .ok()?;
         let capacity = device.read_config_u64(0).ok()?;
 

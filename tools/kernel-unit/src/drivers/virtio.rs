@@ -9,7 +9,7 @@ pub(crate) mod transport {
     }
 }
 
-#[path = "../../../../system/driver-host/src/drivers/virtio/pci.rs"]
+#[path = "../../../../tools/source-view/driver-host/drivers/virtio/pci/pci/pci.rs"]
 pub(crate) mod pci;
 
 #[path = "../../../../tools/source-view/driver-host/drivers/virtio/queue/queue/queue.rs"]

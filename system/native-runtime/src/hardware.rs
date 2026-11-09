@@ -17,6 +17,10 @@ object!(
     Interrupt
 );
 object!(
+    /// 一个设备的消息中断分配；子中断保活底层路由。
+    Msi
+);
+object!(
     /// IOMMU 实例。
     Iommu
 );
@@ -42,8 +46,8 @@ impl Resource {
     ///
     /// # Parameters
     /// - `parent`: 授权来源，其句柄必须具有 WRITE。
-    /// - `kind`: MMIO、IRQ 或 SYSTEM；根 resource 可创建任一种，其余父对象只能细分同类范围。
-    /// - `base`/`size`: 非空授权区间；SYSTEM 使用操作编号，MMIO 使用页对齐的物理字节。
+    /// - `kind`: MMIO、IRQ、MSI 或 SYSTEM；根 resource 可创建任一种，其余父对象只能细分同类范围。
+    /// - `base`/`size`: 非空授权区间；SYSTEM 使用操作编号，MSI 使用消息设备 ID，MMIO 使用页对齐的物理字节。
     ///
     /// # Returns
     /// 新的独立资源句柄；父对象的范围不变。
@@ -80,7 +84,8 @@ impl Interrupt {
     /// 控制器完成路由配置后返回 unit；已经投递的事件仍属于原中断对象。
     ///
     /// # Errors
-    /// 句柄缺少 WRITE、CPU 不存在/未在线、源未绑定或控制器元数据分配失败。
+    /// 句柄缺少 WRITE、CPU 不存在/未在线、源未绑定或目标资源准备失败。
+    /// NO_MEMORY/NO_RESOURCES 不改变旧目标或确认状态；消息迁移提交的硬件超时由内核 fail-stop。
     pub fn set_affinity(&self, cpu: u32) -> Result<(), Status> {
         // SAFETY: 对象句柄保持存活，仅传递标量；权限与在线 CPU 由内核验证。
         check(unsafe {
@@ -138,13 +143,13 @@ impl Interrupt {
     ///
     /// # Errors
     ///
-    /// 句柄无效。
+    /// 句柄无效、port 模式尚无待确认通知，或重新预留失败；分配失败保留待确认状态，可重试。
     pub fn ack(&self) -> Result<(), Status> {
         // SAFETY: 无指针参数。
         check(unsafe { invoke(call::INTERRUPT_ACK, &[self.raw() as usize]) })
     }
 
-    /// 绑定到 port：每次触发投递 `packet::INTERRUPT`。
+    /// 绑定到 port：触发合并为一个 `packet::INTERRUPT`；成功接收后必须 ack 才能再次投递。
     ///
     /// # Errors
     ///
@@ -259,5 +264,76 @@ impl Drop for Pmt {
         let handle = core::mem::replace(&mut self.0, Handle::invalid());
         // SAFETY: 无指针参数；内核随之消费该句柄。失败只可能是句柄无效，没有可恢复动作。
         let _ = unsafe { invoke(call::PMT_UNPIN, &[handle.into_raw() as usize]) };
+    }
+}
+
+impl Msi {
+    /// 为一个设备创建消息中断组，消息地址经该设备 BTI 映射。
+    ///
+    /// # Parameters
+    /// - `resource`: 覆盖 `device` 消息设备 ID 的 WRITE authority。
+    /// - `bti`: 同一设备的 DMA 发起者，必须具备 READ | WRITE。
+    /// - `device`: 由平台消息映射解析的 ID，不假定等于 IOMMU stream ID。
+    /// - `count`: 非零槽数；一个组内每个槽只允许一个存活 Interrupt。
+    ///
+    /// # Returns
+    /// 分配句柄；子 Interrupt 存活期间关闭该句柄不会撤销路由。
+    ///
+    /// # Errors
+    /// 平台不支持、authority 不足、设备已有分配或资源/内存不足。
+    pub fn allocate(
+        resource: &Resource,
+        bti: &Bti,
+        device: u32,
+        count: u32,
+    ) -> Result<Self, Status> {
+        let mut out = native_abi::HANDLE_INVALID;
+        // SAFETY: 输出指针有效；内核验证句柄、范围及设备映射。
+        let status = unsafe {
+            invoke(
+                call::MSI_ALLOCATE,
+                &[
+                    resource.raw() as usize,
+                    bti.raw() as usize,
+                    device as usize,
+                    count as usize,
+                    (&raw mut out) as usize,
+                ],
+            )
+        };
+        new_handle(status, out).map(Self)
+    }
+    /// 从组中创建第 `index` 个消息中断，保活本分配。
+    ///
+    /// # Parameters
+    /// - `table`: MSI-X 表所属的物理 Device VMO，须有 READ | WRITE | MAP。
+    /// - `offset`: 表相对 VMO 的字节起点；内核从 index 计算唯一表项。
+    ///
+    /// # Returns
+    /// 初始路由至 boot CPU 的 Interrupt；内核拥有该表项的消息值和 mask，驱动不得再写已绑定表项。
+    ///
+    /// # Errors
+    /// 槽/表区间越界、非物理 Device VMO、已有子中断、权限不足，或内存/目标资源不足。
+    pub fn create_interrupt(
+        &self,
+        index: u32,
+        table: &Vmo,
+        offset: usize,
+    ) -> Result<Interrupt, Status> {
+        let mut out = native_abi::HANDLE_INVALID;
+        // SAFETY: 输出指针有效；组句柄在调用期间存活。
+        let status = unsafe {
+            invoke(
+                call::MSI_CREATE_INTERRUPT,
+                &[
+                    self.raw() as usize,
+                    index as usize,
+                    table.raw() as usize,
+                    offset,
+                    (&raw mut out) as usize,
+                ],
+            )
+        };
+        new_handle(status, out).map(Interrupt)
     }
 }

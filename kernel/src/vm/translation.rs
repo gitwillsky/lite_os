@@ -239,8 +239,13 @@ impl TranslationCommit {
         {
             let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
             targets.remove(crate::execution::cpu::current_id());
-            crate::platform::synchronize_tlb(targets, start, size)
-                .map_err(TranslationSynchronizationError::Translation)?;
+            crate::platform::synchronize_tlb(
+                targets,
+                start,
+                size,
+                crate::execution::barrier::complete_pending,
+            )
+            .map_err(TranslationSynchronizationError::Translation)?;
         }
         if plan.local_instruction_fence {
             crate::arch::instruction::publish_local();
@@ -318,7 +323,7 @@ pub(super) fn synchronize_address_space_retirement()
     crate::arch::mmu::flush_local();
     let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
     targets.remove(crate::execution::cpu::current_id());
-    crate::platform::synchronize_tlb(targets, 0, 0)
+    crate::platform::synchronize_tlb(targets, 0, 0, crate::execution::barrier::complete_pending)
 }
 
 #[cfg(test)]

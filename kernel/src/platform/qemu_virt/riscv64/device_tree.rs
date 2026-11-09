@@ -3,6 +3,9 @@
 //! 设备身份只由 `compatible` 裁决；`memory`、`cpu@` 与 `/cpus` 是 DTB 规范强制的节点名，
 //! 仍按名称识别。节点属性在下一个 `SubNode` 事件或遍历结束时提交，与属性顺序无关。
 
+mod aia;
+pub(crate) use aia::AiaInfo;
+
 use alloc::vec::Vec;
 use core::{fmt, ops::Range};
 
@@ -10,9 +13,6 @@ use dtb_walker::{Dtb, DtbObj, Property, Str, StrList, WalkOperation};
 
 /// compatible 为 `ns16550a` 的 QEMU UART。
 const UART_COMPATIBLES: &[&str] = &["ns16550a"];
-/// compatible 为 `sifive,plic-1.0.0`/`riscv,plic0` 的 PLIC；QEMU 11 之前节点名为 `plic@…`，之后为
-/// `interrupt-controller@…`，hart-local `riscv,cpu-intc` 也使用后者，因此只能按 compatible 区分。
-const PLIC_COMPATIBLES: &[&str] = &["sifive,plic-1.0.0", "riscv,plic0"];
 /// compatible 为 `google,goldfish-rtc` 的 QEMU RTC。
 const RTC_COMPATIBLES: &[&str] = &["google,goldfish-rtc"];
 
@@ -24,7 +24,7 @@ pub(crate) struct PlatformInfo {
     pub(crate) memory: Range<usize>,
     pub(crate) uart: Range<usize>,
     pub(crate) uart_irq: u32,
-    pub(crate) plic: Range<usize>,
+    pub(crate) aia: AiaInfo,
     pub(crate) rtc: Option<Range<usize>>,
     /// `/chosen` 的 initrd 物理区间（DT chosen 绑定的 `linux,initrd-start/end`）；没有 initrd 时为 `None`。
     pub(crate) initrd: Option<Range<usize>>,
@@ -41,7 +41,11 @@ impl fmt::Display for PlatformInfo {
         writeln!(output, "Timebase: {} Hz", self.timebase_frequency)?;
         writeln!(output, "Memory: {:#x?}", self.memory)?;
         writeln!(output, "UART: {:#x?}, IRQ {}", self.uart, self.uart_irq)?;
-        writeln!(output, "PLIC: {:#x?}", self.plic)?;
+        writeln!(
+            output,
+            "APLIC: {:#x?}, IMSIC IDs: {}",
+            self.aia.aplic, self.aia.identities
+        )?;
         writeln!(output, "RTC: {:#x?}", self.rtc)?;
         writeln!(output, "initrd: {:#x?}", self.initrd)
     }
@@ -50,7 +54,6 @@ impl fmt::Display for PlatformInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeviceKind {
     Uart,
-    Plic,
     Rtc,
 }
 
@@ -59,12 +62,13 @@ struct PendingDevice {
     kind: Option<DeviceKind>,
     reg: Option<Range<usize>>,
     irq: Option<u32>,
+    irq_flags: Option<u32>,
+    irq_parent: Option<u32>,
 }
 
 #[derive(Default)]
 struct Devices {
-    uart: Option<(Range<usize>, Option<u32>)>,
-    plic: Option<Range<usize>>,
+    uart: Option<(Range<usize>, Option<u32>, Option<u32>)>,
     rtc: Option<Range<usize>>,
 }
 
@@ -85,11 +89,13 @@ impl Devices {
         match kind {
             // QEMU 只公开一个 16550；若出现多个，取首个。
             DeviceKind::Uart => {
-                self.uart.get_or_insert((reg, pending.irq));
-            }
-            DeviceKind::Plic => {
-                assert!(self.plic.is_none(), "DTB declares more than one PLIC");
-                self.plic = Some(reg);
+                assert_eq!(
+                    pending.irq_flags,
+                    Some(4),
+                    "UART requires level-high APLIC interrupt"
+                );
+                self.uart
+                    .get_or_insert((reg, pending.irq, pending.irq_parent));
             }
             DeviceKind::Rtc => {
                 self.rtc.get_or_insert(reg);
@@ -111,7 +117,7 @@ impl Devices {
 ///
 /// # Panics
 ///
-/// 缺少 memory、CPU、timebase、UART/UART interrupt 或 PLIC，或已识别设备的 `reg`
+/// 缺少 memory、CPU、timebase、UART/UART interrupt 或 APLIC/IMSIC，或已识别设备的 `reg`
 /// 非法时 fail-stop；这些都是 boot 必需事实，降级运行只会在后续以无上下文的方式失败。
 pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     let dtb_range = physical
@@ -123,74 +129,87 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     let mut memory = None;
     let mut devices = Devices::default();
     let mut pending = PendingDevice::default();
+    let mut aia = aia::Discovery::default();
     let mut initrd_start = None;
     let mut initrd_end = None;
     let mut rng_seed = Vec::new();
     let mut bootargs = Vec::new();
 
-    dtb.walk(|context, object| match object {
-        DtbObj::SubNode { .. } => {
-            devices.commit(core::mem::take(&mut pending));
-            WalkOperation::StepInto
-        }
-        DtbObj::Property(Property::Compatible(values)) => {
-            pending.kind = classify(values.clone());
-            WalkOperation::StepOver
-        }
-        DtbObj::Property(Property::Reg(mut registers)) => {
-            let node = context.name();
-            if node.starts_with("memory") {
-                memory = registers.next();
-            } else if node.starts_with("cpu@") {
-                let hardware_id = registers.next().expect("CPU node lacks reg").start;
-                hardware_cpu_ids
-                    .try_reserve(1)
-                    .expect("CPU discovery allocation failed");
-                hardware_cpu_ids.push(hardware_id);
-            } else {
-                pending.reg = registers.next();
+    dtb.walk(|context, object| {
+        aia.observe(context, &object);
+        match object {
+            DtbObj::SubNode { .. } => {
+                devices.commit(core::mem::take(&mut pending));
+                WalkOperation::StepInto
             }
-            WalkOperation::StepOver
-        }
-        DtbObj::Property(Property::General { name, value }) => {
-            if name == Str::from("bootargs") && context.name() == Str::from("chosen") {
-                let line = value.split(|byte| *byte == 0).next().unwrap_or(&[]);
-                bootargs
-                    .try_reserve_exact(line.len())
-                    .expect("bootargs allocation failed");
-                bootargs.extend_from_slice(line);
-            } else if context.name() == Str::from("chosen") && name == Str::from("rng-seed") {
-                rng_seed
-                    .try_reserve_exact(value.len())
-                    .expect("rng-seed allocation failed");
-                rng_seed.extend_from_slice(value);
-            } else if context.name() == Str::from("chosen")
-                && name == Str::from("linux,initrd-start")
-            {
-                initrd_start = Some(be_uint(value) as usize);
-            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-end")
-            {
-                initrd_end = Some(be_uint(value) as usize);
-            } else if name == Str::from("timebase-frequency") && context.name() == Str::from("cpus")
-            {
-                timebase_frequency = be_uint(value);
-            } else if name == Str::from("interrupts") {
-                // PLIC `#interrupt-cells = <1>`：首个 cell 即 source id。
-                let irq = value.get(..4).map(|cell| be_uint(cell) as u32);
-                pending.irq = pending.irq.or(irq);
+            DtbObj::Property(Property::Compatible(values)) => {
+                pending.kind = classify(values.clone());
+                WalkOperation::StepOver
             }
-            WalkOperation::StepOver
+            DtbObj::Property(Property::Reg(mut registers)) => {
+                let node = context.name();
+                if node.starts_with("memory") {
+                    memory = registers.next();
+                } else if node.starts_with("cpu@") {
+                    let hardware_id = registers.next().expect("CPU node lacks reg").start;
+                    hardware_cpu_ids
+                        .try_reserve(1)
+                        .expect("CPU discovery allocation failed");
+                    hardware_cpu_ids.push(hardware_id);
+                } else {
+                    pending.reg = registers.next();
+                }
+                WalkOperation::StepOver
+            }
+            DtbObj::Property(Property::General { name, value }) => {
+                if name == Str::from("bootargs") && context.name() == Str::from("chosen") {
+                    let line = value.split(|byte| *byte == 0).next().unwrap_or(&[]);
+                    bootargs
+                        .try_reserve_exact(line.len())
+                        .expect("bootargs allocation failed");
+                    bootargs.extend_from_slice(line);
+                } else if context.name() == Str::from("chosen") && name == Str::from("rng-seed") {
+                    rng_seed
+                        .try_reserve_exact(value.len())
+                        .expect("rng-seed allocation failed");
+                    rng_seed.extend_from_slice(value);
+                } else if context.name() == Str::from("chosen")
+                    && name == Str::from("linux,initrd-start")
+                {
+                    initrd_start = Some(be_uint(value) as usize);
+                } else if context.name() == Str::from("chosen")
+                    && name == Str::from("linux,initrd-end")
+                {
+                    initrd_end = Some(be_uint(value) as usize);
+                } else if name == Str::from("timebase-frequency")
+                    && context.name() == Str::from("cpus")
+                {
+                    timebase_frequency = be_uint(value);
+                } else if name == Str::from("interrupt-parent") {
+                    pending.irq_parent = Some(be_uint(value) as u32);
+                } else if name == Str::from("interrupts") {
+                    // APLIC 两 cell；到 compatible 提交时验证 UART，不依赖节点名或属性顺序。
+                    if value.len() == 8 {
+                        pending.irq = Some(be_uint(&value[..4]) as u32);
+                        pending.irq_flags = Some(be_uint(&value[4..]) as u32);
+                    }
+                }
+                WalkOperation::StepOver
+            }
+            DtbObj::Property(_) => WalkOperation::StepOver,
         }
-        DtbObj::Property(_) => WalkOperation::StepOver,
     });
     devices.commit(pending);
+    aia.finish_node();
+    hardware_cpu_ids.retain(|id| aia.cpu_enabled(*id));
+    let (uart, uart_irq, uart_parent) = devices.uart.expect("QEMU virt requires an ns16550a UART");
+    let aia = aia.finish(&hardware_cpu_ids, uart_parent);
 
     assert!(!hardware_cpu_ids.is_empty(), "DTB contains no CPUs");
     assert_ne!(timebase_frequency, 0, "DTB /cpus lacks timebase-frequency");
     let memory = memory
         .filter(valid_range)
         .expect("DTB memory range missing");
-    let (uart, uart_irq) = devices.uart.expect("QEMU virt requires an ns16550a UART");
     PlatformInfo {
         dtb: dtb_range,
         hardware_cpu_ids,
@@ -198,11 +217,9 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
         memory,
         uart,
         uart_irq: uart_irq
-            .filter(|irq| *irq != 0)
-            .expect("ns16550a UART lacks a PLIC interrupt"),
-        plic: devices
-            .plic
-            .expect("QEMU virt requires a sifive,plic-1.0.0/riscv,plic0 interrupt controller"),
+            .filter(|irq| *irq != 0 && *irq <= aia.sources)
+            .expect("ns16550a UART lacks an APLIC interrupt"),
+        aia,
         rtc: devices.rtc,
         bootargs,
         rng_seed,
@@ -217,7 +234,6 @@ fn classify(values: StrList<'_>) -> Option<DeviceKind> {
     for value in values {
         for (kind, compatibles) in [
             (DeviceKind::Uart, UART_COMPATIBLES),
-            (DeviceKind::Plic, PLIC_COMPATIBLES),
             (DeviceKind::Rtc, RTC_COMPATIBLES),
         ] {
             if compatibles

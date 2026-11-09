@@ -1,6 +1,6 @@
 //! “本地连接 状态”：按 Windows 2000 netshell 对话框 1801（常规页）还原。
-//! 连接状态取 sysfs 与网络设置（netcfg），活动计数在有界后台池按 `/proc/net/dev` 周期采样；
-//! “详细信息”使用同一次 netcfg 快照呈现当前生效地址。
+//! 连接状态取 sysfs 与网络设置（router_config），活动计数在有界后台池按 `/proc/net/dev` 周期采样；
+//! “详细信息”使用同一次 router_config 快照呈现当前生效地址。
 //! “属性”打开“本地连接 属性”，“禁用”经网络设置关闭接口后关闭本窗口。
 use crate::{Activity, Page, Response, child, group, pair};
 use liteos_ui::{

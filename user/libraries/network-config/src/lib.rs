@@ -1,18 +1,19 @@
-//! 系统网络接口设置：经 linuxd 读取原生 netcfg 的生效状态；修改设置需要 netdev 组。
+//! 系统网络接口设置：经 linuxd 读取原生 router_config 的生效状态；修改设置需要 netdev 组。
 //!
-//! 设置的 owner 是原生网络配置服务 netcfg：它持久化用户设置、运行 DHCP 并配置接口；本库只是 Linux 侧的
+//! 设置的 owner 是原生网络配置服务 router_config：它持久化用户设置、运行 DHCP 并配置接口；本库只是 Linux 侧的
 //! 客户端，不再有配置文件或需要重载的 Linux 服务。没有单独设置的以太网接口按 Windows 默认处理：
 //! 启用、自动获得 IP 与 DNS。
+pub mod configuration;
 mod links;
 mod settings;
 pub use links::{
     Link, LinkState, ethernet_links, ethernet_links_with_settings, link_state, rename_connection,
 };
-pub use netcfg_protocol::DNS_MAX;
-pub use netcfg_protocol::valid_search_list;
+pub use router_protocol::ConfigurationStatus;
+pub use router_protocol::valid_search_list;
 pub use settings::{Snapshot, dhcp, snapshot, wait};
 
-use netcfg_protocol::{InterfaceConfig, Method as NetcfgMethod};
+use router_protocol::{InterfaceConfig, Method as RouterConfigMethod};
 use std::{io, net::Ipv4Addr};
 
 /// IP 地址的获得方式（“自动获得 IP 地址” / “使用下面的 IP 地址”）。
@@ -63,9 +64,9 @@ impl Interface {
     }
 
     fn from_config(name: &str, config: &InterfaceConfig) -> Self {
-        // 禁用时 netcfg 仍保留之前的静态地址；有地址即视为禁用前使用静态地址。
-        let method = if config.method == NetcfgMethod::Static
-            || (config.method == NetcfgMethod::Disabled && !config.address.is_unspecified())
+        // 禁用时 router_config 仍保留之前的静态地址；有地址即视为禁用前使用静态地址。
+        let method = if config.method == RouterConfigMethod::Static
+            || (config.method == RouterConfigMethod::Disabled && !config.address.is_unspecified())
         {
             Method::Static {
                 address: config.address,
@@ -77,7 +78,7 @@ impl Interface {
         };
         Self {
             name: name.to_owned(),
-            enabled: config.method != NetcfgMethod::Disabled,
+            enabled: config.method != RouterConfigMethod::Disabled,
             method,
             dns: config.dns.clone(),
             dns_suffix: config.dns_suffix.clone(),
@@ -94,13 +95,13 @@ impl Interface {
             gateway,
         } = &self.method
         {
-            config.method = NetcfgMethod::Static;
+            config.method = RouterConfigMethod::Static;
             config.address = *address;
             config.prefix_length = u32::from(*netmask).leading_ones() as u8;
             config.gateway = gateway.unwrap_or(Ipv4Addr::UNSPECIFIED);
         }
         if !self.enabled {
-            config.method = NetcfgMethod::Disabled;
+            config.method = RouterConfigMethod::Disabled;
         }
         config
     }
@@ -136,7 +137,7 @@ pub fn format_lease_time(unix: i64) -> String {
     )
 }
 
-/// 接口 `name` 的当前设置；netcfg 尚未安装该接口时为 Windows 默认。
+/// 接口 `name` 的当前设置；router_config 尚未安装该接口时为 Windows 默认。
 ///
 /// # Errors
 ///
@@ -155,7 +156,7 @@ pub fn apply(
     search_list: Option<Vec<String>>,
     append_parent_suffixes: Option<bool>,
 ) -> io::Result<()> {
-    settings::set(netcfg_protocol::Update {
+    settings::set(router_protocol::Update {
         interface: interface.map_or(&[], |interface| interface.name.as_bytes()),
         config: interface.map(Interface::to_config),
         search_list,
@@ -172,7 +173,7 @@ pub fn normalize_dns_suffix(text: &str) -> Option<&str> {
         .strip_suffix('.')
         .filter(|suffix| !suffix.is_empty())
         .unwrap_or(text);
-    netcfg_protocol::dns_suffix(text.as_bytes()).ok()
+    router_protocol::dns_suffix(text.as_bytes()).ok()
 }
 
 /// 保存主 DNS 后缀；空字符串恢复为未配置。
@@ -181,7 +182,7 @@ pub fn normalize_dns_suffix(text: &str) -> Option<&str> {
 ///
 /// 后缀无效、端点不可用或没有修改权限。
 pub fn set_primary_dns_suffix(suffix: String) -> io::Result<()> {
-    settings::set(netcfg_protocol::Update {
+    settings::set(router_protocol::Update {
         primary_dns_suffix: Some(suffix),
         ..Default::default()
     })
@@ -216,7 +217,7 @@ mod tests {
             dns_suffix: "office.test".into(),
         };
         let config = interface.to_config();
-        assert_eq!(config.method, NetcfgMethod::Disabled);
+        assert_eq!(config.method, RouterConfigMethod::Disabled);
         assert_eq!(config.prefix_length, 24);
         let mut restored = Interface::from_config("eth0", &config);
         assert!(!restored.enabled);

@@ -11,7 +11,7 @@
 
 ## 系统服务启动
 
-component-manager 启动 driver-manager、fshost、netstack、dhcp-client、netcfg、audio-core 与 linuxd，按设备类派生设备目录并为每个
+component-manager 启动 driver-manager、fshost、netstack、dhcp-client、router-config、audio-core 与 linuxd，按设备类派生设备目录并为每个
 消费者服务路由目录（见[服务拓扑与能力路由](../architecture-contract/dependency-owners.md#服务拓扑与能力路由)）。
 driver-manager 获取设备根 resource、DTB、设备目录服务端以及驱动宿主的 Job 与映像；fshost 获取 ext4 实例的 Job 与映像；
 linuxd 获取路由给它的设备类、服务路由目录、串口与电源能力，不持有设备根 resource。
@@ -30,7 +30,7 @@ linuxd 在自身服务线程中建立 VFS、挂载根及 devtmpfs、选择 conso
 ## RISC-V64 / QEMU virt
 
 - 独立 `bootloader/` 提供 M-mode RustSBI、PMP、HSM、TIME、IPI、RFENCE、SRST 与 debug console，以 DTB 和 typed handoff 进入内核。
-- platform 验证 DTB、SBI、PLIC、UART 与 RTC；hart ID 只在 firmware/arch/platform 边界使用，领域只使用 logical `CpuId`。
+- platform 验证 DTB、SBI、APLIC/IMSIC、UART 与 RTC；hart ID 只在 firmware/arch/platform 边界使用，领域只使用 logical `CpuId`。
 - RFENCE 通过每 hart 的 request/range/ack mailbox 与串行 sender 发布 SBI `[start,size)`；目标完成实际 fence 后才确认。Sv39、CSR、SBI mask 不进入通用机制。
 
 ## 范围

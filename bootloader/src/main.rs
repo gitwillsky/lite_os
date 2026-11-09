@@ -3,6 +3,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod aclint;
+mod aia;
 mod clint;
 #[macro_use]
 mod console;
@@ -100,6 +101,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         qemu_test::init(board_info.test.start);
         dbcn::init(KERNEL_ENTRY..board_info.mem.end);
         validate_board_info(board_info, hart_id);
+        aia::initialize(&device_tree::load(opaque));
 
         // print startup information
         print!(
@@ -155,6 +157,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         hart_csr_utils::print_pmps();
     }
     trap_stack::prepare_for_trap();
+    aia::initialize_local(&device_tree::load(opaque), hart_id);
 
     // Release 发布当前 hart 的 HSM cell/trap stack 初始化；cold-boot hart 在写入
     // remote HSM start payload 前以 Acquire 等待完整 mask，避免 payload 被迟到的 init 覆盖。

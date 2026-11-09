@@ -14,7 +14,7 @@ trap '/bin/rm -f "$snapshot"' EXIT
 if ! /bin/awk -F '\t' '
 BEGIN {
     expected["audio-core"]=expected["component-manager"]=expected["driver-manager"]=1;
-    expected["fshost"]=expected["netstack"]=expected["dhcp-client"]=expected["netcfg"]=expected["linuxd"]=1;
+    expected["fshost"]=expected["netstack"]=expected["dhcp-client"]=expected["router-config"]=expected["linuxd"]=1;
     # 原生数据卷与 Linux 根卷各有一个 ext4 实例。
     expected["ext4"]=2;
 }

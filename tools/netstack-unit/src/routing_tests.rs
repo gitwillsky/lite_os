@@ -57,7 +57,7 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
             .unwrap()
             .lock()
             .unwrap()
-            .route(destination, None)
+            .route(Ipv4Addr::UNSPECIFIED, destination, None)
             .unwrap()
             .interface_index,
         3
@@ -73,7 +73,7 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
             .unwrap()
             .lock()
             .unwrap()
-            .route(destination, None)
+            .route(Ipv4Addr::UNSPECIFIED, destination, None)
             .unwrap()
             .interface_index,
         2
@@ -88,7 +88,7 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
             .unwrap()
             .lock()
             .unwrap()
-            .route(destination, None)
+            .route(Ipv4Addr::UNSPECIFIED, destination, None)
             .unwrap()
             .interface_index,
         3
@@ -113,7 +113,7 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
             .unwrap()
             .lock()
             .unwrap()
-            .route(destination, None)
+            .route(Ipv4Addr::UNSPECIFIED, destination, None)
             .unwrap()
             .interface_index,
         2
@@ -134,7 +134,7 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
             .unwrap()
             .lock()
             .unwrap()
-            .route(destination, None),
+            .route(Ipv4Addr::UNSPECIFIED, destination, None),
         Err(SocketError::NetworkUnreachable)
     );
 }
@@ -166,19 +166,30 @@ fn actual_fib_gateway_admission_and_distinct_reject_errors_do_not_modify_existin
     let directly_reachable = static_route(Ipv4Addr::new(198, 51, 100, 0), 24, 3, 1);
     configure_route(&net, directly_reachable, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
     configure_route(&net, unreachable_gateway, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
+    // 省略 oif 与显式 actual oif 是同一已解析 alias；重放不能制造新下一跳或重复路由。
+    crate::allocation_failure::fail_next();
+    configure_route(&net, unreachable_gateway, network_protocol::RouteChange { delete: false, replace: true, create: true, exclusive: false, append: false }).unwrap();
+    assert!(!crate::allocation_failure::was_consumed());
+    assert_eq!(
+        configure_route(&net, Ipv4RouteRequest { interface_index: Some(3), ..unreachable_gateway }, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }),
+        Err(E::Exists)
+    );
     let selected = net
         .protocol()
         .unwrap()
         .lock()
         .unwrap()
-        .route(Ipv4Addr::new(203, 0, 113, 9), None)
+        .route(Ipv4Addr::UNSPECIFIED, Ipv4Addr::new(203, 0, 113, 9), None)
         .unwrap();
     assert_eq!(
         (selected.interface_index, selected.next_hop),
         (3, Ipv4Addr::new(198, 51, 100, 1))
     );
-    {
-        let (kind, error) = (K::Unreachable, SocketError::HostUnreachable);
+    for (kind, error) in [
+        (K::Unreachable, SocketError::HostUnreachable),
+        (K::Blackhole, SocketError::Invalid),
+        (K::Prohibit, SocketError::PermissionDenied),
+    ] {
         let reject = Ipv4RouteRequest {
             kind,
             scope: 254,
@@ -191,7 +202,7 @@ fn actual_fib_gateway_admission_and_distinct_reject_errors_do_not_modify_existin
                 .unwrap()
                 .lock()
                 .unwrap()
-                .route(reject.destination, None),
+                .route(Ipv4Addr::UNSPECIFIED, reject.destination, None),
             Err(error)
         );
         assert_eq!(
@@ -199,13 +210,15 @@ fn actual_fib_gateway_admission_and_distinct_reject_errors_do_not_modify_existin
                 .unwrap()
                 .lock()
                 .unwrap()
-                .route(reject.destination, Some(2))
+                .route(Ipv4Addr::UNSPECIFIED, reject.destination, Some(2))
                 .unwrap()
                 .next_hop,
-            Ipv4Addr::new(10, 40, 0, 1)
+            reject.destination
         );
         configure_route(&net, reject, network_protocol::RouteChange { delete: true, replace: false, create: false, exclusive: false, append: false }).unwrap();
     }
+    configure_route(&net, Ipv4RouteRequest { preferred_source: Some(Ipv4Addr::UNSPECIFIED), ..directly_reachable }, network_protocol::RouteChange { delete: false, replace: true, create: true, exclusive: false, append: false }).unwrap();
+    assert_eq!(net.protocol().unwrap().lock().unwrap().route(Ipv4Addr::UNSPECIFIED, Ipv4Addr::new(198, 51, 100, 9), None).unwrap().preferred_source, Some(Ipv4Addr::new(10, 41, 0, 15)));
     let nonlocal = Ipv4RouteRequest {
         preferred_source: Some(Ipv4Addr::new(192, 0, 2, 1)),
         ..directly_reachable
@@ -229,21 +242,21 @@ fn actual_address_and_fib_publication_roll_back_every_preparation_failure() {
     initialize();
     let (net, _, _) = routing_domain(89233);
     let old = Ipv4Addr::new(10, 40, 0, 15);
-    for fault in 0..7 {
+    for fault in 0.. {
         configure_address(&net, 2, old).unwrap();
         configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
         let manual = static_route(Ipv4Addr::new(172, 20, 0, 0), 16, 2, 12);
         if !route_snapshot(&net)
             .unwrap()
             .iter()
-            .any(|snapshot| snapshot.route == manual)
+            .any(|snapshot| snapshot.single_path() == Some(manual))
         {
             configure_route(&net, manual, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
         }
         let before = route_snapshot(&net)
             .unwrap()
-            .into_iter()
-            .map(|snapshot| snapshot.route)
+            .iter()
+            .map(|snapshot| snapshot.single_path().unwrap())
             .collect::<Vec<_>>();
         crate::allocation_failure::fail_after(fault);
         let changed = configure_address(&net, 2, Ipv4Addr::new(10, 40, 1, 15));
@@ -257,13 +270,14 @@ fn actual_address_and_fib_publication_roll_back_every_preparation_failure() {
             assert_eq!(
                 route_snapshot(&net)
                     .unwrap()
-                    .into_iter()
-                    .map(|snapshot| snapshot.route)
+                    .iter()
+                    .map(|snapshot| snapshot.single_path().unwrap())
                     .collect::<Vec<_>>(),
                 before
             );
         } else {
             changed.unwrap();
+            break;
         }
     }
 }
@@ -282,7 +296,7 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
         .unwrap()
         .lock()
         .unwrap()
-        .route(local, None)
+        .route(Ipv4Addr::UNSPECIFIED, local, None)
         .unwrap();
     assert_eq!(
         (
@@ -296,7 +310,7 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
         !route_snapshot(&net)
             .unwrap()
             .iter()
-            .any(|snapshot| snapshot.route == foreign)
+            .any(|snapshot| snapshot.single_path() == Some(foreign))
     );
     let receiver = scoped_endpoint(&net, InetProtocol::Udp);
     receiver
@@ -330,11 +344,11 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
         !route_snapshot(&net)
             .unwrap()
             .iter()
-            .any(|snapshot| snapshot.route == foreign)
+            .any(|snapshot| snapshot.single_path() == Some(foreign))
     );
     configure_address(&net, 2, Ipv4Addr::UNSPECIFIED).unwrap();
     assert_eq!(
-        net.protocol().unwrap().lock().unwrap().route(local, None),
+        net.protocol().unwrap().lock().unwrap().route(Ipv4Addr::UNSPECIFIED, local, None),
         Err(SocketError::NetworkUnreachable)
     );
     sender.close_description();
@@ -709,7 +723,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
         "actual route MTU refresh must update sender cache without copying the 4096 receive advertisement"
     );
     let snapshot = route_snapshot(&net).unwrap();
-    assert!(snapshot.iter().any(|row| row.route == route));
+    assert!(snapshot.iter().any(|row| row.single_path() == Some(route)));
     child.close_description();
     listener.close_description();
     advance_actual_domains();

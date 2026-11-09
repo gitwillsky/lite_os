@@ -7,6 +7,7 @@ const POLICY_PATH: &str = "kernel/src/vm/translation.rs";
 const AARCH64_MMU_PATH: &str = "kernel/src/arch/aarch64/mmu.rs";
 const AARCH64_PLATFORM_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/mod.rs";
 const AARCH64_TLB_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs";
+const BARRIER_PATH: &str = "kernel/src/execution/barrier.rs";
 const TRAP_PATH: &str = "kernel/src/execution/trap.rs";
 const RFENCE_PATH: &str = "bootloader/src/rfence.rs";
 const TRAP_VECTOR_PATH: &str = "bootloader/src/trap_vec.rs";
@@ -80,7 +81,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .find("crate::arch::mmu::broadcast_tlb();");
     let rendezvous = aarch64_platform
         .text
-        .find("tlb_shootdown::synchronize(cpus)");
+        .find("tlb_shootdown::synchronize(cpus, acknowledge_local)");
     if !matches!((broadcast, rendezvous), (Some(broadcast), Some(rendezvous)) if broadcast < rendezvous)
     {
         errors.push(format!(
@@ -123,12 +124,20 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "crate::arch::mmu::acknowledge_broadcast_tlb();",
         "state.completion.fetch_max(requested, Ordering::Release);",
         ".completion.load(Ordering::Acquire) >= generation",
+        "acknowledge_local();",
     ] {
         if !aarch64_tlb.text.contains(required) {
             errors.push(format!(
                 "{AARCH64_TLB_PATH}: Apple HVF retirement must publish a generation, force every target across the broadcast flush point, and await each release/acquire ack; missing `{required}`"
             ));
         }
+    }
+    if !sources.iter().any(|source| {
+        source.relative == BARRIER_PATH && source.text.contains("platform::complete_pending_ipi();")
+    }) {
+        errors.push(format!(
+            "{BARRIER_PATH}: IRQ-masked barrier waits must acknowledge platform requests to avoid a cross-rendezvous deadlock"
+        ));
     }
     let Some(trap) = sources.iter().find(|source| source.relative == TRAP_PATH) else {
         errors.push(format!("{TRAP_PATH}: missing SGI completion owner"));

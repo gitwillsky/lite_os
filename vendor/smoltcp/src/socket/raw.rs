@@ -146,11 +146,11 @@ impl<'a> Socket<'a> {
     pub fn set_transmit_interface(&mut self, index: Option<u32>) {
         self.transmit_interface = index;
     }
-    /// 借出实际TX队首IPv4 destination及冻结的logical oif；不另存packet目的地址。
-    pub fn transmit_route(&mut self) -> Option<(IpAddress, Option<u32>)> {
+    /// 借出实际 TX 队首 IPv4 source/destination 及冻结的 logical oif；不另存packet目的地址。
+    pub fn transmit_route(&mut self) -> Option<(IpAddress, IpAddress, Option<u32>)> {
         let (metadata, payload) = self.tx_buffer.peek().ok()?;
         let packet = Ipv4Packet::new_checked(payload).ok()?;
-        Some((packet.dst_addr().into(), metadata.interface_index))
+        Some((packet.src_addr().into(), packet.dst_addr().into(), metadata.interface_index))
     }
 
     /// Create a raw IP socket bound to the given IP version and datagram protocol,

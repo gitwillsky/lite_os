@@ -9,11 +9,12 @@ test = false
 bench = false
 
 [dependencies]
+pci-config = { path = "../../libraries/pci-config" }
 native-runtime = { path = "../native-runtime" }
 device-protocol = { path = "../device-protocol" }
 launch-protocol = { path = "../launch-protocol" }
 mmio = { path = "../../libraries/mmio" }
-dtb-walker = "=0.2.0-alpha.3"
+dtb-walker = { path = "../../vendor/dtb-walker", version = "=0.2.0-alpha.3" }
 
 [build-dependencies]
 launch-protocol = { path = "../launch-protocol" }

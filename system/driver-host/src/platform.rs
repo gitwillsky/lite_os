@@ -18,6 +18,7 @@ struct NodeResources {
     node: Node,
     bti: Bti,
     irq: Option<Resource>,
+    msi: Option<Resource>,
     mmio: Vec<Resource>,
 }
 
@@ -35,11 +36,13 @@ pub(crate) fn install(startup: &mut Startup) {
     let first = driver_host::RESOURCES - native_abi::startup::ROLE_HANDLES;
     let mut resources = startup.handles.drain(first..).map(Resource::from_handle);
     let irq = node.has_irq().then(|| resources.next().expect("node IRQ"));
+    let msi = node.has_msi().then(|| resources.next().expect("node MSI"));
     let mmio = resources.collect();
     NODE.call_once(|| NodeResources {
         node,
         bti,
         irq,
+        msi,
         mmio,
     });
 }
@@ -59,33 +62,59 @@ pub(crate) fn node() -> &'static Node {
 ///
 /// 窗口不在任何节点 MMIO resource 内或映射失败时 fail-stop：驱动无法在没有寄存器的情况下继续装配。
 pub(crate) fn map_device_window(physical: usize, size: usize) -> usize {
+    map_device_vmo(physical, size)
+        .unwrap_or_else(|status| panic!("MMIO window {physical:#x}+{size:#x}: {status}"))
+        .0
+}
+
+/// 映射节点 MMIO，连同物理 VMO 与窗口页内偏移交给需委托原生对象的调用方。
+/// # Returns
+/// 窗口虚拟地址、物理 Device VMO、窗口在 VMO 内的字节偏移；映射与本进程同寿命。
+/// # Errors
+/// authority、对象或地址空间映射失败时返回原生错误。
+pub(crate) fn map_device_vmo(
+    physical: usize,
+    size: usize,
+) -> Result<(usize, Vmo, usize), native_abi::Status> {
+    let (vmo, offset) = device_vmo(physical, size)?;
+    let length = (offset + size).next_multiple_of(native_abi::PAGE_SIZE);
+    let base = native_runtime::heap::vmar().map(
+        native_abi::vm::READ | native_abi::vm::WRITE,
+        0,
+        &vmo,
+        0,
+        length,
+    )?;
+    Ok((base + offset, vmo, offset))
+}
+
+/// 按本节点 MMIO authority 创建物理 Device VMO，返回对象和原窗口的页内偏移。
+/// # Errors
+/// 空/溢出窗口、authority 不覆盖或原生对象分配失败；不扩大本节点资源。
+fn device_vmo(physical: usize, size: usize) -> Result<(Vmo, usize), native_abi::Status> {
     let page = native_abi::PAGE_SIZE;
     let start = physical & !(page - 1);
-    let end = (physical + size).next_multiple_of(page);
-    let vmo = resources()
-        .mmio
-        .iter()
-        .find_map(|parent| {
-            let resource = Resource::create(
-                parent,
-                native_abi::resource::MMIO,
-                start as u64,
-                (end - start) as u64,
-            )
-            .ok()?;
-            Vmo::create_physical(&resource, start as u64, (end - start) as u64).ok()
-        })
-        .unwrap_or_else(|| panic!("MMIO window {start:#x}+{:#x} outside node", end - start));
-    let base = native_runtime::heap::vmar()
-        .map(
-            native_abi::vm::READ | native_abi::vm::WRITE,
-            0,
-            &vmo,
-            0,
-            end - start,
-        )
-        .unwrap_or_else(|status| panic!("MMIO mapping {start:#x}: {status}"));
-    base + (physical - start)
+    let end = physical
+        .checked_add(size)
+        .and_then(|end| end.checked_next_multiple_of(page))
+        .filter(|_| size != 0)
+        .ok_or(native_abi::ERR_INVALID_ARGS)?;
+    for parent in &resources().mmio {
+        match Resource::create(
+            parent,
+            native_abi::resource::MMIO,
+            start as u64,
+            (end - start) as u64,
+        ) {
+            Ok(resource) => {
+                return Vmo::create_physical(&resource, start as u64, (end - start) as u64)
+                    .map(|vmo| (vmo, physical - start));
+            }
+            Err(native_abi::ERR_ACCESS_DENIED) => continue,
+            Err(status) => return Err(status),
+        }
+    }
+    Err(native_abi::ERR_ACCESS_DENIED)
 }
 
 /// 注册设备中断：创建中断对象并启动等待线程。
@@ -136,4 +165,29 @@ pub(crate) fn release_quarantine() {
     if let Err(status) = bti().release_quarantine() {
         warn!("BTI quarantine release failed: {status}");
     }
+}
+
+/// 按本节点 msi-map identity 分配消息组；不允许调用者指定别的设备 ID 或 BTI。
+/// # Errors
+/// 没有 authority、平台不支持或 native 分配失败返回原状态。
+pub(crate) fn allocate_message_interrupts(
+    count: u32,
+) -> Result<native_runtime::Msi, native_abi::Status> {
+    let resources = resources();
+    let launch_protocol::driver_host::Bus::Pci {
+        message_device: Some(device),
+        ..
+    } = resources.node.bus
+    else {
+        return Err(native_abi::ERR_NOT_SUPPORTED);
+    };
+    native_runtime::Msi::allocate(
+        resources
+            .msi
+            .as_ref()
+            .ok_or(native_abi::ERR_ACCESS_DENIED)?,
+        &resources.bti,
+        device,
+        count,
+    )
 }

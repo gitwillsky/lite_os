@@ -191,7 +191,7 @@ impl VirtIOConsoleDevice {
         }
         let queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(index, size, queue.addresses())
+            .configure_queue(index, size, queue.addresses(), None)
             .ok()?;
         let mut values = Vec::new();
         values.try_reserve_exact(slots).ok()?;
@@ -223,7 +223,7 @@ impl VirtIOConsoleDevice {
         }
         let queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(index, size, queue.addresses())
+            .configure_queue(index, size, queue.addresses(), None)
             .ok()?;
         let mut values = Vec::new();
         values.try_reserve_exact(slots).ok()?;

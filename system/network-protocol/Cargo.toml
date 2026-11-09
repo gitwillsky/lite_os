@@ -5,6 +5,7 @@ edition = "2024"
 description = "网络服务（netstack）与使用者之间的协议：网络域、socket 操作、接口与路由配置的词汇与线格式"
 
 [dependencies]
+router-protocol = { path = "../router-protocol" }
 native-runtime = { path = "../native-runtime" }
 service-rpc = { path = "../service-rpc" }
 device-model = { path = "../device-model" }

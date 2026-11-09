@@ -60,7 +60,7 @@ class BuildTarget:
             raise ValueError(
                 "ACCEL=hvf is not supported for ARCH=riscv64; use ACCEL=tcg"
             )
-        return "rv64"
+        return "rv64,ssaia=on,smaia=on"
 
     def qemu_machine(self, acceleration: Acceleration) -> str:
         """返回完整且已验证的 QEMU machine/acceleration 配置。
@@ -71,11 +71,13 @@ class BuildTarget:
         checked = _parse_acceleration(acceleration)
         self.qemu_cpu(checked)
         if self.arch == "aarch64":
+            # 原生消息中断通过 ITS/LPI 分配；关闭 ITS 会使 PCI msi-map 消失并丢失每队列路由。
             return (
-                f"virt,accel={checked},gic-version=3,its=off,secure=off,"
+                f"virt,accel={checked},gic-version=3,its=on,secure=off,"
                 "virtualization=off,acpi=off"
             )
-        return "virt,accel=tcg"
+        # 唯一 RISC-V 外部中断后端为 APLIC/IMSIC；PLIC 不提供每队列 MSI-X。
+        return "virt,accel=tcg,aia=aplic-imsic"
 
 
 _TARGETS: dict[Architecture, BuildTarget] = {

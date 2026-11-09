@@ -200,6 +200,8 @@ pub(super) fn retain_linear<K, V>(
             root.right = head.take();
             *head = Some(root);
             *kept += 1;
+        } else {
+            drop(root);
         }
         if let Some(left) = left {
             prepend_filtered(left, head, kept, keep);

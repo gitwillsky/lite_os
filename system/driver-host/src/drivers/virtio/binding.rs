@@ -38,7 +38,8 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
             }
         }
         Bus::Pci { .. } => {
-            let Some(function) = pci_discovery::discover() else {
+            let Some(function) = pci_discovery::discover(matches!(driver, Driver::VirtioNetwork))
+            else {
                 warn!("VirtIO PCI function lacks a usable transport or interrupt");
                 return;
             };
@@ -51,14 +52,17 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
                     ))
                     .expect("virtio-net PCI init failed");
                     publish_network(device, function.interrupt);
-                    info!("VirtIO network PCI transport on IRQ {}", function.interrupt);
+                    info!("VirtIO network PCI transport");
                 }
                 // UTM 产品路径通过 PCI transport 暴露 virtio-console；QEMU 门禁使用 MMIO transport。
                 Driver::VirtioConsole => {
                     let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
                         .expect("virtio-console PCI init failed");
-                    publish_console(device, function.interrupt);
-                    info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
+                    publish_console(device, function.interrupt.expect("console INTx route"));
+                    info!(
+                        "VirtIO console PCI transport on INTx {:?}",
+                        function.interrupt
+                    );
                 }
                 Driver::VirtioBlock => {
                     let device = VirtIOBlockDevice::from_device(super::VirtIODevice::from_pci(
@@ -67,8 +71,11 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
                         function.bti,
                     ))
                     .expect("virtio-block PCI init failed");
-                    publish_block(device, function.interrupt);
-                    info!("VirtIO block PCI transport on IRQ {}", function.interrupt);
+                    publish_block(device, function.interrupt.expect("block INTx route"));
+                    info!(
+                        "VirtIO block PCI transport on INTx {:?}",
+                        function.interrupt
+                    );
                 }
                 _ => warn!("VirtIO PCI driver {driver:?} is not supported"),
             }
@@ -115,14 +122,14 @@ fn bind_input(base: usize, irq: u32) {
 
 fn bind_network(base: usize, irq: u32) {
     let device = VirtIONetworkDevice::new(base).expect("virtio-net init failed");
-    publish_network(device, irq);
+    publish_network(device, Some(irq));
     info!("VirtIO network on IRQ {irq}");
 }
 
-fn publish_network(device: Arc<VirtIONetworkDevice>, irq: u32) {
+fn publish_network(device: Arc<VirtIONetworkDevice>, irq: Option<u32>) {
     let label = "virtio-net";
     crate::name_host(label);
-    register_device_interrupt(irq, device.irq_handler_for(), label);
+    device.bind_interrupts(irq);
     device_protocol::network::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-net publication failed: {status}"));
 }

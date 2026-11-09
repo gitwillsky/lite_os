@@ -211,15 +211,19 @@ zero-window 使用下述有界原生 timer；不声明完整 Linux TCP 扩展、
 以太网接口的 `IFLA_CARRIER`、`IFLA_OPERSTATE` 和 `IFF_LOWER_UP` 取驱动载波状态；`IFF_UP` 仍独立反映管理开关。
 `/sys/class/net/<接口>/carrier` 与查询共用快照，`speed` 以 Mbps 为单位，驱动未报告时返回 `-1`。
 dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓冲容量逐包生成，最后以 `NLMSG_DONE` 结束；被截断的数据报余下部分丢失（`MSG_TRUNC`）。
+完整 FIB 快照经服务只读 VMO 捕获；多成员路由使用标准 RTA_MULTIPATH，保留各成员出口、网关、on-link 与精确权重比例，单成员仍用 OIF/GATEWAY。
+原生权重先按公因数约分；比例仍超出 rtnh_hops 的 1..256 范围则查询回复 EOVERFLOW，完整多路径属性超出 u16 长度则 EMSGSIZE，不裁剪成员或修改执行状态。
+/proc/net/route 按 Linux 约定只列首成员。接收存储准备失败不推进 dump 游标，peek 不消费；单条大消息仍完整生成并应用用户缓冲截断。
 首次发送自动 bind；port 空间按（协议，NET）隔离。
 
 **修改**（需要 socket 所属 NET 的 owning UserNS 里的 `CAP_NET_ADMIN`，否则 `EPERM`，检查先于分发）：
 `RTM_NEWLINK`/`RTM_SETLINK` 修改 MTU 与 UP/DOWN（`ifi_flags/ifi_change` 按 Linux 语义，`NLM_F_EXCL` 得 `EEXIST`）；
 `RTM_NEWADDR`/`RTM_DELADDR` 设置或删除 IPv4 地址、前缀与广播地址；`RTM_NEWROUTE`/`RTM_DELROUTE` 直接进入同一 NET 的 FIB，
 `NLM_F_CREATE/EXCL/REPLACE/APPEND` 原样交给 FIB，`RTN_UNSPEC` 删除匹配任意类型。`NLM_F_ACK` 返回 `error = 0` 确认。
+blackhole/prohibit/unreachable 保留独立类型；未指定 oif 的本机发送分别返回 EINVAL/EACCES/EHOSTUNREACH，明确 oif 沿固定 Linux route_output 的直接出口 fallback。
 
 **明确不支持，返回 `EOPNOTSUPP` 而不伪造成功**：一个接口的第二个 IPv4 地址、点对点 peer、`eth0:1` 式别名 label；设备创建、删除、重命名、
-改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；blackhole/prohibit/anycast/multicast 路由类型、多路径、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
+改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；anycast/multicast 路由类型、多路径修改、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
 邻居、规则、qdisc 等其他对象；非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）；多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）；IPv6 地址族（dump 为空，修改 `EAFNOSUPPORT`）。
 
 网卡移除（驱动宿主终止）按 NETDEV_UNREGISTER：接口及其地址/路由从 dump 中消失，绑定该 ifindex 的 AF_PACKET socket 解绑并报告 `ENETDOWN`（`POLLERR`）；

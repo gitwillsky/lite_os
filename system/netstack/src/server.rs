@@ -7,13 +7,14 @@ use core::net::Ipv4Addr;
 use device_model::network::{NetworkDevice, NetworkRssConfiguration};
 use device_protocol::EventHub;
 use device_protocol::directory::Class;
-use native_runtime::native_abi::{self, Status, rights};
+use native_runtime::native_abi::{self, Status, rights, signals};
+use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Handle};
 use network_protocol::{
     InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService, InstallerService,
     InterfaceSnapshot, InternetOption, InternetSendPacketInfo, Ipv4RouteError, Ipv4RouteRequest,
     NamespaceService, NetworkService, NetworkSnapshot, PacketAddress, PacketKind, PacketReceived,
-    PacketSocketService, RouteChange, RouteSnapshot, ServedSocket, SocketEndpoint, SocketError,
+    PacketSocketService, RouteChange, RoutingSnapshot, ServedSocket, SocketEndpoint, SocketError,
     SocketPollState,
 };
 
@@ -25,13 +26,23 @@ use crate::receive::ReceiveBuffer;
 
 /// 控制面：默认网络与网卡事件分派。
 pub(crate) struct Network {
+    interface_events: Arc<Event>,
     hub: Arc<EventHub>,
-    // OWNER: 默认网络（对应 Fuchsia netstack 的默认栈）：持有 netcfg 安装的全部网卡，随 netstack 存续，
+    // OWNER: 默认网络（对应 Fuchsia netstack 的默认栈）：持有 router_config 安装的全部网卡，随 netstack 存续，
     // 不随任何使用者的连接退休；linuxd 重启后重新连上同一网络，接口配置不丢失。
     default: Arc<Namespace>,
+    // OWNER: 已安装设备身份到其实际接口/寿命能力的登记；控制面重连可重新取得能力，不复制地址/FIB 或在线状态。
+    // 仅安装冷路径持此锁；NET/设备事件不反向取得它。缺失登记会在配置服务单独重启后重复打开仍被 NET 独占的硬件。
+    installed: Mutex<Vec<InstalledInterface>>,
 }
 
-/// 创建控制面与默认网络（回环启用，尚无网卡）；网卡由 netcfg 经安装协议加入。
+struct InstalledInterface {
+    entry: device_protocol::directory::Entry,
+    index: u32,
+    lifetime: Channel,
+}
+
+/// 创建控制面与默认网络（回环启用，尚无网卡）；网卡由 router_config 经安装协议加入。
 ///
 /// # Errors
 ///
@@ -41,14 +52,19 @@ pub(crate) fn start() -> Result<Arc<Network>, Status> {
     let owner =
         inet::prepare_network(&namespace, &[], true).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     namespace.install_protocol(owner);
+    let interface_events = Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    inet::observe_interfaces(&namespace, interface_events.clone())
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     Arc::try_new(Network {
+        interface_events,
         hub: EventHub::start()?,
         default: namespace,
+        installed: Mutex::new(Vec::new()),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 
-/// 以安装服务服务 netcfg 的一条连接。
+/// 以执行安装服务承载原生 RIB 的一条连接。
 ///
 /// # Errors
 ///
@@ -85,23 +101,90 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
 }
 
 impl InstallerService for Network {
+    fn watch_interfaces(&self) -> Result<Event, Status> {
+        self.interface_events.duplicate(rights::SAME)
+    }
+    fn prepare_next_hop(
+        &self,
+        definition: network_protocol::routes::NextHopConfiguration<'_>,
+    ) -> Result<Channel, Status> {
+        let (client, server) = Channel::create()?;
+        let configuration =
+            inet::prepare_next_hop(&self.default, definition).map_err(|error| match error {
+                SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+                SocketError::Again => native_abi::ERR_SHOULD_WAIT,
+                SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
+                SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
+                _ => native_abi::ERR_BAD_STATE,
+            })?;
+        dispatcher::serve(server, Served::Configuration(configuration))?;
+        Ok(client)
+    }
+    fn prepare_configuration(
+        &self,
+        batch: network_protocol::ConfigurationBatch<'_>,
+    ) -> Result<Channel, Status> {
+        let (client, server) = Channel::create()?;
+        let configuration = if let Some(routes) = batch.forwarding() {
+            inet::prepare_routes(
+                &self.default,
+                batch.interfaces().iter(),
+                routes.next_hops(),
+                routes.iter(),
+            )
+        } else {
+            inet::prepare_configuration(&self.default, batch.interfaces().iter())
+        }
+        .map_err(|error| match error {
+            SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+            SocketError::Again => native_abi::ERR_SHOULD_WAIT,
+            SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
+            SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
+            _ => native_abi::ERR_BAD_STATE,
+        })?;
+        dispatcher::serve(server, Served::Configuration(configuration))?;
+        Ok(client)
+    }
+
     fn install_device(
         &self,
         device_id: u64,
         description: Vec<u8>,
         mut handles: Vec<Handle>,
     ) -> Result<(u32, Channel), Status> {
+        if device_id == 0 || handles.len() != 1 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
         let directory = device_protocol::directory::DirectoryClient::new(Channel::from_handle(
             service_rpc::take_handle(&mut handles, 0)?,
         ));
+        let mut installed = self.installed.lock();
+        // 寿命来自实际 NET 接口；关闭立即使旧登记不可复用。只在安装时退休，不添加空闲轮询或设备状态副本。
+        installed.retain(|interface| {
+            interface.lifetime.wait_one(signals::PEER_CLOSED, 0) == Err(native_abi::ERR_TIMED_OUT)
+        });
+        if let Some(interface) = installed
+            .iter()
+            .find(|interface| interface.entry.id == device_id)
+        {
+            if interface.entry.description != description {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            // Installer 已授予默认网络管理权；重连只重交原接口的只观测寿命，不再次打开物理目录/队列。
+            return Ok((interface.index, interface.lifetime.duplicate(rights::SAME)?));
+        }
+        installed
+            .try_reserve(1)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let entry = device_protocol::directory::Entry {
+            id: device_id,
+            class: Class::Network,
+            description,
+        };
         // 当前协议引擎由单一 worker 推进；队列策略属于使用者，不能由驱动按 CPU 数猜测。
         let device = device_protocol::network::connect(
             &directory,
-            &device_protocol::directory::Entry {
-                id: device_id,
-                class: Class::Network,
-                description,
-            },
+            &entry,
             device_model::network::NetworkQueueConfiguration {
                 queue_pairs: 1,
                 transmit_bytes: 1514,
@@ -138,6 +221,9 @@ impl InstallerService for Network {
                 })
                 .map_err(|error| match error {
                     device_model::network::NetworkError::NoMemory => native_abi::ERR_NO_MEMORY,
+                    device_model::network::NetworkError::NoResources => {
+                        native_abi::ERR_NO_RESOURCES
+                    }
                     device_model::network::NetworkError::InvalidConfiguration => {
                         native_abi::ERR_INVALID_ARGS
                     }
@@ -149,12 +235,31 @@ impl InstallerService for Network {
             device.bind_activity(queue, activity.clone());
         }
         let (lifetime, held) = Channel::create()?;
+        let retained = lifetime.duplicate(rights::SAME)?;
         let index =
             inet::install_interface(&self.default, device, held).map_err(|error| match error {
                 SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
                 _ => native_abi::ERR_NO_RESOURCES,
             })?;
+        // 容量与能力均已在接口安装前准备；发表后登记不再分配，回复丢失也可安全重试。
+        installed.push(InstalledInterface {
+            entry,
+            index,
+            lifetime: retained,
+        });
         Ok((index, lifetime))
+    }
+}
+
+impl network_protocol::ConfigurationService for inet::ConfigurationSession {
+    fn activate(&self) -> Result<(), SocketError> {
+        Self::activate(self)
+    }
+    fn confirm(&self) -> Result<(), SocketError> {
+        Self::confirm(self)
+    }
+    fn abort(&self) -> Result<(), SocketError> {
+        Self::abort(self)
     }
 }
 
@@ -234,7 +339,7 @@ impl NamespaceService for NamespaceServer {
         inet::network_snapshot(&self.0)
     }
 
-    fn route_snapshot(&self) -> Result<Vec<RouteSnapshot>, SocketError> {
+    fn route_snapshot(&self) -> Result<RoutingSnapshot, SocketError> {
         inet::route_snapshot(&self.0)
     }
 

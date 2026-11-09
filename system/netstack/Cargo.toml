@@ -9,6 +9,8 @@ test = false
 bench = false
 
 [dependencies]
+prefix-index = { path = "../../libraries/prefix-index" }
+router-protocol = { path = "../router-protocol" }
 packet-wire = { path = "../../libraries/packet-wire" }
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }

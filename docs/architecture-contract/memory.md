@@ -113,6 +113,8 @@ Benchmark 决策：叶项只修改一次，撤销不再按成员数遍历；复�
   完成两步。只有 Clean 且未固定的页可被淘汰；缺失 AwaitingClean 时回写读取前被淘汰的页会从存储补回旧内容，修改丢失。
 - 淘汰（`vm::vmo::reclaim`）由后台内核线程推进，用户缺页入口保留兜底；只能从无内核锁的 task context 进入。
   关中断的调度安全点推进同一 TLB/内存屏障 rendezvous，避免回收者与协作式等待者互等。
+  VM 的远端翻译提交及整空间退休均注入 barrier 的无阻塞本地确认；软件 TLB 等待与 barrier 等待相互推进，
+  不让两个不同类型的同步事务在 IRQ 关闭时互等（见[执行契约](execution.md)）。
   前台压力持续时在有界扫描批间 yield，节流分配直到高水位；八代均无可采样候选时才返回正常失败路径，协调器忙不计为空扫描。
   仅 try-lock VMO 树；先采集本对象、COW 子孙及 slice 别名的访问位，匹配物理身份，不能把 COW 遮盖页误计到祖先。
   `vmo::mapping` 的登记、撤销和采集共用继承窗口投影；撤销与采集均用显式工作栈，别名深度不消耗内核调用栈。
@@ -287,3 +289,10 @@ linuxd 的 maps/smaps/smaps_rollup 共用同一 READ_FSCREDS 授权与 Weak MM �
 每次实际 open 保留一个文本快照，reader TaskMutex 串行读/定位；offset 0 刷新，后续分段读取不重扫或拼接不同快照。
 快照只保留文本，不延长 MM、TCB、SysV membership 或内容租约寿命；失败不发布部分文本。
 Dirty 沿页 owner 的保留/回写状态投影，不把共享映射的可写权限当成脏页；不可变 bootfs 为 clean。
+
+## 控制面内容能力
+
+`native-runtime::Vmo::from_bytes` 只从新建且未发布的 VMO 填充内容，返回前退休唯一写句柄，只导出 READ/MAP/INSPECT/DUPLICATE/TRANSFER。
+没有可变别名，不可变承诺属于这个构造过程，不能推广到任意只读 duplicate。`read_bytes` 先检查逻辑长度、对象容量和地址空间转换，
+缓冲分配/读取失败不发布部分内容；声明长度不包含尾页填充。文件/配置协议各自拥有控制帧与逻辑长度，不给 VMO 增添业务状态。
+Linux regular-file 的 snapshot_vmo 以 32 KiB 捕获缓冲生成同类独立只读对象，不保留发送方 pager 的隐式借用；可变源只保证捕获后固定。

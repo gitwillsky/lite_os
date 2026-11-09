@@ -32,7 +32,7 @@ impl ControlQueue {
         bytes.pin(device.bti()).ok()?;
         Some(Self {
             index,
-            queue: VirtIONetworkDevice::create_queue(device, index)?,
+            queue: VirtIONetworkDevice::create_queue(device, index, None)?,
             bytes,
         })
     }

@@ -6,7 +6,7 @@
 //! netstack：网络服务。
 //!
 //! 拥有 IPv4 协议栈（smoltcp）、网卡、接口与路由、TCP/UDP/ICMP/RAW endpoint 与 packet socket。
-//! 启动时只有带回环的默认网络；netcfg 经安装协议加入网卡（netstack 重启后由它重新安装）。经 outgoing 接受
+//! 启动时只有带回环的默认网络；router_config 经原生 RIB 委托安装网卡（netstack 重启后重新安装）。经 outgoing 接受
 //! 控制与安装连接；
 //! 使用者为每个网络域创建域 channel，经域 channel 创建 socket；每个 socket 一条 channel，全部操作不阻塞，
 //! 就绪变化经 socket 的 Event 通知使用者（协议见 `network_protocol`）。

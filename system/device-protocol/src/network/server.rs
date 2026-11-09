@@ -1,6 +1,6 @@
 use super::queue::{MAX_BATCH, Queue, Record, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_checksum,
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS, decode_checksum,
     decode_segmentation, encode_capabilities, encode_error,
 };
 use crate::directory::{self, Class, Directory, Session, SessionState};
@@ -38,6 +38,7 @@ struct SessionQueue {
     consumer: Mutex<Consumer>,
 }
 struct NetworkSession {
+    link: Event,
     device: Arc<dyn NetworkProvider>,
     queues: Vec<SessionQueue>,
     rss: Option<NetworkRssCapabilities>,
@@ -84,7 +85,16 @@ impl NetworkSession {
                 }),
             });
         }
+        let link = Event::create()?;
+        let notify = link.duplicate(rights::SAME)?;
+        device.bind_link_activity(
+            Arc::try_new(move || {
+                let _ = notify.signal(0, signals::USER_0);
+            })
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+        );
         Ok(Self {
+            link,
             device,
             queues,
             rss,
@@ -99,13 +109,11 @@ impl NetworkSession {
             let _ = queue.progress.signal(0, signals::USER_0);
         }
     }
-    fn dispatch(&self) -> Result<(), Status> {
-        for (index, queue) in self.queues.iter().enumerate() {
-            let result = queue.dispatch(&*self.device, index as u16);
-            if let Err(error) = result {
-                self.close_after_stop();
-                return Err(error);
-            }
+    fn dispatch(&self, index: usize) -> Result<(), Status> {
+        let queue = self.queues.get(index).ok_or(native_abi::ERR_INVALID_ARGS)?;
+        if let Err(error) = queue.dispatch(&*self.device, index as u16) {
+            self.close_after_stop();
+            return Err(error);
         }
         Ok(())
     }
@@ -117,6 +125,29 @@ impl NetworkSession {
         mut handles: Vec<Handle>,
     ) -> Result<Vec<Handle>, Status> {
         match ordinal {
+            super::WATCH_LINK => {
+                request.finish()?;
+                if !handles.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                let mut returned = Vec::new();
+                returned
+                    .try_reserve_exact(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                returned.push(self.link.duplicate(rights::SAME)?.into_handle());
+                return Ok(returned);
+            }
+            QUEUE_AFFINITY => {
+                let queue = request.u16()?;
+                let cpu = request.u32()?;
+                request.finish()?;
+                if !handles.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                self.device
+                    .set_queue_affinity(queue, cpu)
+                    .map_err(encode_error)?;
+            }
             RSS_CONFIG => {
                 let cap = self.rss.ok_or(native_abi::ERR_NOT_SUPPORTED)?;
                 let length = request.usize()?;
@@ -447,6 +478,7 @@ pub fn publish(
         .u16(NETWORK_VERSION)
         .u16(controller.maximum_queue_pairs());
     encode_capabilities(&mut description, controller.transmit_capabilities());
+    description.bool(controller.supports_queue_affinity());
     let rss = controller.receive_scaling();
     description.bool(rss.is_some());
     if let Some(cap) = rss {
@@ -510,7 +542,7 @@ pub fn publish(
                     events.push(event.duplicate(rights::SAME)?);
                 }
                 let active = session.clone();
-                let activity = Arc::try_new(move || active.get().dispatch())
+                let activity = Arc::try_new(move |source: usize| active.get().dispatch(source / 2))
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let handler = Arc::try_new(
                     move |ordinal: u32, request: &mut Reader<'_>, handles, reply: &mut Writer| {
@@ -518,7 +550,14 @@ pub fn publish(
                     },
                 )
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                service_rpc::serve_events(server, 2, b"net-server", handler, events, activity)?;
+                service_rpc::serve_events(
+                    server,
+                    usize::from(device.queue_count()) + 1,
+                    b"net-server",
+                    handler,
+                    events,
+                    activity,
+                )?;
                 Ok(Session {
                     handles: alloc::vec![client.into_handle()],
                     server: watch,

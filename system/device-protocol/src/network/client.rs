@@ -1,7 +1,7 @@
 use super::queue::{MAX_BATCH, Queue, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, RSS_CONFIG, STATISTICS, decode_capabilities,
-    decode_error, encode_checksum, encode_segmentation, queue_request,
+    LINK, MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS,
+    decode_capabilities, decode_error, encode_checksum, encode_segmentation, queue_request,
 };
 use crate::directory::{DirectoryClient, Entry};
 use crate::{ActivityBinding, EventHub, Writer, call, take_handle};
@@ -188,11 +188,13 @@ impl RemoteQueue {
 /// 使用者端的网卡 CPU 帧适配；收发元数据经共享环，帧内容不进入控制消息。
 pub struct RemoteNetwork {
     channel: Channel,
+    link_activity: ActivityBinding,
     queues: Vec<RemoteQueue>,
     mac: [u8; 6],
     driver: alloc::string::String,
     rss: Option<NetworkRssCapabilities>,
     transmit_capabilities: NetworkTransmitCapabilities,
+    queue_affinity: bool,
 }
 /// 按 configuration 显式请求队列数与发送容量，打开硬件会话并一次映射 DMA/共享环。
 /// directory 是已授权的网络设备目录，entry 的静态描述公布硬件上限；不自动截断请求。
@@ -211,6 +213,7 @@ pub fn connect(
     }
     let maximum = reader.u16()?;
     let mut transmit_capabilities = decode_capabilities(&mut reader)?;
+    let queue_affinity = reader.bool()?;
     configuration
         .validate(maximum, transmit_capabilities)
         .map_err(super::encode_error)?;
@@ -242,11 +245,19 @@ pub fn connect(
         .try_reserve_exact(name.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     driver.push_str(name);
+    reader.finish()?;
     let mut options = [0u8; 6];
     options[..2].copy_from_slice(&configuration.queue_pairs.to_le_bytes());
     options[2..].copy_from_slice(&configuration.transmit_bytes.to_le_bytes());
     let mut announcement = directory.open(entry, &options)?;
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
+    let mut watch = call(&channel, &Writer::request(super::WATCH_LINK), Vec::new())?;
+    watch.reader().finish()?;
+    if watch.handles.len() != 1 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let link_activity = hub.activity(Event::from_handle(take_handle(&mut watch.handles, 0)?))?;
+    hub.on_closed(channel.duplicate(rights::SAME)?, &link_activity)?;
     let mut queues = Vec::new();
     queues
         .try_reserve_exact(count as usize)
@@ -301,11 +312,13 @@ pub fn connect(
     }
     Arc::try_new(RemoteNetwork {
         channel,
+        link_activity,
         queues,
         mac,
         driver,
         rss,
         transmit_capabilities,
+        queue_affinity,
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
@@ -337,6 +350,23 @@ impl RemoteNetwork {
     }
 }
 impl NetworkDevice for RemoteNetwork {
+    fn bind_link_activity(&self, activity: device_model::Activity) {
+        self.link_activity.bind(activity);
+    }
+    fn supports_queue_affinity(&self) -> bool {
+        self.queue_affinity
+    }
+    fn set_queue_affinity(&self, queue: u16, cpu: u32) -> Result<(), NetworkError> {
+        if !self.queue_affinity || usize::from(queue) >= self.queues.len() {
+            return Err(NetworkError::InvalidConfiguration);
+        }
+        let mut request = queue_request(QUEUE_AFFINITY, queue);
+        request.u32(cpu);
+        call(&self.channel, &request, Vec::new())
+            .map_err(decode_error)
+            .map(drop)
+    }
+
     fn queue_count(&self) -> u16 {
         self.queues.len() as u16
     }
@@ -363,7 +393,14 @@ impl NetworkDevice for RemoteNetwork {
             speed_mbps: (speed <= i32::MAX as u32).then_some(speed),
         })
     }
-    fn receive(&self, queue_index: u16) -> Result<NetworkReceiveFrame<'_>, NetworkError> {
+    fn receive_batch<'a>(
+        &'a self,
+        queue_index: u16,
+        output: &mut [Option<NetworkReceiveFrame<'a>>],
+    ) -> Result<usize, NetworkError> {
+        if output.iter().any(Option::is_some) {
+            return Err(NetworkError::InvalidConfiguration);
+        }
         let queue = self
             .queues
             .get(queue_index as usize)
@@ -371,47 +408,51 @@ impl NetworkDevice for RemoteNetwork {
         let memory = &queue.memory;
         let mut state = queue.producer.lock();
         queue.check()?;
-        let mut records = [[0; 5]; 1];
-        if queue
+        let mut records = [[0; 5]; MAX_BATCH];
+        let limit = output.len().min(MAX_BATCH);
+        let count = queue
             .ring
-            .pop(Ring::Receive, &mut records)
-            .map_err(|_| queue.abort())?
-            == 0
+            .pop(Ring::Receive, &mut records[..limit])
+            .map_err(|_| queue.abort())?;
+        // 1. 一次 Acquire/tail Release 领取元数据；2. 同一短锁内逐槽转移 Borrowed；3. 返回前解锁，token 独立归还。
+        // 发现后续坏记录时保留 output 的已领取前缀；不能在这里 Drop，否则 release_received 会重入 producer。
+        for (output, &[slot, ticket, length, metadata, extra]) in
+            output.iter_mut().zip(&records[..count])
         {
-            return Err(NetworkError::WouldBlock);
+            let slot = u16::try_from(slot).map_err(|_| queue.abort())?;
+            let owner = state
+                .received
+                .get_mut(slot as usize)
+                .ok_or_else(|| queue.abort())?;
+            let ReceiveOwner::Available { last_ticket } = *owner else {
+                return Err(queue.abort());
+            };
+            if ticket <= last_ticket
+                || metadata > 1
+                || extra != 0
+                || length == 0
+                || length > (memory.receive_stride - memory.header) as u64
+            {
+                return Err(queue.abort());
+            }
+            *owner = ReceiveOwner::Borrowed { ticket };
+            let address =
+                memory.receive_base + slot as usize * memory.receive_stride + memory.header;
+            // SAFETY: 布局/slot/length 已校验，RX Acquire 交付本槽 CPU ownership；Borrowed 状态阻止
+            // 重复领取，唯一 token 释放前不发表 FILL。self 保活 backing，返回引用不越过 self。
+            *output = Some(unsafe {
+                NetworkReceiveFrame::new(
+                    self,
+                    queue_index,
+                    slot,
+                    ticket,
+                    address,
+                    length as usize,
+                    metadata != 0,
+                )
+            });
         }
-        let [slot, ticket, length, metadata, extra] = records[0];
-        let slot = u16::try_from(slot).map_err(|_| queue.abort())?;
-        let owner = state
-            .received
-            .get_mut(slot as usize)
-            .ok_or_else(|| queue.abort())?;
-        let ReceiveOwner::Available { last_ticket } = *owner else {
-            return Err(queue.abort());
-        };
-        if ticket <= last_ticket
-            || metadata > 1
-            || extra != 0
-            || length == 0
-            || length > (memory.receive_stride - memory.header) as u64
-        {
-            return Err(queue.abort());
-        }
-        *owner = ReceiveOwner::Borrowed { ticket };
-        let address = memory.receive_base + slot as usize * memory.receive_stride + memory.header;
-        // SAFETY: 布局/slot/length 已校验，RX Acquire 交付本槽 CPU ownership；Borrowed 状态阻止
-        // 重复领取，唯一 token 释放前不发表 FILL。self 保活 backing，返回引用不越过 self。
-        Ok(unsafe {
-            NetworkReceiveFrame::new(
-                self,
-                queue_index,
-                slot,
-                ticket,
-                address,
-                length as usize,
-                metadata != 0,
-            )
-        })
+        Ok(count)
     }
     fn reserve_transmit(&self, queue_index: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
         let queue = self

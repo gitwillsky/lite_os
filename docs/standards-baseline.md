@@ -13,8 +13,7 @@
 - Linux `v7.1`；tag object `b3f94b2b3f3e51ab880a51fc6510e1dafba654ed`；peeled commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。
 - 来源：[Linux commit](https://github.com/torvalds/linux/commit/8cd9520d35a6c38db6567e97dd93b1f11f185dc6)、
   [arm64 syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/include/uapi/asm/unistd.h)、
-  [RISC-V syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/uapi/asm/unistd.h)、
-  [asm-generic syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/unistd.h)。
+  [RISC-V syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/uapi/asm/unistd.h)、 [asm-generic syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/unistd.h)。
 - io_uring 的 ABI（`include/uapi/linux/io_uring.h`）与语义（`io_uring/*.c`）取自同一固定源码树；本地以 `linux-7.1.tar.xz` 的 SHA-256 校验后解包，不另设来源。
 - smaps/PSS 与 statm 投影使用同一固定源码树 `fs/proc/task_mmu.c` 的 `smaps_account`、`task_statm`；PSS 保留 12 位小数。
 - FUSE 的 UAPI（`include/uapi/linux/fuse.h`，协议 7.45）与语义（`fs/fuse/*.c`）取自同一固定源码树。
@@ -96,6 +95,7 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 - 官方发布包 `v20260120`；Machine ISA 与 Supervisor ISA 均为 `1.13`。
 - 来源：[固定 HTML](https://docs.riscv.org/reference/isa/v20260120/priv/priv-index.html)、[固定 PDF](https://docs.riscv.org/reference/isa/v20260120/_attachments/riscv-privileged.pdf)。
 - 它定义 privilege、CSR、trap/return、interrupt、PMP、Sv39/PTE 与 fence。锁、页表发布和 DMA 还必须对照同发布包的 A extension 与 RVWMO。
+- IMSIC/APLIC 的外部消息中断遵循独立的[固定 AIA 规范](standards-baseline/hardware.md#risc-v-advanced-interrupt-architecture)。
 
 ### SBI
 
@@ -111,23 +111,19 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 
 ### USB host 与 USB Audio
 
-- xHCI Requirements Specification `1.2`，May 2019；[Intel 原文](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)，SHA-256 `9257ca24f34bff08e6020623f707c788ca0f0df657aa713309ff489a68b1731e`。
-- USB 2.0，April 27, 2000；[USB-IF 发布入口](https://www.usb.org/document-library/usb-20-specification)。root-port debounce/reset recovery、standard requests 与 high-speed isochronous/feedback 以该规范为准。
-- USB Device Class Definition for Audio Devices `2.0`，errata/ECN through September 14, 2026；[USB-IF 原文](https://www.usb.org/sites/default/files/Audio2_with_Errata_and_ECN_through_Sep_14_2026.pdf)。Type-I PCM 以同发布组的 Audio Data Formats 2.0 为准。
-- clock/format/feedback 的成熟实现参照本文件固定 Linux revision 的 `sound/usb/clock.c`、`format.c`、`endpoint.c`；xHCI ring/stop/retirement 参照 `drivers/usb/host/xhci-ring.c`。
+版本与一手来源见[硬件规范基线](standards-baseline/hardware.md#usb-host-与-usb-audio)。
 
 ### VirtIO
 
-- Virtual I/O Device `1.4` Committee Specification 01；source commit `917e900e0246b7fe21cdde795b0e566dd4f57d8d`。
-- 来源：[CS01 HTML](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)、[固定源码](https://github.com/oasis-tcs/virtio-spec/tree/917e900e0246b7fe21cdde795b0e566dd4f57d8d)。
-- 定义 transport、feature、virtqueue、DMA 与 reset；TX 校验和采用 [RFC 1071](https://www.rfc-editor.org/rfc/rfc1071.html) 的并行求和与奇偶规则，不使用其增量更新公式。
+版本与一手来源见[硬件规范基线](standards-baseline/hardware.md#virtio)。
 
 ### Arm PrimeCell UART
 
-- PL011 Technical Reference Manual `DDI 0183G`，PrimeCell UART revision `r1p4`。
-- 来源：[Arm 固定手册](https://documentation-service.arm.com/static/5e8e3655fd977155116a9042)。
-- 它定义 UART register layout、reset state、FIFO 与 interrupt threshold；AArch64 QEMU `virt`
-  backend 不从 QEMU 行为反推这些 machine facts。
+版本与一手来源见[硬件规范基线](standards-baseline/hardware.md#arm-primecell-uart)。
+
+### 消息中断与 GIC
+
+固定 GIC 架构与成熟 ITS 编码来源见[硬件规范基线](standards-baseline/hardware.md#消息中断与-gic)。
 
 ## 实现与 consumer 基线
 
@@ -153,39 +149,9 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
   该 toolchain 的 `compiler_builtins` 只以 `extern "Rust"` 导出 f128 complex helper。
 - 来源：[LLVM compiler-rt builtins（llvmorg-23.1.1）](https://github.com/llvm/llvm-project/tree/llvmorg-23.1.1/compiler-rt/lib/builtins)。
 
-### smoltcp
+### 网络与报文
 
-- crate `0.13.1`；source commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897`。
-- 来源：[release 文档](https://docs.rs/crate/smoltcp/0.13.1)、[固定源码](https://github.com/smoltcp-rs/smoltcp/tree/e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897)。
-- netstack、netstack-unit 与 architecture-bench 的唯一协议栈源码是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
-  记录于 `UPSTREAM.sha256.json`，保留原许可证与 upstream commit。Cargo 不保留 registry 备选路径。
-- 本地变化限定UDP/TCP/raw transport、UDP ingress及interface dispatch与IPv4地址mechanism十个文件（第十个只是 `wire/udp.rs` 里 6LoWPAN 专用函数的 feature 门控）：connected peer 在 ingress admission 前匹配，canonical local
-  endpoint 修改保留已有 queue，bind/rehash order 选择单播目标，广播/组播交付实际匹配集合，
-  TX packet 在 enqueue 时冻结source port/address/TTL/oif；TCP实际MSS cache约束广告及分段。
-  bound device在ingress准入前筛选，kernel唯一route selector在dispatch前选设备；IPv4
-  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI 归 linuxd；netstack 只拥有协议机制与 endpoint 状态。
-- 只启用alloc、Ethernet、IP-medium实际loopback、IPv4、raw、UDP、TCP与Reno；Linux socket UAPI不由smoltcp定义，IPv6仍延期。
-
-原生IPv4地址/proc NET归属补充依据同一固定Linux commit的
-[`devinet_ioctl/inet_abc_len`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/devinet.c)、
-[`get_proc_task_net/seq_open_net`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/proc_net.c)、
-[`dev_seq_show`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/net-procfs.c)
-及kernel/nsproxy.c、kernel/kthread.c的真实引用创建/退出；不引入第二个规范版本。
-
-NETLINK_KOBJECT_UEVENT的域、端口和过载以同一固定Linux commit的
-[`netlink_bind/autobind/broadcast_deliver/overrun`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/netlink/af_netlink.c)
-与[`uevent_net_init`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/lib/kobject_uevent.c)为依据。
-端口按NET/协议独立，0首先使用调用者可见TGID，碰撞在[-2147483648,-4097]选择空位；
-group0及同port重bind合法，protocol group数以外的mask被截断。
-无tag内核事件发往所有owning initial UserNS的NET；非initial UserNS的NET不订阅该全局广播。
-actual allocation收费覆盖每个receiver FIFO节点；overrun一次发表ENOBUFS，已有记录不替换，
-SO_ERROR消费不解除拥塞，实际queue排空后恢复。
-
-接口MTU继续使用上述固定dev_ioctl.c的dev_set_mtu调用与devinet.c的
-inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备允许68..1500
-（本驱动frame storage上限1514）。低于IPv4最低68时销毁地址成员；仅恢复MTU不还原旧
-地址，lo再次DOWN→UP才发表127.0.0.1/8。smoltcp interface caps只是该实际设备配置的
-分段mechanism投影，同一NET事务同步刷新，不作为第二份可配置状态。
+报文格式、smoltcp 与 Linux 网络语义的固定来源见[网络基线](standards-baseline/network.md)。
 
 ### musl 与 BusyBox
 

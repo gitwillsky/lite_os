@@ -52,14 +52,7 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
         clint: 0..0,
     };
 
-    // SAFETY: boot ABI supplies a valid DTB physical pointer in opaque; parser validates header,
-    // totalsize, tokens, and filtered compatibility deviations before use.
-    let dtb = unsafe {
-        Dtb::from_raw_parts_filtered(opaque as *const u8, |node| {
-            matches!(node, E::Misaligned(4) | E::LastCompVersion(_))
-        })
-    }
-    .unwrap();
+    let dtb = load(opaque);
 
     ans.dtb.end += dtb.total_size();
     dtb.walk(|ctx, obj| match obj {
@@ -123,4 +116,19 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
         DtbObj::Property(_) => WalkOperation::StepOver,
     });
     ans
+}
+
+/// 加载启动 ABI 提供的只读 DTB；该物理区域在固件与 S-mode 启动期间保持有效。
+/// # Parameters
+/// `opaque` 是 QEMU boot ABI 的 DTB 物理指针。
+/// # Returns
+/// 校验 header、结构及允许的格式偏差后返回 walker；非法输入 fail-stop。
+pub(crate) fn load(opaque: usize) -> Dtb<'static> {
+    // SAFETY: QEMU 启动 ABI 提供存续至 OS 接管的 DTB；所有固件调用者只传原始 boot opaque。
+    unsafe {
+        Dtb::from_raw_parts_filtered(opaque as *const u8, |node| {
+            matches!(node, E::Misaligned(4) | E::LastCompVersion(_))
+        })
+    }
+    .expect("invalid firmware DTB")
 }

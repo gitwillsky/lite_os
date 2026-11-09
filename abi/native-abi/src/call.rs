@@ -373,7 +373,8 @@ pub const THREAD_SET_DEADLINE: usize = 83;
 
 /// 将设备中断路由到一个已在线的逻辑 CPU；不是 Linux 应用 ABI。
 /// 参数：`interrupt`（需 WRITE）、`cpu`（逻辑 CPU 编号）。保留当前屏蔽/待确认状态。
-/// 错误：`ERR_INVALID_ARGS`（CPU 不存在/未在线）、`ERR_BAD_STATE`（源未绑定）、`ERR_NO_MEMORY`。
+/// 错误：`ERR_INVALID_ARGS`（CPU 不存在/未在线）、`ERR_BAD_STATE`（源未绑定）、
+/// `ERR_NO_MEMORY`/`ERR_NO_RESOURCES`（目标准备失败，不改变旧路由和确认状态）。
 pub const INTERRUPT_SET_AFFINITY: usize = 84;
 
 /// 将已启动的系统线程设为指定逻辑 CPU 的唯一调度 owner；不是 Linux 应用 ABI。
@@ -382,5 +383,13 @@ pub const INTERRUPT_SET_AFFINITY: usize = 84;
 /// 错误：`ERR_INVALID_ARGS`（CPU 不存在）、`ERR_NO_RESOURCES`（分区/预算冲突）、`ERR_BAD_STATE`（退出/被替换）、`ERR_NO_MEMORY`（快照分配失败）。
 pub const THREAD_SET_ISOLATION: usize = 85;
 
+/// 分配消息中断组；不是应用 ABI。参数：MSI resource、BTI、device ID、count、out handle。
+/// 错误：ACCESS_DENIED、NOT_SUPPORTED、INVALID_ARGS、ALREADY_BOUND、NO_MEMORY/NO_RESOURCES。
+pub const MSI_ALLOCATE: usize = 86;
+/// 创建组中独占 index 的 MSI-X Interrupt；关闭组句柄不影响仍存活子对象。
+/// 参数：MSI（WRITE）、index、物理 Device VMO（READ|WRITE|MAP）、表起始字节偏移、out handle。
+/// 内核校验并拥有该表项的消息地址/数据与 mask；驱动只能管理功能开关和未绑定表项。
+/// 错误：INVALID_ARGS、OUT_OF_RANGE、ALREADY_BOUND、ACCESS_DENIED、NO_MEMORY/NO_RESOURCES。
+pub const MSI_CREATE_INTERRUPT: usize = 87;
 /// 编号上界（不含）。
-pub const COUNT: usize = 86;
+pub const COUNT: usize = 88;

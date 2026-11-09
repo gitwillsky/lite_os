@@ -32,7 +32,7 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
     {
         let mut network = net.protocol().unwrap().lock().unwrap();
         assert_eq!(
-            network.route(peer, None),
+            network.route(Ipv4Addr::UNSPECIFIED, peer, None),
             Err(SocketError::NetworkUnreachable)
         );
         tcp::maintain_clocks(&mut network, deadline - Duration::from_millis(1));

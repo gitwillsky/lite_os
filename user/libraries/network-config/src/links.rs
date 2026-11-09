@@ -27,7 +27,7 @@ fn read(path: &Path, attr: &str) -> io::Result<String> {
     fs::read_to_string(path.join(attr)).map(|text| text.trim().to_owned())
 }
 
-/// 指定接口当前的管理状态和载波；`settings` 可复用调用者的 netcfg 快照。
+/// 指定接口当前的管理状态和载波；`settings` 可复用调用者的 router_config 快照。
 /// 接口不存在、sysfs 不可读或返回非法状态时返回 I/O 错误。
 pub fn link_state(interface: &str, settings: Option<&crate::Snapshot>) -> io::Result<LinkState> {
     let path = Path::new(NET_CLASS).join(interface);
@@ -36,7 +36,7 @@ pub fn link_state(interface: &str, settings: Option<&crate::Snapshot>) -> io::Re
     let disabled = settings.is_some_and(|settings| {
         settings.interfaces.iter().any(|state| {
             state.name == interface.as_bytes()
-                && state.config.method == netcfg_protocol::Method::Disabled
+                && state.config.method == router_protocol::Method::Disabled
         })
     });
     if disabled || flags & 1 == 0 {
@@ -51,7 +51,7 @@ pub fn link_state(interface: &str, settings: Option<&crate::Snapshot>) -> io::Re
 
 /// 按 ifindex 排序读取本机以太网接口；排除回环等非 ARPHRD_ETHER 链路。
 /// 目录不可读、标志或序号损坏返回 I/O 错误；枚举后尚未读取类型便删除的接口跳过。
-/// 用户设置中的“禁用”来自 netcfg；状态端点暂不可用时只按接口的管理状态判断。
+/// 用户设置中的“禁用”来自 router_config；状态端点暂不可用时只按接口的管理状态判断。
 /// 其余读取中的热拔插错误由调用方下一轮重试，不发布半份扫描结果。
 /// `carrier` 在接口关闭时允许读取失败，仍按管理状态显示 Disabled。
 pub fn ethernet_links() -> io::Result<Vec<Link>> {
@@ -142,9 +142,9 @@ pub fn ethernet_links_with_settings(settings: Option<&crate::Snapshot>) -> io::R
 ///
 /// # Errors
 ///
-/// 连接已移除、名称与现有连接重复，或 netcfg 拒绝请求。
+/// 连接已移除、名称与现有连接重复，或 router_config 拒绝请求。
 pub fn rename_connection(interface: &str, name: &str) -> io::Result<()> {
-    netcfg_protocol::connection_name(name.as_bytes()).map_err(|_| {
+    router_protocol::connection_name(name.as_bytes()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "连接名称无效。请输入非空名称，避免使用保留字符。",

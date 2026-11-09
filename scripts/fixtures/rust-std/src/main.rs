@@ -146,7 +146,7 @@ fn ipv4_host(port: u16) {
         }
     };
     stream
-        .write_all(b"GET /system/netcfg/default.conf HTTP/1.0\r\nHost: liteos-std-gate\r\n\r\n")
+        .write_all(b"GET /system/router-config/default.conf HTTP/1.0\r\nHost: liteos-std-gate\r\n\r\n")
         .expect("write std IPv4 request");
     let mut response = Vec::new();
     stream

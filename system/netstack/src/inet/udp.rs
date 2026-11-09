@@ -218,7 +218,15 @@ pub(super) fn connect(
     }
     let mut network = endpoint.stack()?.lock()?;
     network.ensure_udp_bound(handle)?;
+    let source = network
+        .sockets
+        .get::<udp::Socket<'static>>(handle)
+        .endpoint()
+        .addr
+        .map(from_ip)
+        .unwrap_or(Ipv4Addr::UNSPECIFIED);
     let route = network.route(
+        source,
         peer.address,
         network.endpoints[&handle].options.bound_to_device,
     )?;
@@ -345,7 +353,18 @@ pub(super) fn send(
             if requested_source.is_some_and(|source| !network.has_local_address(source)) {
                 return Err(SocketError::NetworkUnreachable);
             }
-            let route = network.route(peer.address, outgoing)?;
+            let bound_source = network
+                .sockets
+                .get::<udp::Socket<'static>>(handle)
+                .endpoint()
+                .addr;
+            let flow_source = if packet_info.is_some() {
+                requested_source
+            } else {
+                bound_source.map(from_ip)
+            }
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
+            let route = network.route(flow_source, peer.address, outgoing)?;
             // 未开放 IPv4 fragmentation；按真实本次出口 MTU 在入队前拒绝，不能成功后丢包。
             if input.len() > route.transport.mtu.saturating_sub(20 + 8) {
                 return Err(SocketError::MessageTooLarge);
@@ -358,11 +377,6 @@ pub(super) fn send(
             if network.endpoints[&handle].shutdown & SEND_SHUTDOWN != 0 {
                 return Err(SocketError::BrokenPipe);
             }
-            let bound_source = network
-                .sockets
-                .get::<udp::Socket<'static>>(handle)
-                .endpoint()
-                .addr;
             // cmsg明确给出0源地址时清除本次request的bound source，实际binding保持。
             let local = if packet_info.is_some() {
                 requested_source

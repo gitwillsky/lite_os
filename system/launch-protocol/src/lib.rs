@@ -63,7 +63,7 @@ pub mod ext4 {
     pub const CONTROL: usize = ROLE_HANDLES;
 }
 
-/// 网络服务：拥有 IPv4 协议栈、packet socket 与默认网络；netcfg 安装网卡，使用者创建网络域与 socket。
+/// 网络服务：拥有 IPv4 协议栈、packet socket 与默认网络；router_config 安装网卡，使用者创建网络域与 socket。
 pub mod netstack {
     use super::ROLE_HANDLES;
 
@@ -118,7 +118,7 @@ pub mod driver_update {
     /// ELF 生命周期 note 类型，标识驱动管理器。
     pub const MANAGER_NOTE: u32 = 2;
     /// 宿主启动与设备协议、管理器启动与交接协议的共同兼容代际。
-    pub const ABI: u32 = 1;
+    pub const ABI: u32 = 5;
 
     /// 生成独立 PT_NOTE，依次为 ELF note header、NUL 终止的 owner 及 ABI 代际。
     pub const fn note(role: u32) -> [u8; 24] {
@@ -160,7 +160,7 @@ pub mod driver_host {
     pub const READY: usize = ROLE_HANDLES + 2;
     /// 转发 OPEN 的独立设备目录连接，避免独占会话的回收阻塞监督。
     pub const OPEN_DIRECTORY: usize = ROLE_HANDLES + 3;
-    /// 节点 MMIO 窗口的 resource 起点；若节点声明 IRQ，第一个句柄为 IRQ resource。
+    /// 可变节点 resource 起点：按 IRQ（若有）、MSI（若有）、MMIO 窗口顺序交付。
     pub const RESOURCES: usize = ROLE_HANDLES + 4;
 
     /// 绑定到节点的驱动。
@@ -198,7 +198,7 @@ pub mod driver_host {
         /// 只声明给使用者能在会话 `PEER_CLOSED` 后改用新登记设备的驱动：熵源（使用者总取最新的可用
         /// source）、声音（audio-core 把旧输出标为断开、把新设备接为新输出，linuxd 呈现为声卡重新插入）、
         /// 输入（linuxd 撤下 evdev 节点并发 remove/add uevent）、console 端口（linuxd 以新会话重新发布节点）
-        /// 网卡（netcfg 重新安装并配置网卡），以及 USB 主控（旧 USB 与 PCM 会话断开，主控复位后重新枚举端口）。
+        /// 网卡（router_config 重新安装并配置网卡），以及 USB 主控（旧 USB 与 PCM 会话断开，主控复位后重新枚举端口）。
         /// 块设备和显示仍缺少消费者恢复契约，宿主崩溃时节点被移除。
         pub const fn restart_on_crash(self) -> bool {
             matches!(
@@ -230,6 +230,8 @@ pub mod driver_host {
             config: u64,
             bars: [Option<Bar>; 6],
             interrupt: Option<u32>,
+            /// msi-map 解析的消息 DeviceID；对应独立 MSI resource，不能与 DMA stream 混用。
+            message_device: Option<u32>,
         },
     }
 
@@ -241,7 +243,9 @@ pub mod driver_host {
     }
 
     /// 编码后的长度。
-    pub const NODE_BYTES: usize = 4 + 4 + 8 + 6 * 16 + 4;
+    const INTERRUPT_OFFSET: usize = 4 + 4 + 8 + 6 * 16;
+    const MESSAGE_OFFSET: usize = INTERRUPT_OFFSET + 4;
+    pub const NODE_BYTES: usize = MESSAGE_OFFSET + 8;
     const NO_INTERRUPT: u32 = u32::MAX;
 
     impl Node {
@@ -251,6 +255,17 @@ pub mod driver_host {
                 Bus::VirtioMmio { .. } => true,
                 Bus::Pci { interrupt, .. } => interrupt.is_some(),
             }
+        }
+
+        /// 启动资源中是否包含单设备 MSI authority。
+        pub fn has_msi(&self) -> bool {
+            matches!(
+                self.bus,
+                Bus::Pci {
+                    message_device: Some(_),
+                    ..
+                }
+            )
         }
 
         /// 节点的运行时定位地址。
@@ -270,12 +285,14 @@ pub mod driver_host {
                     bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
                     bytes[8..16].copy_from_slice(&base.to_le_bytes());
                     bytes[16..24].copy_from_slice(&size.to_le_bytes());
-                    bytes[NODE_BYTES - 4..].copy_from_slice(&irq.to_le_bytes());
+                    bytes[INTERRUPT_OFFSET..INTERRUPT_OFFSET + 4]
+                        .copy_from_slice(&irq.to_le_bytes());
                 }
                 Bus::Pci {
                     config,
                     bars,
                     interrupt,
+                    message_device,
                 } => {
                     bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
                     bytes[8..16].copy_from_slice(&config.to_le_bytes());
@@ -288,8 +305,13 @@ pub mod driver_host {
                         bytes[at..at + 8].copy_from_slice(&bar.address.to_le_bytes());
                         bytes[at + 8..at + 16].copy_from_slice(&bar.size.to_le_bytes());
                     }
-                    bytes[NODE_BYTES - 4..]
+                    bytes[INTERRUPT_OFFSET..INTERRUPT_OFFSET + 4]
                         .copy_from_slice(&interrupt.unwrap_or(NO_INTERRUPT).to_le_bytes());
+                    if let Some(device) = message_device {
+                        bytes[MESSAGE_OFFSET..MESSAGE_OFFSET + 4]
+                            .copy_from_slice(&1u32.to_le_bytes());
+                        bytes[MESSAGE_OFFSET + 4..].copy_from_slice(&device.to_le_bytes());
+                    }
                 }
             }
             bytes
@@ -305,7 +327,15 @@ pub mod driver_host {
             let u64_at =
                 |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or([0; 8]));
             let driver = Driver::decode(u32_at(0))?;
-            let tail = u32_at(NODE_BYTES - 4);
+            let tail = u32_at(INTERRUPT_OFFSET);
+            let message_device = match u32_at(MESSAGE_OFFSET) {
+                0 if u32_at(MESSAGE_OFFSET + 4) == 0 => None,
+                1 => Some(u32_at(MESSAGE_OFFSET + 4)),
+                _ => return None,
+            };
+            if u32_at(4) != 2 && message_device.is_some() {
+                return None;
+            }
             let bus = match u32_at(4) {
                 1 => Bus::VirtioMmio {
                     base: u64_at(8),
@@ -328,6 +358,7 @@ pub mod driver_host {
                         config: u64_at(8),
                         bars,
                         interrupt: (tail != NO_INTERRUPT).then_some(tail),
+                        message_device,
                     }
                 }
                 _ => return None,
@@ -359,20 +390,34 @@ pub mod component_manager {
     pub const BASE: usize = 0x20_0000;
 }
 
-/// 网络配置：发现网卡并经 netstack 的安装协议安装，按默认策略与用户设置配置接口（DHCP 经 dhcp-client），
-/// 提供网络设置协议（Fuchsia netcfg）。
-pub mod netcfg {
+/// 原生 RIB：接管受授权配置来源，选择候选并委托 netstack 执行。
+pub mod routing_rib {
+    use super::ROLE_HANDLES;
+    /// bootfs 中的原生 RIB 映像。
+    pub const IMAGE: &[u8] = b"bin/routing-rib";
+    /// 独立进程的静态链接基址。
+    pub const BASE: usize = 0x40_0000;
+    /// 提供获授权配置来源的 outgoing 目录。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只含 NET 控制与执行能力的路由目录。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
+}
+
+/// 网络配置树与持久决定 owner。
+pub mod router_config {
     use super::ROLE_HANDLES;
 
     /// bootfs 中的映像路径。
-    pub const IMAGE: &[u8] = b"bin/netcfg";
+    pub const IMAGE: &[u8] = b"bin/router-config";
     /// bootfs 中的只读默认策略（interfaces(5) 子集，`iface *` 匹配未单独配置的以太网口）。
-    pub const DEFAULT_CONFIG: &[u8] = b"data/netcfg/default.conf";
+    pub const DEFAULT_CONFIG: &[u8] = b"data/router-config/default.conf";
+    /// 已有数据卷上的稳定存储身份，与进程展示名独立；改名不能静默丢弃既存网络设置。
+    pub const STORAGE_ID: &[u8] = b"netcfg";
     /// 静态链接基址（普通进程的低地址区）。
     pub const BASE: usize = 0x40_0000;
     /// outgoing 服务目录的服务端：接受 `service_directory::NETWORK_SETTINGS` 连接。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 根服务的服务路由目录（netstack 控制与安装、dhcp-client）。
+    /// 根服务的服务路由目录（netstack 控制、RIB 接口来源与 dhcp-client）。
     pub const SERVICES: usize = ROLE_HANDLES + 1;
     /// 只含网卡的设备目录连接。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 2;
@@ -382,7 +427,7 @@ pub mod netcfg {
     pub const CONFIG: usize = ROLE_HANDLES + 4;
 }
 
-/// DHCPv4 客户端：经 netstack 的 packet socket 为 netcfg 指定的接口取得并续租地址（Fuchsia dhcp-client）。
+/// DHCPv4 客户端：经 netstack 的 packet socket 为 router_config 指定的接口取得并续租地址（Fuchsia dhcp-client）。
 pub mod dhcp_client {
     use super::ROLE_HANDLES;
 

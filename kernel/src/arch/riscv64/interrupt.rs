@@ -1,5 +1,60 @@
 //! RISC-V supervisor local interrupt mechanism。
 
+/// 初始化本 CPU 的 supervisor IMSIC 文件；调用者已关闭 SIE，ids 为 DTB 验证的 63..=2047。
+pub(crate) fn initialize_messages(ids: u32) {
+    message_write(0x70, 0);
+    message_write(0x72, 1);
+    for word in 0..=(ids / 64) {
+        message_write(0x80 + word as usize * 2, 0);
+        message_write(0xc0 + word as usize * 2, 0);
+    }
+    message_write(0x72, 0);
+    message_write(0x70, 1);
+}
+
+/// 改变本 CPU 的 EIE；selector/ireg 序列只能在 SIE 关闭时使用。
+pub(crate) fn enable_message(id: u32, enabled: bool) {
+    let selector = 0xc0 + (id / 64) as usize * 2;
+    let bit = 1usize << (id % 64);
+    // SAFETY: 调用方持有当前 CPU 的 IRQ guard；0x150/0x151 为 Ssaia 的 SISELECT/SIREG。
+    unsafe {
+        if enabled {
+            core::arch::asm!("csrw 0x150, {selector}", "csrs 0x151, {bit}", selector = in(reg) selector, bit = in(reg) bit, options(nostack));
+        } else {
+            core::arch::asm!("csrw 0x150, {selector}", "csrc 0x151, {bit}", selector = in(reg) selector, bit = in(reg) bit, options(nostack));
+        }
+    }
+}
+
+/// 原子领取并清除本 CPU 的一个 EIP 位；调用方已关闭 SIE。
+pub(crate) fn take_message_pending(id: u32) -> bool {
+    let selector = 0x80 + (id / 64) as usize * 2;
+    let bit = 1usize << (id % 64);
+    let previous: usize;
+    // SAFETY: 当前 CPU 独占 selector/ireg 序列；CSRR[C] 仅清除授权的单一 pending 位。
+    unsafe {
+        core::arch::asm!("csrw 0x150, {selector}", "csrrc {previous}, 0x151, {bit}", selector = in(reg) selector, previous = out(reg) previous, bit = in(reg) bit, options(nostack));
+    }
+    previous & bit != 0
+}
+
+/// 原子 claim 当前 CPU 最高优先级消息并清除该 EIP；0 表示没有 eligible 消息，无另一次 EOI。
+pub(crate) fn claim_message() -> u32 {
+    let top: usize;
+    // SAFETY: hardirq 的本地 SIE 已关闭；STOPEI 的 swap-to-zero 是标准 IMSIC claim 操作。
+    unsafe {
+        core::arch::asm!("csrrw {top}, 0x15c, zero", top = out(reg) top, options(nostack));
+    }
+    (top >> 16) as u32
+}
+
+fn message_write(selector: usize, value: usize) {
+    // SAFETY: 仅在本地 IMSIC 初始化、SIE 关闭时调用，写入已验证 interrupt-file 的间接寄存器。
+    unsafe {
+        core::arch::asm!("csrw 0x150, {selector}", "csrw 0x151, {value}", selector = in(reg) selector, value = in(reg) value, options(nostack));
+    }
+}
+
 /// 调用前的 local interrupt enable 状态。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LocalInterruptState {

@@ -142,6 +142,7 @@ pub enum ObjectType {
     Pmt = 13,
     Pager = 14,
     Exception = 15,
+    Msi = 16,
 }
 
 /// 单条 channel 消息的最大字节数。
@@ -302,6 +303,8 @@ pub mod resource {
     pub const IRQ: u32 = 2;
     /// 一段系统操作授权；不能用于 MMIO、IRQ 或 IOMMU 创建。
     pub const SYSTEM: u32 = 3;
+    /// 一段消息中断设备 ID 授权；不能升级为 MMIO/IRQ 或根权限。
+    pub const MSI: u32 = 4;
 
     /// system resource 的单项操作；每项占一个编号，可再切出同类子范围。
     pub mod system {
@@ -372,6 +375,8 @@ pub mod info {
     pub const VMAR_RESIDENCY: u32 = 11;
     /// [`crate::VmarMappingStats`] 数组；实际用户翻译按物理页共享次数分摊。
     pub const VMAR_MAPPING_STATS: u32 = 12;
+    /// 消息中断组容量，见 MsiInfo。
+    pub const MSI: u32 = 13;
 }
 
 /// `system_get_info` 主题与电源操作。
@@ -711,3 +716,10 @@ pub struct RiscvIommuDescriptor {
 
 /// 原生进程用户地址空间的页大小。
 pub const PAGE_SIZE: usize = 4096;
+
+/// 消息中断组容量；目标地址/数据由原生中断对象拥有，不由驱动复制路由状态。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MsiInfo {
+    pub count: u32,
+}

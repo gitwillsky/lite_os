@@ -30,9 +30,14 @@ impl VirtIOCompletionIrq {
             Err(_) => None,
         };
         if status.is_none() {
-            self.0.store(true, Ordering::Release);
+            self.record_transport_error();
         }
         status
+    }
+
+    /// 原生消息绑定/确认或配置向量发现设备错误，交给同一完成 owner 撤离 DMA。
+    pub(super) fn record_transport_error(&self) {
+        self.0.store(true, Ordering::Release);
     }
 
     /// 只观察错误锁存，避免正常完成分派进入设备的冷配置锁；不能代替 take 消费。

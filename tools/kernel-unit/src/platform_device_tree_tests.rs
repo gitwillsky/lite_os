@@ -5,7 +5,7 @@
 
 use std::{env, fs, panic};
 
-use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
+use dtb_walker::{Dtb, DtbObj, HeaderError, Property, WalkOperation};
 
 use crate::qemu_virt::{aarch64, riscv64};
 
@@ -58,56 +58,71 @@ fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
     assert_eq!(info.memory.start, 0x8000_0000);
     assert_eq!(info.uart, 0x1000_0000..0x1000_0100);
     assert_eq!(info.uart_irq, 10);
-    assert_eq!(info.plic.start, 0x0c00_0000);
+    assert_eq!(info.aia.aplic.start, 0x0d00_0000);
+    assert_eq!(info.aia.identities, 255);
+    assert_eq!(info.aia.files.len(), FIXTURE_CPUS);
+    for hardware in 0..FIXTURE_CPUS {
+        let file = info
+            .aia
+            .files
+            .iter()
+            .find(|file| file.hardware_cpu == hardware)
+            .expect("each enabled CPU has a supervisor file");
+        assert_eq!(file.address, 0x2800_0000 + hardware * 4096);
+        assert_eq!(file.hart_index, hardware as u32);
+    }
     assert_eq!(info.rtc, Some(0x0010_1000..0x0010_2000));
 }
 
 #[test]
 fn riscv64_device_identity_does_not_depend_on_node_names() {
     let mut bytes = fixture("LITEOS_RISCV64_DTB");
-    // 1. fixture 的节点名不是设备身份；先用固定 compatible 找到实际 PLIC 节点。
+    // 1. 先由生产 decoder 选择 supervisor 文件，再从原 DTB 定位它的节点。
+    let selected = riscv64::device_tree::parse(dtb(&bytes), 0x8700_0000)
+        .aia
+        .windows[0]
+        .start;
     let mut name = None;
     dtb(&bytes).walk(|context, object| {
-        if let DtbObj::Property(Property::Compatible(values)) = object
-            && values
-                .into_iter()
-                .any(|value| value == Str::from("sifive,plic-1.0.0"))
+        if let DtbObj::Property(Property::Reg(mut registers)) = object
+            && registers
+                .next()
+                .is_some_and(|range| range.start == selected)
         {
             assert!(
                 name.replace(context.name().as_bytes().to_vec()).is_none(),
-                "fixture has one PLIC"
+                "one supervisor IMSIC node"
             );
         }
         WalkOperation::StepInto
     });
-    let name = name.expect("fixture must contain PLIC compatible");
+    let name = name.expect("fixture must contain supervisor IMSIC");
     // 2. 等长改名保持 DTB 结构与 compatible 不变；decoder 必须继续识别同一个设备。
     let replacement = vec![b'x'; name.len()];
     replace_all(&mut bytes, &name, &replacement);
     replace_all(&mut bytes, b"serial@10000000", b"tty000@10000000");
     replace_all(&mut bytes, b"rtc@101000", b"clk@101000");
     let info = riscv64::device_tree::parse(dtb(&bytes), 0x8700_0000);
-    assert_eq!(info.plic.start, 0x0c00_0000);
+    assert_eq!(info.aia.aplic.start, 0x0d00_0000);
     assert_eq!(info.uart_irq, 10);
     assert!(info.rtc.is_some());
 }
 
 #[test]
-fn riscv64_missing_plic_fails_with_a_reason() {
+fn riscv64_missing_imsic_fails_with_a_reason() {
     let mut bytes = fixture("LITEOS_RISCV64_DTB");
-    replace_all(&mut bytes, b"sifive,plic-1.0.0", b"vendor,intc-1.0.0");
-    replace_all(&mut bytes, b"riscv,plic0", b"vendor,pic0");
+    replace_all(&mut bytes, b"riscv,imsics", b"vendor,imsic");
     let panic = panic::catch_unwind(|| {
         riscv64::device_tree::parse(dtb(&bytes), 0x8700_0000);
     })
-    .expect_err("a DTB without a PLIC must fail-stop");
+    .expect_err("a DTB without an IMSIC must fail-stop");
     let message = panic
         .downcast_ref::<&str>()
         .map(|message| (*message).to_owned())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_default();
     assert!(
-        message.contains("plic"),
+        message.contains("IMSIC"),
         "panic lacks the missing device: {message}"
     );
 }
@@ -122,4 +137,7 @@ fn aarch64_qemu_virt_dtb_decodes_every_boot_fact() {
     // PL011 是 SPI 1，GIC INTID = 32 + 1。
     assert_eq!(info.uart.irq, 33);
     assert_eq!(info.gic.distributor.start, 0x0800_0000);
+    let its = info.its.expect("product machine enables ITS");
+    assert_eq!(its.start, 0x0808_0000);
+    assert_eq!(its.size, 0x20000);
 }

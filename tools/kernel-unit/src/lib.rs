@@ -262,10 +262,6 @@ mod timer_deadline;
 mod futex_queue;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/platform/qemu_virt/riscv64/plic_policy.rs"]
-mod plic_policy;
-
-#[cfg(test)]
 #[path = "../../../kernel/src/arch/riscv64/sv39.rs"]
 mod sv39;
 
@@ -320,7 +316,7 @@ mod drm_publication;
 mod network_device_error;
 
 #[cfg(test)]
-#[path = "../../../system/device-model/src/network.rs"]
+#[path = "../../../tools/source-view/device-model/network/network/network.rs"]
 #[allow(dead_code)]
 mod network_transmit;
 

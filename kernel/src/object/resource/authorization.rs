@@ -10,6 +10,7 @@ enum ResourceKind {
     Mmio(Range<u64>),
     Irq(Range<u32>),
     System(Range<u64>),
+    Msi(Range<u64>),
 }
 
 /// 不可变的硬件/系统操作授权；对象 kind 与范围是唯一 authority，不复制服务角色。
@@ -59,6 +60,7 @@ impl Resource {
                 let end = u32::try_from(end).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                 ResourceKind::Irq(start..end)
             }
+            native_abi::resource::MSI if end <= 1u64 << 32 => ResourceKind::Msi(base..end),
             native_abi::resource::SYSTEM => {
                 if end > native_abi::resource::system::COUNT {
                     return Err(native_abi::ERR_INVALID_ARGS);
@@ -75,7 +77,8 @@ impl Resource {
             (ResourceKind::Irq(parent), ResourceKind::Irq(child)) => {
                 parent.start <= child.start && child.end <= parent.end
             }
-            (ResourceKind::System(parent), ResourceKind::System(child)) => {
+            (ResourceKind::Msi(parent), ResourceKind::Msi(child))
+            | (ResourceKind::System(parent), ResourceKind::System(child)) => {
                 parent.start <= child.start && child.end <= parent.end
             }
             _ => false,
@@ -96,7 +99,7 @@ impl Resource {
             && match &self.kind {
                 ResourceKind::Root => true,
                 ResourceKind::System(range) => range.contains(&operation),
-                ResourceKind::Mmio(_) | ResourceKind::Irq(_) => false,
+                ResourceKind::Mmio(_) | ResourceKind::Irq(_) | ResourceKind::Msi(_) => false,
             }
     }
 
@@ -111,16 +114,24 @@ impl Resource {
                 !(base < ram.end as u64 && end > ram.start as u64)
             }
             ResourceKind::Mmio(range) => range.start <= base && end <= range.end,
-            ResourceKind::Irq(_) | ResourceKind::System(_) => false,
+            ResourceKind::Irq(_) | ResourceKind::System(_) | ResourceKind::Msi(_) => false,
         }
     }
 
+    /// 消息设备 ID 的不可变 authority；不授予其他硬件资源。
+    pub(crate) fn covers_msi(&self, device: u32) -> bool {
+        match &self.kind {
+            ResourceKind::Root => true,
+            ResourceKind::Msi(range) => range.contains(&u64::from(device)),
+            _ => false,
+        }
+    }
     /// 是否授权中断向量。
     pub(crate) fn covers_irq(&self, vector: u32) -> bool {
         match &self.kind {
             ResourceKind::Root => crate::platform::device_interrupt_range().contains(&vector),
             ResourceKind::Irq(range) => range.contains(&vector),
-            ResourceKind::Mmio(_) | ResourceKind::System(_) => false,
+            ResourceKind::Mmio(_) | ResourceKind::System(_) | ResourceKind::Msi(_) => false,
         }
     }
 }

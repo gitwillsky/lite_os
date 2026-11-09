@@ -23,8 +23,8 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
         interface_index: Some(2), gateway: Some(gateway), preferred_source: None, metrics: network_protocol::Ipv4RouteMetrics::default(), on_link: false,
     };
     configure_route(&first, default, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
-    assert!(route_snapshot(&first).unwrap().iter().any(|snapshot| snapshot.route == default));
-    assert!(!route_snapshot(&second).unwrap().iter().any(|snapshot| snapshot.route.gateway.is_some()));
+    assert!(route_snapshot(&first).unwrap().iter().any(|snapshot| snapshot.single_path() == Some(default)));
+    assert!(!route_snapshot(&second).unwrap().iter().any(|snapshot| snapshot.single_path().unwrap().gateway.is_some()));
     let endpoint = |net: &Arc<crate::namespace::Namespace>, kind| {
         InetSocket::new(
             kind,
@@ -655,7 +655,7 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
     assert!(
         network.interfaces[1]
             .device
-            .statistics()
+            .local_statistics()
             .transmitted_dropped
             > 0
     );

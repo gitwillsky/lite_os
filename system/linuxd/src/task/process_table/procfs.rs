@@ -303,19 +303,21 @@ impl ProcSource for KernelProcSource {
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
         rows.extend(
             routes
-                .into_iter()
+                .iter()
                 .filter(|snapshot| {
                     snapshot.route.table == 254 && snapshot.route.kind != Ipv4RouteKind::Broadcast
                 })
                 .map(|snapshot| {
                     let route = snapshot.route;
+                    // Linux fib_route_seq_show 只展示首个路径；完整组由 rtnetlink 提供。
+                    let member = snapshot.next_hops.and_then(|group| group.members().next());
+                    let gateway = member.and_then(|member| member.gateway);
                     ProcRouteSnapshot {
-                        name: snapshot.name,
+                        name: member
+                            .and_then(|member| routes.interface_name(member.interface_index))
+                            .unwrap_or([0; 16]),
                         destination: route.destination.octets(),
-                        gateway: route
-                            .gateway
-                            .unwrap_or(core::net::Ipv4Addr::UNSPECIFIED)
-                            .octets(),
+                        gateway: gateway.unwrap_or(core::net::Ipv4Addr::UNSPECIFIED).octets(),
                         prefix_length: route.prefix_length,
                         metric: route.metric,
                         mtu: if route.metrics.advertised_mss == 0 {
@@ -326,9 +328,12 @@ impl ProcSource for KernelProcSource {
                         window: route.metrics.receive_window,
                         initial_rtt: route.metrics.round_trip_time >> 3,
                         flags: 1
-                            | if route.gateway.is_some() { 2 } else { 0 }
+                            | if gateway.is_some() { 2 } else { 0 }
                             | if route.prefix_length == 32 { 4 } else { 0 }
-                            | if matches!(route.kind, Ipv4RouteKind::Unreachable) {
+                            | if matches!(
+                                route.kind,
+                                Ipv4RouteKind::Unreachable | Ipv4RouteKind::Prohibit
+                            ) {
                                 0x200
                             } else {
                                 0

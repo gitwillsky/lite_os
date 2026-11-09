@@ -74,6 +74,7 @@ pub(super) fn complete_pending() {
 /// # Parameters
 ///
 /// - `targets`: generic memory owner 选出的全部 remote logical CPU。
+/// - `acknowledge_local`: 上层其他核间事务的无阻塞本地确认；不调度、不分配、不等待远端。
 ///
 /// # Returns
 ///
@@ -82,7 +83,10 @@ pub(super) fn complete_pending() {
 /// # Errors
 ///
 /// SGI 投递失败时返回 platform TLB shootdown error。
-pub(super) fn synchronize(targets: CpuSet) -> Result<(), super::TlbShootdownError> {
+pub(super) fn synchronize(
+    targets: CpuSet,
+    acknowledge_local: impl Fn(),
+) -> Result<(), super::TlbShootdownError> {
     if targets.is_empty() {
         return Ok(());
     }
@@ -107,9 +111,9 @@ pub(super) fn synchronize(targets: CpuSet) -> Result<(), super::TlbShootdownErro
     }
 
     loop {
-        // 两颗 CPU 并发 retirement 时，calling CPU 也可能是另一 transaction 的 target。
-        // 主动完成本地 request 可避免双方都在 IRQ-masked caller 中等待对方。
+        // 两颗 CPU 可能分别等待 TLB 与通用内存屏障；关中断等待不能只确认同类请求。
         complete_pending();
+        acknowledge_local();
         if targets
             .iter()
             .all(|target| states()[target.index()].completion.load(Ordering::Acquire) >= generation)

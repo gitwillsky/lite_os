@@ -25,6 +25,14 @@ const HEADER: usize = 8;
 pub struct Writer(Vec<u8>);
 
 impl Writer {
+    /// 在控制操作产生副作用前预留回复空间，后续固定字段写入不会再分配。
+    /// # Errors
+    /// 容量溢出或内存不足。
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), Status> {
+        self.0
+            .try_reserve(additional)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)
+    }
     /// 以 `ordinal` 开始一条请求（事务号位置由内核填写）。
     pub fn request(ordinal: u32) -> Self {
         let mut writer = Self(Vec::new());
@@ -81,6 +89,20 @@ impl Writer {
         Self(Vec::new())
     }
 
+    /// 接管已初始化的字节前缀并继续编码，不分配、复制或隐式增加 RPC 头。
+    /// # Parameters
+    /// `bytes` 的 framing 由调用者负责，后续字段追加到末尾。
+    /// # Returns
+    /// 独占该存储的编码器；不验证前缀内容。
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// 移交完整编码缓冲的唯一所有权，不分配或复制。
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
     /// 已编码的字节。
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
@@ -93,6 +115,16 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// 检查本帧恰好消费完毕，拒绝合法前缀后附带的未知字段；不改变游标。
+    /// # Errors
+    /// 存在尾部字节时返回 INVALID_ARGS。
+    pub fn finish(&self) -> Result<(), Status> {
+        if self.bytes.is_empty() {
+            Ok(())
+        } else {
+            Err(native_abi::ERR_INVALID_ARGS)
+        }
+    }
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
     }
@@ -244,11 +276,11 @@ struct PoolState {
 
 struct Activity {
     events: Vec<Event>,
-    handler: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
+    handler: Arc<dyn Fn(usize) -> Result<(), Status> + Send + Sync>,
 }
 enum Work {
     Message(native_runtime::Message),
-    Activity,
+    Activity(usize),
 }
 
 impl Pool {
@@ -313,10 +345,10 @@ impl Pool {
                         .as_ref()
                         .and_then(|activity| activity.events.get((key - 2) as usize))
                         .ok_or(native_abi::ERR_BAD_STATE)?;
-                    // clear -> arm -> drain；多个完成源共享一个 handler，也不需要通知桥接线程。
+                    // clear -> arm -> drain；保留来源索引，不能迫使 handler 扫描所有独立队列。
                     event.signal(native_abi::signals::SIGNALED, 0)?;
                     event.wait_async(&self.port, key, native_abi::signals::SIGNALED)?;
-                    return Ok(Work::Activity);
+                    return Ok(Work::Activity((key - 2) as usize));
                 }
             }
         }
@@ -373,7 +405,7 @@ pub fn serve_messages(
 /// # Parameters
 /// - `channel`/`workers`/`name`/`handler`: 与 [`serve`] 相同的控制连接、并发上限、名称和控制处理器。
 /// - `events`: 非空的数据面通知集合；收到后先清除并重新武装，再调用 `activity`。至少需要两个工作者。
-/// - `activity`: 排空当前数据；失败停止接收新工作，所有在途处理结束后才释放会话。
+/// - `activity`: 接收 events 中的源索引，只排空对应数据；失败停止接收新工作，所有在途处理结束后才释放会话。
 ///
 /// # Errors
 /// 空事件集合或并发不足返回参数错误；port、异步登记、内存或初始线程创建失败不发表服务。
@@ -383,7 +415,7 @@ pub fn serve_events(
     name: &[u8],
     handler: Arc<Handler<'static>>,
     events: Vec<Event>,
-    activity: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
+    activity: Arc<dyn Fn(usize) -> Result<(), Status> + Send + Sync>,
 ) -> Result<(), Status> {
     if events.is_empty() || workers < 2 {
         return Err(native_abi::ERR_INVALID_ARGS);
@@ -505,11 +537,11 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
                         }
                     })
                 }
-                Work::Activity => (pool
+                Work::Activity(source) => (pool
                     .activity
                     .as_ref()
                     .expect("activity source was selected")
-                    .handler)(),
+                    .handler)(source),
             }
         };
         pool.state.lock().idle += 1;

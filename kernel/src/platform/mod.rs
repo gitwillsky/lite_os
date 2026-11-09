@@ -11,9 +11,10 @@ use qemu_virt as selected;
 compile_error!("LiteOS currently has no platform implementation for this target architecture");
 
 pub(crate) use selected::{
-    BootInfo, ClaimedInterrupt, InstructionFenceError, TlbShootdownError, arm_timer,
-    bind_interrupt, boot_entropy, claim_interrupt, complete_interrupt, complete_pending_ipi,
-    console, device_interrupt_range, dtb_range, hardware_cpu_ids, initialize, initialize_devices,
+    BootInfo, ClaimedInterrupt, InstructionFenceError, InterruptRetirement, MessageInterruptGroup,
+    MessageInterruptRoute, TlbShootdownError, arm_timer, bind_interrupt, bind_message_interrupt,
+    boot_entropy, claim_interrupt, complete_interrupt, complete_pending_ipi, console,
+    device_interrupt_range, dtb_range, hardware_cpu_ids, initialize, initialize_devices,
     initrd_range, kernel_command_line, kernel_mmio_regions, physical_memory_end,
     physical_memory_range, read_realtime_ns, reset_system, send_ipi, set_interrupt_affinity,
     start_cpu, synchronize_instruction_cache, synchronize_tlb, timebase_frequency,
@@ -35,3 +36,8 @@ pub(crate) enum ResetReason {
     /// kernel fail-stop。
     SystemFailure,
 }
+
+/// 上层注入的已清零 DMA 存储；type erasure 只保留冷分配的寿命与物理地址，不分派架构。
+pub(crate) type MessageInterruptMemory = alloc::boxed::Box<dyn crate::arch::dma::DmaFrame>;
+/// 分配策略属于上层；platform 只接收可失败的连续驻留存储，不反向调用 memory。
+pub(crate) type MessageInterruptAllocator = fn(usize) -> Option<MessageInterruptMemory>;

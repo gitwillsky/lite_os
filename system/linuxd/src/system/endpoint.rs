@@ -111,6 +111,16 @@ pub(crate) fn receive_message(
 
 /// 以 linuxd 的身份把 `reply` 发回 `source`；发送失败（客户端已离开、队列满）时丢弃。
 pub(crate) fn reply(socket: &Socket, source: SocketAddress, reply: &[u8]) {
+    reply_with_rights(socket, source, reply, None);
+}
+
+/// 回复可携带标准 SCM_RIGHTS；独占消费 rights，发送失败时同样退休全部文件引用。
+pub(crate) fn reply_with_rights(
+    socket: &Socket,
+    source: SocketAddress,
+    reply: &[u8],
+    mut rights: Option<net::UnixRights>,
+) {
     let credentials = UnixSendCredentials {
         sender: UnixCredentials {
             pid: task::current_task()
@@ -124,7 +134,7 @@ pub(crate) fn reply(socket: &Socket, source: SocketAddress, reply: &[u8]) {
     let _ = socket.send_to_with_ancillary(
         reply,
         Some(SocketSendDestination::Address(source)),
-        &mut None,
+        &mut rights,
         &credentials,
         None,
         false,

@@ -250,7 +250,7 @@ impl Session {
             _ => None,
         }))
     }
-    /// 启用或禁用连接，等 netcfg 把接口切到目标状态（最多 3 秒）后刷新列表。
+    /// 启用或禁用连接，等 router_config 把接口切到目标状态（最多 3 秒）后刷新列表。
     async fn set_connection(&self, interface: String, enabled: bool) -> Result<()> {
         self.view.status.set_text(if enabled {
             "正在启用…\t\t"

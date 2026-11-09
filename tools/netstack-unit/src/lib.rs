@@ -81,7 +81,19 @@ mod inet {
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tcp_tests.rs"));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/domain_tests.rs"));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/routing_tests.rs"));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/configuration_tests.rs"
+            ));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/routing_compilation_tests.rs"
+            ));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/packet_tests.rs"));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/rx_batch_tests.rs"
+            ));
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/namespace_tests.rs"
@@ -107,3 +119,17 @@ pub fn benchmark_lifecycle(mut measure: impl FnMut(&str, u64, usize, bool, &mut 
 #[cfg(test)]
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
+
+#[cfg(test)]
+#[path = "../../../system/router-config/src/transaction/storage.rs"]
+mod configuration_storage;
+#[cfg(test)]
+#[path = "../../../system/router-config/src/policy.rs"]
+mod configuration_policy;
+#[cfg(test)]
+#[path = "../../../system/router-config/src/backup/archive.rs"]
+mod backup_archive;
+#[cfg(test)]
+mod configuration_storage_tests;
+#[cfg(test)]
+mod backup_archive_tests;

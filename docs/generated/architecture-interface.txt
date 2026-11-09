@@ -12,6 +12,8 @@ bootloader/src/aclint.rs :: pub (crate) struct Mtime
 bootloader/src/aclint.rs :: pub (crate) struct Mtimecmp
 bootloader/src/aclint.rs :: pub (crate) struct Mtimer
 bootloader/src/aclint.rs :: pub (crate) struct SifiveClint
+bootloader/src/aia.rs :: pub (crate) fn initialize (dtb : & Dtb < '_ >)
+bootloader/src/aia.rs :: pub (crate) fn initialize_local (dtb : & Dtb < '_ > , hart : usize)
 bootloader/src/clint.rs :: pub (crate) fn clear ()
 bootloader/src/clint.rs :: pub (crate) fn clear_msip ()
 bootloader/src/clint.rs :: pub (crate) fn init (base : usize)
@@ -40,6 +42,7 @@ bootloader/src/device_tree.rs :: pub (crate) BoardInfo :: mem : Range < usize >
 bootloader/src/device_tree.rs :: pub (crate) BoardInfo :: model : StringInLine < 128 >
 bootloader/src/device_tree.rs :: pub (crate) BoardInfo :: test : Range < usize >
 bootloader/src/device_tree.rs :: pub (crate) BoardInfo :: uart : Range < usize >
+bootloader/src/device_tree.rs :: pub (crate) fn load (opaque : usize) -> Dtb < 'static >
 bootloader/src/device_tree.rs :: pub (crate) fn parse (opaque : usize) -> BoardInfo
 bootloader/src/device_tree.rs :: pub (crate) struct BoardInfo
 bootloader/src/device_tree.rs :: pub (crate) struct StringInLine < const N : usize >
@@ -174,6 +177,7 @@ kernel/src/arch/aarch64/interrupt.rs :: pub (crate) struct LocalInterruptState
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn enable_scheduler_interrupts ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn enable_timer_source ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
+kernel/src/arch/aarch64/iommu.rs :: pub (crate) fn complete_table_writes ()
 kernel/src/arch/aarch64/iommu.rs :: pub (crate) impl Backend < F > :: fn create (kind : u32 , virtual_base : usize , size : usize) -> Result < Self , Status >
 kernel/src/arch/aarch64/iommu.rs :: pub (crate) struct Backend < F >
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) impl KernelContext :: fn set_resume_target (& mut self , target : KernelResume)
@@ -366,11 +370,12 @@ kernel/src/arch/address_space_id.rs :: pub (super) impl Context :: fn retire_aft
 kernel/src/arch/address_space_id.rs :: pub (super) impl Context :: fn try_new () -> Result < Arc < Self > , alloc :: alloc :: AllocError >
 kernel/src/arch/address_space_id.rs :: pub (super) struct Allocator
 kernel/src/arch/address_space_id.rs :: pub (super) struct Context
+kernel/src/arch/dma.rs :: pub (crate) fn complete_table_writes ()
 kernel/src/arch/dma.rs :: pub (crate) fn publish_table_changes ()
 kernel/src/arch/dma.rs :: pub (crate) trait DmaFrame
 kernel/src/arch/dma.rs :: pub (crate) trait Translation
 kernel/src/arch/dma.rs :: pub (crate) use backend :: Backend
-kernel/src/arch/dma.rs :: trait DmaFrame :: fn allocate_zeroed (pages : usize) -> Option < Self >
+kernel/src/arch/dma.rs :: trait DmaFrame :: fn allocate_zeroed (pages : usize) -> Option < Self > where Self : Sized
 kernel/src/arch/dma.rs :: trait DmaFrame :: fn physical_page (& self) -> usize
 kernel/src/arch/dma.rs :: trait Translation :: fn attach (& self , stream : u32 , domain : u16 , root : usize) -> Result < () , Status >
 kernel/src/arch/dma.rs :: trait Translation :: fn drain_faults (& self , record : & mut dyn FnMut (u32 , u64)) -> bool
@@ -404,6 +409,7 @@ kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruc
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_interrupt as wait , wait_with_local_irq_masked , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { SOFTWARE_SGI , send_software_sgi }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { claim_message , enable_message , initialize_messages , take_message_pending , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: startup_stack_bounds
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: time_counter as counter
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceKind , AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , PagePermissions , PageTableError , THREAD_TRAP_CONTEXT_RANGE , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , canonicalize_virtual_address , flush_local_tlb as flush_local , flush_local_tlb_range as flush_local_range , initialize_asid_allocator , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
@@ -420,12 +426,16 @@ kernel/src/arch/riscv64/fp_instruction.rs :: pub (crate) fn is_floating_point_in
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn initialize_local ()
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn prepare_range (_physical_start : usize , _size : usize)
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn publish_local ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn claim_message () -> u32
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn clear_software ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_fail_stop ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_transfer ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_local () -> LocalInterruptState
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_timer_source ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn enable_message (id : u32 , enabled : bool)
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn initialize_messages (ids : u32)
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn raise_software ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn take_message_pending (id : u32) -> bool
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn wait_for_interrupt ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn wait_with_local_irq_masked ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) struct LocalInterruptState
@@ -844,7 +854,7 @@ kernel/src/id.rs :: pub (crate) struct IdAllocator
 kernel/src/iommu/mod.rs :: pub (crate) fn create (kind : u32 , descriptor : & [u8]) -> Result < Arc < dyn IommuBackend > , Status >
 kernel/src/iommu/mod.rs :: pub (crate) trait IommuBackend
 kernel/src/iommu/mod.rs :: trait IommuBackend :: fn faults (& self , stream : u32) -> u64
-kernel/src/iommu/mod.rs :: trait IommuBackend :: fn map (& self , stream : u32 , pages : & [PhysicalPageNumber] , writable : bool , output : & mut Vec < u64 > ,) -> Result < () , Status >
+kernel/src/iommu/mod.rs :: trait IommuBackend :: fn map (& self , stream : u32 , pages : & [PhysicalPageNumber] , writable : bool , cache : CachePolicy , output : & mut Vec < u64 > ,) -> Result < () , Status >
 kernel/src/iommu/mod.rs :: trait IommuBackend :: fn unmap (& self , stream : u32 , addresses : & [u64])
 kernel/src/log/mod.rs :: enum LogLevel :: Debug = 0
 kernel/src/log/mod.rs :: enum LogLevel :: Error = 3
@@ -1017,6 +1027,7 @@ kernel/src/object/mod.rs :: enum Object :: Exception (Arc < Exception >)
 kernel/src/object/mod.rs :: enum Object :: Interrupt (Arc < Interrupt >)
 kernel/src/object/mod.rs :: enum Object :: Iommu (Arc < Iommu >)
 kernel/src/object/mod.rs :: enum Object :: Job (Arc < Job >)
+kernel/src/object/mod.rs :: enum Object :: Msi (Arc < Msi >)
 kernel/src/object/mod.rs :: enum Object :: Pager (Arc < Pager >)
 kernel/src/object/mod.rs :: enum Object :: Pmt (Arc < Pmt >)
 kernel/src/object/mod.rs :: enum Object :: Port (Arc < Port >)
@@ -1037,7 +1048,7 @@ kernel/src/object/mod.rs :: pub (crate) use exception :: { Exception , Exception
 kernel/src/object/mod.rs :: pub (crate) use handle_table :: { HandleEntry , HandleTable }
 kernel/src/object/mod.rs :: pub (crate) use memory :: { Pager , vm_status }
 kernel/src/object/mod.rs :: pub (crate) use port :: Port
-kernel/src/object/mod.rs :: pub (crate) use resource :: { Bti , Interrupt , Iommu , Pmt , Resource }
+kernel/src/object/mod.rs :: pub (crate) use resource :: { Bti , Interrupt , Iommu , Msi , Pmt , Resource }
 kernel/src/object/mod.rs :: pub (crate) use signals :: { CancelKey , SignalState , WaitOutcome }
 kernel/src/object/mod.rs :: pub (crate) use task :: { Job , Mode , Process , ProcessKind , RestrictedEntry , Thread }
 kernel/src/object/mod.rs :: trait KernelObject :: fn cancel (& self , key : CancelKey)
@@ -1070,13 +1081,29 @@ kernel/src/object/resource.rs :: pub (crate) struct Interrupt
 kernel/src/object/resource.rs :: pub (crate) struct Iommu
 kernel/src/object/resource.rs :: pub (crate) struct Pmt
 kernel/src/object/resource.rs :: pub (crate) use authorization :: Resource
+kernel/src/object/resource.rs :: pub (crate) use msi :: Msi
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn covers_irq (& self , vector : u32) -> bool
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn covers_mmio (& self , base : u64 , size : u64) -> bool
+kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn covers_msi (& self , device : u32) -> bool
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn covers_system (& self , operation : u64) -> bool
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn create_child (& self , kind : u32 , base : u64 , size : u64) -> Result < Self , Status >
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn is_root (& self) -> bool
 kernel/src/object/resource/authorization.rs :: pub (crate) impl Resource :: fn root () -> Self
 kernel/src/object/resource/authorization.rs :: pub (crate) struct Resource
+kernel/src/object/resource/msi.rs :: pub (crate) impl Msi :: fn create (bti : Arc < Bti > , device : u32 , count : u32) -> Result < Self , Status >
+kernel/src/object/resource/msi.rs :: pub (crate) impl Msi :: fn info (& self) -> native_abi :: MsiInfo
+kernel/src/object/resource/msi.rs :: pub (crate) impl Msi :: fn interrupt (self : Arc < Self > , index : u32 , table : & crate :: vm :: Vmo , offset : usize ,) -> Result < Interrupt , Status >
+kernel/src/object/resource/msi.rs :: pub (crate) struct Msi
+kernel/src/object/resource/msi.rs :: pub (super) impl Registration :: fn set_affinity (& self , source : & Source , target : crate :: execution :: cpu :: CpuId ,) -> Result < () , Status >
+kernel/src/object/resource/msi.rs :: pub (super) struct Registration
+kernel/src/object/resource/msi.rs :: pub (super) use source :: Source
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn ack (& self)
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn activate (& self , triggered : & AtomicI64)
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn prepare (vmo : & Vmo , offset : usize , address : u64 , data : u32 ,) -> Result < Self , Status >
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn retarget (& self , address : u64 , data : u32 , commit : impl FnOnce () ,)
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn retire (& self)
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) impl Source :: fn trigger (& self , timestamp : i64 , triggered : & AtomicI64 ,) -> bool
+kernel/src/object/resource/msi/source.rs :: pub (in crate :: object :: resource) struct Source
 kernel/src/object/signals.rs :: enum WaitOutcome :: # [doc = " 句柄被关闭。"] Canceled
 kernel/src/object/signals.rs :: enum WaitOutcome :: # [doc = " 截止时间到达；附当前 signal。"] TimedOut (u32)
 kernel/src/object/signals.rs :: enum WaitOutcome :: # [doc = " 所在进程正在终止。"] Interrupted
@@ -1162,7 +1189,9 @@ kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) type MessageInterruptAllocator  = fn (usize) -> Option < MessageInterruptMemory >
+kernel/src/platform/mod.rs :: pub (crate) type MessageInterruptMemory  = alloc :: boxed :: Box < dyn crate :: arch :: dma :: DmaFrame >
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , InterruptRetirement , MessageInterruptGroup , MessageInterruptRoute , TlbShootdownError , arm_timer , bind_interrupt , bind_message_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -1180,6 +1209,7 @@ kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: initrd : Option < Range < usize > >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: its : Option < RangeValue >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: rng_seed : Vec < u8 >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: rtc : RangeValue
@@ -1202,7 +1232,8 @@ kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct BootInf
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) fn info () -> & 'static PlatformInfo
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) fn info_if_initialized () -> Option < & 'static PlatformInfo >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) impl BootInfo :: fn address (self) -> usize
-kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn bind_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > ,) -> Result < () , InterruptError >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn bind_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , level : bool , _acknowledge_local : impl Fn () ,) -> Result < () , native_abi :: Status >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn bind_message_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , _acknowledge_local : impl Fn () ,) -> Result < () , native_abi :: Status >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn claim_interrupt () -> ClaimedInterrupt
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn complete_interrupt (claim : ClaimedInterrupt)
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn device_interrupt_range () -> core :: ops :: Range < u32 >
@@ -1210,10 +1241,47 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize (inf
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize_local ()
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device (vector : u32 , handler : Arc < dyn InterruptHandler > , affinity : CpuSet ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : cpu :: CpuId) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : cpu :: CpuId , _acknowledge_local : impl Fn () ,) -> Result < () , native_abi :: Status >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unbind_interrupt (vector : u32 , _retirement : & mut InterruptRetirement , _acknowledge_local : impl Fn () ,) -> Option < Arc < dyn InterruptHandler > >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) impl InterruptRetirement :: fn prepare () -> Result < Self , native_abi :: Status >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct InterruptRetirement
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (super) LpiTarget :: bus : MmioBus
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (super) LpiTarget :: cpu : cpu :: CpuId
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (super) LpiTarget :: target : u64
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (super) fn lpi_redistributors (physical_target : bool ,) -> Result < (u32 , alloc :: vec :: Vec < LpiTarget >) , native_abi :: Status >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (super) struct LpiTarget
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptGroup :: fn allocate (device : u32 , count : u32 , allocator : MessageInterruptAllocator ,) -> Result < Self , Status >
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptGroup :: fn count (& self) -> u32
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptGroup :: fn prepare_affinity (& self , index : u32 , target : CpuId ,) -> Result < MessageInterruptRoute < '_ > , Status >
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptGroup :: fn vector (& self , index : u32) -> Option < u32 >
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptRoute < '_ > :: fn commit (& mut self , _acknowledge_local : impl Fn ())
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) impl MessageInterruptRoute < '_ > :: fn message (& self) -> (u64 , u32)
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) struct MessageInterruptGroup
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (crate) struct MessageInterruptRoute < 'a >
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (super) fn clear (vector : u32)
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (super) fn contains (vector : u32) -> bool
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (super) fn initialize (info : Option < RangeValue >)
+kernel/src/platform/qemu_virt/aarch64/its.rs :: pub (super) fn set_enabled (vector : u32 , enabled : bool) -> bool
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) Command :: <tuple> : [u64 ; 4]
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn clear (device : u32 , event : u32) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn discard (device : u32 , event : u32) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn invalidate (device : u32 , event : u32) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn map_collection (collection : u16 , target : u64) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn map_device (device : u32 , table : u64 , bits : u32 , valid : bool) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn map_interrupt (device : u32 , event : u32 , interrupt : u32 , collection : u16) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn move_interrupt (device : u32 , event : u32 , collection : u16) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) impl Command :: fn synchronize (target : u64) -> Self
+kernel/src/platform/qemu_virt/aarch64/its/command.rs :: pub (super) struct Command
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) fn allocate (allocator : MessageInterruptAllocator , bytes : usize ,) -> Result < Frame , Status >
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) fn physical (frame : & Frame) -> u64
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) impl Frame :: fn bytes_mut (& mut self) -> & mut [u8]
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) impl Table :: fn ensure (& mut self , allocator : MessageInterruptAllocator , id : u32 ,) -> Result < () , Status >
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) impl Table :: fn prepare (allocator : MessageInterruptAllocator , bus : MmioBus , register : usize , bits : u32 , indirect : bool ,) -> Result < Self , Status >
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) impl Table :: fn publish (& self , bus : MmioBus)
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) struct Frame
+kernel/src/platform/qemu_virt/aarch64/its/table.rs :: pub (super) struct Table
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn arm_timer (deadline : u64) -> Result < () , TimerArmError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn boot_entropy () -> & 'static [u8]
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn complete_pending_ipi ()
@@ -1227,7 +1295,7 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn physical_memory_e
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn physical_memory_range () -> core :: ops :: Range < usize >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn synchronize_instruction_cache (cpus : crate :: execution :: cpu :: CpuSet ,) -> Result < () , InstructionFenceError >
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn synchronize_tlb (cpus : crate :: execution :: cpu :: CpuSet , start_address : usize , size : usize ,) -> Result < () , TlbShootdownError >
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn synchronize_tlb (cpus : crate :: execution :: cpu :: CpuSet , start_address : usize , size : usize , acknowledge_local : impl Fn () ,) -> Result < () , TlbShootdownError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn timebase_frequency () -> u64
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn verify_firmware ()
@@ -1236,8 +1304,9 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct InstructionFe
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { bind_interrupt , device_interrupt_range , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { InterruptRetirement , bind_interrupt , bind_message_interrupt , device_interrupt_range , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , send_ipi }
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use its :: { MessageInterruptGroup , MessageInterruptRoute }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { reset_system , start_cpu }
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
@@ -1249,23 +1318,54 @@ kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct FirmwareErro
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct ResetError
 kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn complete_pending ()
 kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn initialize ()
-kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn synchronize (targets : CpuSet) -> Result < () , super :: TlbShootdownError >
+kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn synchronize (targets : CpuSet , acknowledge_local : impl Fn () ,) -> Result < () , super :: TlbShootdownError >
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Device (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , InterruptRetirement , MessageInterruptGroup , MessageInterruptRoute , TlbShootdownError , arm_timer , bind_interrupt , bind_message_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn bind_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , level : bool , acknowledge_local : impl Fn () ,) -> Result < () , Status >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn bind_message_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , acknowledge_local : impl Fn () ,) -> Result < () , Status >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn complete_pending ()
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn device_interrupt_range () -> core :: ops :: Range < u32 >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn handle_external_interrupt ()
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : CpuId , acknowledge_local : impl Fn () ,) -> Result < () , Status >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn unbind_interrupt (vector : u32 , retirement : & mut InterruptRetirement , acknowledge_local : impl Fn () ,) -> Option < Arc < dyn InterruptHandler > >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) impl InterruptRetirement :: fn prepare () -> Result < Self , Status >
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) struct InterruptRetirement
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (crate) use msi :: { MessageInterruptGroup , MessageInterruptRoute }
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (super) fn initialize ()
+kernel/src/platform/qemu_virt/riscv64/aia.rs :: pub (super) fn initialize_local ()
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) Aplic :: sources : u32
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) fn wait (mut done : impl FnMut () -> bool , progress : impl Fn ())
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn configure (& self , source : u32 , level : Option < bool >)
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn enable (& self , source : u32 , enabled : bool)
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn marker (& self , hart : u32 , progress : impl Fn ())
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn new (range : core :: ops :: Range < usize > , sources : u32) -> Self
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn retrigger (& self , source : u32)
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn start (& self)
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) impl Aplic :: fn target (& self , source : u32 , hart : u32 , id : u32)
+kernel/src/platform/qemu_virt/riscv64/aia/aplic.rs :: pub (super) struct Aplic
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptGroup :: fn allocate (device : u32 , count : u32 , _allocator : crate :: platform :: MessageInterruptAllocator ,) -> Result < Self , Status >
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptGroup :: fn count (& self) -> u32
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptGroup :: fn prepare_affinity (& self , index : u32 , cpu : CpuId ,) -> Result < MessageInterruptRoute < '_ > , Status >
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptGroup :: fn vector (& self , index : u32) -> Option < u32 >
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptRoute < '_ > :: fn commit (& mut self , acknowledge_local : impl Fn ())
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) impl MessageInterruptRoute < '_ > :: fn message (& self) -> (u64 , u32)
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) struct MessageInterruptGroup
+kernel/src/platform/qemu_virt/riscv64/aia/msi.rs :: pub (crate) struct MessageInterruptRoute < 'a >
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn write_raw (bytes : & [u8])
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: aia : AiaInfo
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: bootargs : Vec < u8 >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: initrd : Option < Range < usize > >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: plic : Range < usize >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: rng_seed : Vec < u8 >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: rtc : Option < Range < usize > >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: timebase_frequency : u64
@@ -1273,14 +1373,23 @@ kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: uart_irq : u32
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ > , physical : usize) -> PlatformInfo
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) struct PlatformInfo
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn bind_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > ,) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn device_interrupt_range () -> core :: ops :: Range < u32 >
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn handle_external_interrupt ()
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) use aia :: AiaInfo
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) AiaInfo :: aplic : Range < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) AiaInfo :: files : Vec < InterruptFile >
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) AiaInfo :: identities : u32
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) AiaInfo :: sources : u32
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) AiaInfo :: windows : Vec < Range < usize > >
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) InterruptFile :: address : usize
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) InterruptFile :: hardware_cpu : usize
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) InterruptFile :: hart_index : u32
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) struct AiaInfo
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (crate) struct InterruptFile
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (super) impl Discovery :: fn cpu_enabled (& self , hardware : usize) -> bool
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (super) impl Discovery :: fn finish (self , enabled : & [usize] , uart_parent : Option < u32 >) -> AiaInfo
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (super) impl Discovery :: fn finish_node (& mut self)
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (super) impl Discovery :: fn observe (& mut self , context : & Context < '_ > , object : & DtbObj < '_ >)
+kernel/src/platform/qemu_virt/riscv64/device_tree/aia.rs :: pub (super) struct Discovery
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn initialize ()
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : crate :: execution :: cpu :: CpuId ,) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (super) fn register_device_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
@@ -1295,7 +1404,7 @@ kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn reset_system
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn send_ipi (cpus : crate :: execution :: cpu :: CpuSet) -> Result < () , FirmwareError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn start_cpu (hardware_cpu_id : crate :: execution :: cpu :: HardwareCpuId , start_address : usize , boot : super :: BootInfo ,) -> Result < () , CpuStartError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn synchronize_instruction_cache (cpus : crate :: execution :: cpu :: CpuSet ,) -> Result < () , InstructionFenceError >
-kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn synchronize_tlb (cpus : crate :: execution :: cpu :: CpuSet , start_address : usize , size : usize ,) -> Result < () , TlbShootdownError >
+kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn synchronize_tlb (cpus : crate :: execution :: cpu :: CpuSet , start_address : usize , size : usize , _acknowledge_local : impl Fn () ,) -> Result < () , TlbShootdownError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn verify_firmware ()
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct CpuStartError
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct FirmwareError
@@ -1306,7 +1415,6 @@ kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TlbShoot
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn boot_entropy () -> & 'static [u8]
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn claim_interrupt () -> super :: ClaimedInterrupt
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_interrupt (claim : super :: ClaimedInterrupt)
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_pending_ipi ()
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn dtb_range () -> core :: ops :: Range < usize >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn initrd_range () -> Option < core :: ops :: Range < usize > >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn kernel_command_line () -> & 'static [u8]
@@ -1315,25 +1423,13 @@ kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_e
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_range () -> core :: ops :: Range < usize >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn timebase_frequency () -> u64
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) mod console
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { bind_interrupt , device_interrupt_range , handle_external_interrupt , initialize as initialize_devices , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize , validate_boot_info }
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use aia :: complete_pending as complete_pending_ipi
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use aia :: { InterruptRetirement , MessageInterruptGroup , MessageInterruptRoute , bind_interrupt , bind_message_interrupt , device_interrupt_range , handle_external_interrupt , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: initialize as initialize_devices
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize }
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use firmware :: { InstructionFenceError , TlbShootdownError , arm_timer , debug_console_write , debug_console_write_bytes , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , verify_firmware , }
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn disable_interrupt (& self , vector : InterruptVector)
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn enable_interrupt (& mut self , vector : InterruptVector ,) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn handle_pending_interrupts (& mut self) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn has_handler (& self , vector : InterruptVector) -> bool
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn new (base_addr : usize , size : usize , possible_cpus : CpuSet ,) -> Result < Self , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn register_handler (& mut self , vector : InterruptVector , handler : Arc < dyn InterruptHandler > ,) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn set_affinity (& mut self , vector : InterruptVector , cpus : CpuSet ,) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn set_priority (& mut self , vector : InterruptVector) -> Result < () , InterruptError >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn unregister_handler (& mut self , vector : InterruptVector ,) -> Option < Arc < dyn InterruptHandler > >
-kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) struct PlicInterruptController
-kernel/src/platform/qemu_virt/riscv64/plic_policy.rs :: pub (super) const HARDIRQ_CLAIM_BUDGET : usize = 64
-kernel/src/platform/qemu_virt/riscv64/plic_policy.rs :: pub (super) const MAX_INTERRUPT_VECTOR : u32 = (ENABLE_CONTEXT_BYTES * BITS_PER_BYTE - 1) as u32
-kernel/src/platform/qemu_virt/riscv64/plic_policy.rs :: pub (super) const fn enable_word_offset (vector : u32) -> Option < usize >
-kernel/src/platform/qemu_virt/riscv64/plic_policy.rs :: pub (super) const fn valid_interrupt_vector (vector : u32) -> bool
-kernel/src/platform/qemu_virt/riscv64/plic_policy.rs :: pub (super) fn dispatch_claim_batch < E > (mut claim : impl FnMut () -> u32 , mut handle : impl FnMut (u32) -> Result < () , E > , mut complete : impl FnMut (u32) ,) -> Result < () , E >
 kernel/src/platform/qemu_virt/riscv64/rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) enum RtcError
 kernel/src/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (base_addr : usize , size : usize) -> Result < Self , RtcError >
@@ -1370,6 +1466,8 @@ kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_create (call : & Call
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_set_affinity (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_wait (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn iommu_create (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/hardware.rs :: pub (super) fn msi_allocate (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/hardware.rs :: pub (super) fn msi_create_interrupt (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn pmt_unpin (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn resource_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/ipc.rs :: pub (super) fn channel_call (call : & Call < '_ >) -> Result < () , Status >
@@ -1803,7 +1901,7 @@ kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn token
 kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn with_resident_word < R > (self : & Arc < Self > , address : usize , operation : impl FnOnce (& core :: sync :: atomic :: AtomicU32) -> R ,) -> Result < R , VmError >
 kernel/src/vm/address_space/view.rs :: pub (super) impl SpaceInner :: fn mark_accessed (& mut self , vpn : VirtualPageNumber , entry : crate :: vm :: page_table :: PageTableEntry ,) -> Result < () , VmError >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn create () -> Result < Self , () >
-kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn map (& mut self , first : usize , pages : & [PhysicalPageNumber] , writable : bool ,) -> Result < () , Retired >
+kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn map (& mut self , first : usize , pages : & [PhysicalPageNumber] , writable : bool , cache : CachePolicy ,) -> Result < () , Retired >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn root (& self) -> PhysicalPageNumber
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn unmap (& mut self , first : usize , count : usize) -> Retired
 kernel/src/vm/device_space.rs :: pub (crate) impl Retired :: fn release (self)
@@ -1980,6 +2078,7 @@ kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_child (self :
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_paged (size : u64 , options : VmoOptions , pager : PagerBinding , anonymous : bool ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_physical (physical : u64 , size : u64 , cache : CachePolicy ,) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn device_range (& self , offset : usize , length : usize ,) -> Result < core :: ops :: Range < usize > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (super) impl Vmo :: fn new_in (tree : Arc < Tree > , kind : Kind , pages : usize , relation : Option < Relation > ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) const FAULT_AROUND_PAGES : usize = 16
 kernel/src/vm/vmo/fault_around.rs :: pub (crate) impl Vmo :: fn with_resolved_around < R > (self : & Arc < Self > , index : usize , write : bool , around : Option < core :: ops :: Range < usize > > , mut with_page : impl FnMut (ResolvedPage) -> Result < R , VmError > , with_around : impl FnOnce (& mut R , & [Option < (usize , ResolvedPage) >]) ,) -> Result < R , VmError >
@@ -2030,6 +2129,7 @@ kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn invalidate_read_request
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn request_page (& self , index : usize) -> Result < Arc < PageRequestCompletion > , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn wait_for_page (& self , request : & PageRequestCompletion) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (super) struct PageRequestCompletion
+kernel/src/vm/vmo/pin.rs :: pub (crate) impl PinnedRange :: fn cache_policy (& self) -> CachePolicy
 kernel/src/vm/vmo/pin.rs :: pub (crate) impl PinnedRange :: fn pages (& self) -> & [PhysicalPageNumber]
 kernel/src/vm/vmo/pin.rs :: pub (crate) impl Vmo :: fn pin (self : & Arc < Self > , offset : u64 , length : u64) -> Result < PinnedRange , VmError >
 kernel/src/vm/vmo/pin.rs :: pub (crate) struct PinnedRange
@@ -2246,6 +2346,7 @@ system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_tran
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge (& self , device : & VirtIODevice) -> Option < u32 >
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn has_transport_error (& self) -> bool
+system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn record_transport_error (& self)
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
 system/driver-host/src/drivers/virtio/console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport , bti : & 'static native_runtime :: Bti ,) -> Option < Arc < Self > >
@@ -2517,7 +2618,6 @@ system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use net :: VirtIONet
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use pci :: PciTransport
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use rng :: VirtIORngDevice
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use sound :: VirtIOSoundDevice
-system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) struct VirtIONetworkDevice
 system/driver-host/src/drivers/virtio/net.rs :: pub (super) impl VirtIONetworkDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
@@ -2525,6 +2625,8 @@ system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl Control
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_rss (& mut self , device : & VirtIODevice , pairs : u16 , config : & NetworkRssConfiguration ,) -> Result < () , NetworkError >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32 , rss : Option < NetworkRssCapabilities > ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) struct ControlQueue
+system/driver-host/src/drivers/virtio/net/interrupts.rs :: pub (crate) impl VirtIONetworkDevice :: fn bind_interrupts (self : & Arc < Self > , wired : Option < u32 >)
+system/driver-host/src/drivers/virtio/net/interrupts.rs :: pub (super) impl VirtIONetworkDevice :: fn prepare_interrupts (& self , count : u16 , generation : u32 ,) -> Result < Vec < Interrupt > , Status >
 system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn receive (buffer : & mut [u8] , negotiated : bool) -> Result < bool , NetworkError >
 system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn transmit (header : & mut [u8] , checksum : Option < NetworkChecksum > , segmentation : Option < NetworkTcpSegmentation > ,)
 system/driver-host/src/drivers/virtio/net/queue_pair.rs :: pub (super) impl QueueState :: fn try_new (device : & VirtIODevice , index : u16 , transmit_limit : usize ,) -> Option < Self >
@@ -2551,7 +2653,6 @@ system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport ::
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn get_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn interrupt_status (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn notify_queue (& self , index : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn read_config_u16 (& self , offset : usize) -> Result < u16 , BusError >
@@ -2562,12 +2663,23 @@ system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport ::
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn write_config_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn write_config_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) struct PciTransport
-system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) impl PciTransport :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) impl PciTransport :: fn assign_config_interrupt (& self , vector : u16 ,) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) impl PciTransport :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses , interrupt : Option < u16 > ,) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) impl PciTransport :: fn message_interrupts (& self) -> Option < & Msix >
+system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 , msix : Option < Msix > ,) -> Option < Self >
+system/driver-host/src/drivers/virtio/pci.rs :: pub (in crate :: drivers :: virtio) use msix :: Msix
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn capacity (& self) -> u16
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn create_interrupt (& self , group : & Msi , index : u32 ,) -> Result < Interrupt , native_abi :: Status >
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn disable (& self) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn enable (& self) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn initialize (& self) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) impl Msix :: fn new (config : MmioBus , control : usize , table : MmioBus , table_vmo : Vmo , table_offset : usize , entries : u16 ,) -> Result < Self , BusError >
+system/driver-host/src/drivers/virtio/pci/msix.rs :: pub (in crate :: drivers :: virtio) struct Msix
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: bti : & 'static native_runtime :: Bti
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: device_id : u32
-system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: interrupt : u32
+system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: interrupt : Option < u32 >
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: transport : PciTransport
-system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) fn discover () -> Option < VirtioPciFunction >
+system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) fn discover (message_interrupts : bool) -> Option < VirtioPciFunction >
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) struct VirtioPciFunction
 system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " buffer 无效或整条链超过协商的队列总容量。"] InvalidBuffer
 system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " 当前 free descriptor 不足。"] NoDescriptors
@@ -2704,21 +2816,24 @@ system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) VirtQueueAddresses :: device : u64
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) VirtQueueAddresses :: driver : u64
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_CONFIG_S_ACKNOWLEDGE : u32 = 1
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_CONFIG_S_DEVICE_NEEDS_RESET : u32 = 64
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_CONFIG_S_DRIVER : u32 = 2
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_CONFIG_S_DRIVER_OK : u32 = 4
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_CONFIG_S_FEATURES_OK : u32 = 8
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_F_VERSION_1 : u64 = 1 << 32
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_MMIO_INT_CONFIG : u32 = 2
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) const VIRTIO_MMIO_INT_VRING : u32 = 1
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn assign_config_interrupt (& self , vector : u16 ,) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn bti (& self) -> & 'static native_runtime :: Bti
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn config_generation (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses , interrupt : Option < u16 > ,) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_features (& self) -> Result < u64 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_id (& self) -> u32
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn get_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_ack (& self , interrupt : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_status (& self) -> Result < u32 , BusError >
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn message_interrupts (& self) -> Option < & super :: pci :: Msix >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn mmio_vendor_id (& self) -> Option < u32 >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn notify_queue (& self , queue : u32) -> Result < () , BusError >
@@ -2806,8 +2921,10 @@ system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct Prep
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct RequestIdentity
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct RequestOwner
 system/driver-host/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
+system/driver-host/src/platform.rs :: pub (crate) fn allocate_message_interrupts (count : u32 ,) -> Result < native_runtime :: Msi , native_abi :: Status >
 system/driver-host/src/platform.rs :: pub (crate) fn bti () -> & 'static Bti
 system/driver-host/src/platform.rs :: pub (crate) fn install (startup : & mut Startup)
+system/driver-host/src/platform.rs :: pub (crate) fn map_device_vmo (physical : usize , size : usize ,) -> Result < (usize , Vmo , usize) , native_abi :: Status >
 system/driver-host/src/platform.rs :: pub (crate) fn map_device_window (physical : usize , size : usize) -> usize
 system/driver-host/src/platform.rs :: pub (crate) fn node () -> & 'static Node
 system/driver-host/src/platform.rs :: pub (crate) fn register_device_interrupt (vector : InterruptVector , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
@@ -2830,6 +2947,7 @@ system/driver-manager/src/main.rs :: pub (crate) use native_runtime :: { debug ,
 system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: bti : Bti
 system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: irq : Option < Resource >
 system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: mmio : Vec < Resource >
+system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: msi : Option < Resource >
 system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: node : Node
 system/driver-manager/src/nodes.rs :: pub (crate) fn enumerate () -> Vec < BoundNode >
 system/driver-manager/src/nodes.rs :: pub (crate) struct BoundNode
@@ -2837,6 +2955,7 @@ system/driver-manager/src/pci.rs :: pub (crate) Function :: bars : [Option < Bar
 system/driver-manager/src/pci.rs :: pub (crate) Function :: config : MmioBus
 system/driver-manager/src/pci.rs :: pub (crate) Function :: config_address : usize
 system/driver-manager/src/pci.rs :: pub (crate) Function :: interrupt : Option < u32 >
+system/driver-manager/src/pci.rs :: pub (crate) Function :: message_device : Option < u32 >
 system/driver-manager/src/pci.rs :: pub (crate) Function :: stream : Option < u32 >
 system/driver-manager/src/pci.rs :: pub (crate) fn enumerate (host : Option < & PciHost >) -> Result < Vec < Function > , () >
 system/driver-manager/src/pci.rs :: pub (crate) struct Function
@@ -2854,17 +2973,25 @@ system/driver-manager/src/platform/mod.rs :: pub (crate) fn initialize (device_t
 system/driver-manager/src/platform/mod.rs :: pub (crate) fn irq_resource (vector : u32) -> Resource
 system/driver-manager/src/platform/mod.rs :: pub (crate) fn map_device_window (physical : usize , size : usize) -> usize
 system/driver-manager/src/platform/mod.rs :: pub (crate) fn mmio_resource (physical : usize , size : usize) -> (Resource , usize , usize)
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn msi_resource (device : u32) -> Resource
 system/driver-manager/src/platform/mod.rs :: pub (crate) fn pci_host () -> Option < & 'static PciHost >
 system/driver-manager/src/platform/mod.rs :: pub (crate) fn virtio_mmio_transports () -> & 'static VirtioMmioTransports
 system/driver-manager/src/platform/mod.rs :: pub (crate) use device_tree :: IommuFacts
 system/driver-manager/src/platform/mod.rs :: pub (crate) use pci_host :: PciHost
 system/driver-manager/src/platform/mod.rs :: pub (crate) use virtio_mmio :: { VirtioMmioTransport , VirtioMmioTransports }
+system/driver-manager/src/platform/pci_host.rs :: enum MessageRouting :: # [doc = " 单 PCI domain 的 RID 作为软件分配租约身份；不冒充 IMSIC 硬件 DeviceID 或 DMA stream。"] Direct
+system/driver-manager/src/platform/pci_host.rs :: enum MessageRouting :: None
+system/driver-manager/src/platform/pci_host.rs :: enum MessageRouting :: Remapped (RequesterMap)
 system/driver-manager/src/platform/pci_host.rs :: pub (crate) PciHost :: ecam : core :: ops :: Range < usize >
 system/driver-manager/src/platform/pci_host.rs :: pub (crate) PciHost :: mmio32 : core :: ops :: Range < usize >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) enum MessageRouting
 system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn interrupt (& self , slot : usize , pin : usize) -> Option < u32 >
-system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn new (ecam : core :: ops :: Range < usize > , mmio32 : core :: ops :: Range < usize > , intx : [[u32 ; 4] ; 4] , stream_map : Vec < (u32 , u32 , u32) > , stream_mask : u32 ,) -> Self
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn message_device (& self , requester : u32) -> Option < u32 >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn new (ecam : core :: ops :: Range < usize > , mmio32 : core :: ops :: Range < usize > , intx : [[u32 ; 4] ; 4] , stream : RequesterMap , messages : MessageRouting ,) -> Self
 system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn stream (& self , requester : u32) -> Option < u32 >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl RequesterMap :: fn new (ranges : Vec < (u32 , u32 , u32) > , mask : u32) -> Self
 system/driver-manager/src/platform/pci_host.rs :: pub (crate) struct PciHost
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) struct RequesterMap
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: base_addr : usize
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: irq : u32
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: size : usize
@@ -5449,6 +5576,7 @@ system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile 
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn read_available (& self , offset : u64 , output : & mut [u8] ,) -> Result < Option < RegularFileRead > , FileSystemError >
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn read_limit (& self , offset : u64 , limit : usize) -> usize
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
+system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn snapshot_vmo (& self , length : u64) -> Result < native_runtime :: Vmo , FileSystemError >
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn tracks_access_time (& self) -> bool
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) struct RegularFile
 system/linuxd/src/fs/page_cache/regular_file.rs :: pub (crate) struct RegularFileRead
@@ -7651,7 +7779,7 @@ system/linuxd/src/net/inet.rs :: pub (crate) fn interface_index (scope : & NetNa
 system/linuxd/src/net/inet.rs :: pub (crate) fn interface_snapshot (scope : & NetNamespace , index : u32 ,) -> Result < InterfaceSnapshot , SocketError >
 system/linuxd/src/net/inet.rs :: pub (crate) fn interface_snapshots (scope : & NetNamespace ,) -> Result < Vec < InterfaceSnapshot > , SocketError >
 system/linuxd/src/net/inet.rs :: pub (crate) fn network_snapshot (scope : & NetNamespace) -> Result < Vec < NetworkSnapshot > , SocketError >
-system/linuxd/src/net/inet.rs :: pub (crate) fn route_snapshot (scope : & NetNamespace) -> Result < Vec < RouteSnapshot > , SocketError >
+system/linuxd/src/net/inet.rs :: pub (crate) fn route_snapshot (scope : & NetNamespace) -> Result < RoutingSnapshot , SocketError >
 system/linuxd/src/net/inet.rs :: pub (super) impl InetSocket :: fn accept (& self , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 system/linuxd/src/net/inet.rs :: pub (super) impl InetSocket :: fn address (& self) -> Result < InetAddress , SocketError >
 system/linuxd/src/net/inet.rs :: pub (super) impl InetSocket :: fn bind (& self , address : InetAddress) -> Result < () , SocketError >
@@ -7784,7 +7912,7 @@ system/linuxd/src/net/mod.rs :: pub (crate) use inet :: { configure_address , co
 system/linuxd/src/net/mod.rs :: pub (crate) use kobject :: { publish_drm_hotplug , publish_input }
 system/linuxd/src/net/mod.rs :: pub (crate) use net_namespace :: { NetNamespace , initial_net , initialize_net }
 system/linuxd/src/net/mod.rs :: pub (crate) use netstack :: init
-system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , PacketChecksum , PacketInformation , RouteChange , RouteSnapshot , SocketError , SocketPollState , }
+system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , PacketChecksum , PacketInformation , RouteChange , RoutingSnapshot , SocketError , SocketPollState , }
 system/linuxd/src/net/mod.rs :: pub (crate) use preparation :: { PreparedSocket , SocketRequest }
 system/linuxd/src/net/mod.rs :: pub (crate) use timeouts :: { SocketIoDirection , SocketTimeout }
 system/linuxd/src/net/mod.rs :: pub (crate) use unix :: { SCM_MAX_FD , UnixAddress , UnixFileLimit , UnixNode , UnixPassedFile , UnixPathIdentity , UnixReceivedRights , UnixRights , }
@@ -7920,11 +8048,15 @@ system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) fn find_attribute (paylo
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) fn link (snapshot : & InterfaceSnapshot , statistics : & NetworkStatistics , flags : u16 , sequence : u32 , port : u32 ,) -> ([u8 ; MESSAGE_CAPACITY] , usize)
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) fn next_offset (length : usize) -> usize
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) fn parse_header (bytes : & [u8]) -> Option < RequestHeader >
-system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) fn route (row : & RouteSnapshot , sequence : u32 , port : u32 ,) -> ([u8 ; MESSAGE_CAPACITY] , usize)
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl Message :: fn finish (mut self) -> ([u8 ; MESSAGE_CAPACITY] , usize)
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl Message :: fn new (kind : u16 , flags : u16 , sequence : u32 , port : u32) -> Self
+system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl RouteDump :: fn append (& self , index : usize , sequence : u32 , port : u32 , limit : usize , out : & mut Vec < u8 > ,) -> bool
+system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl RouteDump :: fn len (& self) -> usize
+system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl RouteDump :: fn maximum_message_size (& self) -> usize
+system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) impl RouteDump :: fn new (snapshot : RoutingSnapshot) -> Result < Self , i32 >
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) struct Message
 system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) struct RequestHeader
+system/linuxd/src/net/rtnetlink/codec.rs :: pub (super) struct RouteDump
 system/linuxd/src/net/timeouts.rs :: enum SocketIoDirection :: Receive
 system/linuxd/src/net/timeouts.rs :: enum SocketIoDirection :: Send
 system/linuxd/src/net/timeouts.rs :: enum SocketTimeout :: Finite (u64)
@@ -8780,7 +8912,10 @@ system/linuxd/src/system/endpoint.rs :: pub (crate) fn publish (path : & [u8] , 
 system/linuxd/src/system/endpoint.rs :: pub (crate) fn receive (socket : & Socket , storage : & mut [u8] ,) -> Result < (usize , usize , SocketAddress) , net :: SocketError >
 system/linuxd/src/system/endpoint.rs :: pub (crate) fn receive_message (socket : & Socket , storage : & mut [u8] , receive_rights : bool ,) -> Result < ReceivedMessage , net :: SocketError >
 system/linuxd/src/system/endpoint.rs :: pub (crate) fn reply (socket : & Socket , source : SocketAddress , reply : & [u8])
+system/linuxd/src/system/endpoint.rs :: pub (crate) fn reply_with_rights (socket : & Socket , source : SocketAddress , reply : & [u8] , mut rights : Option < net :: UnixRights > ,)
 system/linuxd/src/system/network_settings.rs :: pub (crate) fn start ()
+system/linuxd/src/system/network_settings/configuration.rs :: pub (super) fn forward (channel : & Channel , operation : u32 , payload : & [u8] , input : Option < & Vmo > ,) -> Result < (Vec < u8 > , Option < UnixRights >) , Status >
+system/linuxd/src/system/network_settings/configuration.rs :: pub (super) fn prepare (operation : u32 , payload : & [u8] , rights : Option < UnixReceivedRights > ,) -> Result < Option < Vmo > , Status >
 system/linuxd/src/system/task_observer.rs :: pub (crate) fn start (observer : Job)
 system/linuxd/src/system/task_observer.rs :: pub (crate) fn take (startup : & mut Startup) -> Job
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
@@ -10393,6 +10528,7 @@ system/linuxd/src/time.rs :: pub (crate) fn set_realtime_ns (realtime_ns : u64) 
 system/linuxd/src/trap.rs :: pub (crate) const CARRIER_STACK : usize = 256 * 1024
 system/linuxd/src/trap.rs :: pub (crate) fn prepare_kernel_carrier (name : & 'static str ,) -> Result < PreparedThread < () > , MemoryError >
 system/linuxd/src/trap.rs :: pub (crate) fn prepare_user_carrier (process : & Arc < Process > ,) -> Result < PreparedThread < () > , MemoryError >
+system/netstack/src/dispatcher.rs :: enum Served :: Configuration (crate :: inet :: ConfigurationSession)
 system/netstack/src/dispatcher.rs :: enum Served :: Namespace (NamespaceServer)
 system/netstack/src/dispatcher.rs :: enum Served :: Socket (ServedSocket)
 system/netstack/src/dispatcher.rs :: pub (crate) enum Served
@@ -10417,7 +10553,7 @@ system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn send_to (& self
 system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn take_error (& self) -> Option < SocketError >
 system/netstack/src/inet.rs :: pub (crate) struct InetSocket
-system/netstack/src/inet.rs :: pub (crate) use configuration :: { configure_address , configure_broadcast , configure_mtu , configure_netmask , configure_route , configure_up , inject_loopback , install_interface , interface_index , interface_snapshot , interface_snapshots , network_snapshot , packet_interface , packet_transmit_available , route_snapshot , }
+system/netstack/src/inet.rs :: pub (crate) use configuration :: { ConfigurationSession , configure_address , configure_broadcast , configure_mtu , configure_netmask , configure_route , configure_up , inject_loopback , install_interface , interface_index , interface_snapshot , interface_snapshots , network_snapshot , observe_interfaces , packet_interface , packet_transmit_available , prepare_configuration , prepare_next_hop , prepare_routes , route_snapshot , }
 system/netstack/src/inet.rs :: pub (crate) use self :: protocol_owner :: NetworkStackOwner
 system/netstack/src/inet.rs :: pub (crate) use timing :: network_work_due
 system/netstack/src/inet/configuration.rs :: pub (crate) fn configure_address (scope : & Namespace , index : u32 , address : Ipv4Addr ,) -> Result < () , SocketError >
@@ -10432,9 +10568,27 @@ system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_index (sco
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshot (scope : & Namespace , index : u32 ,) -> Result < InterfaceSnapshot , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshots (scope : & Namespace ,) -> Result < Vec < InterfaceSnapshot > , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn network_snapshot (scope : & Namespace) -> Result < Vec < NetworkSnapshot > , SocketError >
+system/netstack/src/inet/configuration.rs :: pub (crate) fn observe_interfaces (scope : & Namespace , event : alloc :: sync :: Arc < native_runtime :: Event > ,) -> Result < () , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn packet_interface (scope : & Namespace , index : u32 ,) -> Result < (InterfaceSnapshot , Option < alloc :: sync :: Arc < dyn device_model :: network :: NetworkDevice > > ,) , SocketError , >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn packet_transmit_available (scope : & Namespace , index : i32) -> Option < bool >
-system/netstack/src/inet/configuration.rs :: pub (crate) fn route_snapshot (scope : & Namespace) -> Result < Vec < RouteSnapshot > , SocketError >
+system/netstack/src/inet/configuration.rs :: pub (crate) fn route_snapshot (scope : & Namespace) -> Result < RoutingSnapshot , SocketError >
+system/netstack/src/inet/configuration.rs :: pub (crate) use transaction :: { ConfigurationSession , prepare_configuration , prepare_next_hop , prepare_routes , }
+system/netstack/src/inet/configuration.rs :: pub (super) InterfaceChange :: next : InterfaceState
+system/netstack/src/inet/configuration.rs :: pub (super) InterfaceChange :: plan : router_protocol :: interface :: Ipv4InterfaceConfiguration
+system/netstack/src/inet/configuration.rs :: pub (super) InterfaceChange :: previous : InterfaceState
+system/netstack/src/inet/configuration.rs :: pub (super) InterfaceChange :: previous_mtu : usize
+system/netstack/src/inet/configuration.rs :: pub (super) impl InterfaceChange :: fn next_mtu (& self) -> usize
+system/netstack/src/inet/configuration.rs :: pub (super) impl NetworkStack :: fn notify_interfaces (& self)
+system/netstack/src/inet/configuration.rs :: pub (super) struct InterfaceChange
+system/netstack/src/inet/configuration.rs :: pub (super) use transaction :: Transaction
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) fn prepare_configuration (scope : & Arc < Namespace > , plans : impl ExactSizeIterator < Item = Ipv4InterfaceConfiguration > ,) -> Result < ConfigurationSession , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) fn prepare_next_hop (scope : & Arc < Namespace > , definition : network_protocol :: routes :: NextHopConfiguration < '_ > ,) -> Result < ConfigurationSession , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) fn prepare_routes < 'a > (scope : & Arc < Namespace > , plans : impl ExactSizeIterator < Item = Ipv4InterfaceConfiguration > , definitions : impl ExactSizeIterator < Item = network_protocol :: routes :: NextHopConfiguration < 'a > > , routes : impl ExactSizeIterator < Item = network_protocol :: routes :: RouteConfiguration > ,) -> Result < ConfigurationSession , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) impl ConfigurationSession :: fn abort (& self) -> Result < () , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) impl ConfigurationSession :: fn activate (& self) -> Result < () , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) impl ConfigurationSession :: fn confirm (& self) -> Result < () , SocketError >
+system/netstack/src/inet/configuration/transaction.rs :: pub (crate) struct ConfigurationSession
+system/netstack/src/inet/configuration/transaction.rs :: pub (in crate :: inet) struct Transaction
 system/netstack/src/inet/device.rs :: enum ProtocolDevice :: Ethernet (EthernetDevice)
 system/netstack/src/inet/device.rs :: enum ProtocolDevice :: Loopback (LoopbackDevice)
 system/netstack/src/inet/device.rs :: enum ProtocolRxToken :: Ethernet (EthernetRxToken < 'a >)
@@ -10446,39 +10600,55 @@ system/netstack/src/inet/device.rs :: pub (super) enum ProtocolRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolTxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & str
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
+system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn local_statistics (& self) -> NetworkStatistics
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn network_device (& self) -> Arc < dyn NetworkDevice >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn new (device : Arc < dyn NetworkDevice > , net_id : u64 , interface_index : u32) -> Self
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn poll_completions (& self , budget : usize ,) -> Result < NetworkCompletion , NetworkError >
-system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn statistics (& self) -> NetworkStatistics
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_error (& self) -> Option < NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn configure_mtu (& mut self , mtu : i32) -> Result < () , network_protocol :: SocketError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & str >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn ip_mtu (& self) -> usize
-system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn link (& self) -> Option < NetworkLink >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn local_statistics (& self) -> NetworkStatistics
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn mac_address (& self) -> [u8 ; 6]
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn poll_completions (& self , budget : usize ,) -> Result < NetworkCompletion , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn prepare_loopback (net_id : u64) -> Result < Self , network_protocol :: SocketError >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn receive_batch < 'a , 'b > (& 'a self , frames : & 'b mut [Option < NetworkReceiveFrame < 'a > >] , facts : & 'b mut [Option < ingress :: IngressFacts >] ,) -> Option < ProtocolReceiveBatch < 'a , 'b > >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn record_transmit_drop (& self)
-system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn statistics (& self) -> NetworkStatistics
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn take_error (& self) -> Option < NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn validate_mtu (& self , mtu : i32) -> Result < () , network_protocol :: SocketError >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolRxToken < '_ > :: fn addresses (& self) -> Option < (core :: net :: Ipv4Addr , core :: net :: Ipv4Addr) >
 system/netstack/src/inet/device.rs :: pub (super) impl TcpReset :: fn matches (self , local : network_protocol :: InetAddress , peer : network_protocol :: InetAddress ,) -> bool
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetDevice
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetTxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct TcpReset
+system/netstack/src/inet/device/batch.rs :: enum ProtocolReceiveBatch :: Ethernet (EthernetReceiveBatch < 'a , 'b >)
+system/netstack/src/inet/device/batch.rs :: enum ProtocolReceiveBatch :: Loopback { device : & 'a LoopbackDevice , remaining : usize , }
+system/netstack/src/inet/device/batch.rs :: pub (in crate :: inet) enum ProtocolReceiveBatch < 'a , 'b >
+system/netstack/src/inet/device/batch.rs :: pub (in crate :: inet) struct EthernetReceiveBatch < 'a , 'b >
+system/netstack/src/inet/device/batch.rs :: pub (super) impl EthernetDevice :: fn receive_batch < 'a , 'b > (& 'a self , frames : & 'b mut [Option < NetworkReceiveFrame < 'a > >] , facts : & 'b mut [Option < IngressFacts >] ,) -> Option < EthernetReceiveBatch < 'a , 'b > >
 system/netstack/src/inet/device/checksum.rs :: pub (super) fn prepare (frame : & mut [u8]) -> Result < Option < NetworkChecksum > , NetworkError >
+system/netstack/src/inet/device/ingress.rs :: pub (in crate :: inet) struct IngressFacts
+system/netstack/src/inet/device/ingress.rs :: pub (super) IngressFacts :: destination : Ipv4Addr
+system/netstack/src/inet/device/ingress.rs :: pub (super) IngressFacts :: reset : Option < TcpReset >
+system/netstack/src/inet/device/ingress.rs :: pub (super) IngressFacts :: source : Ipv4Addr
+system/netstack/src/inet/device/ingress.rs :: pub (super) impl IngressFacts :: fn from_frame (frame : ParsedFrame < '_ >) -> Option < Self >
+system/netstack/src/inet/device/ingress.rs :: pub (super) impl IngressFacts :: fn from_ipv4 (ip : packet_wire :: ipv4 :: Ipv4Packet < '_ >) -> Self
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn can_transmit (& self) -> bool
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn inject (& self , header : [u8 ; 14] , packet : & [u8] , sender : usize ,) -> Result < () , SocketError >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) struct LoopbackDevice
 system/netstack/src/inet/device/loopback.rs :: pub (crate) struct LoopbackRxToken < 'a >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) struct LoopbackTxToken < 'a >
 system/netstack/src/inet/device/loopback.rs :: pub (super) LoopbackDevice :: mtu : usize
+system/netstack/src/inet/device/loopback.rs :: pub (super) LoopbackRxToken :: facts : Option < IngressFacts >
 system/netstack/src/inet/device/loopback.rs :: pub (super) const LOOPBACK_MTU : usize = 65_536
+system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn can_receive (& self) -> bool
 system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn prepare (net_id : u64) -> Result < Self , SocketError >
+system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn receive_one (& self) -> Option < (LoopbackRxToken < '_ > , LoopbackTxToken < '_ >) >
 system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn record_transmit_drop (& self)
 system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn statistics (& self) -> NetworkStatistics
 system/netstack/src/inet/device/loopback.rs :: pub (super) impl LoopbackDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
@@ -10489,6 +10659,7 @@ system/netstack/src/inet/interface.rs :: pub (super) NetworkInterface :: interfa
 system/netstack/src/inet/interface.rs :: pub (super) NetworkInterface :: name : [u8 ; 16]
 system/netstack/src/inet/interface.rs :: pub (super) NetworkInterface :: state : InterfaceState
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkInterface :: fn apply_state (& mut self)
+system/netstack/src/inet/interface.rs :: pub (super) impl NetworkInterface :: fn configure_mtu (& mut self , mtu : i32) -> Result < () , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkInterface :: fn ethernet (net_id : u64 , index : u32 , unit : u32 , nic : Arc < dyn NetworkDevice > , lifetime : Option < Channel > ,) -> Result < Self , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkInterface :: fn loopback (net_id : u64 , up : bool) -> Result < Self , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkInterface :: fn name (& self) -> & [u8]
@@ -10498,7 +10669,7 @@ system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn int
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn interface_index (& self , name : & [u8]) -> Result < u32 , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn interface_mut (& mut self , index : u32 ,) -> Result < & mut NetworkInterface , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn remove_interface (& mut self , index : u32) -> bool
-system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn route (& self , destination : Ipv4Addr , bound : Option < u32 > ,) -> Result < super :: route :: RouteSelection , SocketError >
+system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn route (& self , source : Ipv4Addr , destination : Ipv4Addr , bound : Option < u32 > ,) -> Result < super :: route :: RouteSelection , SocketError >
 system/netstack/src/inet/interface.rs :: pub (super) impl NetworkStack :: fn source_address (& self , route : super :: route :: RouteSelection) -> Option < Ipv4Addr >
 system/netstack/src/inet/interface.rs :: pub (super) struct NetworkInterface
 system/netstack/src/inet/options.rs :: pub (crate) impl InetSocket :: fn bind_to_device (& self , name : & [u8] , privileged : bool) -> Result < () , SocketError >
@@ -10567,6 +10738,7 @@ system/netstack/src/inet/protocol_owner.rs :: pub (crate) struct NetworkStackOwn
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackGuard < '_ > :: const fn cleanup_backlog (& self) -> bool
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn cleanup_or_defer (& self , endpoint : InetEndpoint)
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn lock (& self) -> Result < NetworkStackGuard < '_ > , SocketError >
+system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn lock_prepared (& self , wait : & mut TaskMutexWaitPreparation ,) -> NetworkStackGuard < '_ >
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn new (stack : NetworkStack) -> Self
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn try_observe (& self) -> Option < NetworkStackGuard < '_ > >
 system/netstack/src/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn try_poll (& self) -> Option < NetworkStackGuard < '_ > >
@@ -10599,6 +10771,9 @@ system/netstack/src/inet/readiness.rs :: pub (super) impl NetworkStack :: fn sna
 system/netstack/src/inet/readiness.rs :: pub (super) impl NetworkStack :: fn take_pending_notifications (& mut self) -> PendingNotifications
 system/netstack/src/inet/readiness.rs :: pub (super) impl PendingNotifications :: fn backlog (& self) -> bool
 system/netstack/src/inet/readiness.rs :: pub (super) struct PendingNotifications
+system/netstack/src/inet/route.rs :: pub (super) Flow :: bound : Option < u32 >
+system/netstack/src/inet/route.rs :: pub (super) Flow :: destination : Ipv4Addr
+system/netstack/src/inet/route.rs :: pub (super) Flow :: source : Ipv4Addr
 system/netstack/src/inet/route.rs :: pub (super) InterfaceFacts :: address : Option < Ipv4Addr >
 system/netstack/src/inet/route.rs :: pub (super) InterfaceFacts :: index : u32
 system/netstack/src/inet/route.rs :: pub (super) InterfaceFacts :: mtu : usize
@@ -10612,22 +10787,98 @@ system/netstack/src/inet/route.rs :: pub (super) RouteSelection :: transport : s
 system/netstack/src/inet/route.rs :: pub (super) const TABLE_LOCAL : u32 = 255
 system/netstack/src/inet/route.rs :: pub (super) const TABLE_MAIN : u32 = 254
 system/netstack/src/inet/route.rs :: pub (super) impl InterfaceFacts :: fn capture (interface : & NetworkInterface) -> Self
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn device_down (& mut self , index : u32 , force : bool)
 system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn ingress (& self , source : Ipv4Addr , destination : Ipv4Addr , index : u32 , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> smoltcp :: iface :: Ipv4IngressFacts
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn insert (& mut self , mut request : Ipv4RouteRequest , interfaces : & [NetworkInterface] , replace : bool , create : bool , exclusive : bool , append : bool ,) -> Result < () , Ipv4RouteError >
+system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn insert (& mut self , request : Ipv4RouteRequest , interfaces : & [NetworkInterface] , replace : bool , create : bool , exclusive : bool , append : bool ,) -> Result < () , Ipv4RouteError >
 system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn is_local (& self , address : Ipv4Addr , interfaces : & [NetworkInterface]) -> bool
 system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn new () -> Self
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn prepare_interface (index : u32 , state : InterfaceState ,) -> Result < PreparedInterfaceRoutes , SocketError >
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn records (& self) -> impl Iterator < Item = Ipv4RouteRequest > + '_
+system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn prepare_interface (& self , index : u32 , previous : InterfaceState , state : InterfaceState , interfaces : & [NetworkInterface] , force : bool ,) -> Result < PreparedInterfaceRoutes , SocketError >
 system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn remove (& mut self , request : Ipv4RouteRequest) -> Result < () , Ipv4RouteError >
 system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn remove_interface (& mut self , index : u32)
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn replace_interface (& mut self , index : u32 , prepared : PreparedInterfaceRoutes)
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn select (& self , destination : Ipv4Addr , bound : Option < u32 > , interfaces : & [NetworkInterface] ,) -> Result < RouteSelection , Ipv4RouteKind >
-system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn select_facts (& self , destination : Ipv4Addr , bound : Option < u32 > , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Result < RouteSelection , Ipv4RouteKind >
+system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn replace_interface (& mut self , prepared : PreparedInterfaceRoutes)
+system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn select_facts (& self , source : Ipv4Addr , destination : Ipv4Addr , bound : Option < u32 > , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Result < RouteSelection , Ipv4RouteKind >
+system/netstack/src/inet/route.rs :: pub (super) impl RoutingTable :: fn snapshot_bytes (& self , interfaces : & [NetworkInterface] ,) -> Result < Vec < u8 > , SocketError >
+system/netstack/src/inet/route.rs :: pub (super) struct Flow
 system/netstack/src/inet/route.rs :: pub (super) struct InterfaceFacts
 system/netstack/src/inet/route.rs :: pub (super) struct PreparedInterfaceRoutes
 system/netstack/src/inet/route.rs :: pub (super) struct RouteSelection
 system/netstack/src/inet/route.rs :: pub (super) struct RoutingTable
+system/netstack/src/inet/route.rs :: pub (super) use configuration :: PreparedRouteChange
+system/netstack/src/inet/route/admission.rs :: pub (super) impl RoutingTable :: fn admit (& self , request : Ipv4RouteRequest , interfaces : & [NetworkInterface] , origin : Origin ,) -> Result < Record , Ipv4RouteError >
+system/netstack/src/inet/route/admission.rs :: pub (super) impl RoutingTable :: fn admit_with (mut request : Ipv4RouteRequest , interfaces : impl Clone + Iterator < Item = InterfaceFacts > , origin : Origin , lookup : impl Fn (Ipv4Addr , Option < u32 > , u8) -> Option < Record > ,) -> Result < Record , Ipv4RouteError >
+system/netstack/src/inet/route/configuration.rs :: pub (in crate :: inet) impl RoutingTable :: fn activate_change (& mut self , prepared : & mut PreparedRouteChange , interfaces : & [NetworkInterface] ,)
+system/netstack/src/inet/route/configuration.rs :: pub (in crate :: inet) impl RoutingTable :: fn prepare_configuration (& self , changes : & [InterfaceChange] , interfaces : & [NetworkInterface] ,) -> Result < PreparedRouteChange , SocketError >
+system/netstack/src/inet/route/configuration.rs :: pub (in crate :: inet) impl RoutingTable :: fn prepare_next_hop (& self , definition : network_protocol :: routes :: NextHopConfiguration < '_ > , interfaces : & [NetworkInterface] ,) -> Result < PreparedRouteChange , SocketError >
+system/netstack/src/inet/route/configuration.rs :: pub (in crate :: inet) impl RoutingTable :: fn rollback_change (& mut self , prepared : & mut PreparedRouteChange , interfaces : & [NetworkInterface] ,) -> Result < () , SocketError >
+system/netstack/src/inet/route/configuration.rs :: pub (in crate :: inet) struct PreparedRouteChange
+system/netstack/src/inet/route/configuration.rs :: pub (super) fn configuration_facts < 'a > (interfaces : & 'a [NetworkInterface] , changes : & 'a [InterfaceChange] ,) -> impl Clone + Iterator < Item = InterfaceFacts > + 'a
+system/netstack/src/inet/route/configuration.rs :: pub (super) fn replaced (record : & Record , changes : & [InterfaceChange] , fib : & Fib) -> bool
+system/netstack/src/inet/route/configuration.rs :: pub (super) impl RoutingTable :: fn configuration_draft (changes : & [InterfaceChange]) -> Result < Draft , SocketError >
+system/netstack/src/inet/route/configuration.rs :: pub (super) impl RoutingTable :: fn configuration_lookup (& self , flow : Flow , minimum_scope : u8 , candidate : & Draft , changes : & [InterfaceChange] , interfaces : & [NetworkInterface] , replace_forwarding : bool ,) -> Option < Record >
+system/netstack/src/inet/route/configuration.rs :: pub (super) impl RoutingTable :: fn prepare_change (& self , candidate : Draft , replace : impl Fn (& Record) -> bool , interfaces : & [NetworkInterface] , facts : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Result < PreparedRouteChange , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn define (& mut self , definition : network_protocol :: routes :: NextHopConfiguration < '_ > ,) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn define_group (& mut self , id : u64 , group : group :: Group) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn extend (& mut self , other : Self) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn inherit_named (& mut self , fib : & Fib) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn iter (& self) -> impl ExactSizeIterator < Item = Record > + '_
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn lookup_record (& self , table : u32 , flow : Flow , minimum_scope : u8 , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Option < Record >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn named (& self , name : nexthop :: Name) -> Result < & group :: Group , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn new (capacity : usize) -> Result < Self , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn push (& mut self , record : Record , order : i128) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn retire_interface (& mut self , index : u32 , force : bool)
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Draft :: fn unique_prefixes (& mut self) -> bool
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Entry :: fn table (& self) -> u32
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn exchange_next_hop (& mut self , change : & mut nexthop :: Change) -> & group :: Group
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn insert (& mut self , record : Record , change : RouteChange ,) -> Result < () , Ipv4RouteError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn is_multipath (& self , name : Option < nexthop :: Name >) -> bool
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn iter (& self) -> impl ExactSizeIterator < Item = Record > + '_
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn matching (& self , address : Ipv4Addr) -> impl Clone + Iterator < Item = & [Entry] >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn new () -> Self
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn prepare (& self , mut candidate : Draft , replace : impl Fn (& Record) -> bool ,) -> Result < Self , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn prepare_next_hop (& self , name : nexthop :: Name , hop : group :: Group ,) -> Result < nexthop :: Change , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn remove (& mut self , request : Ipv4RouteRequest) -> Result < () , Ipv4RouteError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn remove_missing (& mut self , interfaces : & [NetworkInterface])
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn resolve (& self , entry : & Entry) -> Record
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn retain (& mut self , mut keep : impl FnMut (& Record) -> bool)
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn retire_interface (& mut self , index : u32 , force : bool)
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn retire_source_marks (& mut self , marks : & [u64] , retired : usize ,) -> Result < () , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn select_record (& self , entry : & Entry , flow : Flow , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Option < Record >
+system/netstack/src/inet/route/fib.rs :: pub (super) impl Fib :: fn snapshot_bytes (& self , interfaces : & [NetworkInterface] ,) -> Result < Vec < u8 > , SocketError >
+system/netstack/src/inet/route/fib.rs :: pub (super) struct Draft
+system/netstack/src/inet/route/fib.rs :: pub (super) struct Entry
+system/netstack/src/inet/route/fib.rs :: pub (super) struct Fib
+system/netstack/src/inet/route/forwarding.rs :: pub (in crate :: inet) impl RoutingTable :: fn prepare_routes < 'a > (& self , definitions : impl ExactSizeIterator < Item = NextHopConfiguration < 'a > > , routes : impl ExactSizeIterator < Item = RouteConfiguration > , interfaces : & [NetworkInterface] , changes : & [InterfaceChange] ,) -> Result < (PreparedRouteChange , Vec < u32 >) , SocketError >
+system/netstack/src/inet/route/forwarding.rs :: pub (super) impl RoutingTable :: fn admit_next_hop (& self , definition : NextHopConfiguration < '_ > , interfaces : & [NetworkInterface] ,) -> Result < group :: Group , SocketError >
+system/netstack/src/inet/route/group.rs :: pub (super) fn select (members : & [NextHopMember] , flow : Flow , seed : u64 , kind : Ipv4RouteKind , interfaces : impl Clone + Iterator < Item = InterfaceFacts > ,) -> Option < NextHopMember >
+system/netstack/src/inet/route/group.rs :: pub (super) impl Group :: fn capture (definition : NextHopConfiguration < '_ >) -> Result < Self , SocketError >
+system/netstack/src/inet/route/group.rs :: pub (super) impl Group :: fn members (& self) -> & [NextHopMember]
+system/netstack/src/inet/route/group.rs :: pub (super) impl Group :: fn remove_missing (& mut self , interfaces : & [NetworkInterface])
+system/netstack/src/inet/route/group.rs :: pub (super) impl Group :: fn retire (& mut self , index : u32 , force : bool)
+system/netstack/src/inet/route/group.rs :: pub (super) struct Group
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn acquire (& mut self , prepared : Prepared , scope : u8) -> Id
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn active_groups (& self) -> impl Clone + Iterator < Item = (Id , & [NextHop]) >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn change_scope (& mut self , index : Id , previous : u8 , next : u8)
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn define (& mut self , name : Name , group : Group) -> Result < () , SocketError >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn definitions (& self) -> impl Iterator < Item = NextHopConfiguration < '_ > > + '_
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn exchange (& mut self , change : & mut Change) -> & Group
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn get (& self , index : Id) -> (NextHop , Option < Name >)
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn is_empty (& self) -> bool
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn members (& self , index : Id) -> & [NextHop]
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn named (& self , name : Name) -> Option < Id >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn named_group (& self , name : Name) -> Result < & Group , SocketError >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn new () -> Self
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn prepare (& mut self , hop : NextHop , name : Option < Name > ,) -> Result < Prepared , SocketError >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn prepare_change (& self , name : Name , replacement : Group ,) -> Result < Change , SocketError >
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn release (& mut self , index : Id , scope : u8)
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn remove_missing (& mut self , interfaces : & [NetworkInterface])
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn retire (& mut self , index : u32 , force : bool)
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn slot_count (& self) -> usize
+system/netstack/src/inet/route/nexthop.rs :: pub (super) impl NextHops :: fn view (& self , index : Id) -> (& [NextHop] , Option < Name >)
+system/netstack/src/inet/route/nexthop.rs :: pub (super) struct Change
+system/netstack/src/inet/route/nexthop.rs :: pub (super) struct NextHops
+system/netstack/src/inet/route/nexthop.rs :: pub (super) struct Prepared
+system/netstack/src/inet/route/nexthop.rs :: pub (super) type Id  = NonZeroU32
+system/netstack/src/inet/route/nexthop.rs :: pub (super) type Name  = NonZeroU64
+system/netstack/src/inet/route/nexthop.rs :: pub (super) use network_protocol :: routes :: NextHopMember as NextHop
 system/netstack/src/inet/route_reply.rs :: pub (super) impl NetworkStack :: fn poll_route_replies (& mut self , now : Instant , first : usize , end : usize , rotation : usize ,) -> bool
 system/netstack/src/inet/route_reply.rs :: pub (super) impl NetworkStack :: fn queue_tcp_resets (& mut self , now : Instant)
 system/netstack/src/inet/route_reply.rs :: pub (super) impl RouteReplies :: fn due (& self , now : Instant) -> bool
@@ -10658,7 +10909,7 @@ system/netstack/src/inet/tcp.rs :: pub (super) use accept :: accept
 system/netstack/src/inet/tcp.rs :: pub (super) use io :: { maintain , maintain_clocks , poll_state , reap_orphans , receive , send , shutdown , take_error , }
 system/netstack/src/inet/tcp.rs :: pub (super) use lifecycle :: { disconnect , drop_endpoint }
 system/netstack/src/inet/tcp/accept.rs :: pub (in crate :: inet) fn accept (socket : & InetSocket , readiness : Arc < Event > , namespace : Arc < Namespace > ,) -> Result < Arc < InetSocket > , SocketError >
-system/netstack/src/inet/tcp/io.rs :: pub (in crate :: inet) fn maintain (network : & mut NetworkStack , reset : Option < super :: super :: device :: TcpReset > ,)
+system/netstack/src/inet/tcp/io.rs :: pub (in crate :: inet) fn maintain (tcp_endpoints : & mut fallible_tree :: FallibleMap < usize , TcpEndpointState > , sockets : & mut SocketSet < 'static > , reset : Option < super :: super :: device :: TcpReset > ,)
 system/netstack/src/inet/tcp/io.rs :: pub (in crate :: inet) fn maintain_clocks (network : & mut NetworkStack , timestamp : smoltcp :: time :: Instant ,)
 system/netstack/src/inet/tcp/io.rs :: pub (in crate :: inet) fn poll_state (socket : & InetSocket) -> SocketPollState
 system/netstack/src/inet/tcp/io.rs :: pub (in crate :: inet) fn reap_orphans (network : & mut NetworkStack)
@@ -10736,3 +10987,54 @@ system/netstack/src/time.rs :: pub (crate) fn get_time_us () -> u64
 system/netstack/src/worker.rs :: pub (crate) fn device_activity () -> Result < device_model :: Activity , Status >
 system/netstack/src/worker.rs :: pub (crate) fn request_poll ()
 system/netstack/src/worker.rs :: pub (crate) fn start () -> Result < () , Status >
+system/router-config/src/administration.rs :: pub (super) fn handle (owner : & RouterConfig , operation : u32 , request : & mut service_rpc :: Reader < '_ > , mut handles : Vec < native_runtime :: Handle > , reply : & mut service_rpc :: Writer ,) -> Result < Vec < native_runtime :: Handle > , Status >
+system/router-config/src/backup.rs :: pub (super) impl RouterConfig :: fn backup_create (& self) -> Result < (u64 , Id) , Status >
+system/router-config/src/backup.rs :: pub (super) impl RouterConfig :: fn backup_delete (& self , id : Id) -> Result < u64 , Status >
+system/router-config/src/backup.rs :: pub (super) impl RouterConfig :: fn backup_export (& self , id : Id) -> Result < Vec < u8 > , Status >
+system/router-config/src/backup.rs :: pub (super) impl RouterConfig :: fn backup_list (& self) -> Result < Vec < u8 > , Status >
+system/router-config/src/backup.rs :: pub (super) impl RouterConfig :: fn run_backups (& self)
+system/router-config/src/backup.rs :: pub (super) struct Scheduler
+system/router-config/src/backup/archive.rs :: pub (super) fn list (store : & impl StorageService) -> Result < Vec < Entry > , Status >
+system/router-config/src/backup/archive.rs :: pub (super) fn prune (store : & impl StorageService , retain : u32 , touched : & mut bool ,) -> Result < () , Status >
+system/router-config/src/backup/archive.rs :: pub (super) fn read (store : & impl StorageService , id : Id) -> Result < Vec < u8 > , Status >
+system/router-config/src/backup/archive.rs :: pub (super) fn remove (store : & impl StorageService , id : Id) -> Result < () , Status >
+system/router-config/src/backup/archive.rs :: pub (super) fn save (store : & impl StorageService , id : Id , automatic : bool , bytes : & [u8] , touched : & mut bool ,) -> Result < () , Status >
+system/router-config/src/leases.rs :: pub (super) impl RouterConfig :: fn lease_ready (& self , key : u64)
+system/router-config/src/leases.rs :: pub (super) impl RouterConfig :: fn open_dhcp (& self , interface : & Interface , key : u64) -> Result < Channel , Status >
+system/router-config/src/policy.rs :: pub (crate) const SETTINGS_FILE : & [u8] = b"interfaces"
+system/router-config/src/policy.rs :: pub (crate) fn decode_settings (bytes : & [u8]) -> Result < Configuration , String >
+system/router-config/src/policy.rs :: pub (crate) fn encode_settings (settings : & Configuration) -> Result < Vec < u8 > , Invalid >
+system/router-config/src/policy.rs :: pub (crate) fn parse_defaults (text : & [u8]) -> Vec < Entry >
+system/router-config/src/policy.rs :: pub (crate) fn resolve (saved : & Configuration , defaults : & [Entry] , name : & [u8] , mac : [u8 ; 6] ,) -> Result < (InterfaceConfig , u32) , Invalid >
+system/router-config/src/policy.rs :: pub (crate) type Entry  = (Vec < u8 > , InterfaceConfig)
+system/router-config/src/routing.rs :: pub (super) fn attributes (configuration : Option < & Configuration > , interface : & Interface ,) -> Result < router_protocol :: routing :: Attributes , Status >
+system/router-config/src/routing.rs :: pub (super) fn changed (previous : Option < & Configuration > , candidate : & Configuration) -> bool
+system/router-config/src/routing.rs :: pub (super) fn compile (configuration : Option < & Configuration > , interfaces : & [Interface] ,) -> Result < Vec < u8 > , Status >
+system/router-config/src/routing.rs :: pub (super) fn default_route (configuration : Option < & Configuration > , interface : & Interface , gateway : Ipv4Addr , protocol : u8 ,) -> Result < Option < router_protocol :: interface :: DefaultRoute > , Status >
+system/router-config/src/transaction.rs :: enum StageError :: RollbackFailed { cause : Status , rollback : Status }
+system/router-config/src/transaction.rs :: enum StageError :: Unchanged (Status)
+system/router-config/src/transaction.rs :: pub (super) enum StageError
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn compile_configuration (& self , inner : & Inner , candidate : & Configuration ,) -> Result < Vec < (InterfaceConfig , u32) > , Status >
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn queue_application (& self , interface : & mut Interface)
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn queue_sources (& self , inner : & mut Inner)
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn rename (& self , interface : & [u8] , name : & [u8]) -> Result < () , Status >
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn replace (& self , generation : u64 , candidate : Configuration) -> Result < u64 , Status >
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn retry_deadline (& self) -> i64
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn retry_pending (& self)
+system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn set (& self , update : router_protocol :: Update < '_ >) -> Result < () , Status >
+system/router-config/src/transaction.rs :: pub (super) impl StageError :: fn status (self) -> Status
+system/router-config/src/transaction.rs :: pub (super) struct StorageRollback
+system/router-config/src/transaction/staging.rs :: pub (crate) impl Link :: fn activate_configuration (& self , plans : & [Ipv4InterfaceConfiguration] , routes : Option < & [u8] > , policy : Option < & router_protocol :: policy :: Policy > ,) -> Result < PreparedConfiguration , StageError >
+system/router-config/src/transaction/staging.rs :: pub (crate) impl RouterConfig :: fn apply (& self , inner : & mut Inner , position : usize) -> Result < () , Status >
+system/router-config/src/transaction/staging.rs :: pub (crate) impl RouterConfig :: fn queue_devices (& self , inner : & mut Inner)
+system/router-config/src/transaction/staging.rs :: pub (super) impl RouterConfig :: fn apply_pending (& self , inner : & mut Inner , now : i64) -> bool
+system/router-config/src/transaction/staging.rs :: pub (super) impl RouterConfig :: fn stage_interfaces (& self , inner : & mut Inner , changes : & [(usize , & InterfaceConfig , u32)] , configuration : Option < & Configuration > ,) -> Result < StagedConfiguration , StageError >
+system/router-config/src/transaction/staging.rs :: pub (super) impl StagedConfiguration :: fn abort (self) -> Result < () , Status >
+system/router-config/src/transaction/staging.rs :: pub (super) impl StagedConfiguration :: fn confirm (self , owner : & RouterConfig , inner : & mut Inner) -> Result < () , Status >
+system/router-config/src/transaction/staging.rs :: pub (super) struct StagedConfiguration
+system/router-config/src/transaction/storage.rs :: pub (super) PersistenceFailure :: before : Option < Vec < u8 > >
+system/router-config/src/transaction/storage.rs :: pub (super) PersistenceFailure :: restore_error : Option < Status >
+system/router-config/src/transaction/storage.rs :: pub (super) PersistenceFailure :: status : Status
+system/router-config/src/transaction/storage.rs :: pub (super) fn persist (store : & impl StorageService , name : & [u8] , before : Option < Vec < u8 > > , bytes : & [u8] ,) -> Result < () , PersistenceFailure >
+system/router-config/src/transaction/storage.rs :: pub (super) fn restore (store : & impl StorageService , name : & [u8] , before : Option < & [u8] > ,) -> Result < () , Status >
+system/router-config/src/transaction/storage.rs :: pub (super) struct PersistenceFailure

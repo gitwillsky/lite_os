@@ -780,8 +780,8 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_RESOLVD_SINGLE_51",
-                    # resolvd 经 /dev/network-status 读取 netcfg 的设置：删除 resolv.conf 并结束它，init 重启的
-                    # 新实例必须重新写出 DHCP 租约中的 DNS（端点授权、init 监督与 netcfg 快照一起被覆盖）。
+                    # resolvd 经 /dev/network-status 读取 router-config 的设置：删除 resolv.conf 并结束它，init 重启的
+                    # 新实例必须重新写出 DHCP 租约中的 DNS（端点授权、init 监督与 router-config 快照一起被覆盖）。
                     ShellCommand(b"old=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); /bin/rm -f /etc/resolv.conf; /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf 2>/dev/null; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_RESOLVD_RESPAWN_$((7*7+2))\n"),
                 ),
                 (
@@ -794,15 +794,15 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DNS_51",
-                    ShellCommand(f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/system/netcfg/default.conf && /bin/grep -q '^iface [*] inet dhcp' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode()),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/system/router-config/default.conf && /bin/grep -q '^iface [*] inet dhcp' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTP_51",
-                    ShellCommand(f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/system/netcfg/default.conf; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode()),
+                    ShellCommand(f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/system/router-config/default.conf; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode()),
                 ),
                 (
                     "LITEOS_TLS_REJECT_52",
-                    ShellCommand(f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/system/netcfg/default.conf && /bin/grep -q '^iface [*] inet dhcp' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode()),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/system/router-config/default.conf && /bin/grep -q '^iface [*] inet dhcp' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTPS_52",

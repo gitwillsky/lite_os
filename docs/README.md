@@ -33,8 +33,10 @@
 - [进程与调度契约](architecture-contract/process-scheduling.md)
 - [ptrace 契约](architecture-contract/ptrace.md)
 - [文件系统与存储契约](architecture-contract/filesystem-storage.md)
+- [服务私有存储契约](architecture-contract/service-storage.md)
 - [IPC 与网络契约](architecture-contract/ipc-network.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
+- [硬件资源与消息中断契约](architecture-contract/hardware-resources.md)
 - [DRM/KMS 与图形资源契约](architecture-contract/drm.md)
 - [音频契约](architecture-contract/audio.md)
 - [io_uring 契约](architecture-contract/io-uring.md)
@@ -56,6 +58,8 @@
 ## 工程基线
 
 - [固定规范与上游来源](standards-baseline.md)
+- [硬件规范基线](standards-baseline/hardware.md)
+- [网络与报文固定基线](standards-baseline/network.md)
 - [构建、测试与验证](development/build-and-verify.md)
 - [网络驱动器验证](development/network-drive-verification.md)
 - [性能验证范围与成本契约](development/performance-coverage.md)
@@ -92,6 +96,8 @@
 - [领域依赖说明](architecture-contract/dependency-owners.md)
 - [文件系统接口、事务与退休契约](architecture-contract/filesystem-transactions.md)
 - [FUSE 契约](architecture-contract/fuse.md)
+- [路由配置与执行事务契约](architecture-contract/router-configuration.md)
+- [BGP 契约](architecture-contract/bgp.md)
 - [IPv4 与 TCP/UDP 传输契约](architecture-contract/ipv4-transports.md)
 - [有序存储与源码审查](architecture-contract/ordered-storage.md)
 - [Packet 与 Netlink 契约](architecture-contract/packet-netlink.md)

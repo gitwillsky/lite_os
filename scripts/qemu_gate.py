@@ -187,7 +187,7 @@ def _qemu_command(
             "-netdev",
             "user,id=net0",
             "-device",
-            "virtio-net-device,netdev=net0",
+            "virtio-net-pci,netdev=net0",
         ]
     )
     if display_qmp is not None:

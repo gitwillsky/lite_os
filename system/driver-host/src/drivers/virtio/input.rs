@@ -108,7 +108,7 @@ impl VirtIOInputDevice {
         }
         let mut queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(EVENT_QUEUE, size, queue.addresses())
+            .configure_queue(EVENT_QUEUE, size, queue.addresses(), None)
             .ok()?;
 
         // 任意小 buffer 最多跨两个页；预留 size/2 个 slot 可证明 descriptor capacity。

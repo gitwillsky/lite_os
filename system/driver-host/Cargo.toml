@@ -9,6 +9,7 @@ test = false
 bench = false
 
 [dependencies]
+pci-config = { path = "../../libraries/pci-config" }
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }

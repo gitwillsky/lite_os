@@ -37,8 +37,6 @@ checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 [[package]]
 name = "dtb-walker"
 version = "0.2.0-alpha.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9404d41caa1aa659f7be44d5a902e318c0672900822fe9ca41d9e38c14b52332"
 
 [[package]]
 name = "embedded-hal"

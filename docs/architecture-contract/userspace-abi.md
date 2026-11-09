@@ -150,7 +150,7 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
   `/dev/task-observer`（root:adm 0660，任务管理器）、`/dev/network-status`（公开 GET）和
   `/dev/network-settings`（root:netdev 0660，SET/WAIT/租约操作）。帧格式由对应协议 crate 拥有；受限端点由 VFS 组权限授权。WAIT 与租约操作共用至多 4 个阻塞转发名额，
   超出返回资源不足。
-- Linux 侧不配置接口、不运行 DHCP 客户端：接口设置的 owner 是原生 netcfg，`network-config` 只是客户端；
+- Linux 侧不配置接口、不运行 DHCP 客户端：接口设置的 owner 是原生 router-config，`network-config` 只是客户端；
   `/etc/resolv.conf` 由 init 监督的 resolvd 依据设置快照以临时文件、fsync、rename 原子维护。
 - Rust application 必须使用标准 Linux/musl target；禁止 `os=none` custom target、预编译 bundled
   musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。

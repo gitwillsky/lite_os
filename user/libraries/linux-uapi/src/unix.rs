@@ -390,11 +390,11 @@ pub fn recv_fds(socket: BorrowedFd<'_>, bytes: &mut [u8]) -> io::Result<(usize, 
     #[cfg(not(target_os = "linux"))]
     let received = Vec::new();
     #[cfg(target_os = "linux")]
-    if message.flags & raw::MSG_CTRUNC != 0 {
+    if message.flags & (raw::MSG_CTRUNC | raw::MSG_TRUNC) != 0 {
         drop(received);
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "SCM_RIGHTS control data was truncated",
+            "SCM_RIGHTS message or control data was truncated",
         ));
     }
     Ok((result as usize, received))
@@ -581,6 +581,13 @@ mod tests {
         send_rights(&sender, MAX_RECEIVED_FDS + 1);
         let error = recv_fds(receiver.as_fd(), &mut output).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // 数据包正文截断也必须拒绝，并退休随消息交付的 fd，不能把合法前缀当完整控制帧。
+        let file = std::fs::File::open("/dev/null").unwrap();
+        send_fd(sender.as_fd(), b"two bytes", file.as_fd()).unwrap();
+        assert_eq!(
+            recv_fds(receiver.as_fd(), &mut output).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

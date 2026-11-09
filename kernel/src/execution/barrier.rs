@@ -96,9 +96,10 @@ pub(crate) fn synchronize() {
         platform::send_ipi(targets).expect("firmware IPI failed for memory barrier");
     }
 
-    // 3. syscall 期间本地中断关闭；并发 caller 必须主动完成自己的 pending request，
-    // 否则两个 caller 会互相等待对方的 IPI trap。
+    // 3. syscall 期间本地中断关闭；等待者必须推进全部本地确认，而非只推进同类事务。
+    // 否则本 CPU 等 barrier、目标 CPU 等本 CPU 的 TLB ack 时，两边都不能进入 IPI trap。
     loop {
+        platform::complete_pending_ipi();
         complete_pending();
         if targets
             .iter()

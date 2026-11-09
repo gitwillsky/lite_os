@@ -195,7 +195,7 @@ impl VirtIOSoundDevice {
         let size = maximum.min(QUEUE_SIZE);
         let queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(index, size, queue.addresses())
+            .configure_queue(index, size, queue.addresses(), None)
             .ok()?;
         Some(queue)
     }

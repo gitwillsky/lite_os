@@ -12,10 +12,10 @@ bench = false
 native-runtime = { path = "../native-runtime" }
 launch-protocol = { path = "../launch-protocol" }
 network-protocol = { path = "../network-protocol" }
-netcfg-protocol = { path = "../netcfg-protocol" }
+router-protocol = { path = "../router-protocol" }
 service-directory = { path = "../service-directory" }
 service-rpc = { path = "../service-rpc" }
-smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-raw"] }
+packet-wire = { path = "../../libraries/packet-wire" }
 
 [build-dependencies]
 launch-protocol = { path = "../launch-protocol" }

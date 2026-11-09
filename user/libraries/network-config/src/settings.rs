@@ -1,17 +1,27 @@
 //! `/dev/network-settings` 的客户端：一次请求一个 datagram，回复带状态码。
-use netcfg_protocol::{Decoder, DhcpAction, Encoder, Update, ordinal};
+use router_protocol::{Decoder, DhcpAction, Encoder, Update, ordinal};
 use std::{io, time::Duration};
 
-pub use netcfg_protocol::Snapshot;
+pub use router_protocol::Snapshot;
 
 /// 普通请求的超时；WAIT 不设超时。
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-fn request(ordinal: u32, payload: &[u8], timeout: Option<Duration>) -> io::Result<Vec<u8>> {
+pub(super) fn request(
+    ordinal: u32,
+    payload: &[u8],
+    timeout: Option<Duration>,
+) -> io::Result<Vec<u8>> {
     #[cfg(target_os = "linux")]
     {
-        use netcfg_protocol::bridge;
+        use router_protocol::bridge;
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        if payload.len() > bridge::DATAGRAM_MAX - bridge::HEADER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "网络设置请求超过传输容量",
+            ));
+        }
         // 回复发往自动绑定的 abstract 源地址；端点本身的访问由其 inode 权限（netdev 组）决定。
         let socket = linux_uapi::unix::anonymous_datagram()?;
         socket.set_read_timeout(timeout)?;
@@ -57,7 +67,7 @@ fn request(ordinal: u32, payload: &[u8], timeout: Option<Duration>) -> io::Resul
     }
 }
 
-fn invalid(_: netcfg_protocol::Invalid) -> io::Error {
+fn invalid(_: router_protocol::Invalid) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "网络设置回复无效")
 }
 
@@ -99,7 +109,7 @@ pub(crate) fn rename(interface: &str, name: &str) -> io::Result<()> {
     request(ordinal::RENAME, &encoder.0, Some(TIMEOUT)).map(drop)
 }
 
-/// 在当前 DHCP 会话续租或释放，等待 netcfg 应用结果。
+/// 在当前 DHCP 会话续租或释放，等待 router_config 应用结果。
 ///
 /// # Errors
 ///

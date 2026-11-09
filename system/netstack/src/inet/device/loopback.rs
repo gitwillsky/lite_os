@@ -1,5 +1,5 @@
 //! 实际IP-medium loopback队列；没有伪Ethernet/ARP或第二份transport owner。
-use super::TcpReset;
+use super::{TcpReset, ingress::IngressFacts};
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use device_model::network::NetworkStatistics;
@@ -20,6 +20,11 @@ struct Delivery {
     header: [u8; 14],
     interface_index: u32,
 }
+impl Delivery {
+    fn accepts_ipv4(self) -> bool {
+        self.header[12..14] == [8, 0] && (self.header[..6] == [0; 6] || self.header[0] & 1 != 0)
+    }
+}
 
 /// 唯一NET protocol mutex串行化的loopback设备；token只借用当前一次callback。
 pub(crate) struct LoopbackDevice {
@@ -33,6 +38,9 @@ pub(crate) struct LoopbackDevice {
     // OWNER: ingress payload必须在释放queue borrow后进入库callback，callback可能立即发送回复。
     // RX与TX scratch不能共用，否则回复会覆写尚在解析的输入IP packet。
     receive_scratch: RefCell<Vec<u8>>,
+    // OWNER: 唯一 RX scratch 的活跃借用身份；NET guard 串行化领取，token Drop 才归还。
+    // 批 API 可保留已发出的 token；缺少该状态会为同一 queue front 发出多个 token，造成重复出队/覆盖 scratch。
+    receive_claimed: Cell<bool>,
     queued_packets: Cell<usize>,
     dropped_packets: Cell<u64>,
     statistics: Cell<NetworkStatistics>,
@@ -40,6 +48,38 @@ pub(crate) struct LoopbackDevice {
 }
 
 impl LoopbackDevice {
+    pub(super) fn can_receive(&self) -> bool {
+        self.queued_packets.get() != 0 && !self.receive_claimed.get()
+    }
+    pub(super) fn receive_one(&self) -> Option<(LoopbackRxToken<'_>, LoopbackTxToken<'_>)> {
+        self.ingress_reset.set(None);
+        if !self.can_receive() {
+            return None;
+        }
+        let facts = {
+            let mut queue = self.queue.borrow_mut();
+            let (delivery, packet) = queue.peek().ok()?;
+            // 与消费时相同的链路准入；未知 packet 协议仍保留原始抓包，不产生 IP 路由事实。
+            if delivery.accepts_ipv4() {
+                packet_wire::ipv4::Ipv4Packet::parse_header(packet)
+                    .ok()
+                    .map(IngressFacts::from_ipv4)
+            } else {
+                None
+            }
+        };
+        self.receive_claimed.set(true);
+        Some((
+            LoopbackRxToken {
+                device: self,
+                facts,
+            },
+            LoopbackTxToken {
+                device: self,
+                interface_index: 1,
+            },
+        ))
+    }
     /// publication前准备固定buffer；失败不注册设备或进入任何SocketSet。
     pub(super) fn prepare(net_id: u64) -> Result<Self, SocketError> {
         let mut metadata = Vec::new();
@@ -68,6 +108,7 @@ impl LoopbackDevice {
             queue: RefCell::new(PacketBuffer::new(metadata, payload)),
             scratch: RefCell::new(scratch),
             receive_scratch: RefCell::new(receive_scratch),
+            receive_claimed: Cell::new(false),
             queued_packets: Cell::new(0),
             dropped_packets: Cell::new(0),
             statistics: Cell::new(NetworkStatistics::default()),
@@ -155,7 +196,17 @@ impl LoopbackDevice {
     }
 }
 
-pub(crate) struct LoopbackRxToken<'a>(&'a LoopbackDevice);
+pub(crate) struct LoopbackRxToken<'a> {
+    device: &'a LoopbackDevice,
+    // OWNER: claim 保证队列头在本 token 内不出队；格式事实只随本次借用存续，不跨领取缓存。
+    pub(super) facts: Option<IngressFacts>,
+}
+impl Drop for LoopbackRxToken<'_> {
+    fn drop(&mut self) {
+        // consume 的 scratch/queue 局部借用已先退出；未 consume 的 token 则不出队，只撤销领取。
+        self.device.receive_claimed.set(false);
+    }
+}
 pub(crate) struct LoopbackTxToken<'a> {
     device: &'a LoopbackDevice,
     interface_index: u32,
@@ -165,7 +216,7 @@ impl RxToken for LoopbackRxToken<'_> {
     fn meta(&self) -> smoltcp::phy::PacketMeta {
         let mut meta = smoltcp::phy::PacketMeta::default();
         meta.interface_index = self
-            .0
+            .device
             .queue
             .borrow_mut()
             .peek()
@@ -177,40 +228,36 @@ impl RxToken for LoopbackRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let mut input = self.0.receive_scratch.borrow_mut();
+        let mut input = self.device.receive_scratch.borrow_mut();
         let (length, header) = {
-            let mut queue = self.0.queue.borrow_mut();
+            let mut queue = self.device.queue.borrow_mut();
             let (header, packet) = queue
                 .dequeue()
                 .expect("唯一loopback RxToken必须消费已有packet");
             let length = packet.len();
             input[..length].copy_from_slice(packet);
-            (length, header.header)
+            (length, header)
         };
         let packet = &input[..length];
-        self.0.queued_packets.set(
-            self.0
+        self.device.queued_packets.set(
+            self.device
                 .queued_packets
                 .get()
                 .checked_sub(1)
                 .expect("loopback queue double receive"),
         );
-        self.0.ingress_reset.set(TcpReset::from_ip_packet(packet));
-        let mut statistics = self.0.statistics.get();
+        self.device
+            .ingress_reset
+            .set(self.facts.and_then(|facts| facts.reset));
+        let mut statistics = self.device.statistics.get();
         statistics.received_bytes = statistics
             .received_bytes
             .saturating_add(packet.len() as u64);
         statistics.received_packets = statistics.received_packets.saturating_add(1);
-        self.0.statistics.set(statistics);
-        crate::packet::deliver_loopback(self.0.net_id, header, packet);
+        self.device.statistics.set(statistics);
+        crate::packet::deliver_loopback(self.device.net_id, header.header, packet);
         // IP-medium仅解析ETH_P_IP；其他native packet协议仍由tap收到，不能误送进IPv4。
-        operation(
-            if header[12..14] == [8, 0] && (header[..6] == [0; 6] || header[0] & 1 != 0) {
-                packet
-            } else {
-                &[]
-            },
-        )
+        operation(if header.accepts_ipv4() { packet } else { &[] })
     }
 }
 impl TxToken for LoopbackTxToken<'_> {
@@ -231,16 +278,7 @@ impl Device for LoopbackDevice {
     type RxToken<'a> = LoopbackRxToken<'a>;
     type TxToken<'a> = LoopbackTxToken<'a>;
     fn receive(&mut self, _: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        self.ingress_reset.set(None);
-        (self.queued_packets.get() != 0).then_some({
-            (
-                LoopbackRxToken(self),
-                LoopbackTxToken {
-                    device: self,
-                    interface_index: 1,
-                },
-            )
-        })
+        self.receive_one()
     }
     fn transmit(&mut self, _: Instant) -> Option<Self::TxToken<'_>> {
         self.can_transmit().then_some(LoopbackTxToken {

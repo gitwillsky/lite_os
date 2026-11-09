@@ -26,6 +26,43 @@ fn new_handle(status: Status, out: native_abi::Handle) -> Result<Handle, Status>
 }
 
 impl Vmo {
+    /// 创建一次填充、仅导出读取/映射能力的内容对象；原写句柄在返回前退休。
+    /// # Parameters
+    /// `bytes` 是本次复制的完整内容；VMO 的页取整容量不改变调用者声明的逻辑长度。
+    /// # Returns
+    /// 无可写别名的 VMO，接收方只能读或建立自身 COW 子对象。
+    /// # Errors
+    /// 对象/页分配、写入或只读能力派生失败。
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Status> {
+        use native_abi::rights;
+        let source = Self::create(bytes.len() as u64, 0)?;
+        source.write(bytes, 0)?;
+        source.duplicate(
+            rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER | rights::INSPECT,
+        )
+    }
+
+    /// 把声明的逻辑内容复制到独占缓冲；先检查对象边界和地址空间，再分配，不暴露部分读取。
+    /// # Parameters
+    /// `length` 不含 VMO 尾页填充；零长度合法。
+    /// # Returns
+    /// 完整读取的字节缓冲。
+    /// # Errors
+    /// 长度越界/溢出、缓冲分配失败或 VMO 读取失败。
+    pub fn read_bytes(&self, length: u64) -> Result<alloc::vec::Vec<u8>, Status> {
+        if length > self.size()? {
+            return Err(native_abi::ERR_OUT_OF_RANGE);
+        }
+        let length = usize::try_from(length).map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
+        let mut bytes = alloc::vec::Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        bytes.resize(length, 0);
+        self.read(&mut bytes, 0)?;
+        Ok(bytes)
+    }
+
     /// 创建零内容 VMO。
     ///
     /// # Errors

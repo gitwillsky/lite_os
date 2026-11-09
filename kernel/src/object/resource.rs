@@ -10,6 +10,7 @@
 //! 1. 硬中断上下文只记录时间戳并把对象放入预留的待处理队列，发布一个 deferred vector；
 //! 2. deferred work 唤醒等待者或向绑定的 port 投递 `packet::INTERRUPT`；
 //! 3. 电平触发源在 handler 前由控制器屏蔽，`ack` 时解除，避免用户态处理前反复重投。
+//!    MSI-X 由本对象直接屏蔽已授权表项，控制器仅保有向量绑定与 CPU 路由。
 //!
 //! # DMA
 //!
@@ -36,7 +37,9 @@ use crate::vm::{PinnedRange, Vmo};
 // ---------------------------------------------------------------------------------------------
 
 mod authorization;
+mod msi;
 pub(crate) use authorization::Resource;
+pub(crate) use msi::Msi;
 
 // ---------------------------------------------------------------------------------------------
 // Interrupt
@@ -44,7 +47,8 @@ pub(crate) use authorization::Resource;
 
 struct InterruptShared {
     vector: InterruptVector,
-    level: bool,
+    mask_until_ack: bool,
+    source: Option<msi::Source>,
     // OWNER: 最近一次触发的单调时间戳；0 表示没有未消费的触发。
     triggered: AtomicI64,
     // FLAG: 已在待处理队列中；避免同一对象重复入队超出预留容量。
@@ -52,7 +56,21 @@ struct InterruptShared {
     // FLAG: 对象已销毁；等待者以 `ERR_CANCELED` 结束。
     destroyed: AtomicBool,
     waiters: WaitQueue,
-    port: Mutex<Option<(Arc<Port>, u64)>>,
+    port: Mutex<Option<InterruptPort>>,
+}
+
+/// 一个绑定独占一个可重用队列预留；Delivered 消耗它，ack 在解除硬件屏蔽前补回。
+struct InterruptPort {
+    port: Arc<Port>,
+    key: u64,
+    state: InterruptPortState,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InterruptPortState {
+    Reserved,
+    Delivered,
+    // OWNER: 唯一 ack 暂时离开对象锁准备队列空间；并发 ack 不能重复归还或重新启用源。
+    Rearming,
 }
 
 /// 交给中断控制器的绑定：持有共享状态的强引用，硬中断入队不需要查找。
@@ -62,20 +80,19 @@ impl InterruptHandler for InterruptBinding {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
         let shared = &self.0;
         let now = crate::execution::timer::get_time_ns() as i64;
-        shared.triggered.store(now.max(1), Ordering::Release);
-        if !shared.queued.swap(true, Ordering::AcqRel) {
-            // 绑定时已为本对象预留一格，入队不分配。
-            let mut pending = PENDING.lock();
-            debug_assert!(pending.queue.len() < pending.queue.capacity());
-            pending.queue.push_back(shared.clone());
-            drop(pending);
-            deferred::raise(*PENDING_WORK.wait());
+        if let Some(source) = &shared.source {
+            if !source.trigger(now.max(1), &shared.triggered) {
+                return Ok(());
+            }
+        } else {
+            shared.triggered.store(now.max(1), Ordering::Release);
         }
+        queue_interrupt(shared);
         Ok(())
     }
 
     fn masks_until_ack(&self) -> bool {
-        self.0.level
+        self.0.mask_until_ack
     }
 }
 
@@ -93,19 +110,35 @@ static PENDING: IrqMutex<PendingQueue> = IrqMutex::new(PendingQueue {
 // OWNER: 中断对象共用的 deferred vector；首次创建中断对象时注册。
 static PENDING_WORK: Once<DeferredWork> = Once::new();
 
+/// 对象创建时已准备容量；硬 IRQ 和 bind/ack 的补偿通知共用同一个去重入口，不分配。
+fn queue_interrupt(shared: &Arc<InterruptShared>) {
+    if !shared.queued.swap(true, Ordering::AcqRel) {
+        let mut pending = PENDING.lock();
+        debug_assert!(pending.queue.len() < pending.queue.capacity());
+        pending.queue.push_back(shared.clone());
+        drop(pending);
+        deferred::raise(*PENDING_WORK.wait());
+    }
+}
+
 fn process_pending(_now: u64) -> bool {
     loop {
         let Some(shared) = PENDING.lock().queue.pop_front() else {
             return false;
         };
         shared.queued.store(false, Ordering::Release);
-        let port = shared.port.lock().clone();
-        match port {
-            Some((port, key)) => {
+        let mut slot = shared.port.lock();
+        if shared.destroyed.load(Ordering::Acquire) {
+            continue;
+        }
+        match slot.as_mut() {
+            Some(binding) if binding.state == InterruptPortState::Reserved => {
                 let timestamp = shared.triggered.swap(0, Ordering::AcqRel);
                 if timestamp != 0 {
-                    let _ = port.queue(PortPacket {
-                        key,
+                    binding.state = InterruptPortState::Delivered;
+                    // 绑定/ack 已预留；与对象销毁在同一 slot 锁内排序，投递永不扩容或丢失 OOM 唤醒。
+                    binding.port.deliver(PortPacket {
+                        key: binding.key,
                         kind: native_abi::packet::INTERRUPT,
                         status: native_abi::OK,
                         trigger: 0,
@@ -114,13 +147,19 @@ fn process_pending(_now: u64) -> bool {
                     });
                 }
             }
-            None => shared.waiters.wake_all(),
+            Some(_) => {} // Delivered/Rearming 的新边沿保留 triggered，ack 发表预留后补偿入队。
+            None => {
+                drop(slot);
+                shared.waiters.wake_all();
+            }
         }
     }
 }
 
 /// 中断对象。
 pub(crate) struct Interrupt {
+    message: Option<msi::Registration>,
+    retirement: crate::platform::InterruptRetirement,
     koid: u64,
     shared: Arc<InterruptShared>,
     signals: SignalState,
@@ -130,17 +169,22 @@ impl Interrupt {
     /// 改变当前中断对象的目标逻辑 CPU；不重建 binding 或转移已投递的事件。
     ///
     /// # Errors
-    /// CPU 未在线返回 INVALID_ARGS，绑定不存在返回 BAD_STATE，控制器准备失败返回 NO_MEMORY。
+    /// CPU 未在线返回 INVALID_ARGS，绑定不存在返回 BAD_STATE；内存/设备地址空间准备失败返回
+    /// NO_MEMORY/NO_RESOURCES，保留当前路由与确认状态。
     pub(crate) fn set_affinity(&self, cpu: crate::execution::cpu::CpuId) -> Result<(), Status> {
         if !crate::execution::cpu::online().contains(cpu) {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
-        crate::platform::set_interrupt_affinity(self.shared.vector, cpu).map_err(
-            |error| match error {
-                InterruptError::InvalidVector => native_abi::ERR_INVALID_ARGS,
-                InterruptError::HandlerNotSet => native_abi::ERR_BAD_STATE,
-                InterruptError::NoMemory => native_abi::ERR_NO_MEMORY,
-            },
+        if let Some(message) = &self.message {
+            return message.set_affinity(
+                self.shared.source.as_ref().expect("MSI owns its source"),
+                cpu,
+            );
+        }
+        crate::platform::set_interrupt_affinity(
+            self.shared.vector,
+            cpu,
+            crate::execution::barrier::complete_pending,
         )
     }
 
@@ -149,12 +193,30 @@ impl Interrupt {
     /// # Errors
     /// 向量已被占用或非法返回 `ERR_ALREADY_BOUND`/`ERR_INVALID_ARGS`；分配失败返回 `ERR_NO_MEMORY`。
     pub(crate) fn create(vector: u32, level: bool) -> Result<Self, Status> {
+        Self::create_source(vector, level, None, None)
+    }
+    /// 消息组内的子中断；登记令牌保活 group，初始化失败也恰好归还一次。
+    fn create_message(
+        vector: u32,
+        registration: msi::Registration,
+        source: msi::Source,
+    ) -> Result<Self, Status> {
+        Self::create_source(vector, false, Some(registration), Some(source))
+    }
+    fn create_source(
+        vector: u32,
+        level: bool,
+        message: Option<msi::Registration>,
+        source: Option<msi::Source>,
+    ) -> Result<Self, Status> {
+        let retirement = crate::platform::InterruptRetirement::prepare()?;
         PENDING_WORK.call_once(|| {
             deferred::register(process_pending).expect("interrupt deferred vector exhausted")
         });
         let shared = Arc::try_new(InterruptShared {
             vector,
-            level,
+            mask_until_ack: level,
+            source,
             triggered: AtomicI64::new(0),
             queued: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
@@ -165,28 +227,57 @@ impl Interrupt {
         let binding = Arc::try_new(InterruptBinding(shared.clone()))
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         // 预留在锁外分配：先扩出新存储，再在锁内交换，硬中断路径永不分配。
-        let target = PENDING.lock().reserved + 1;
         let mut replacement = VecDeque::new();
-        replacement
-            .try_reserve_exact(target)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        {
+        loop {
             let mut pending = PENDING.lock();
-            if pending.queue.capacity() < pending.reserved + 1 {
+            let target = pending.reserved + 1;
+            if pending.queue.capacity() >= target {
+                pending.reserved = target;
+                break;
+            }
+            if replacement.capacity() >= target {
                 replacement.append(&mut pending.queue);
                 core::mem::swap(&mut pending.queue, &mut replacement);
+                pending.reserved = target;
+                break;
             }
-            pending.reserved += 1;
+            // 并发创建可能改变 target；重新取得锁后必须再检查，不能采用过期容量。
+            drop(pending);
+            replacement
+                .try_reserve_exact(target)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         }
         drop(replacement);
-        if let Err(error) = crate::platform::bind_interrupt(vector, binding) {
-            PENDING.lock().reserved -= 1;
-            return Err(match error {
-                InterruptError::NoMemory => native_abi::ERR_NO_MEMORY,
-                _ => native_abi::ERR_ALREADY_BOUND,
-            });
+        let result = if message.is_some() {
+            crate::platform::bind_message_interrupt(
+                vector,
+                binding,
+                crate::execution::barrier::complete_pending,
+            )
+        } else {
+            crate::platform::bind_interrupt(
+                vector,
+                binding,
+                level,
+                crate::execution::barrier::complete_pending,
+            )
+        };
+        if let Err(error) = result {
+            if let Some(source) = &shared.source {
+                source.retire();
+            }
+            shared.destroyed.store(true, Ordering::Release);
+            let mut pending = PENDING.lock();
+            pending.queue.retain(|entry| !Arc::ptr_eq(entry, &shared));
+            pending.reserved -= 1;
+            return Err(error);
+        }
+        if let Some(source) = &shared.source {
+            source.activate(&shared.triggered);
         }
         Ok(Self {
+            message,
+            retirement,
             koid: next_koid(),
             shared,
             signals: SignalState::new(0),
@@ -223,36 +314,114 @@ impl Interrupt {
     /// 确认触发并重新允许（电平触发源解除屏蔽）。
     ///
     /// # Errors
-    /// 控制器拒绝时返回 `ERR_INTERNAL`。
+    /// 控制器拒绝时返回 `ERR_INTERNAL`；port 没有已交付通知返回 `ERR_BAD_STATE`；
+    /// ack 的队列预留失败返回 `ERR_NO_MEMORY`，保留 Delivered 与硬件屏蔽，允许重试。
     pub(crate) fn ack(&self) -> Result<(), Status> {
-        self.shared.triggered.store(0, Ordering::Release);
-        if self.shared.level {
+        let port = {
+            let mut slot = self.shared.port.lock();
+            match slot.as_mut() {
+                Some(binding) if binding.state == InterruptPortState::Delivered => {
+                    binding.state = InterruptPortState::Rearming;
+                    Some(binding.port.clone())
+                }
+                Some(_) => return Err(native_abi::ERR_BAD_STATE),
+                None => {
+                    self.shared.triggered.store(0, Ordering::Release);
+                    None
+                }
+            }
+        };
+        if let Some(port) = port {
+            // 1. 预留可能分配，必须在对象锁外。正常消费者已成功取出 packet，沿用原容量即可。
+            let reserved = port.reserve();
+            let mut slot = self.shared.port.lock();
+            let binding = slot
+                .as_mut()
+                .expect("ack retains the Interrupt and its binding");
+            assert!(
+                binding.state == InterruptPortState::Rearming,
+                "only one ack may rearm a binding"
+            );
+            if let Err(error) = reserved {
+                binding.state = InterruptPortState::Delivered;
+                return Err(error);
+            }
+            binding.state = InterruptPortState::Reserved;
+            drop(slot);
+            // 2. 原始 edge IRQ 可在 Delivered/Rearming 期间到达；不能清零后悄悄丢掉它。
+            if self.shared.triggered.load(Ordering::Acquire) != 0 {
+                queue_interrupt(&self.shared);
+            }
+        }
+        if let Some(source) = &self.shared.source {
+            source.ack();
+        } else if self.shared.mask_until_ack {
             crate::platform::unmask_interrupt(self.shared.vector)
                 .map_err(|_| native_abi::ERR_INTERNAL)?;
         }
         Ok(())
     }
 
-    /// 绑定 port：之后每次触发投递一个 packet，`wait` 不再可用。
+    /// 绑定 port：触发合并为一个待确认 packet，ack 后恢复预留；`wait` 不再可用。
     ///
     /// # Errors
-    /// 已绑定返回 `ERR_ALREADY_BOUND`。
+    /// 已绑定返回 `ERR_ALREADY_BOUND`；初始队列预留失败返回 `ERR_NO_MEMORY`。
     pub(crate) fn bind_port(&self, port: Arc<Port>, key: u64) -> Result<(), Status> {
+        // 第一次 IRQ 也不能分配；先取得预留再发表绑定，失败不改变原对象。
+        port.reserve()?;
         let mut slot = self.shared.port.lock();
         if slot.is_some() {
+            drop(slot);
+            port.release_reservation();
             return Err(native_abi::ERR_ALREADY_BOUND);
         }
-        *slot = Some((port, key));
+        *slot = Some(InterruptPort {
+            port,
+            key,
+            state: InterruptPortState::Reserved,
+        });
+        drop(slot);
+        // create 已启用硬件，IRQ 可能先于 bind 到达；统一排队补偿，不要求另一次硬件边沿。
+        if self.shared.triggered.load(Ordering::Acquire) != 0 {
+            queue_interrupt(&self.shared);
+        }
         Ok(())
     }
 }
 
 impl Drop for Interrupt {
     fn drop(&mut self) {
-        let handler = crate::platform::unbind_interrupt(self.shared.vector);
+        // 1. 原生对象先退休 MSI-X 源，再取得控制器锁 unbind；不反转 GIC → Source 锁序。
+        if let Some(source) = &self.shared.source {
+            source.retire();
+        }
+        let handler = crate::platform::unbind_interrupt(
+            self.shared.vector,
+            &mut self.retirement,
+            crate::execution::barrier::complete_pending,
+        );
         drop(handler);
-        PENDING.lock().reserved -= 1;
+        // 2. 与 deferred deliver 串行化；关闭后的旧事件不能投给复用该向量的新对象。
+        let mut port = self.shared.port.lock();
         self.shared.destroyed.store(true, Ordering::Release);
+        let binding = port.take();
+        drop(port);
+        if let Some(binding) = binding {
+            if binding.state == InterruptPortState::Reserved {
+                binding.port.release_reservation();
+            }
+            // Rearming 持有当前 Interrupt 的调用强引用，不可能在它完成前进入 Drop。
+            assert!(
+                binding.state != InterruptPortState::Rearming,
+                "interrupt cannot retire during ack"
+            );
+        }
+        let mut pending = PENDING.lock();
+        pending
+            .queue
+            .retain(|entry| !Arc::ptr_eq(entry, &self.shared));
+        pending.reserved -= 1;
+        drop(pending);
         self.shared.waiters.wake_all();
         self.signals.update(0, signals::CANCELED);
     }
@@ -373,8 +542,13 @@ impl Bti {
     ) -> Result<Pmt, Status> {
         let pinned = vmo.pin(offset, length).map_err(vm_status)?;
         let mut addresses = Vec::new();
-        self.backend
-            .map(self.stream, pinned.pages(), writable, &mut addresses)?;
+        self.backend.map(
+            self.stream,
+            pinned.pages(),
+            writable,
+            pinned.cache_policy(),
+            &mut addresses,
+        )?;
         let pinning = Pinning { addresses, pinned };
         {
             let mut quarantine = self.quarantine.lock();

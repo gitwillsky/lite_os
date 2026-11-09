@@ -38,6 +38,7 @@ fn actual_qemu_device_windows_and_routes_belong_to_driver_host() {
     assert!(pci.interrupt(0, 1).is_some());
     assert_eq!(pci.interrupt(0, 0), None);
     assert_eq!(pci.stream(0), None);
+    assert_eq!(pci.message_device(255), Some(255));
     assert!(facts.iommu.is_none());
 }
 
@@ -76,6 +77,7 @@ fn actual_smmu_phandle_routes_pci_and_retains_mmio_transports() {
     let pci = facts.pci.unwrap();
     assert_eq!(pci.stream(0), Some(0));
     assert_eq!(pci.stream(255), Some(255));
+    assert_eq!(pci.message_device(255), Some(255));
     assert_eq!(pci.stream(65535), Some(65535));
     assert!(std::panic::catch_unwind(|| pci.stream(65536)).is_err());
 }
@@ -86,10 +88,11 @@ fn pci_stream_mask_and_disjoint_range_boundaries_do_not_bypass_translation() {
         0..4096,
         0..4096,
         [[0; 4]; 4],
-        vec![(8, 100, 8), (32, 200, 2)],
-        0xff,
+        pci_host::RequesterMap::new(vec![(8, 100, 8), (32, 200, 2)], 0xff),
+        pci_host::MessageRouting::Remapped(pci_host::RequesterMap::new(vec![(8, 300, 8)], 0xff)),
     );
     assert_eq!(pci.stream(0x108), Some(100));
+    assert_eq!(pci.message_device(0x108), Some(300));
     assert_eq!(pci.stream(15), Some(107));
     assert_eq!(pci.stream(32), Some(200));
     assert_eq!(pci.stream(33), Some(201));

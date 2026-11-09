@@ -28,6 +28,7 @@ pub(crate) fn function() -> Option<Function> {
         config,
         bars,
         interrupt,
+        ..
     } = crate::platform::node().bus
     else {
         return None;

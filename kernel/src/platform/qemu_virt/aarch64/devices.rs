@@ -9,6 +9,7 @@ use crate::info;
 pub(crate) fn initialize() {
     let platform = discovery::info();
     gicv3::initialize(platform.gic).expect("GICv3 initialization failed");
+    super::its::initialize(platform.its);
     initialize_pl011();
     info!("AArch64 device initialization completed");
 }

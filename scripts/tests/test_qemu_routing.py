@@ -62,7 +62,7 @@ class QemuRoutingTests(unittest.TestCase):
                 self.assertIn(machine_option, argument_after(command, "-machine"))
                 self.assertIn("virtio-blk-pci,disable-legacy=on,iommu_platform=on,drive=x0", command)
                 self.assertIn("virtio-rng-device,rng=rng0", command)
-                self.assertIn("virtio-net-device,netdev=net0", command)
+                self.assertIn("virtio-net-pci,netdev=net0", command)
                 self.assertNotIn("virtio-blk-device,drive=x0", command)
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
@@ -291,7 +291,7 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertEqual(command[0], "/opt/qemu-system-aarch64")
         self.assertEqual(
             argument_after(command, "-machine"),
-            "virt,accel=hvf,gic-version=3,its=off,secure=off,"
+            "virt,accel=hvf,gic-version=3,its=on,secure=off,"
             "virtualization=off,acpi=off",
         )
         self.assertEqual(argument_after(command, "-cpu"), "host")
@@ -332,8 +332,8 @@ class QemuRoutingTests(unittest.TestCase):
             command = qemu_gate._qemu_command(Path("rootfs.img"), 2)
 
         self.assertEqual(command[0], "/opt/qemu-system-riscv64")
-        self.assertEqual(argument_after(command, "-machine"), "virt,accel=tcg")
-        self.assertEqual(argument_after(command, "-cpu"), "rv64")
+        self.assertEqual(argument_after(command, "-machine"), "virt,accel=tcg,aia=aplic-imsic")
+        self.assertEqual(argument_after(command, "-cpu"), "rv64,ssaia=on,smaia=on")
         self.assertEqual(
             argument_after(command, "-bios"),
             "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -386,7 +386,7 @@ class QemuRoutingTests(unittest.TestCase):
                 "accel": "tcg",
                 "cpu": "max",
                 "machine": (
-                    "virt,accel=tcg,gic-version=3,its=off,secure=off,"
+                    "virt,accel=tcg,gic-version=3,its=on,secure=off,"
                     "virtualization=off,acpi=off"
                 ),
                 "kernel_boot_artifact": (

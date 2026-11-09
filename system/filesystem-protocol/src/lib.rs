@@ -15,6 +15,8 @@
 
 extern crate alloc;
 
+pub mod directory;
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -370,10 +372,25 @@ impl RemoteMount {
 const STORAGE_OPEN: u32 = 1;
 const STORAGE_READ: u32 = 1;
 const STORAGE_WRITE: u32 = 2;
-/// 私有目录中单个文件的上限：整文件随一条消息传递。
-pub const STORAGE_FILE_MAX: usize = 48 * 1024;
+const STORAGE_REMOVE: u32 = 3;
+const STORAGE_SYNC: u32 = 4;
+const STORAGE_LIST: u32 = 5;
+const STORAGE_CREATE: u32 = 6;
+/// 私有文件控制消息版本；内容一律使用只读 VMO，大小不受 channel 字节容量限制。
+const STORAGE_VERSION: u32 = 1;
 /// 文件名上限；名称不得含 `/` 或 NUL，也不得是 `.` 或 `..`。
 pub const STORAGE_NAME_MAX: usize = 64;
+
+/// 私有目录的普通文件事实；大小与修改时刻只由实际文件系统提供。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageEntry {
+    /// 经 storage_name 校验的直接子文件名。
+    pub name: Vec<u8>,
+    /// 逻辑文件大小。
+    pub size: u64,
+    /// 文件系统的 UTC 修改秒数。
+    pub modified_seconds: i64,
+}
 
 /// 校验私有目录中的文件名。
 ///
@@ -407,13 +424,16 @@ pub fn serve_storage_admin(channel: Channel, open: Arc<StorageOpener>) -> Result
         1,
         b"storage-admin",
         Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, _: &mut Writer| {
+            move |ordinal: u32, request: &mut Reader<'_>, handles: Vec<Handle>, _: &mut Writer| {
                 if ordinal != STORAGE_OPEN {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
                 }
-                Ok(alloc::vec![
-                    open(storage_name(request.bytes()?)?)?.into_handle()
-                ])
+                let name = storage_name(request.bytes()?)?;
+                request.finish()?;
+                if !handles.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                Ok(alloc::vec![open(name)?.into_handle()])
             },
         )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
@@ -435,27 +455,53 @@ impl StorageAdmin {
     /// 名称非法、数据卷不可用或服务已终止。
     pub fn open(&self, name: &[u8]) -> Result<Channel, Status> {
         let mut request = Writer::request(STORAGE_OPEN);
-        request.bytes(name);
+        request.bytes(storage_name(name)?);
         let mut reply = call(&self.0, &request, Vec::new())?;
+        if reply.handles.len() != 1 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        reply.reader().finish()?;
         Ok(Channel::from_handle(take_handle(&mut reply.handles, 0)?))
     }
 }
 
-/// 服务端：一个私有目录。
+/// 一个私有目录的存储能力；实际 provider 与远程 client 使用同一操作契约。
 pub trait StorageService: Send + Sync {
+    /// 枚举符合文件名契约的直接普通子文件，不包含目录。
+    /// # Errors
+    /// 枚举/元数据读取、分配或传输失败。
+    fn list(&self) -> Result<Vec<StorageEntry>, Status>;
+
+    /// 原子创建并持久化新文件；名字存在返回 ALREADY_BOUND，绝不替换原内容。
+    /// # Errors
+    /// 名字冲突、资源或 I/O 失败；目录同步/回复丢失时，错误不证明尚未创建。
+    fn create(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status>;
+
     /// 读取整个文件；不存在返回 `None`。
     ///
     /// # Errors
     ///
-    /// 文件超过 [`STORAGE_FILE_MAX`] 或 I/O 失败。
+    /// 内容分配或 I/O 失败。
     fn read(&self, name: &[u8]) -> Result<Option<Vec<u8>>, Status>;
 
     /// 原子替换整个文件：读者只会看到旧内容或完整的新内容，返回前内容已持久化。
     ///
     /// # Errors
     ///
-    /// 空间不足或 I/O 失败。
+    /// 空间不足或 I/O 失败。rename/目录同步或回复传输失败时，错误不证明原文件未被替换。
     fn write(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status>;
+
+    /// 删除文件并同步目录；不存在也成功，以便撤销首次创建或重试未确认的删除。
+    ///
+    /// # Errors
+    /// I/O 失败；错误不证明删除尚未发生。
+    fn remove(&self, name: &[u8]) -> Result<(), Status>;
+
+    /// 同步私有目录的命名状态，不创建或重写文件。
+    ///
+    /// # Errors
+    /// I/O 失败或服务不可用。
+    fn sync(&self) -> Result<(), Status>;
 }
 
 /// 服务私有目录协议。
@@ -469,23 +515,87 @@ pub fn serve_storage(channel: Channel, service: Arc<dyn StorageService>) -> Resu
         1,
         b"storage",
         Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, reply: &mut Writer| {
+            move |ordinal: u32,
+                  request: &mut Reader<'_>,
+                  mut handles: Vec<Handle>,
+                  reply: &mut Writer| {
+                if request.u32()? != STORAGE_VERSION {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                // 固定回复头在文件副作用之前准备；内容读操作另行返回独立能力。
+                reply.try_reserve(13)?;
+                reply.u32(STORAGE_VERSION);
+                if ordinal == STORAGE_LIST {
+                    request.finish()?;
+                    if !handles.is_empty() {
+                        return Err(native_abi::ERR_INVALID_ARGS);
+                    }
+                    let entries = service.list()?;
+                    let mut data = Writer::payload();
+                    let length = entries
+                        .iter()
+                        .try_fold(8usize, |total, entry| {
+                            total.checked_add(20 + entry.name.len())
+                        })
+                        .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+                    data.try_reserve(length)?;
+                    data.u64(entries.len() as u64);
+                    for entry in entries {
+                        data.bytes(storage_name(&entry.name)?)
+                            .u64(entry.size)
+                            .u64(entry.modified_seconds as u64);
+                    }
+                    let content = Vmo::from_bytes(data.as_bytes())?;
+                    reply.u64(data.as_bytes().len() as u64);
+                    return Ok(alloc::vec![content.into_handle()]);
+                }
+                if ordinal == STORAGE_SYNC {
+                    request.finish()?;
+                    if !handles.is_empty() {
+                        return Err(native_abi::ERR_INVALID_ARGS);
+                    }
+                    service.sync()?;
+                    return Ok(Vec::new());
+                }
                 let name = storage_name(request.bytes()?)?;
                 match ordinal {
-                    STORAGE_READ => match service.read(name)? {
-                        Some(bytes) => {
-                            reply.bool(true).bytes(&bytes);
+                    STORAGE_READ => {
+                        request.finish()?;
+                        if !handles.is_empty() {
+                            return Err(native_abi::ERR_INVALID_ARGS);
                         }
-                        None => {
-                            reply.bool(false);
+                        if let Some(bytes) = service.read(name)? {
+                            let content = Vmo::from_bytes(&bytes)?;
+                            let mut returned = Vec::new();
+                            returned
+                                .try_reserve_exact(1)
+                                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                            returned.push(content.into_handle());
+                            reply.bool(true).u64(bytes.len() as u64);
+                            return Ok(returned);
                         }
-                    },
-                    STORAGE_WRITE => {
-                        let bytes = request.bytes()?;
-                        if bytes.len() > STORAGE_FILE_MAX {
-                            return Err(native_abi::ERR_OUT_OF_RANGE);
+                        reply.bool(false);
+                    }
+                    STORAGE_WRITE | STORAGE_CREATE => {
+                        let length = request.u64()?;
+                        request.finish()?;
+                        if handles.len() != 1 {
+                            return Err(native_abi::ERR_INVALID_ARGS);
                         }
-                        service.write(name, bytes)?;
+                        let content =
+                            Vmo::from_handle(take_handle(&mut handles, 0)?).read_bytes(length)?;
+                        if ordinal == STORAGE_CREATE {
+                            service.create(name, &content)?;
+                        } else {
+                            service.write(name, &content)?;
+                        }
+                    }
+                    STORAGE_REMOVE => {
+                        request.finish()?;
+                        if !handles.is_empty() {
+                            return Err(native_abi::ERR_INVALID_ARGS);
+                        }
+                        service.remove(name)?;
                     }
                     _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
@@ -504,33 +614,104 @@ impl Storage {
         Self(channel)
     }
 
-    /// 读取整个文件；不存在返回 `None`。
-    ///
-    /// # Errors
-    ///
-    /// 名称非法、I/O 失败或服务已终止。
-    pub fn read(&self, name: &[u8]) -> Result<Option<Vec<u8>>, Status> {
-        let mut request = Writer::request(STORAGE_READ);
-        request.bytes(storage_name(name)?);
-        let reply = call(&self.0, &request, Vec::new())?;
+    /// 启动者派生的私有能力连接；关闭后无法原地恢复，使用者应由其组件生命周期重取。
+    pub fn channel(&self) -> &Channel {
+        &self.0
+    }
+}
+
+impl StorageService for Storage {
+    fn list(&self) -> Result<Vec<StorageEntry>, Status> {
+        let mut request = Writer::request(STORAGE_LIST);
+        request.u32(STORAGE_VERSION);
+        let mut reply = call(&self.0, &request, Vec::new())?;
         let mut reader = reply.reader();
-        if !reader.bool()? {
-            return Ok(None);
+        if reader.u32()? != STORAGE_VERSION || reply.handles.len() != 1 {
+            return Err(native_abi::ERR_INVALID_ARGS);
         }
-        Ok(Some(reader.bytes()?.to_vec()))
+        let length = reader.u64()?;
+        reader.finish()?;
+        let bytes = Vmo::from_handle(take_handle(&mut reply.handles, 0)?).read_bytes(length)?;
+        let mut reader = Reader::new(&bytes);
+        let count = reader.usize()?;
+        if count > bytes.len() / 21 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        for _ in 0..count {
+            entries.push(StorageEntry {
+                name: storage_name(reader.bytes()?)?.to_vec(),
+                size: reader.u64()?,
+                modified_seconds: reader.u64()? as i64,
+            });
+        }
+        reader.finish()?;
+        Ok(entries)
     }
 
-    /// 原子替换整个文件，返回前已持久化。
-    ///
-    /// # Errors
-    ///
-    /// 名称非法、文件过大、空间不足、I/O 失败或服务已终止。
-    pub fn write(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status> {
-        if bytes.len() > STORAGE_FILE_MAX {
-            return Err(native_abi::ERR_OUT_OF_RANGE);
+    fn create(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status> {
+        self.store(STORAGE_CREATE, name, bytes)
+    }
+    fn sync(&self) -> Result<(), Status> {
+        let mut request = Writer::request(STORAGE_SYNC);
+        request.u32(STORAGE_VERSION);
+        self.empty_reply(call(&self.0, &request, Vec::new())?)
+    }
+
+    fn read(&self, name: &[u8]) -> Result<Option<Vec<u8>>, Status> {
+        let mut request = Writer::request(STORAGE_READ);
+        request.u32(STORAGE_VERSION).bytes(storage_name(name)?);
+        let mut reply = call(&self.0, &request, Vec::new())?;
+        let mut reader = reply.reader();
+        if reader.u32()? != STORAGE_VERSION {
+            return Err(native_abi::ERR_INVALID_ARGS);
         }
-        let mut request = Writer::request(STORAGE_WRITE);
-        request.bytes(storage_name(name)?).bytes(bytes);
-        call(&self.0, &request, Vec::new()).map(drop)
+        let present = reader.u8()?;
+        let length = match present {
+            0 => None,
+            1 => Some(reader.u64()?),
+            _ => return Err(native_abi::ERR_INVALID_ARGS),
+        };
+        reader.finish()?;
+        match length {
+            None if reply.handles.is_empty() => Ok(None),
+            Some(length) if reply.handles.len() == 1 => {
+                let content = Vmo::from_handle(take_handle(&mut reply.handles, 0)?);
+                content.read_bytes(length).map(Some)
+            }
+            _ => Err(native_abi::ERR_INVALID_ARGS),
+        }
+    }
+
+    fn write(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status> {
+        self.store(STORAGE_WRITE, name, bytes)
+    }
+
+    fn remove(&self, name: &[u8]) -> Result<(), Status> {
+        let mut request = Writer::request(STORAGE_REMOVE);
+        request.u32(STORAGE_VERSION).bytes(storage_name(name)?);
+        self.empty_reply(call(&self.0, &request, Vec::new())?)
+    }
+}
+
+impl Storage {
+    fn store(&self, operation: u32, name: &[u8], bytes: &[u8]) -> Result<(), Status> {
+        let mut request = Writer::request(operation);
+        request
+            .u32(STORAGE_VERSION)
+            .bytes(storage_name(name)?)
+            .u64(bytes.len() as u64);
+        let content = Vmo::from_bytes(bytes)?;
+        self.empty_reply(call(&self.0, &request, alloc::vec![content.into_handle()])?)
+    }
+    fn empty_reply(&self, reply: service_rpc::Reply) -> Result<(), Status> {
+        let mut reader = reply.reader();
+        if reader.u32()? != STORAGE_VERSION || !reply.handles.is_empty() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        reader.finish()
     }
 }

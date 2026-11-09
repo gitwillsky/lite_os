@@ -33,7 +33,7 @@ RETIRED_FILES = tuple(f"/bin/{name}" for name in (
 )) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos", "/bin/wine",
       "/usr/share/applications/wine-programs.desktop", "/usr/share/applications/wine-exe.desktop",
       "/usr/share/applications/wine-msi.desktop", "/etc/fonts/conf.d/99-liteos-ui.conf",
-      # 网络设置的 owner 改为原生 netcfg（数据卷中的私有目录）；Linux 侧的旧配置文件退役。
+      # 网络设置的 owner 改为原生 router-config（数据卷中的私有目录）；Linux 侧的旧配置文件退役。
       "/etc/network/interfaces")
 RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos", "/opt/wine",
                  "/usr/share/fontconfig", "/usr/share/X11/xkb")

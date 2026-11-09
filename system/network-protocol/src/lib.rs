@@ -4,8 +4,7 @@
 //!
 //! 1. 控制 channel：使用者经根服务的服务目录连接（`service_directory::NETWORK`），为每个网络域创建一条域
 //!    channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。
-//! 2. 安装 channel（`service_directory::NETWORK_INSTALLER`，只路由给 netcfg）：委托设备目录能力与 ID，由 netstack 打开队列并安装默认网络接口
-//!    （[`InstallerService::install_device`]）。
+//! 2. 原生 RIB 独占执行安装能力；router-config 经 [`routing`] 提交接口意图，由 RIB 选路并委托 netstack 安装设备与执行批次。
 //! 3. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
 //! 4. socket 控制 channel 与共享 SQ/CQ：每 socket 一组（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
 //!    文件关闭发出 CLOSE，关闭 channel 同样关闭 socket（使用者终止时）；
@@ -43,8 +42,16 @@ pub const MAX_IPV4_UDP_BYTES: usize = 65_507;
 /// 由使用者按部分完成的语义分多次进行。
 pub const TRANSFER_LIMIT: usize = 256 * 1024;
 
+mod namespace;
+pub use namespace::{NamespaceService, dispatch_namespace};
+
 mod installer;
 pub use installer::{InstallerService, NetworkInstaller, dispatch_installer};
+mod configuration;
+pub mod routes;
+pub mod routing;
+pub use configuration::{ConfigurationService, PreparedConfiguration, dispatch_configuration};
+use routes::{get_route, put_route};
 
 mod ordinal {
     pub(super) const CREATE_NAMESPACE: u32 = 2;
@@ -113,28 +120,6 @@ pub trait NetworkService: Send + Sync {
     fn create_namespace(&self, initial: bool) -> Result<Channel, Status>;
 }
 
-/// 服务端：一个网络域。
-pub trait NamespaceService: Send + Sync {
-    fn socket(&self, protocol: InetProtocol) -> Result<SocketEndpoint, SocketError>;
-    fn packet_socket(&self, kind: PacketKind, protocol: u16)
-    -> Result<SocketEndpoint, SocketError>;
-    fn interface_index(&self, name: &[u8]) -> Result<u32, SocketError>;
-    fn interface_snapshot(&self, index: u32) -> Result<InterfaceSnapshot, SocketError>;
-    fn interface_snapshots(&self) -> Result<Vec<InterfaceSnapshot>, SocketError>;
-    fn network_snapshot(&self) -> Result<Vec<NetworkSnapshot>, SocketError>;
-    fn route_snapshot(&self) -> Result<Vec<RouteSnapshot>, SocketError>;
-    fn configure_mtu(&self, index: u32, mtu: i32) -> Result<(), SocketError>;
-    fn configure_address(&self, index: u32, address: Ipv4Addr) -> Result<(), SocketError>;
-    fn configure_netmask(&self, index: u32, netmask: Ipv4Addr) -> Result<(), SocketError>;
-    fn configure_broadcast(&self, index: u32, broadcast: Ipv4Addr) -> Result<(), SocketError>;
-    fn configure_up(&self, index: u32, up: bool) -> Result<(), SocketError>;
-    fn configure_route(
-        &self,
-        request: Ipv4RouteRequest,
-        change: RouteChange,
-    ) -> Result<(), Ipv4RouteError>;
-}
-
 /// 服务端：一个 INET socket；全部操作不阻塞。
 pub trait InetSocketService: Send + Sync {
     fn bind(&self, address: InetAddress) -> Result<(), SocketError>;
@@ -194,6 +179,9 @@ fn put_option_ipv4(writer: &mut Writer, address: Option<Ipv4Addr>) {
 fn get_option_ipv4(reader: &mut Reader<'_>) -> Result<Option<Ipv4Addr>, Status> {
     let present = reader.bool()?;
     let address = get_ipv4(reader)?;
+    if !present && !address.is_unspecified() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     Ok(present.then_some(address))
 }
 
@@ -204,6 +192,9 @@ fn put_option_u32(writer: &mut Writer, value: Option<u32>) {
 fn get_option_u32(reader: &mut Reader<'_>) -> Result<Option<u32>, Status> {
     let present = reader.bool()?;
     let value = reader.u32()?;
+    if !present && value != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     Ok(present.then_some(value))
 }
 
@@ -347,46 +338,6 @@ fn get_statistics(
     })
 }
 
-fn put_route(writer: &mut Writer, route: &Ipv4RouteRequest) {
-    put_ipv4(writer, route.destination);
-    writer
-        .u8(route.prefix_length)
-        .u32(route.table)
-        .u32(route.metric)
-        .u8(route.scope)
-        .u8(route.protocol)
-        .u8(route.kind.code());
-    put_option_u32(writer, route.interface_index);
-    put_option_ipv4(writer, route.gateway);
-    put_option_ipv4(writer, route.preferred_source);
-    writer
-        .bool(route.on_link)
-        .u32(route.metrics.advertised_mss)
-        .u32(route.metrics.receive_window)
-        .u32(route.metrics.round_trip_time);
-}
-
-fn get_route(reader: &mut Reader<'_>) -> Result<Ipv4RouteRequest, Status> {
-    Ok(Ipv4RouteRequest {
-        destination: get_ipv4(reader)?,
-        prefix_length: reader.u8()?,
-        table: reader.u32()?,
-        metric: reader.u32()?,
-        scope: reader.u8()?,
-        protocol: reader.u8()?,
-        kind: Ipv4RouteKind::from_code(reader.u8()?).ok_or(native_abi::ERR_INVALID_ARGS)?,
-        interface_index: get_option_u32(reader)?,
-        gateway: get_option_ipv4(reader)?,
-        preferred_source: get_option_ipv4(reader)?,
-        on_link: reader.bool()?,
-        metrics: Ipv4RouteMetrics {
-            advertised_mss: reader.u32()?,
-            receive_window: reader.u32()?,
-            round_trip_time: reader.u32()?,
-        },
-    })
-}
-
 fn put_result<T>(writer: &mut Writer, result: Result<T, SocketError>) -> Option<T> {
     match result {
         Ok(value) => {
@@ -434,126 +385,6 @@ pub fn dispatch_control(
         ordinal::CREATE_NAMESPACE => {
             let channel = service.create_namespace(request.bool()?)?;
             Ok(alloc::vec![channel.into_handle()])
-        }
-        _ => Err(native_abi::ERR_NOT_SUPPORTED),
-    }
-}
-
-/// 分派域 channel 的一条请求。
-///
-/// # Errors
-///
-/// 未知请求或格式错误；服务的领域失败编码在回复中。
-pub fn dispatch_namespace(
-    service: &dyn NamespaceService,
-    ordinal: u32,
-    request: &mut Reader<'_>,
-    _handles: Vec<Handle>,
-    reply: &mut Writer,
-) -> Result<Vec<Handle>, Status> {
-    let unit = |reply: &mut Writer, result: Result<(), SocketError>| {
-        put_result(reply, result);
-        Ok(Vec::new())
-    };
-    match ordinal {
-        ordinal::SOCKET => {
-            let protocol = match request.u8()? {
-                0 => InetProtocol::Udp,
-                1 => InetProtocol::Tcp,
-                2 => InetProtocol::Icmp,
-                3 => InetProtocol::Raw,
-                _ => return Err(native_abi::ERR_INVALID_ARGS),
-            };
-            Ok(put_result(reply, service.socket(protocol)).map_or_else(Vec::new, endpoint_handles))
-        }
-        ordinal::PACKET_SOCKET => {
-            let kind = if request.bool()? {
-                PacketKind::Raw
-            } else {
-                PacketKind::Datagram
-            };
-            let protocol = request.u16()?;
-            Ok(put_result(reply, service.packet_socket(kind, protocol))
-                .map_or_else(Vec::new, endpoint_handles))
-        }
-        ordinal::INTERFACE_INDEX => {
-            if let Some(index) = put_result(reply, service.interface_index(request.bytes()?)) {
-                reply.u32(index);
-            }
-            Ok(Vec::new())
-        }
-        ordinal::INTERFACE_SNAPSHOT => {
-            if let Some(snapshot) = put_result(reply, service.interface_snapshot(request.u32()?)) {
-                put_interface(reply, &snapshot);
-            }
-            Ok(Vec::new())
-        }
-        ordinal::INTERFACE_SNAPSHOTS => {
-            if let Some(rows) = put_result(reply, service.interface_snapshots()) {
-                reply.u32(rows.len() as u32);
-                for row in &rows {
-                    put_interface(reply, row);
-                }
-            }
-            Ok(Vec::new())
-        }
-        ordinal::NETWORK_SNAPSHOT => {
-            if let Some(rows) = put_result(reply, service.network_snapshot()) {
-                reply.u32(rows.len() as u32);
-                for row in &rows {
-                    reply.bytes(&row.name);
-                    put_statistics(reply, &row.statistics);
-                }
-            }
-            Ok(Vec::new())
-        }
-        ordinal::ROUTE_SNAPSHOT => {
-            if let Some(rows) = put_result(reply, service.route_snapshot()) {
-                reply.u32(rows.len() as u32);
-                for row in &rows {
-                    reply.bytes(&row.name);
-                    put_route(reply, &row.route);
-                }
-            }
-            Ok(Vec::new())
-        }
-        ordinal::CONFIGURE_MTU => {
-            let index = request.u32()?;
-            unit(reply, service.configure_mtu(index, request.i32()?))
-        }
-        ordinal::CONFIGURE_ADDRESS => {
-            let index = request.u32()?;
-            unit(reply, service.configure_address(index, get_ipv4(request)?))
-        }
-        ordinal::CONFIGURE_NETMASK => {
-            let index = request.u32()?;
-            unit(reply, service.configure_netmask(index, get_ipv4(request)?))
-        }
-        ordinal::CONFIGURE_BROADCAST => {
-            let index = request.u32()?;
-            unit(
-                reply,
-                service.configure_broadcast(index, get_ipv4(request)?),
-            )
-        }
-        ordinal::CONFIGURE_UP => {
-            let index = request.u32()?;
-            unit(reply, service.configure_up(index, request.bool()?))
-        }
-        ordinal::CONFIGURE_ROUTE => {
-            let route = get_route(request)?;
-            let change = RouteChange {
-                delete: request.bool()?,
-                replace: request.bool()?,
-                create: request.bool()?,
-                exclusive: request.bool()?,
-                append: request.bool()?,
-            };
-            reply.u8(service
-                .configure_route(route, change)
-                .err()
-                .map_or(0, Ipv4RouteError::code));
-            Ok(Vec::new())
         }
         _ => Err(native_abi::ERR_NOT_SUPPORTED),
     }

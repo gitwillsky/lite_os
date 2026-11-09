@@ -37,6 +37,22 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: false,
     },
     SourceDomain {
+        root: "libraries/packet-wire/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/router-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/router-config/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "libraries/pci-config/src",
+        binary_crate: false,
+    },
+    SourceDomain {
         root: "libraries/mmio/src",
         binary_crate: false,
     },

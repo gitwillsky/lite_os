@@ -5,7 +5,7 @@ use device_model::DeviceBacking;
 use native_runtime::Vmo;
 use native_runtime::native_abi::{self, Status};
 
-pub(super) const MAX_BATCH: usize = 32;
+pub(super) const MAX_BATCH: usize = device_model::network::RECEIVE_BATCH_CAPACITY;
 const HEADER: usize = 576;
 const CLOSED: usize = 512;
 const ABORT: usize = 516;

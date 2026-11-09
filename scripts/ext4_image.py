@@ -200,7 +200,7 @@ def offline_development_image(image: Path) -> Iterator[None]:
         yield
 
 
-# 原生数据卷：fshost 按卷标识别、只由原生服务使用（netcfg 等的私有目录），不交给 Linux。
+# 原生数据卷：fshost 按卷标识别、只由原生服务使用（router-config 等的私有目录），不交给 Linux。
 DATA_VOLUME_LABEL = "liteos-data"
 DATA_VOLUME_MIB = 32
 

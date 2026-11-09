@@ -149,6 +149,40 @@ impl Vmo {
             None,
         )
     }
+
+    /// 从物理 Device VMO 投影不可变寄存器字节范围；不解析分页/COW/slice，不触发 pager。
+    ///
+    /// # Parameters
+    /// - `offset`/`length`: VMO 内非空字节范围；调用方仍负责寄存器宽度与对齐检查。
+    ///
+    /// # Returns
+    /// 对应物理地址区间；物理 VMO 不可调整大小，不拥有可回收页框。
+    ///
+    /// # Errors
+    /// 非物理 Device 对象返回 InvalidArgs，越界/溢出返回 OutOfRange。
+    pub(crate) fn device_range(
+        &self,
+        offset: usize,
+        length: usize,
+    ) -> Result<core::ops::Range<usize>, VmError> {
+        let Kind::Physical {
+            base,
+            cache: CachePolicy::Device,
+        } = self.kind
+        else {
+            return Err(VmError::InvalidArgs);
+        };
+        let end = offset.checked_add(length).ok_or(VmError::OutOfRange)?;
+        if length == 0 || end as u64 > self.size() {
+            return Err(VmError::OutOfRange);
+        }
+        let physical = base
+            .as_usize()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(VmError::OutOfRange)?;
+        let start = physical.checked_add(offset).ok_or(VmError::OutOfRange)?;
+        Ok(start..physical.checked_add(end).ok_or(VmError::OutOfRange)?)
+    }
     /// 创建子对象。
     ///
     /// # Parameters

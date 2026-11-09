@@ -637,6 +637,8 @@ impl<K: Ord, V> FallibleMap<K, V> {
     ///
     /// 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
+        // 回调 panic 时原 topology 已移出；仍保留合法空表，不能留下旧 len 与空 root。
+        self.len = 0;
         (self.root, self.len) = retain_linear(self.root.take(), &mut keep);
     }
 

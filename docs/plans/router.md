@@ -46,8 +46,8 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
   整机吞吐、收敛时间只作诊断，不作窄阈值 blocking gate。
 - 范围缩减（例如 Linux 侧写操作、未实现的 TCP 选项）在 ABI 矩阵精确记录。
 - 不复制 RouterOS 或 WinBox 的名称、图标与品牌；只借鉴交互方式，界面使用现有经典桌面控件。
-- 验证节奏：每阶段做两架构编译/clippy、architecture-check 与相关单元测试；运行时门禁与完整 `make verify`
-  在全部阶段完成后经用户允许统一执行。
+- 验证节奏：以代码审查与范围内 Clippy 为主，跨架构变更覆盖两架构及 architecture-check；只有审查无法覆盖具体风险时才运行最窄的既有用例。
+  运行时门禁与完整 `make verify` 在全部功能完成后经用户允许统一执行。
 - 用户提供的 x86_64 PVE 可按需要用于后续平台支持及部署验收；不修改既有虚拟机，尤其家庭网关/OpenWrt，亦不修改宿主现有网桥、路由或防火墙。
   只使用专用测试实例；DHCP/RA、动态路由和二层环路等主动测试必须与家庭业务网隔离。连接凭据不进入源码、文档或日志。
 
@@ -56,7 +56,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 | 服务 | 职责 |
 |---|---|
 | `netstack`（重写） | 网卡队列、L2（网桥/VLAN）、L3 多 VRF 双栈转发、邻居（ARP/ND）、连接跟踪、NAT、防火墙分类器、流表快路径；主机协议栈（TCP/UDP/原始 IP/ICMP、多播加组、TCP-MD5/AO）；socket 共享环；镜像点 |
-| `router-config`（新） | 配置树 owner：schema、校验、事务、持久化、订阅；把配置下发给 netstack、routing-rib、协议进程与执行服务 |
+| `router-config` | 配置树 owner：schema、校验、事务、持久化、订阅；把配置下发给 netstack、routing-rib、协议进程与执行服务 |
 | `routing-rib`（新） | 各来源路由的汇总与选路、递归下一跳解析、路由策略（前缀列表、团体属性等）、按 VRF 下发 FIB 与共享下一跳对象 |
 | `bgp`、`ospf`（新） | 协议状态机；作为主机协议栈的普通 socket 使用者；向 routing-rib 提交路由 |
 | `dhcp-client`（保留） | 由 router-config 驱动的 DHCPv4/DHCPv6-PD 客户端 |
@@ -64,8 +64,9 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 | `router-api`（新，Linux 侧） | WebSocket 网关：本地 Unix socket（`SO_PEERCRED`）与远程 TLS（Linux 账号登录）；按组授权（如 `netadmin` 可写、`netview` 只读）；持有 linuxd 发布的授权端点 `/dev/router-config` |
 | 网络管理器（新，Linux 桌面应用） | 经典控件实现的图形化管理器：左侧菜单树、列表窗口、属性对话框、实时刷新、诊断工具；只连 router-api |
 
-现有 `netcfg`、`netcfg-protocol`、`/dev/network-settings`、`/dev/network-status`、`user/libraries/network-config`
-及控制面板网络页在对应阶段迁移到新链路后删除，不保留兼容入口。
+`netcfg` 与 `netcfg-protocol` 已原位迁入 `router-config` 与 `router-protocol`，不保留旧服务或 crate。
+现有 `/dev/network-settings`、`/dev/network-status`、`user/libraries/network-config` 及控制面板网络页
+在 API 阶段整体迁移到新链路后删除，不保留兼容入口。
 
 ## 数据结构
 
@@ -78,135 +79,118 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **报文缓冲**：每队列预分配缓冲池，网卡 DMA 直接写入 netstack 的 VMO；批大小固定，热路径不分配。
 - **状态寿命**：本期运行时 FIB、下一跳、接口表、连接跟踪随其 owner 存续，不宣称故障后恢复；配置树仍按版本持久化。跨重启保留及布局迁移属二期。
 
-## 阶段与验证点
+## 功能状态总览
 
-### 0. 前置能力（内核与驱动）
+按用户可用的功能维护状态，不按模块、内部机制或每轮改动记进度。
+“部分实现”不等于功能已可端到端使用；“待系统验收”表示该范围已有实现，但尚未完成真实系统验收。
+执行时先完成一个可独立使用的功能，再推进下一功能；必要前置随当前功能补齐，不横向铺开多个骨架。
 
-- 已有前置：高精度定时器、登记 VMO 块/DMA 数据面、截止时间调度类与 socket 共享环；
-  owner 与验收边界见[性能覆盖](../development/performance-coverage.md)。
-- 新增：CPU 隔离（独占核不调度普通线程）与中断亲和设置的原生接口；virtio-net 多队列与每队列 MSI-X；
-  驱动 trait 改为多队列批量收发（RSS 配置、队列数协商、校验和/TSO 等卸载能力位）。
-- **契约**：执行域契约（CPU 隔离、IRQ 亲和）、设备契约（网络驱动 trait）。
-- **验证点**：kernel-unit 调度与 IRQ 测试；virtio-net 多队列单元测试；两架构编译。
+| 功能 | 当前状态 | 已具备或仍缺少的能力 |
+|---|---|---|
+| 接口、地址与 DNS 设置 | 部分实现 | 已有当前 IPv4 设置；完整双栈与路由功能配置待补齐 |
+| 配置保存、导入、导出与对比 | 已有范围待系统验收 | 当前设置支持保存与审阅；新增功能仍须纳入同一配置管理 |
+| 定时备份与恢复 | 已有范围待系统验收 | 当前配置支持备份管理与恢复；实际定时、存储故障及断电待验收 |
+| 静态路由与多路径 | 部分实现 | 已有 IPv4 静态/多路径；IPv6、多路由域与完整转发待完成 |
+| 链路变化后的自动选路 | 部分实现 | 已有当前 IPv4 主备重选；双栈和动态路由联动待完成 |
+| BGP 路由学习与发布 | 未闭环，当前优先 | 尚不能完整配置邻居并学习、应用、观测和撤回路由 |
+| 双栈主机网络 | 部分实现 | 当前 IPv4 网络仍在使用；目标双栈及 TCP 认证等能力未完成 |
+| 多网卡、多核转发与路由隔离 | 未完成 | VRF、策略选表、目标规模与多核性能未形成完整功能 |
+| 连接跟踪、NAT 与防火墙 | 未实现 | — |
+| 网桥、VLAN 与 RSTP | 未实现 | — |
+| OSPFv2/v3 动态路由 | 未实现 | — |
+| DHCP 服务端、DHCPv6-PD 与 DNS 缓存 | 未实现 | 服务尚不可用 |
+| 网络管理器、远程管理与诊断 | 未实现 | 新管理入口、实时列表与完整诊断工具待完成 |
+| 整体验收与性能对比 | 未完成 | 当前宿主检查不代表系统可用或性能达标 |
 
-### 1. 协议 crate 与 router-config
+## TODO：未完成的功能
 
-- 定义版本化协议 crate（配置 schema、事务、订阅、FIB/RIB 下发、诊断）；schema 以类型化描述生成校验与 API 元数据，
-  桌面管理器与未来的 Web 界面据此生成列表和对话框。
-- router-config 实现事务（校验 → 预备 → 提交到各执行服务 → 失败回滚）、版本化持久化、导出/导入、配置对比、定时备份。
-- 并入 netcfg 的默认策略与用户设置；dhcp-client 改由 router-config 驱动；删除 netcfg 与 netcfg-protocol。
-- **契约**：新增 router-config 协议契约；`docs/architecture-contract/dependency-owners.md` 的服务拓扑与能力路由。
-- **验证点**：router-config 单元测试（事务原子性、部分失败回滚、持久化崩溃一致性、schema 版本升级）。
+### 当前优先：BGP 路由学习与发布
 
-### 2. netstack 重写：数据面骨架与主机协议栈
+- [ ] 能配置 IPv4/IPv6 邻居、启停会话，查看连接状态、错误及断开原因。
+- [ ] 能从邻居学习路由，按入口策略和真实下一跳可达性选路，将结果应用到实际转发，并查看结果与未采用原因。
+- [ ] 能向邻居正确发布和撤回路由，支持四字节 AS、团体属性、出口策略、路由反射及适用的联盟边界；ADD-PATH 按实际需要决定。
+- [ ] 邻居退出、配置改变或下一跳失效时能及时重选并撤回失效路由；发送拥塞和通知失败不能遗留错误路由。
+- [ ] 能与 FRR/BIRD 互通，并完成全表加载、传播与属性共享内存评估；不以局部核心用例代替完整功能验收。
 
-- 每核 worker、RSS、批处理图（收包 → 解析 → L2 → L3 → 本机/转发分流 → 发包），自适应轮询与独占核配置。
-- `libraries/packet-wire`（R16）：以太网、VLAN、ARP、IPv4/IPv6（含扩展头）、ICMP/ICMPv6（含 ND/MLD）、TCP（含 MD5/AO 选项）、
-  UDP、DHCPv4/v6 的解析与构造；每种格式 fuzz 测试，并与 smoltcp 及 Linux 抓包样本做对照测试（对照只在测试中，产品代码不依赖 smoltcp）。
-  dhcp-client 在本阶段同步迁移，移除 workspace 中的 smoltcp 依赖。
-- 双栈主机协议栈：IPv4/IPv6、ICMP/ICMPv6、ND/RA、TCP（含 MD5/AO、窗口缩放、SACK）、UDP、原始 IP、多播加组；
-  socket 沿用性能计划落地的共享 SQ/CQ + 事件通知，迁移到新协议引擎，不恢复逐次数据 RPC。
-- linuxd：socket 接入新协议；rtnetlink/sysfs 只读投影（接口、地址、路由、邻居、规则），写操作 EPERM；
-  netns 对应 VRF。
-- **契约**：`docs/architecture/ipc-network.md` 与 IPC/网络契约整体改写；ABI 矩阵（socket、rtnetlink 写操作范围）。
-- **benchmark 决策**：批处理图单级处理与 socket 环收发加 host blocking benchmark（单包 CPU 成本、热路径零分配）。
-- **验证点**：协议栈单元测试；现有 socket/网络运行时门禁（统一阶段执行）。
+### 配置管理与恢复
 
-### 3. L3 转发、VRF 与策略路由
+- [ ] 所有本期功能均能配置、校验、审阅和订阅变化，字段说明与实际行为一致；不局限于当前接口/IPv4/DNS/静态路由子集。
+- [ ] 一次配置涉及多个功能时整体生效或撤销；失败、结果未知和服务重连后不出现部分新配置或虚报成功。
+- [ ] 当前及后续配置均能持久保存、开机加载、导出/导入、对比、定时备份与恢复；完成版本迁移、存储失败和断电验收。
 
-- FIB（Poptrie/DIR-24-8）、共享下一跳与多路径（ECMP 哈希）、规则表、邻居解析、ICMP 错误生成、TTL/hop limit、分片处理。
-- 共享 FIB 的布局按当前读写与发布语义设计；本期不引入跨重启交还布局或恢复流程。
-- **benchmark 决策**：FIB 查找与更新加 host blocking benchmark（100 万前缀查找、批量更新吞吐）。
-- **验证点**：FIB 单元测试（最长前缀匹配对照参考实现的随机测试）；多网卡转发运行时测试。
+### 双栈主机网络
 
-### 4. 连接跟踪、NAT 与防火墙
+- [ ] 完成 IPv4/IPv6 的地址配置、ARP/ND、SLAAC/RA、ICMP 错误、路径 MTU、分片重组、UDP、原始 IP 与多播收发。
+- [ ] 完成 TCP 连接、窗口缩放、SACK、拥塞控制、重传与 TCP-MD5/AO 认证及密钥管理。
+- [ ] Linux 应用继续通过标准 socket 使用完整网络；接口、地址、路由、邻居及规则可查询，受限写操作按约定拒绝，网络命名空间对应路由隔离域。
+- [ ] 完成目标原生协议栈替换，移除产品中的 smoltcp 依赖；用格式 fuzz、成熟实现和 Linux 抓包对照验证实际协议行为。
 
-- 连接跟踪（TCP 状态、UDP/ICMP 超时）、srcnat/dstnat/masquerade、规则链编译器与分类器、流表快路径、规则计数。
-- **benchmark 决策**：分类器（数千条规则）与连接跟踪查找/插入加 host blocking benchmark。
-- **验证点**：编译器对照逐条线性执行的等价性随机测试；NAT 端口耗尽与超时回收测试。
+### 多网卡转发、VRF 与策略路由
 
-### 5. 网桥与 VLAN
+- [ ] 完成双栈静态路由、精确带权多路径、邻居解析、TTL/hop limit、错误报告与分片处理，实际流量能跨网卡双向转发。
+- [ ] 每个 VRF 独立管理路由；可按源地址、入接口和标记等规则选表，并与 Linux 网络命名空间正确对应。
+- [ ] 接口、来源和下一跳变化时正确切换主备；双栈动态路由、准入策略和下一跳跟踪完整联动，不能依赖已经失效的路由继续转发。
+- [ ] 完成多核、自适应轮询与独占核使用；高负载能扩展，空闲不过度耗 CPU，未指定独占核时不影响桌面交互。
+- [ ] 验证多队列、流量分布、卸载、设备退出/重开与中断迁移；完成目标路由规模下的查找、更新、收敛及内存评估。
 
-- 网桥（MAC 学习与老化、泛洪）、802.1Q VLAN 过滤、端口隔离。
-- RSTP（R15）：端口角色与状态机、BPDU 收发（经数据面上送）、拓扑变化时刷新 MAC 表；网桥默认启用。MSTP 不在本期。
-- **验证点**：网桥学习、老化、VLAN 过滤单元测试；RSTP 状态机单元测试；多网卡二层运行时测试
-  （人为制造环路时不形成广播风暴，主链路断开后备份链路在 RSTP 收敛时间内接管）。
+### 连接跟踪、NAT 与防火墙
 
-### 6. routing-rib、OSPF 与 BGP
+- [ ] 支持 TCP/UDP/ICMP 连接跟踪、超时回收、srcnat/dstnat/masquerade 与端口耗尽处理。
+- [ ] 支持有序规则链、链跳转、地址集、连接状态匹配与命中计数；配置替换时规则语义和已建立流量保持正确。
+- [ ] 验证双向流量、规则执行等价性、百万级连接规模及数千规则下的性能。
 
-- routing-rib：多来源选路（管理距离/优先级）、递归下一跳、路由策略引擎、FIB 批量下发。
-- ospf：OSPFv2（RFC 2328）、OSPFv3（RFC 5340），区域、LSA 泛洪、SPF（增量 SPF 视收敛指标决定）。
-- bgp：BGP-4（RFC 4271）、多协议（RFC 4760）、团体属性、路由反射（RFC 4456）、ADD-PATH 视需要；
-  Adj-RIB-In/Loc-RIB 内存按 100 万前缀设计（属性去重共享）。
-- **验证点**：各协议单元测试（状态机、报文编解码 fuzz）；与 FRR/BIRD 在 QEMU 中互通的运行时测试；
-  BGP 全表加载与 OSPF 收敛诊断。
+### 网桥、VLAN 与 RSTP
 
-### 7. DHCP 服务端、DHCPv6-PD 与 DNS 缓存
+- [ ] 支持 MAC 学习/老化、泛洪、802.1Q VLAN 过滤与端口隔离。
+- [ ] 网桥默认启用 RSTP；环路不形成广播风暴，拓扑变化后正确刷新转发表并切换备用链路。MSTP 不属本期。
+- [ ] 在与家庭业务网隔离的环境完成二层互通、环路抑制与故障切换验收。
 
-- dhcp-server（RFC 2131、DHCPv6 RFC 8415）、DHCPv6-PD 客户端与下游 RA 前缀分发、dns-cache（转发与缓存）。
-- **验证点**：协议单元测试；Linux 客户端在 QEMU 中取得地址与解析域名。
+### OSPF 动态路由
 
-### 8. router-api 网关与网络管理器
+- [ ] 支持 OSPFv2/v3 邻居、区域、路由发布和学习，实际转发随网络拓扑变化收敛。
+- [ ] 完成 LSA 泛洪、SPF 和统一路由选择的完整联动；是否需要增量 SPF 以收敛指标决定。
+- [ ] 与 FRR/BIRD 互通，验证拓扑变化、路由撤回和收敛时间。
 
-- router-api：WebSocket（本地 Unix socket、远程 TLS）、Linux 账号认证、按组授权、订阅增量推送、背压。
-- linuxd 发布限组的 `/dev/router-config` 授权端点，删除 `/dev/network-settings` 与 `/dev/network-status`。
-- 网络管理器（Rust UI SDK）：菜单树、虚拟化列表（只绘制可见行）、属性对话框、实时刷新、诊断工具（实时流量分解、
-  ping、traceroute、带宽测试、抓包，抓包经数据面镜像点）。控制面板网络页改为经 router-api 读写。
-- **契约**：用户态与 ABI 契约（授权端点、组）；UI 框架契约（新控件需求若有）。
-- **验证点**：网关单元测试（授权、断线、背压）；管理器在十万级条目下的绘制与刷新诊断。
+### 地址分发与 DNS 服务
 
-### 9. 二期：故障恢复（本期不实施）
+- [ ] 提供由统一配置管理的 DHCPv4 服务端、DHCPv6-PD 客户端与下游 RA 前缀分发。
+- [ ] 租约、重传、认证、地址/前缀寿命与配置修改正确生效；DHCPv6 遵循 RFC 9915。
+- [ ] 提供 DNS 转发和缓存；Linux 客户端能取得地址/前缀、实际连通并解析域名。
 
-- 依 R12 的用户修订，本期不要求 netstack 故障或重启后恢复此前的路由、接口运行状态、连接跟踪及 NAT 映射。
-- 跨进程状态交还、恢复时限、转发连续性及 BGP/OSPF Graceful Restart 在二期设计和验收，不作为本期完成声明。
+### 网络管理器、远程管理与诊断
 
-### 10. 评测、文档迁移与整体验证
+- [ ] 本地与远程使用同一管理 API，支持账号认证、按组授权、TLS、实时订阅及慢客户端处理。
+- [ ] 桌面管理器提供经典菜单树、虚拟化列表、属性对话框及实时刷新；十万级条目下仍可流畅查看与修改。
+- [ ] 管理器及控制面板网络页通过同一入口完成配置、审阅、导入/导出与备份恢复，迁移后删除旧入口，不留双轨。
+- [ ] 提供实时流量分解、ping、traceroute、带宽测试与抓包，结果能反映实际收发。
+- [ ] 验证权限、断线、订阅背压、配置提交到生效的延迟及完整桌面操作。
 
-- 在同样的 QEMU 配置下对比 Linux 内核转发与 RouterOS CHR（诊断，不设阈值）：
-  - 64 字节小包 pps、IMIX 吞吐，开启 NAT 与防火墙后的衰减，按核数的扩展；
-  - BGP 全表加载、OSPF 收敛、FIB 更新速率；
-  - 每 100 万路由与每 100 万连接的内存，空闲时 CPU 占用；
-  - 管理界面在十万级条目下的响应、配置提交到生效的延迟。
-- 持久事实迁入 `docs/architecture/`、契约、ABI 矩阵与性能文档；完整 `make verify`（经用户允许）。
+### 整体验收与收尾
 
-## 进度
+- [ ] 按既定授权和运行范围统一完成系统、存储故障、协议互通及完整 `make verify` 验收；局部宿主检查不能代替这些结论。
+- [ ] 同样 QEMU 配置对比 Linux 内核转发和 RouterOS CHR：64-byte pps、IMIX、NAT/防火墙衰减、按核扩展、空闲 CPU。
+- [ ] 测量百万 IPv4/25 万 IPv6 路由、多路径、百万连接、BGP 全表、OSPF 收敛、十万级 UI 和配置生效延迟；整机结果只作诊断，不虚设窄阈值。
+- [ ] 确认 R1–R16 与必需交互均有实际功能和对应验证；持久事实归回领域文档，完整交付后删除本计划。
 
-- `micro_kernel` 已于 2026-11-08 快进合入本地 `main`，实现分支为 `codex/router`，起点 `c070532f`。
-- 阶段 0 开始；故障恢复依 R12 修订移至二期，其余阶段与用户可用目标保持完整。前置 socket 环边界见[性能覆盖](../development/performance-coverage.md)。
-- 阶段 0：原生中断对象已接通在线逻辑 CPU 亲和配置，GIC/PLIC 保持屏蔽与 ack；CPU 独占接口已接入配置准入、调度分派与退出归还，
-  见[执行契约](../architecture-contract/execution.md#cpu-分区)。两架构静态检查与 scheduler-unit 覆盖不代替 SMP 硬件验收；硬件行为在统一验收阶段验证。
-- 阶段 0 网络前置：PCI 通知改为每队列初始化时校验的独立 doorbell，移除运行时共享 queue_select 竞争；网络 adapter 复用 MMIO/PCI 传输。
-  MQ 已接入驱动队列、版本化设备消息、独立活动通知与主机栈全队列轮询；队列 1 UDP/回复预留归还由实际引擎 fixture 覆盖。
-  队列数已由使用者显式请求；MSI-X 及硬件 MQ 运行验收仍未完成；PCI 仍为 INTx。
-- 阶段 0 下一步：补每队列中断，并继续阶段 2 的原生数据面。
-  不以当前主机栈轮询适配层替代最终数据面。
-- DMA 池已跨进程授权：线性非重叠槽共用 VMO/pin，区间投影二分定位缓存片段；v9 的 RX/Fill/TX/CQ 四环替换逐次描述符 RPC。
-  每队列固定 ticket 表与批窗口，批量硬件提交/完成和合并通知；关闭先排空 TX，异常同步 stop DMA 后才 closed。
-  客户端一次映射并用有寿命的帧借用直接消费 RX/构造 TX，已移除适配复制；最终每核路由引擎与跨网卡转发借用尚未完成。
-  四环 codec 容量/回绕/畸形位置/kick 用例及双架构 Clippy 通过，不代替跨进程 DMA/吞吐运行验收。
-- IRQ 传输错误已接到既有完成线程：沿设备级失败屏障延迟 reset 并唤醒各队列；正常网络 IRQ 仍直接通知，不增加转发线程。
-- 显式队列协商已接通：目录 OPEN 透明传递设备类选项，netcfg 只委托目录/id 给 netstack，由实际 worker owner 请求 pair 数。
-  物理 controller 与活动 DMA 租约分离，初始化失败/正常关闭/异常 stop 后均先撤销 DMA 再退休；下次 OPEN 可请求不同数量。
-  当前旧主机协议引擎只有一个 worker，明确请求一对；不借此宣称阶段 2 的多核引擎已完成。运行时重开/MQ 硬件验证待统一验收。
-- RSS 控制已接通：真实能力发布、领域校验、v9 只读 VMO 配置快照、标准 RSS_CONFIG/ACK，支持只提供 RSS 的硬件初始化。
-  动态控制存储按设备上限分配；单 worker 不额外启用散列，多队列策略由 netstack 选择均衡表与随机 key。
-  真实流分布、硬件重配及性能仍待最终来宾验收；HASH_REPORT、主机 TSO 大包生成、每队列中断和阶段 2 的多核引擎均未冒充完成。
-- 共享帧已改为借用：RX 的 token 结束才归还，TX 直接在 Reserved 槽编码；不逐包分配或增减设备 Arc，移除旧复制接口。
-  现有主机栈与 AF_PACKET 已接通，保留 TX 拥塞下的协议推进、取消回滚及实际 codec 零初始化；两架构 Clippy 和现有 wire/ownership 用例覆盖。
-  跨网卡转发缓冲登记、主机 TSO 大包生成与实际硬件验收继续推进，不据此宣称阶段 0 或完整零拷贝数据面完成。
+## Done：已有功能范围
 
-- 阶段 0 TX partial checksum 已接通：真实能力位、v9 逐帧元数据、提交范围校验与 VirtIO NEEDS_CSUM；
-  TCP/UDP emitter 显式请求，RAW/AF_PACKET 原字节保留，无能力及分片软件回退。现有 TCP/UDP wire fixture 模拟设备补全并独立验和，
-  双架构 Clippy 通过；主机 TSO 大包生成与硬件性能未完成。出口抓包已经 socket 环传递 checksum 状态，并由 Linuxd 的标准 PACKET_AUXDATA 输出；未运行来宾抓包验收。
-- R16 已开始：`packet-wire` 目前仅有 RFC 1071 校验和累加，未实现格式 codec，smoltcp 产品依赖仍在；
-  不以本轮适配冒充协议引擎重写。
+以下仅表示该范围已有实现，不表示整项功能或真实系统验收已经完成；剩余能力只列在 TODO。
+实现细节留在代码，当前契约与验证边界通过链接查阅，不在这里复制版本、结构、测试数量或历次测量。
 
-- 阶段 0 RX checksum 已接通：协商 GUEST_CSUM、claim 内原地补全 NEEDS_CSUM、DATA_VALID 逐帧传递；
-  主机栈逐包选择 TCP/UDP 验证，IP header 始终验证，AF_PACKET/AUXDATA 保持同一状态事实。
-  现有 wire 用例覆盖下一帧恢复软件验证及坏 IP header 拒绝；生产 header helper 覆盖偏移越界、未知 flags 和未协商 GSO。
-  主机 TSO 大包生成、每队列 MSI-X、跨网卡缓冲登记与阶段 2 多核引擎仍未完成；没有硬件验收结论。
+| 功能 | 已落地范围 | 契约与验证边界 |
+|---|---|---|
+| 接口与基本网络设置 | 当前 IPv4 地址、DNS、搜索域、MTU 与默认路由设置；租约更新及失败重试 | [配置契约](../architecture-contract/router-configuration.md) |
+| 配置保存与审阅 | 当前配置的持久保存、导出、校验、对比及完整导入；失败撤销和未知结果处理 | [配置契约](../architecture-contract/router-configuration.md) |
+| 备份与恢复 | 当前配置的定时备份、保留策略、列表、创建、导出、删除及恢复 | [备份契约](../architecture-contract/router-configuration.md#配置备份) |
+| IPv4 静态路由 | 当前来源的直接/递归下一跳、带权多路径及丢弃/拒绝动作 | [路由配置契约](../architecture-contract/router-configuration.md) |
+| IPv4 路由变化处理 | 当前接口/载波和来源变化后的主备重选、来源退出撤回与下一跳观测 | [路由配置契约](../architecture-contract/router-configuration.md) |
+| IPv4 路由准入 | 按前缀/协议匹配、拒绝及偏好/代价调整；策略清除后可重新选路 | [准入契约](../architecture-contract/router-configuration.md#路由准入策略) |
+| 路由观测 | 当前 IPv4 路由和多路径查询，保留真实比例与来源信息 | [网络契约](../architecture-contract/ipc-network.md)、[Packet/Netlink](../architecture-contract/packet-netlink.md) |
 
-- 阶段 0 TSO 驱动接口与按需大帧池已接通：显式 OPEN 容量、真实 TCPv4/v6/ECN 能力及依赖、v9 分段元数据与标准 VirtIO header。
-  校验同时覆盖 checksum/MSS/头长/普通 MTU/槽容量，普通帧不能借大槽绕过 MTU；原生数据通路可请求最大 65549 字节 TX 槽。
-  现有主机引擎仍明确请求 1514，不提前增加默认内存；阶段 2 重写时接入真实 TCP 大包生成与抓包 GSO 状态。
-  定长和运行时 DMA 区间共用唯一线性池/映射/pin/投影规则；主机用例覆盖槽寿命、codec 与能力/头字节，硬件 TSO 和性能仍待统一验收。
+BGP、双栈、多核转发等已有的内部前置不单独计作 Done 功能；只有入口、执行和可观察结果闭环后才将相应范围移入上表。
+已有宿主检查和局部性能测量的范围见[性能覆盖](../development/performance-coverage.md)；真实系统、硬件和互通验收仍见 TODO。
+
+## 二期：故障恢复
+
+依 R12，本期不要求 netstack 故障或重启后恢复此前的路由、接口运行状态、连接跟踪和 NAT 映射。
+跨重启状态保留、恢复时限、连续转发及 BGP/OSPF Graceful Restart 留待二期；正常配置保存与开机加载仍属本期。

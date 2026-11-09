@@ -103,10 +103,13 @@ impl NetworkStack {
             let Some(packet) = socket.take_reset() else {
                 continue;
             };
-            let Ok(route) = self.routing.select(
+            let Ok(route) = self.routing.select_facts(
+                super::from_ip(packet.0.src_addr()),
                 super::from_ip(packet.0.dst_addr()),
                 socket.bound_interface(),
-                &self.interfaces,
+                self.interfaces
+                    .iter()
+                    .map(super::route::InterfaceFacts::capture),
             ) else {
                 // native tcp_send_active_reset是best-effort单次发布，不能因无route持端口。
                 continue;
@@ -144,10 +147,13 @@ impl NetworkStack {
             }
             let packet = Ipv4Packet::new_checked(reply.packet.as_slice())
                 .expect("reply codec emitted malformed IP");
-            let route = match self.routing.select(
+            let route = match self.routing.select_facts(
+                packet.src_addr(),
                 packet.dst_addr(),
                 reply.bound_interface,
-                &self.interfaces,
+                self.interfaces
+                    .iter()
+                    .map(super::route::InterfaceFacts::capture),
             ) {
                 Ok(route) => route,
                 Err(_) => {

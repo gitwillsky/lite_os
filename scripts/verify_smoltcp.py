@@ -36,16 +36,19 @@ def verify(root: Path = ROOT) -> None:
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
     transport = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"}
-    # dhcp-client 只用 wire 层编解码 DHCPv4 报文；协议栈与 socket 只属于 netstack。smoltcp 启用以太网 medium
-    # 时要求至少一种 socket 特性才能编译，dhcp-client 因此带上不使用的 socket-raw（链接时裁掉）。
-    for relative, features in [("system/netstack/Cargo.toml", transport),
-                               ("tools/netstack-unit/Cargo.toml", transport),
-                               ("system/dhcp-client/Cargo.toml", {"medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-raw"})]:
-        dependency = tomllib.loads((root / relative).read_text())["dependencies"]["smoltcp"]
+    # 产品协议引擎与 host 独立 oracle 共用固定源码；DHCP 编解码已迁至 packet-wire。
+    for relative, section, features in [("system/netstack/Cargo.toml", "dependencies", transport),
+                                        ("tools/netstack-unit/Cargo.toml", "dependencies", transport),
+                                        ("tools/netstack-unit/Cargo.toml", "dev-dependencies", {"proto-dhcpv4"})]:
+        dependency = tomllib.loads((root / relative).read_text())[section]["smoltcp"]
         if dependency.get("path") != "../../vendor/smoltcp" or dependency.get("version") != "=0.13.1":
             raise ValueError(f"smoltcp: {relative} must use the single pinned local transport")
         if dependency.get("default-features") is not False or set(dependency["features"]) != features:
             raise ValueError(f"smoltcp: unexpected protocol features in {relative}")
+
+    dhcp = tomllib.loads((root / "system/dhcp-client/Cargo.toml").read_text())["dependencies"]
+    if "smoltcp" in dhcp or dhcp.get("packet-wire", {}).get("path") != "../../libraries/packet-wire":
+        raise ValueError("dhcp-client: packet formats must use packet-wire without a second codec")
 
 
 if __name__ == "__main__":

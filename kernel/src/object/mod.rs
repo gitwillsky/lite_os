@@ -23,7 +23,7 @@ pub(crate) use exception::{Exception, ExceptionResolution};
 pub(crate) use handle_table::{HandleEntry, HandleTable};
 pub(crate) use memory::{Pager, vm_status};
 pub(crate) use port::Port;
-pub(crate) use resource::{Bti, Interrupt, Iommu, Pmt, Resource};
+pub(crate) use resource::{Bti, Interrupt, Iommu, Msi, Pmt, Resource};
 pub(crate) use signals::{CancelKey, SignalState, WaitOutcome};
 pub(crate) use task::{Job, Mode, Process, ProcessKind, RestrictedEntry, Thread};
 
@@ -76,6 +76,7 @@ pub(crate) enum Object {
     Pager(Arc<Pager>),
     Resource(Arc<Resource>),
     Interrupt(Arc<Interrupt>),
+    Msi(Arc<Msi>),
     Iommu(Arc<Iommu>),
     Bti(Arc<Bti>),
     Pmt(Arc<Pmt>),
@@ -97,6 +98,7 @@ impl Object {
             Self::Pager(object) => object.as_ref(),
             Self::Resource(object) => object.as_ref(),
             Self::Interrupt(object) => object.as_ref(),
+            Self::Msi(object) => object.as_ref(),
             Self::Iommu(object) => object.as_ref(),
             Self::Bti(object) => object.as_ref(),
             Self::Pmt(object) => object.as_ref(),

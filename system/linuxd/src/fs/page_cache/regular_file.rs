@@ -30,6 +30,41 @@ pub(crate) struct RegularFileRead {
 }
 
 impl RegularFile {
+    /// 从偏移零捕获声明长度的文件内容，返回只读 VMO；不改变 OFD 文件位置。
+    ///
+    /// 以固定小缓冲分段复制，避免为大 ELF/配置同时持有整文件临时 Vec。返回前退休唯一写句柄；
+    /// 对可变源只保证本次捕获的字节此后固定，不声称与并发写入构成原子文件快照。
+    /// # Errors
+    /// 分配/读取失败、源在声明范围内提前 EOF，或 VMO 写入/授权失败。
+    pub(crate) fn snapshot_vmo(&self, length: u64) -> Result<native_runtime::Vmo, FileSystemError> {
+        use native_runtime::{Vmo, native_abi::rights};
+        let content = Vmo::create(length, 0).map_err(status_error)?;
+        let mut buffer = alloc::vec::Vec::new();
+        let chunk =
+            usize::try_from(length.min(32 * 1024)).map_err(|_| FileSystemError::OutOfMemory)?;
+        buffer
+            .try_reserve_exact(chunk)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        buffer.resize(chunk, 0);
+        let mut offset = 0;
+        while offset < length {
+            let count = (length - offset).min(buffer.len() as u64) as usize;
+            let read = self.read(offset, &mut buffer[..count])?;
+            if read.bytes == 0 || read.bytes > count {
+                return Err(FileSystemError::IoError);
+            }
+            content
+                .write(&buffer[..read.bytes], offset)
+                .map_err(status_error)?;
+            offset += read.bytes as u64;
+        }
+        content
+            .duplicate(
+                rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER | rights::INSPECT,
+            )
+            .map_err(status_error)
+    }
+
     /// 由 `inode` 与实际打开的可选 `io` 建立 facade；返回共享 cache owner 的 I/O 视图。
     /// 直接 I/O 只适用于持久 backing；传播 inode/cache 分配与准入错误。
     pub(crate) fn from_open(

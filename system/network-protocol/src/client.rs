@@ -73,6 +73,11 @@ pub struct RemoteNamespace {
 }
 
 impl RemoteNamespace {
+    /// 实际执行域的寿命连接；服务退出时 PEER_CLOSED，控制面据此丢弃旧接口身份并重建。
+    pub fn channel(&self) -> &Channel {
+        &self.channel
+    }
+
     pub fn socket(&self, protocol: InetProtocol) -> Result<SocketEndpoint, SocketError> {
         let mut writer = Writer::request(ordinal::SOCKET);
         writer.u8(match protocol {
@@ -138,13 +143,25 @@ impl RemoteNamespace {
         })
     }
 
-    pub fn route_snapshot(&self) -> Result<Vec<RouteSnapshot>, SocketError> {
-        self.rows(ordinal::ROUTE_SNAPSHOT, |reader| {
-            Ok(RouteSnapshot {
-                name: fixed::<16>(reader)?,
-                route: get_route(reader)?,
-            })
-        })
+    /// 读取完整冻结的 FIB；VMO 正文不受 channel 上限约束，成员按字典借用，不按行复制。
+    /// # Errors
+    /// 服务不可用、资源不足、句柄/长度/正文格式无效或服务拒绝。
+    pub fn route_snapshot(&self) -> Result<RoutingSnapshot, SocketError> {
+        let mut reply = request(
+            &self.channel,
+            &Writer::request(ordinal::ROUTE_SNAPSHOT),
+            Vec::new(),
+        )?;
+        let mut reader = body(&reply);
+        let length = reader.u64().map_err(transport)?;
+        reader.finish().map_err(transport)?;
+        if reply.handles.len() != 1 {
+            return Err(SocketError::Invalid);
+        }
+        let content = Vmo::from_handle(take_handle(&mut reply.handles, 0).map_err(transport)?)
+            .read_bytes(length)
+            .map_err(transport)?;
+        RoutingSnapshot::parse(content).map_err(transport)
     }
 
     fn configure(

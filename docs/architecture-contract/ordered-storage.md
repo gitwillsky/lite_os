@@ -15,7 +15,8 @@
   Send owner，放宽到不满足 K/V bound 则会跨线程移动领域数据。
 - `split_off` 只沿 AVL root-to-leaf path 比较并重组现有节点，再对移出的 subtree 做一次无 key comparison 的精确 cardinality 遍历；不为所有节点增加永久 subtree-size 字段，复杂度为 `O(log n + k)`。
 - bulk join 只接受 `left.max < right.min` 的 ordered-disjoint 输入，边界检查必须在 mutation 前完成；重复或逆序表示 caller contract 损坏并 fail-stop，两表保持不变。join 只改动 AVL spine，复杂度为 `O(log n)`。
-- `retain` 消费原 topology 后只执行一次 node ownership filter 与一次 sorted-list balanced rebuild；每个节点访问常数次、无分配、保留节点 identity，禁止逐节点 `join_*` 双轨。
+- `retain` 使用一次 node ownership filter 与一次 sorted-list balanced rebuild；每个节点访问常数次、无分配、保留节点 identity，禁止逐节点 `join_*` 双轨。
+  predicate 或删除值的 Drop panic 时源表保留合法空 root/len，不暴露失效 topology。
 - regression 的 primary metric 是 AVL order/height/length/successor-link/model 不变量、RV64 iterator ≤ 16 bytes、完整有序扫描至多一次 key comparison，以及 split 不超过原树高的 key comparison、join 一次边界 comparison 和 cardinality 每个移出节点
   一次 structural visit。
   host wall time 会混入建树 allocation 与 runner 调度，不作为稳定 gate；只有新增持续调用该 bulk interface 的 production 热路径时才增加 wall-clock benchmark。

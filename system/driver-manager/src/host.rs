@@ -93,6 +93,9 @@ fn prepare(
         if let Some(irq) = &bound.irq {
             handles.push(irq.duplicate(rights::SAME)?.into_handle());
         }
+        if let Some(msi) = &bound.msi {
+            handles.push(msi.duplicate(rights::SAME)?.into_handle());
+        }
         for mmio in &bound.mmio {
             handles.push(mmio.duplicate(rights::SAME)?.into_handle());
         }
@@ -256,6 +259,9 @@ fn checkpoint(
     if let Some(irq) = &bound.irq {
         handles.push(irq.duplicate(rights::SAME)?.into_handle());
     }
+    if let Some(msi) = &bound.msi {
+        handles.push(msi.duplicate(rights::SAME)?.into_handle());
+    }
     for mmio in &bound.mmio {
         handles.push(mmio.duplicate(rights::SAME)?.into_handle());
     }
@@ -299,6 +305,11 @@ impl Checkpoint {
         let mut handles = message.handles.into_iter();
         let bti = Bti::from_handle(handles.next().ok_or(invalid)?);
         let irq = if node.has_irq() {
+            Some(Resource::from_handle(handles.next().ok_or(invalid)?))
+        } else {
+            None
+        };
+        let msi = if node.has_msi() {
             Some(Resource::from_handle(handles.next().ok_or(invalid)?))
         } else {
             None
@@ -363,6 +374,7 @@ impl Checkpoint {
                 node,
                 bti,
                 irq,
+                msi,
                 mmio,
             },
             active,

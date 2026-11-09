@@ -29,6 +29,7 @@ const GICD_ISENABLER: usize = 0x0100;
 const GICD_ICENABLER: usize = 0x0180;
 const GICD_ICACTIVER: usize = 0x0380;
 const GICD_IPRIORITYR: usize = 0x0400;
+const GICD_ICFGR: usize = 0x0c00;
 const GICD_IROUTER: usize = 0x6000;
 const GICD_CTLR_RWP: u32 = 1 << 31;
 const GICD_CTLR_ARE_NS: u32 = 1 << 5;
@@ -48,9 +49,18 @@ const GICR_SGI_BASE: usize = 0x10_000;
 // OWNER: platform owns one concrete GICv3 adapter; no runtime architecture dispatch is used.
 static GIC: Once<IrqMutex<GicV3>> = Once::new();
 
+/// GIC 解绑只需要 IRQ-safe 控制器锁；没有需要预分配的 task waiter。
+pub(crate) struct InterruptRetirement;
+impl InterruptRetirement {
+    pub(crate) fn prepare() -> Result<Self, native_abi::Status> {
+        Ok(Self)
+    }
+}
+
 pub(crate) struct GicV3 {
     distributor: MmioRange,
     redistributor: MmioRange,
+    redistributor_physical: usize,
     max_interrupt: u32,
     requires_range_selector: bool,
     possible_cpus: CpuSet,
@@ -131,6 +141,7 @@ impl GicV3 {
         Ok(Self {
             distributor,
             redistributor,
+            redistributor_physical: info.redistributor.start,
             max_interrupt,
             requires_range_selector,
             possible_cpus,
@@ -223,13 +234,17 @@ impl GicV3 {
     }
 
     fn redistributor_for(&self, hardware_id: usize) -> MmioRange {
+        self.redistributor_frame(hardware_id).0
+    }
+
+    fn redistributor_frame(&self, hardware_id: usize) -> (MmioRange, usize) {
         let expected = packed_affinity(hardware_id);
         let mut offset = 0usize;
         loop {
             let frame = self.redistributor.subrange(offset, REDISTRIBUTOR_STRIDE);
             let typer = frame.read64(GICR_TYPER);
             if (typer >> 32) as u32 == expected {
-                return frame;
+                return (frame, offset);
             }
             assert!(
                 typer & GICR_TYPER_LAST == 0,
@@ -251,29 +266,19 @@ impl GicV3 {
         (32..=self.max_interrupt).contains(&vector)
     }
 
-    fn register_handler(
-        &mut self,
-        vector: InterruptVector,
-        handler: Arc<dyn InterruptHandler>,
-    ) -> Result<(), InterruptError> {
-        if !self.valid_device_vector(vector) {
-            return Err(InterruptError::InvalidVector);
-        }
-        self.handlers
-            .try_insert(vector, handler)
-            .map_err(|_| InterruptError::NoMemory)?;
-        Ok(())
-    }
-
     fn unregister_handler(&mut self, vector: InterruptVector) -> Option<Arc<dyn InterruptHandler>> {
-        if !self.valid_device_vector(vector) {
+        if !self.valid_device_vector(vector) && !super::its::contains(vector) {
             return None;
         }
         self.disable_interrupt(vector);
+        super::its::clear(vector);
         self.handlers.remove(&vector)
     }
 
     fn disable_interrupt(&self, vector: InterruptVector) {
+        if super::its::set_enabled(vector, false) {
+            return;
+        }
         let register = vector as usize / 32;
         self.distributor
             .write32(GICD_ICENABLER + register * 4, 1u32 << (vector % 32));
@@ -281,11 +286,14 @@ impl GicV3 {
     }
 
     fn enable_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if !self.valid_device_vector(vector) {
+        if !self.valid_device_vector(vector) && !super::its::contains(vector) {
             return Err(InterruptError::InvalidVector);
         }
         if !self.handlers.contains_key(&vector) {
             return Err(InterruptError::HandlerNotSet);
+        }
+        if super::its::set_enabled(vector, true) {
+            return Ok(());
         }
         let register = vector as usize / 32;
         self.distributor
@@ -294,8 +302,11 @@ impl GicV3 {
     }
 
     fn set_priority(&self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if !self.valid_device_vector(vector) {
+        if !self.valid_device_vector(vector) && !super::its::contains(vector) {
             return Err(InterruptError::InvalidVector);
+        }
+        if super::its::contains(vector) {
+            return Ok(());
         }
         let register = vector as usize / 4;
         let shift = (vector % 4) * 8;
@@ -333,7 +344,7 @@ impl GicV3 {
             asm!("mrs {value}, icc_iar1_el1", value = out(reg) acknowledge, options(nomem, nostack, preserves_flags));
         }
         let interrupt = acknowledge as u32 & 0x00ff_ffff;
-        if interrupt >= SPURIOUS_INTERRUPT_MIN {
+        if (SPURIOUS_INTERRUPT_MIN..=1023).contains(&interrupt) {
             return ClaimedInterrupt::Spurious;
         }
         match interrupt {
@@ -382,8 +393,13 @@ pub(crate) fn register_device(
     handler: Arc<dyn InterruptHandler>,
     affinity: CpuSet,
 ) -> Result<(), InterruptError> {
+    let prepared =
+        FallibleMap::try_prepare(vector, handler).map_err(|_| InterruptError::NoMemory)?;
     let mut controller = GIC.wait().lock();
-    controller.register_handler(vector, handler)?;
+    if !controller.valid_device_vector(vector) || controller.handlers.contains_key(&vector) {
+        return Err(InterruptError::InvalidVector);
+    }
+    controller.handlers.commit_vacant(prepared);
     controller.set_priority(vector)?;
     controller.set_affinity(vector, affinity)?;
     controller.enable_interrupt(vector)
@@ -396,24 +412,72 @@ pub(crate) fn register_device(
 pub(crate) fn bind_interrupt(
     vector: u32,
     handler: Arc<dyn InterruptHandler>,
-) -> Result<(), InterruptError> {
+    level: bool,
+    _acknowledge_local: impl Fn(),
+) -> Result<(), native_abi::Status> {
+    if !GIC.wait().lock().valid_device_vector(vector) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    bind_source(vector, handler, Some(level))
+}
+
+/// 仅绑定已分配的 LPI；其默认 collection 已由 ITS 安装。
+pub(crate) fn bind_message_interrupt(
+    vector: u32,
+    handler: Arc<dyn InterruptHandler>,
+    _acknowledge_local: impl Fn(),
+) -> Result<(), native_abi::Status> {
+    if !super::its::contains(vector) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    bind_source(vector, handler, None)
+}
+
+fn bind_source(
+    vector: u32,
+    handler: Arc<dyn InterruptHandler>,
+    level: Option<bool>,
+) -> Result<(), native_abi::Status> {
+    let prepared =
+        FallibleMap::try_prepare(vector, handler).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut controller = GIC.wait().lock();
     if controller.handlers.contains_key(&vector) {
-        return Err(InterruptError::InvalidVector);
+        return Err(native_abi::ERR_ALREADY_BOUND);
     }
-    controller.register_handler(vector, handler)?;
+    controller.handlers.commit_vacant(prepared);
     let result = controller
         .set_priority(vector)
-        .and_then(|()| controller.set_affinity(vector, CpuSet::singleton(cpu::boot_id())))
+        .and_then(|()| {
+            if let Some(level) = level {
+                let offset = GICD_ICFGR + vector as usize / 16 * 4;
+                let bit = 1 << (vector % 16 * 2 + 1);
+                let old = controller.distributor.read32(offset);
+                controller
+                    .distributor
+                    .write32(offset, if level { old & !bit } else { old | bit });
+                if (controller.distributor.read32(offset) & bit == 0) != level {
+                    return Err(InterruptError::InvalidVector);
+                }
+                controller.set_affinity(vector, CpuSet::singleton(cpu::boot_id()))
+            } else {
+                Ok(())
+            }
+        })
         .and_then(|()| controller.enable_interrupt(vector));
     if result.is_err() {
-        drop(controller.unregister_handler(vector));
+        let handler = controller.unregister_handler(vector);
+        drop(controller);
+        drop(handler);
     }
-    result
+    result.map_err(binding_status)
 }
 
 /// 解除绑定；返回的 handler 在锁外释放。
-pub(crate) fn unbind_interrupt(vector: u32) -> Option<Arc<dyn InterruptHandler>> {
+pub(crate) fn unbind_interrupt(
+    vector: u32,
+    _retirement: &mut InterruptRetirement,
+    _acknowledge_local: impl Fn(),
+) -> Option<Arc<dyn InterruptHandler>> {
     GIC.wait().lock().unregister_handler(vector)
 }
 
@@ -423,13 +487,17 @@ pub(crate) fn unmask_interrupt(vector: u32) -> Result<(), InterruptError> {
 }
 
 /// 改变 SPI 的单目标路由，保留 masks_until_ack 产生的屏蔽状态。
-pub(crate) fn set_interrupt_affinity(vector: u32, cpu: cpu::CpuId) -> Result<(), InterruptError> {
+pub(crate) fn set_interrupt_affinity(
+    vector: u32,
+    cpu: cpu::CpuId,
+    _acknowledge_local: impl Fn(),
+) -> Result<(), native_abi::Status> {
     let controller = GIC.wait().lock();
     if !controller.valid_device_vector(vector) || !controller.possible_cpus.contains(cpu) {
-        return Err(InterruptError::InvalidVector);
+        return Err(native_abi::ERR_INVALID_ARGS);
     }
     if !controller.handlers.contains_key(&vector) {
-        return Err(InterruptError::HandlerNotSet);
+        return Err(native_abi::ERR_BAD_STATE);
     }
     // 1. 与固定 Linux gic_set_affinity 一致，先停止已启用源，再更改 IROUTER。
     let enabled = controller
@@ -443,11 +511,13 @@ pub(crate) fn set_interrupt_affinity(vector: u32, cpu: cpu::CpuId) -> Result<(),
     // 2. 路由变化不消费 pending 事件；原本待 ack 的电平源必须继续屏蔽。
     let result = controller.set_affinity(vector, CpuSet::singleton(cpu));
     if enabled {
-        controller.enable_interrupt(vector)?;
+        controller
+            .enable_interrupt(vector)
+            .map_err(binding_status)?;
     } else {
         controller.wait_distributor_write();
     }
-    result
+    result.map_err(binding_status)
 }
 
 /// 设备中断（SPI）向量区间。
@@ -495,4 +565,52 @@ fn affinity_group(hardware: usize) -> (usize, usize) {
 
 fn route_value(hardware: usize) -> u64 {
     (hardware as u64) & 0x0000_00ff_00ff_ffff
+}
+
+/// 一颗 CPU 的 LPI 接收端；由 GIC 的帧发现投影给 ITS，不复制寄存器配置。
+pub(super) struct LpiTarget {
+    pub(super) cpu: cpu::CpuId,
+    pub(super) bus: MmioBus,
+    pub(super) target: u64,
+}
+
+/// 投影 LPI 位宽与每颗逻辑 CPU 的 redistributor/collection target；仅冷初始化分配。
+pub(super) fn lpi_redistributors(
+    physical_target: bool,
+) -> Result<(u32, alloc::vec::Vec<LpiTarget>), native_abi::Status> {
+    let mut targets = alloc::vec::Vec::new();
+    targets
+        .try_reserve_exact(cpu::possible().iter().count())
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let controller = GIC.wait().lock();
+    let typer = controller.distributor.read32(GICD_TYPER);
+    let bits = ((typer >> 19) & 31) + 1;
+    if typer & (1 << 17) == 0 || bits < 14 {
+        return Err(native_abi::ERR_NOT_SUPPORTED);
+    }
+    for cpu in controller.possible_cpus.iter() {
+        let (frame, offset) = controller.redistributor_frame(cpu::hardware_id(cpu).raw());
+        if frame.read64(GICR_TYPER) & 1 == 0 {
+            return Err(native_abi::ERR_NOT_SUPPORTED);
+        }
+        let target = if physical_target {
+            (controller.redistributor_physical + offset) as u64
+        } else {
+            ((frame.read64(GICR_TYPER) >> 8) & 0xffff) << 16
+        };
+        targets.push(LpiTarget {
+            cpu,
+            bus: frame.0,
+            target,
+        });
+    }
+    Ok((bits, targets))
+}
+
+fn binding_status(error: InterruptError) -> native_abi::Status {
+    match error {
+        InterruptError::NoMemory => native_abi::ERR_NO_MEMORY,
+        InterruptError::InvalidVector => native_abi::ERR_INVALID_ARGS,
+        InterruptError::HandlerNotSet => native_abi::ERR_BAD_STATE,
+    }
 }

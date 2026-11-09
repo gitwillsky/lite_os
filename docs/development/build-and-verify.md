@@ -13,6 +13,7 @@ Clippy 与 architecture-check 只静态拒绝可确定的恒定断言；测试�
 集成测试使用 Cargo `tests/`，guest 验收使用原有 runtime fixture。测试模块之后不得添加生产条目。
 root/user workspace 与独立 bootloader 启用 Clippy `items_after_test_module = deny`；
 host gate 以 `--all-targets` 检查 ABI/support/tool crate，避免只编译 lib 而漏过测试模块。
+routing-rib 同包含宿主候选库与裸机服务：host Clippy 以 `--lib --tests` 覆盖库/测试，服务 bin 沿原生双架构 gate 检查，不在宿主补 allocator/panic 兼容实现。
 architecture-check 同时解析全部第一方 Rust 源码的模块结构，覆盖未在当前 target/test 配置中编译的代码；
 第三方 vendor、Git/隐藏目录和 Cargo 产物不属于第一方源码输入。不提供文件白名单或 lint suppression。
 
@@ -60,7 +61,7 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   PT_LOAD、PT_NOTE 与入口不变。宿主服务 ELF 保持完整，继续用于调试、构建验收与热更新；debug profile 的归档也不携带调试副本。
 - AArch64 原生 target 的链接段按实际 4 KiB 页对齐，避免默认 64 KiB 文件填充常驻 bootfs。
   此设置由现有 `.cargo/config.toml` 拥有；raw Image 的物理放置及链接地址仍沿用原启动契约。
-- 原生数据卷（卷标 `liteos-data` 的 32 MiB ext4，保存 netcfg 等原生服务的私有设置）与 Linux 根盘分开：`run` 使用
+- 原生数据卷（卷标 `liteos-data` 的 32 MiB ext4，保存 router-config 等原生服务的私有设置）与 Linux 根盘分开：`run` 使用
   `data-<arch>.img`，缺失时创建，reset-rootfs 不清除它；`run-gui` 使用 UTM 产物目录中的 `data.img`；门禁每次启动
   附加一块新的空数据卷，不跨启动保留原生设置。fshost 按卷标识别它且不交给 Linux，它不改变 `vda`/`vdb` 命名。
 - rootfs 基线容量按发布文件总量推导，覆盖原树、APK 压缩包和原子替换峰值（最小 512 MiB）；APK 装配显式使用产品 `QEMU_MEMORY`（默认 2G），不能隐式消费 QEMU 的 128 MiB 默认值。

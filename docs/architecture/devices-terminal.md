@@ -3,7 +3,7 @@
 ## 当前设计
 
 1. 内核 `platform` 只发现 machine facts、路由中断并发布受权限约束的 MMIO/IRQ resource；
-   不装配设备驱动。`driver-manager::platform` 解码 DTB，`driver-manager::pci` 枚举 PCI 并分配 BAR，
+   不装配设备驱动。`driver-manager::platform` 解码 DTB，`driver-manager::pci` 枚举 PCI 并分配 BAR，双方以 `pci-config` 共用标准 capability 解码，
    `driver-manager::nodes` 为每个节点匹配驱动；每个节点在自己的 driver-host 进程中由 `driver-host::drivers` 装配。
 2. 驱动宿主拥有其节点的硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
    `device-model` 定义设备类接口；`device-protocol` 通过目录、channel 与 VMO 发布设备，
@@ -22,6 +22,10 @@
    split virtqueue 的 used capability 必须先验证 identity、generation 与长度，再 exactly once 回收。
    非法 completion 关闭 adapter 并 reset，不能修补 free list 后继续运行。
 7. QEMU `virt` 的 DMA 必须 coherent；不提供 non-coherent shadow buffer 或运行时 cache fallback。
+
+原生消息中断组、BTI doorbell 映射与 ITS/LPI 的机制和当前缺口见[硬件资源契约](../architecture-contract/hardware-resources.md)；VirtIO-net 已接通每 RX/TX 队列的 MSI-X 绑定，运行验收与多核队列策略尚未完成。
+
+PCI capability 解码只在冷发现事务读取一份 256-byte 快照（64 次 dword read），不逐包读取配置或分配；不另设 host benchmark，硬件发现及中断成本在最终目标机验收。
 
 - DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event，并经 `dri/card0` 设备文件拥有 Linux DRM UAPI。
   VirtIO-GPU config change 更新唯一 connector preferred mode，并只通过标准 DRM kobject hotplug

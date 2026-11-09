@@ -11,6 +11,7 @@ use native_runtime::Channel;
 use network_protocol::SocketError;
 use smoltcp::{
     iface::{Config, Interface},
+    phy::Device,
     wire::{EthernetAddress, HardwareAddress, IpCidr},
 };
 
@@ -21,8 +22,8 @@ pub(super) struct NetworkInterface {
     pub(super) interface: Interface,
     pub(super) device: ProtocolDevice,
     pub(super) state: InterfaceState,
-    // OWNER: 安装者（netcfg）持有对端；接口移除时随本对象丢弃而关闭，对端据此撤销该接口的配置。
-    // 回环与创建域时给出的初始网卡没有安装者，不随会话关闭移除。缺失时网卡移除后 netcfg 仍保留旧 ifindex 的 DHCP 会话与默认路由意图。
+    // OWNER: 安装者（router_config）持有对端；接口移除时随本对象丢弃而关闭，对端据此撤销该接口的配置。
+    // 回环与创建域时给出的初始网卡没有安装者，不随会话关闭移除。缺失时网卡移除后 router_config 仍保留旧 ifindex 的 DHCP 会话与默认路由意图。
     lifetime: Option<Channel>,
 }
 
@@ -45,6 +46,20 @@ fn ethernet_name(unit: u32) -> [u8; 16] {
     name
 }
 impl NetworkInterface {
+    /// 验证并发布实际 MTU，同时更新同一接口的协议能力；没有设备状态副本或分配。
+    /// # Parameters
+    /// `mtu` 是 L3 数据包的字节上限。
+    /// # Returns
+    /// 成功后设备与协议能力均使用新值。
+    /// # Errors
+    /// 超出实际 adapter 范围；失败不修改原状态。
+    pub(super) fn configure_mtu(&mut self, mtu: i32) -> Result<(), SocketError> {
+        self.device.configure_mtu(mtu)?;
+        self.interface
+            .set_device_capabilities(self.device.capabilities());
+        Ok(())
+    }
+
     /// 实际IP-medium loopback，原生ifindex1/name lo/127.0.0.1/8；新NET初始DOWN。
     pub(super) fn loopback(net_id: u64, up: bool) -> Result<Self, SocketError> {
         let mut device = ProtocolDevice::prepare_loopback(net_id)?;
@@ -158,6 +173,7 @@ impl NetworkStack {
             return false;
         };
         self.interfaces.remove(position);
+        self.notify_interfaces();
         self.routing.remove_interface(index);
         // 批次游标按位置计数；移除后从头开始，避免越界或跳过接口。
         self.interface_cursor = 0;
@@ -191,8 +207,10 @@ impl NetworkStack {
         self.routing.is_local(address, &self.interfaces)
     }
     /// 唯一FIB用于socket准入与实际dispatch；没有独立default gateway或线性prefix selector。
+    /// 实际发送的源/目的键进入同一 selector；已绑定源不会在 ECMP 后改写。
     pub(super) fn route(
         &self,
+        source: Ipv4Addr,
         destination: Ipv4Addr,
         bound: Option<u32>,
     ) -> Result<super::route::RouteSelection, SocketError> {
@@ -200,9 +218,18 @@ impl NetworkStack {
             self.interface(index)?;
         }
         self.routing
-            .select(destination, bound, &self.interfaces)
+            .select_facts(
+                source,
+                destination,
+                bound,
+                self.interfaces
+                    .iter()
+                    .map(super::route::InterfaceFacts::capture),
+            )
             .map_err(|kind| match kind {
                 network_protocol::Ipv4RouteKind::Unreachable => SocketError::HostUnreachable,
+                network_protocol::Ipv4RouteKind::Blackhole => SocketError::Invalid,
+                network_protocol::Ipv4RouteKind::Prohibit => SocketError::PermissionDenied,
                 _ => SocketError::NetworkUnreachable,
             })
     }

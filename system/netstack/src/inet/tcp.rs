@@ -591,7 +591,12 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
         },
         None => return Err(SocketError::NotConnected),
     };
+    let source = bound
+        .and_then(|local| local.addr)
+        .map(from_ip)
+        .unwrap_or(Ipv4Addr::UNSPECIFIED);
     let route = network.route(
+        source,
         peer.address,
         network.tcp_endpoints[&id].options.bound_to_device,
     )?;

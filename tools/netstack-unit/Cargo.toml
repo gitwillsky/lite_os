@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bgp = { path = "../../system/bgp" }
+routing-rib = { path = "../../system/routing-rib" }
+prefix-index = { path = "../../libraries/prefix-index" }
+router-protocol = { path = "../../system/router-protocol" }
 packet-wire = { path = "../../libraries/packet-wire" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
 device-model = { path = "../../system/device-model" }
@@ -11,6 +15,10 @@ network-protocol = { path = "../../system/network-protocol" }
 native-abi = { path = "../../abi/native-abi" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-tcp", "socket-tcp-reno", "socket-udp", "socket-raw"] }
+
+[dev-dependencies]
+filesystem-protocol = { path = "../../system/filesystem-protocol" }
+smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["proto-dhcpv4"] }
 
 [lints]
 workspace = true

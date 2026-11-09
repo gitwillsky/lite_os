@@ -29,7 +29,7 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(target.qemu_cpu(acceleration), "host")
         self.assertEqual(
             target.qemu_machine(acceleration),
-            "virt,accel=hvf,gic-version=3,its=off,secure=off,"
+            "virt,accel=hvf,gic-version=3,its=on,secure=off,"
             "virtualization=off,acpi=off",
         )
         self.assertEqual(target.musl_loader, "/lib/ld-musl-aarch64.so.1")
@@ -54,7 +54,7 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(target.qemu_cpu(acceleration), "max")
         self.assertEqual(
             target.qemu_machine(acceleration),
-            "virt,accel=tcg,gic-version=3,its=off,secure=off,"
+            "virt,accel=tcg,gic-version=3,its=on,secure=off,"
             "virtualization=off,acpi=off",
         )
 
@@ -66,8 +66,8 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(target.kernel_triple, "riscv64gc-unknown-none-elf")
         self.assertEqual(target.linux_triple, "riscv64-linux-musl")
         self.assertEqual(target.qemu_binary, "qemu-system-riscv64")
-        self.assertEqual(target.qemu_cpu(acceleration), "rv64")
-        self.assertEqual(target.qemu_machine(acceleration), "virt,accel=tcg")
+        self.assertEqual(target.qemu_cpu(acceleration), "rv64,ssaia=on,smaia=on")
+        self.assertEqual(target.qemu_machine(acceleration), "virt,accel=tcg,aia=aplic-imsic")
         self.assertEqual(target.musl_loader, "/lib/ld-musl-riscv64.so.1")
         self.assertEqual(target.alpine_arch, "riscv64")
         self.assertTrue(target.requires_bootloader)
@@ -105,7 +105,7 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(variables["QEMU_CPU"], "host")
         self.assertEqual(
             variables["QEMU_MACHINE"],
-            "virt,accel=hvf,gic-version=3,its=off,secure=off,"
+            "virt,accel=hvf,gic-version=3,its=on,secure=off,"
             "virtualization=off,acpi=off",
         )
         self.assertEqual(variables["BOOTLOADER_REQUIRED"], "0")

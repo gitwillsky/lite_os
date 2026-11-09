@@ -238,7 +238,7 @@ pub(super) fn serve_device(
     let ready = session.get().queue.ready.duplicate(rights::SAME)?;
     let hardware = session.get().queue.hardware.duplicate(rights::SAME)?;
     let active = session.clone();
-    let activity = Arc::try_new(move || active.get().queue.dispatch(active.get()))
+    let activity = Arc::try_new(move |_source: usize| active.get().queue.dispatch(active.get()))
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let handler = Arc::try_new(
         move |ordinal: u32,

@@ -33,6 +33,7 @@ pub(crate) struct BoundNode {
     pub(crate) node: Node,
     pub(crate) bti: Bti,
     pub(crate) irq: Option<Resource>,
+    pub(crate) msi: Option<Resource>,
     pub(crate) mmio: Vec<Resource>,
 }
 
@@ -118,6 +119,7 @@ fn mmio_node(transport: &VirtioMmioTransport, device: u32) -> Option<BoundNode> 
         },
         bti: platform::bti(None),
         irq: Some(platform::irq_resource(transport.irq)),
+        msi: None,
         mmio: alloc::vec![platform::mmio_resource(transport.base_addr, transport.size).0],
     })
 }
@@ -161,10 +163,12 @@ fn pci_node(function: &Function, driver: Driver) -> BoundNode {
                 config: function.config_address as u64,
                 bars: function.bars,
                 interrupt: function.interrupt,
+                message_device: function.message_device,
             },
         },
         bti: platform::bti(function.stream),
         irq: function.interrupt.map(platform::irq_resource),
+        msi: function.message_device.map(platform::msi_resource),
         mmio,
     }
 }

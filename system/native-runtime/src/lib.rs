@@ -33,7 +33,7 @@ pub mod task;
 pub mod thread;
 
 pub use handle::Handle;
-pub use hardware::{Bti, Interrupt, Iommu, Pmt, Resource};
+pub use hardware::{Bti, Interrupt, Iommu, Msi, Pmt, Resource};
 pub use ipc::{Channel, Event, Message, Port};
 pub use memory::{Pager, Vmar, Vmo};
 pub use native_abi;
@@ -72,6 +72,7 @@ plain!(
     native_abi::VmarMappingStats,
     native_abi::VmoInfo,
     native_abi::BtiInfo,
+    native_abi::MsiInfo,
     native_abi::SystemMemoryStats,
     native_abi::ProcessBasic,
     native_abi::SystemBasic,

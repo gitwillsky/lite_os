@@ -2,20 +2,25 @@
 
 #[macro_use]
 pub(crate) mod console;
+mod aia;
 mod device_tree;
 mod devices;
 mod discovery;
 mod firmware;
-mod plic;
-mod plic_policy;
 mod rtc;
 mod uart;
 
-pub(crate) use devices::{
-    bind_interrupt, device_interrupt_range, handle_external_interrupt,
-    initialize as initialize_devices, set_interrupt_affinity, unbind_interrupt, unmask_interrupt,
+pub(crate) use aia::{
+    InterruptRetirement, MessageInterruptGroup, MessageInterruptRoute, bind_interrupt,
+    bind_message_interrupt, device_interrupt_range, handle_external_interrupt,
+    set_interrupt_affinity, unbind_interrupt, unmask_interrupt,
 };
-pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};
+pub(crate) use devices::initialize as initialize_devices;
+pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize};
+pub(crate) fn validate_boot_info(boot: BootInfo) {
+    discovery::validate_boot_info(boot);
+    aia::initialize_local();
+}
 pub(crate) use firmware::{
     InstructionFenceError, TlbShootdownError, arm_timer, debug_console_write,
     debug_console_write_bytes, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
@@ -28,17 +33,17 @@ pub(crate) fn claim_interrupt() -> super::ClaimedInterrupt {
     super::ClaimedInterrupt::Device(0)
 }
 
-/// PLIC handler 已在 batch 内 exactly-once complete；此处只消费 typed token。
+/// IMSIC claim 已在 batch 内 exactly-once complete；此处只消费 typed token。
 pub(crate) fn complete_interrupt(claim: super::ClaimedInterrupt) {
     assert!(
         matches!(claim, super::ClaimedInterrupt::Device(_)),
-        "RISC-V PLIC returned a non-device semantic interrupt"
+        "RISC-V IMSIC returned a non-device semantic interrupt"
     );
     let _ = claim.completion_token();
 }
 
-/// RISC-V SBI RFENCE 由 firmware trap owner 完成，不使用 platform SGI mailbox。
-pub(crate) fn complete_pending_ipi() {}
+/// 消费本 CPU IMSIC CSR/marker 请求；SBI RFENCE 仍由 M-mode firmware 确认。
+pub(crate) use aia::complete_pending as complete_pending_ipi;
 
 /// 投影 platform 可分配 physical memory 的 exclusive end。
 ///
@@ -67,16 +72,17 @@ pub(crate) fn timebase_frequency() -> u64 {
 ///
 /// # Returns
 ///
-/// UART、RTC 与 PLIC 的非空区间；concrete device facts 不穿过 seam。
+/// UART、RTC、APLIC 与 IMSIC 的非空区间；concrete device facts 不穿过 seam。
 pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usize>> {
     let info = discovery::info();
     [
         Some(info.uart.clone()),
         info.rtc.clone(),
-        Some(info.plic.clone()),
+        Some(info.aia.aplic.clone()),
     ]
     .into_iter()
     .flatten()
+    .chain(info.aia.windows.iter().cloned())
 }
 
 /// 从 platform realtime source 读取一次 Unix epoch 纳秒值。

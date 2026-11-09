@@ -26,12 +26,13 @@ use native_abi::Status;
 
 use crate::execution::sync::TaskMutex;
 use crate::memory::{PAGE_SIZE, PhysicalPageNumber};
-use crate::vm::DeviceAddressSpace;
+use crate::vm::{CachePolicy, DeviceAddressSpace};
 use fallible_tree::FallibleMap;
 
 /// IOMMU 硬件后端：为一个 stream 建立与撤销设备地址翻译。
 pub(crate) trait IommuBackend: Send + Sync {
-    /// 把 `pages` 映射到该 stream 的设备地址空间，返回逐页设备地址。
+    /// 把 `pages` 以 `cache` 内存属性映射到该 stream，返回逐页设备地址。
+    /// MMIO 消息 doorbell 必须为 Device，不能误设为普通 WB 内存而允许合并/重排。
     ///
     /// # Errors
     /// 设备地址空间耗尽或分配失败。
@@ -40,6 +41,7 @@ pub(crate) trait IommuBackend: Send + Sync {
         stream: u32,
         pages: &[PhysicalPageNumber],
         writable: bool,
+        cache: CachePolicy,
         output: &mut Vec<u64>,
     ) -> Result<(), Status>;
     /// 撤销映射并在返回前完成设备侧 TLB 失效。
@@ -57,6 +59,7 @@ impl IommuBackend for IdentityIommu {
         _stream: u32,
         pages: &[PhysicalPageNumber],
         _writable: bool,
+        _cache: CachePolicy,
         output: &mut Vec<u64>,
     ) -> Result<(), Status> {
         output
@@ -157,6 +160,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
         stream: u32,
         pages: &[PhysicalPageNumber],
         writable: bool,
+        cache: CachePolicy,
         output: &mut Vec<u64>,
     ) -> Result<(), Status> {
         output
@@ -193,7 +197,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
         let first = Self::allocate(domain, pages.len()).ok_or(native_abi::ERR_NO_RESOURCES)?;
         let record =
             FallibleMap::try_prepare(first, pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        if let Err(retired) = domain.space.map(first, pages, writable) {
+        if let Err(retired) = domain.space.map(first, pages, writable, cache) {
             // 已绑定的设备可以遍历任意 IOVA：失败前的部分发布也必须先失效再释放表页/固定页。
             self.hardware.invalidate(domain.id, first, pages.len());
             retired.release();

@@ -1,4 +1,4 @@
-//! 以太网卡 v9：OPEN 显式协商 pair 数；一次授权 VMO，四条共享环传递收发，事件合并通知。
+//! 以太网卡 v11：显式协商 pair 数；共享环传递收发，链路变化独立于队列通知。
 mod client;
 mod queue;
 mod rss;
@@ -13,18 +13,21 @@ use device_model::network::{
 use native_runtime::native_abi::{self, Status};
 pub use server::publish;
 
-const NETWORK_VERSION: u16 = 9;
+const NETWORK_VERSION: u16 = 11;
 const STATISTICS: u32 = 8;
 const LINK: u32 = 9;
+const WATCH_LINK: u32 = 16;
 const MEMORY: u32 = 12;
 const QUEUE: u32 = 13;
 const RSS_CONFIG: u32 = 14;
+const QUEUE_AFFINITY: u32 = 15;
 
 fn encode_error(error: NetworkError) -> Status {
     match error {
         NetworkError::InvalidConfiguration => native_abi::ERR_INVALID_ARGS,
         NetworkError::WouldBlock => native_abi::ERR_SHOULD_WAIT,
         NetworkError::NoMemory => native_abi::ERR_NO_MEMORY,
+        NetworkError::NoResources => native_abi::ERR_NO_RESOURCES,
         NetworkError::FrameTooLarge => native_abi::ERR_OUT_OF_RANGE,
         NetworkError::Device => native_abi::ERR_IO,
         NetworkError::Disconnected => native_abi::ERR_PEER_CLOSED,
@@ -35,6 +38,7 @@ fn decode_error(status: Status) -> NetworkError {
         native_abi::ERR_INVALID_ARGS => NetworkError::InvalidConfiguration,
         native_abi::ERR_SHOULD_WAIT => NetworkError::WouldBlock,
         native_abi::ERR_NO_MEMORY => NetworkError::NoMemory,
+        native_abi::ERR_NO_RESOURCES => NetworkError::NoResources,
         native_abi::ERR_OUT_OF_RANGE => NetworkError::FrameTooLarge,
         native_abi::ERR_PEER_CLOSED => NetworkError::Disconnected,
         _ => NetworkError::Device,

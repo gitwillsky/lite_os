@@ -11,9 +11,11 @@ pub(crate) use backend::Backend;
 
 /// A zeroed, physically contiguous allocation retained for hardware table/queue access.
 /// Implementations must keep every page resident and stable until the frame owner is dropped.
-pub(crate) trait DmaFrame: Send + Sync + Sized {
+pub(crate) trait DmaFrame: Send + Sync {
     /// Allocate `pages` zeroed pages; returns `None` when allocation fails.
-    fn allocate_zeroed(pages: usize) -> Option<Self>;
+    fn allocate_zeroed(pages: usize) -> Option<Self>
+    where
+        Self: Sized;
     /// First physical page number, stable for this allocation's entire lifetime.
     fn physical_page(&self) -> usize;
 }
@@ -35,4 +37,10 @@ pub(crate) trait Translation: Send + Sync {
 /// No invalid-to-valid TLB invalidation is needed; the architecture still requires store ordering.
 pub(crate) fn publish_table_changes() {
     mmio::before_write();
+}
+
+/// Arm 消息中断表在发出 cache invalidation 前需要 coherent store completion。
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn complete_table_writes() {
+    backend::complete_table_writes();
 }

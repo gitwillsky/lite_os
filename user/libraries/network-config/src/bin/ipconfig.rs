@@ -1,5 +1,5 @@
-//! Windows 2000 风格的 IP 配置与 DHCP 租约操作。当前状态和租约由 netcfg 提供。
-use netcfg_protocol::{DhcpAction, Method};
+//! Windows 2000 风格的 IP 配置与 DHCP 租约操作。当前状态和租约由 router_config 提供。
+use router_protocol::{DhcpAction, Method};
 use network_config::{Link, LinkState, ethernet_links_with_settings, format_lease_time};
 use std::{
     io::{self, Write},

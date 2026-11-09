@@ -6,20 +6,29 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 
 1. netstack 只提供协议栈：启动时创建只有回环（启用）的默认网络，经 `liteos.network.Control` 交出网络域与 socket，
    经 `liteos.network.Installer` 接受网卡会话并在默认网络中安装为 `eth<n>` 接口。默认网络随 netstack 存续。
-2. netcfg 是接口配置 owner（Fuchsia netcfg）：向 netstack 委托 Network 类目录能力与设备 ID；netstack 按自己的 worker 策略打开并独占队列；每个接口的配置依次取用户设置、
-   bootfs 只读默认策略（`data/netcfg/default.conf`，`iface * inet dhcp`）、DHCP。静态地址直接配置；DHCP 经
-   dhcp-client 取得租约后由 netcfg 配置地址、掩码、默认路由与 DNS。用户设置持久化在 netcfg 的私有数据目录。
+2. router-config 是接口配置 owner（Fuchsia netcfg）：经原生 RIB 向 netstack 委托 Network 类目录能力与设备 ID；netstack 按自己的 worker 策略打开并独占队列；每个接口的配置依次取用户设置、
+   bootfs 只读默认策略（`data/router-config/default.conf`，`iface * inet dhcp`）、DHCP。静态地址直接配置；DHCP 经
+   dhcp-client 取得租约后由 router-config 向 RIB 提交接口意图；RIB 选默认路由，再经原生执行事务原子配置地址、掩码和 FIB；DNS 由配置/成功租约投影。
+   执行服务确认前保留原 FIB 根与会话，避免逐项设置中途失败。用户设置持久化在 router-config 的私有数据目录，存储身份与进程名独立，保留既有设置。
+   MTU 与地址/管理状态/默认路由由同一原生事务发布和撤销，单独修改 MTU 保留有效 DHCP 租约；批次经只读 VMO 传输。
+   提交失败撤销原文件与可逆执行；持久决定后的确认丢失按新决定重试，快照明确投影提交状态，见[协调契约](../architecture-contract/router-configuration.md#原生接口执行事务)。
    一个事件循环线程以一个 Port 等待 netstack 断开（重连、重新安装网卡、重新配置）、设备目录变化（热插拔网卡）与
-   各接口的租约事件；设置变化经 `liteos.network.Settings` 提交，先持久化再应用。
-3. dhcp-client 为 netcfg 指定的接口在默认网络的 datagram packet socket（EtherType IPv4）上收发 IPv4/UDP/DHCP 报文，
-   按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING，向 netcfg 报告租约取得、
+   各接口的租约事件；设置变化经 `liteos.network.Settings` 提交，先暂存可逆执行，再持久决定和确认。
+   原生配置使用具名接口对象与独立设备匹配，唯一 JSON 持久模型和字段元数据归 router-protocol；历史二进制仅导入，不再写回。
+   已发布配置是不可变 Arc 快照，导出/备份不复制整树。自动备份由同服务的后台执行线程处理周期、确认和轮转，不持配置锁等待存储。
+   备份策略与目录管理见[配置备份契约](../architecture-contract/router-configuration.md#配置备份)，恢复仍走唯一整份导入。
+   加载失败保留管理查询、禁用设备并拒绝局部覆盖；授权整份导入可以修复，不退回 DHCP，不使关键服务进入崩溃循环。
+   原生配置导出/校验/字段元数据/对比及带代际的完整替换复用授权设置通道；接口修改与导入共用整批 NET/DHCP/持久化提交。
+3. dhcp-client 为 router-config 指定的接口在默认网络的 datagram packet socket（EtherType IPv4）上收发 IPv4/UDP/DHCP 报文，
+   按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING，向 router-config 报告租约取得、
    续租与失效。T1 使用租约服务器的 IP 和链路地址单播，T2 广播，两个阶段均不携带 Server Identifier。
-   续租未改变地址、前缀与网关时，netcfg 保留现有地址、路由与连接时长，并发布新的租约期限与生效 DNS。
-   netcfg 关闭租约事件 channel 即停止该接口的 DHCP。报文编解码使用 smoltcp 的 wire 层。
+   续租未改变地址、前缀与网关时，router-config 保留现有地址、路由与连接时长，并发布新的租约期限与生效 DNS。
+   router-config 关闭租约事件 channel 即停止该接口的 DHCP。报文编解码使用无分配的 packet-wire；
+   实际格式与失败边界见[报文格式契约](../architecture-contract/ipc-network.md#报文格式)。
 4. linuxd 的初始网络域连上默认网络，新网络域在 netstack 中创建只有 DOWN 回环的独立实例。netstack 重启后 linuxd 重连并为
-   全部存活网络域重建协议实例，旧 socket 的 channel 已随旧实例关闭，之后的操作以 `ENETDOWN` 失败；默认网络由 netcfg
+   全部存活网络域重建协议实例，旧 socket 的 channel 已随旧实例关闭，之后的操作以 `ENETDOWN` 失败；默认网络由 router-config
    重新配置。linuxd 重启不影响默认网络及其配置。
-5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 netcfg 的设置快照维护。
+5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 router-config 的设置快照维护。
    `/dev/network-status` 向普通用户提供只读接口快照；`/dev/network-settings` 的修改和订阅能力限 netdev。
    控制面板读取生效状态并经 `/dev/network-settings` 修改设置（见[用户态与 ABI 契约](../architecture-contract/userspace-abi.md)）。
    接口管理开关由 netstack 持有。以太网载波与速率由网卡驱动读取，并随接口快照投影到 Linux sysfs 和 rtnetlink；
@@ -32,6 +41,18 @@ socket 控制与数据分离：低频配置/关闭走 channel，send/receive/pol
 
 ## 当前设计
 
+- IPv4 FIB 在唯一 RoutingTable 内共同保存连续有序记录、共享下一跳组与 prefix-index::Poptrie 实例，前缀直接引用候选区间，再按实际 alias/table/metric/设备裁决。
+  内联路径按值共享，具名对象按配置身份独立；记录直接引用所属根内的槽，不增加报文锁或查询身份/路径树。
+  完整配置交换候选根，具名独立更新只交换一个槽的成员数组，均复用原确认/撤销能力；热拔出后过滤实际失效路由。
+  当前仍持 NET guard，新前缀与整表候选仍冷编译，按实际源/目的地址带权选择，成员按出口分组裁决；完整组快照经只读 VMO 传输，rtnetlink 输出标准多路径，不能宣称 ECMP 产品能力或 RCU 完成。
+  生命周期与边界见[FIB 前缀索引契约](../architecture-contract/ipc-network.md#fib-前缀索引)。
+- routing-rib 的不可变候选库与 FIB 共用 Poptrie；原生服务已装配并接管接口/静态意图与授权来源会话，属性/下一跳共享，替换不修改旧读者。
+  冻结重选可撤回失效选择、采用备用并恢复递归依赖；实际接口/载波变化由 NET 直达 RIB，配置服务不再中转；独立来源替换/关闭撤回已接入，协议状态机和通用递归依赖订阅仍待实现。
+  router-protocol 的双栈来源正文已接到该目录，resolution 对冻结选择做显式栈递归、环路剪枝和精确带权出口展开。
+  结果组共享且退休无引用中间组；接口来源/RIB/NET 的 host 链路覆盖发布、撤销及热拔出备用切换，原生 RPC/VMO 尚未验收，见[候选目录契约](../architecture-contract/ipc-network.md#rib-候选目录)。
+- 受管 IPv4 FIB 与接口计划可在一个授权 VMO 批次中共同预备，具名定义/内联/引用路由基于新接口事实准入，只构建一个最终索引。
+  无 FIB 段保持原集合，显式空集合清除来源与定义；同一写租约、根交换与接口前像保证发布/确认/撤销一致。
+  该执行入口不提供 RIB 选路，也不代表 routing-rib、ECMP 或双栈完成，见[集合契约](../architecture-contract/ipc-network.md#原生受管-fib-集合)。
 - `ipc::IpcNamespace` 拥有实际 System V message/semaphore/shared-memory registry、标准 key/ID/权限与限额；
   Task 只持 membership。SemaphoreSet 原子处理多项 sembuf，SemUndoHandle 按实际共享者最后退出
   撤销；共享内存复用 memory 共享页和 VMA 退休，RMID 撤销 key 后按最后挂接延迟销毁。

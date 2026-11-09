@@ -123,6 +123,11 @@ AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零
 - Blocking/Preempting 到 Blocked/Ready 的提交只在 outgoing context 保存后执行；pending slot 保活 outgoing owner，next/idle continuation 恰好消费一次。
 - IRQ guard 不可跨 logical CPU，持有 spin/IRQ-safe guard 时禁止阻塞、可失败分配或等待 remote completion。
 - software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
+- 关中断的远端确认等待必须推进全部相关本地确认。barrier 等待调用平台 IPI 确认；软件 TLB rendezvous
+  等待除本地 TLB ack 外，还通过 VM 注入的静态回调确认 barrier 请求，不能仅推进同类事务。
+  反之两 CPU 分别等待 barrier/TLB 时，双方都无法进入 IPI trap。回调仅确认本地请求，不调度、分配或等待远端；
+  不新增分派状态，generation 仍分别由 barrier 与平台 TLB owner 持有。SBI RFENCE 的目标确认在 M-mode 完成，
+  不依赖 S-mode IPI trap。成本仅为冷等待循环的必要确认读取，无新热路径锁或消息，未设独立 host benchmark 阈值。
 - deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
 - guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
 - 可执行映射在发表 PTE 前按实际连续物理范围完成数据清理；`TranslationCommit` 只保留待同步标记，
@@ -210,13 +215,11 @@ linuxd 只解码返回寄存器，并以 saved PC - 4 取得原 syscall 指令�
 restart 与 seccomp 消费同一个原指令地址。实际 RISC-V musl/BusyBox/std 运行时验证这个交接，
 单独编译不能证明返回指令没有被跳过。
 
-## PLIC level masking
+## 外部消息中断
 
-PLIC 的 level source 用全局 priority 0/1 屏蔽与恢复；context enable bitmap 只承载 CPU affinity。
-已 claim source 在 complete 时仍保持 context enable，避免控制器忽略完成；unmask 的 priority 写入
-同时使 QEMU 重新裁决已有 pending 的 SEIP，不能只改 enable bitmap 后等待下一次设备边沿。
-该顺序参照固定 Linux irq-sifive-plic 的 irq_mask/irq_unmask/eoi；不新增中断状态副本。
-动态 IRQ 亲和配置与 claim→handler→complete 使用同一控制器锁，不能在已 claim 未 complete 时移除原 context 的 enable 位；配置入口及权限归设备契约。
+RISC-V QEMU virt 使用 APLIC/IMSIC；CSR mechanism 归 arch，源配置、CPU 本地 EIID、迁移与退休归 platform。
+APLIC 电平源在处理后重新采样，mask/ack 与迁移恢复由同一 owner 串行；IMSIC claim 原子清除 EIP，不再重复 EOI。
+资源寿命、跨 CPU 确认及 GENMSI fence 见[硬件资源契约](hardware-resources.md#risc-v-aia)。
 
 ## 返回硬件视图
 

@@ -188,7 +188,7 @@ impl VirtIOGpuDevice {
         let size = maximum.min(QUEUE_SIZE);
         let queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(CONTROL_QUEUE, size, queue.addresses())
+            .configure_queue(CONTROL_QUEUE, size, queue.addresses(), None)
             .ok()?;
         let control = Mutex::new(ControlQueue {
             queue,
@@ -212,7 +212,7 @@ impl VirtIOGpuDevice {
         let cursor_size = cursor_maximum.min(QUEUE_SIZE);
         let cursor_queue = VirtQueue::new(cursor_size, device.bti())?;
         device
-            .configure_queue(CURSOR_QUEUE, cursor_size, cursor_queue.addresses())
+            .configure_queue(CURSOR_QUEUE, cursor_size, cursor_queue.addresses(), None)
             .ok()?;
         let cursor = Mutex::new(CursorQueue {
             queue: cursor_queue,

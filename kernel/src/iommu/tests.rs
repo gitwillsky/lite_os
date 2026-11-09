@@ -36,7 +36,13 @@ fn allocation_failure_cannot_publish_an_unowned_hardware_root() {
         let owner = owner(0);
         let mut output = Vec::new();
         allocation_failure::fail_after(successful_allocations);
-        let result = owner.map(7, &[PhysicalPageNumber::from(1)], true, &mut output);
+        let result = owner.map(
+            7,
+            &[PhysicalPageNumber::from(1)],
+            true,
+            CachePolicy::Cached,
+            &mut output,
+        );
         let consumed = allocation_failure::was_consumed();
         if owner.hardware.attached.load(Ordering::Relaxed) != 0 {
             assert!(
@@ -62,7 +68,13 @@ fn domain_identity_exhaustion_cannot_wrap_and_reuse_a_live_tag() {
     let mut output = Vec::new();
     for stream in [1, 2] {
         assert_eq!(
-            owner.map(stream, &[PhysicalPageNumber::from(1)], true, &mut output),
+            owner.map(
+                stream,
+                &[PhysicalPageNumber::from(1)],
+                true,
+                CachePolicy::Cached,
+                &mut output
+            ),
             Err(native_abi::ERR_NO_RESOURCES)
         );
     }

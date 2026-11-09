@@ -384,3 +384,9 @@ impl<F: DmaFrame> Translation for Backend<F> {
         result.unwrap_or_else(|status| panic!("SMMUv3 invalidation failed: {status}"));
     }
 }
+
+/// 完成 coherent 设备表写入，再允许控制器消费失效命令；不能用仅排序的 DMB 替代。
+pub(crate) fn complete_table_writes() {
+    // SAFETY: DSB 只改变写入完成顺序，memory clobber 防止编译器跨 publication 重排。
+    unsafe { core::arch::asm!("dsb oshst", options(nostack, preserves_flags)) };
+}

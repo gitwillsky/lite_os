@@ -35,6 +35,7 @@ struct Sources {
 pub(crate) enum Served {
     Namespace(NamespaceServer),
     Socket(ServedSocket),
+    Configuration(crate::inet::ConfigurationSession),
 }
 
 impl Served {
@@ -53,12 +54,23 @@ impl Served {
                 network_protocol::dispatch_namespace(namespace, ordinal, request, handles, reply)
             }
             Self::Socket(socket) => socket.dispatch(ordinal, request, handles, reply),
+            Self::Configuration(configuration) => network_protocol::dispatch_configuration(
+                configuration,
+                ordinal,
+                request,
+                handles,
+                reply,
+            ),
         }
     }
 
     fn close(&self) {
-        if let Self::Socket(socket) = self {
-            socket.close();
+        match self {
+            Self::Socket(socket) => socket.close(),
+            Self::Configuration(configuration) => {
+                let _ = configuration.abort();
+            }
+            Self::Namespace(_) => {}
         }
     }
 }
@@ -121,7 +133,7 @@ pub(crate) fn serve(channel: Channel, served: Served) -> Result<(), Status> {
         .map_err(|_| native_abi::ERR_NO_RESOURCES)?;
     let queue = match &served {
         Served::Socket(_) => Some(SocketQueue::create()?),
-        Served::Namespace(_) => None,
+        Served::Namespace(_) | Served::Configuration(_) => None,
     };
     let entry = Arc::try_new(Entry {
         channel,

@@ -1,4 +1,4 @@
-//! PCI ECAM 根总线的唯一枚举与 BAR 分配 owner（PCI 总线驱动）；function 的设备协议由宿主中的驱动解码。
+//! PCI ECAM 根总线的枚举、BAR 分配与初始中断接管 owner；function 的设备协议由宿主中的驱动解码。
 use crate::platform::PciHost;
 use alloc::vec::Vec;
 use launch_protocol::driver_host::Bar;
@@ -20,6 +20,8 @@ pub(crate) struct Function {
     pub(crate) interrupt: Option<u32>,
     /// 请求者 ID 经 `iommu-map` 换算的 stream；没有 IOMMU 时为 `None`。
     pub(crate) stream: Option<u32>,
+    /// 同一 requester 经独立 msi-map 得到的消息 DeviceID。
+    pub(crate) message_device: Option<u32>,
 }
 
 /// 枚举平台 ECAM 根总线并分配 memory BAR；无 PCI host 时返回空表。
@@ -56,8 +58,33 @@ pub(crate) fn enumerate(host: Option<&PciHost>) -> Result<Vec<Function>, ()> {
             }
             let command = config.read_u16(COMMAND).map_err(|_| ())?;
             config.write_u16(COMMAND, command & !6).map_err(|_| ())?;
+            // 1. 独占枚举时先撤下固件遗留 MSI/MSI-X，再移动 BAR；否则设备仍可向旧目标发消息。
+            let snapshot = pci_config::Configuration::read(|offset| config.read_u32(offset))
+                .map_err(|_| ())?;
+            for capability in snapshot.capabilities().map_err(|_| ())? {
+                if let Some(message) = capability.message_interrupt().map_err(|_| ())? {
+                    let (offset, disabled) = message.disabled_control();
+                    config.write_u16(offset, disabled).map_err(|_| ())?;
+                }
+            }
             let bars = assign_memory_bars(&config, &mut allocation, host.mmio32.end).ok_or(())?;
-            config.write_u16(COMMAND, command | 6).map_err(|_| ())?;
+            for capability in snapshot.capabilities().map_err(|_| ())? {
+                if let Some(message) = capability.message_interrupt().map_err(|_| ())?
+                    && let Some(msix) = message.msix()
+                {
+                    msix.validate(|bar| {
+                        bars.get(usize::from(bar))
+                            .copied()
+                            .flatten()
+                            .map(|bar| bar.size)
+                    })
+                    .map_err(|_| ())?;
+                }
+            }
+            // 2. 当前宿主按 INTx 接管；不能保留固件的 INTx-disable 位而静默丢失所有通知。
+            config
+                .write_u16(COMMAND, (command | 6) & !(1 << 10))
+                .map_err(|_| ())?;
             let pin = config.read_u8(0x3d).map_err(|_| ())? as usize;
             functions.try_reserve(1).map_err(|_| ())?;
             functions.push(Function {
@@ -67,6 +94,7 @@ pub(crate) fn enumerate(host: Option<&PciHost>) -> Result<Vec<Function>, ()> {
                 interrupt: host.interrupt(slot, pin),
                 // 根总线 requester ID = slot << 3 | function（PCIe BDF，bus 0）。
                 stream: host.stream(((slot << 3) | function) as u32),
+                message_device: host.message_device(((slot << 3) | function) as u32),
             });
             if function == 0 && header & 0x80 == 0 {
                 break;

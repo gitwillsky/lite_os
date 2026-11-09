@@ -2,7 +2,7 @@
 //!
 //! 每个入口先完整解析并校验请求，再调用既有的 `configure_*`；校验失败时不改变任何状态。
 //! 本实现的设备模型一个接口只有一个 IPv4 地址：第二个不同地址、点对点 peer、地址别名 label、
-//! 设备重命名/创建、blackhole/prohibit 路由与多路径等都明确返回 `EOPNOTSUPP`，不会静默忽略。
+//! 设备重命名/创建、多路径修改等明确返回 `EOPNOTSUPP`，不会静默忽略。
 
 use core::net::Ipv4Addr;
 
@@ -260,10 +260,12 @@ fn route_kind(kind: u8) -> Result<Ipv4RouteKind, i32> {
         1 => Ok(Ipv4RouteKind::Unicast),
         2 => Ok(Ipv4RouteKind::Local),
         3 => Ok(Ipv4RouteKind::Broadcast),
+        6 => Ok(Ipv4RouteKind::Blackhole),
+        8 => Ok(Ipv4RouteKind::Prohibit),
         7 => Ok(Ipv4RouteKind::Unreachable),
         9 => Ok(Ipv4RouteKind::Throw),
-        // anycast、multicast、blackhole、prohibit、nat：FIB 没有对应语义。
-        4 | 5 | 6 | 8 | 10 => Err(EOPNOTSUPP),
+        // anycast、multicast、nat：FIB 没有对应语义。
+        4 | 5 | 10 => Err(EOPNOTSUPP),
         _ => Err(EINVAL),
     }
 }
@@ -360,6 +362,8 @@ pub(super) fn route(
         Ipv4RouteKind::Broadcast,
         Ipv4RouteKind::Unreachable,
         Ipv4RouteKind::Throw,
+        Ipv4RouteKind::Blackhole,
+        Ipv4RouteKind::Prohibit,
     ] {
         request.kind = candidate;
         match configure_route(scope, request, DELETE) {

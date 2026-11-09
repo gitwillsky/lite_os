@@ -43,10 +43,11 @@ mod timing;
 mod udp;
 mod wait;
 pub(crate) use configuration::{
-    configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
-    configure_up, inject_loopback, install_interface, interface_index, interface_snapshot,
-    interface_snapshots, network_snapshot, packet_interface, packet_transmit_available,
-    route_snapshot,
+    ConfigurationSession, configure_address, configure_broadcast, configure_mtu, configure_netmask,
+    configure_route, configure_up, inject_loopback, install_interface, interface_index,
+    interface_snapshot, interface_snapshots, network_snapshot, observe_interfaces,
+    packet_interface, packet_transmit_available, prepare_configuration, prepare_next_hop,
+    prepare_routes, route_snapshot,
 };
 pub(crate) use timing::network_work_due;
 
@@ -66,7 +67,7 @@ const NETWORK_NOTIFICATION_BUDGET: usize = 64;
 // 缺失上限检查时 socket 压力会触发 kernel-wide allocation abort，而非 ENOMEM。
 const SOCKET_STORAGE_CAPACITY: usize = 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct InterfaceState {
     address: Option<Ipv4Addr>,
     prefix_length: u8,
@@ -106,9 +107,14 @@ fn try_allocate_endpoint(
 }
 
 struct NetworkStack {
+    // OWNER: 只在被观测的执行域装配一次的变化通知，不镜像接口状态；写入时通知，报文路径不检查它。
+    interface_observer: Option<Arc<Event>>,
     interfaces: Vec<NetworkInterface>,
     // OWNER: 本NET唯一IPv4 FIB，自动地址route和用户route共享配置/查找/退休事务。
     routing: route::RoutingTable,
+    // OWNER: 唯一在途配置；冷路径预备时分配，确认/回滚后释放。持有期间拒绝其他配置写入，
+    // 否则逆向节点会覆盖并发提交；数据包与 socket 操作不取得这项配置租约。
+    configuration: Option<alloc::boxed::Box<configuration::Transaction>>,
     // OWNER: protocol即时IP回复只有此有预算queue，ARP仍是实际link内响应。
     route_replies: route_reply::RouteReplies,
     // OWNER: 本 NET 的非零 IPv4 packet ID；HDRINCL 的零 ID 在发送准入时分配，不另建全局计数。
@@ -201,18 +207,23 @@ pub(crate) fn prepare_network(
         .map_err(|_| SocketError::NoMemory)?;
     let mut routing = route::RoutingTable::new();
     for interface in &interfaces {
-        routing.replace_interface(
+        routing.replace_interface(routing.prepare_interface(
             interface.index,
-            route::RoutingTable::prepare_interface(interface.index, interface.state)?,
-        );
+            interface.state,
+            interface.state,
+            &interfaces,
+            false,
+        )?);
     }
     let mut egress_routes = Vec::new();
     egress_routes
         .try_reserve_exact(SOCKET_STORAGE_CAPACITY)
         .map_err(|_| SocketError::NoMemory)?;
     Arc::try_new(NetworkStackOwner::new(NetworkStack {
+        interface_observer: None,
         interfaces,
         routing,
+        configuration: None,
         route_replies: route_reply::RouteReplies::new(),
         raw_packet_id: 1,
         egress_routes,

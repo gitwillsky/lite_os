@@ -55,6 +55,62 @@ static gate 与 disassembly gate 继续负责。
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
 
+网络 RX 的共享环领取按固定窗口摊销短锁与 acquire/release；批 guard 不分配，也不为每个队列新增长期帧缓存。
+`tcp-lifecycle-bench` 保留实际 TCP wire/NIC poll，并提供八帧 UDP 批次的每帧诊断成本；后者包含边界 peer 与读取分配，
+不作为纯 DMA/解析成本或整机 pps。最终原生批处理图的 blocking CPU/零分配基准及来宾吞吐仍由路由计划完成。
+同一基准增加生产 packet-wire::batch 的八帧 L2/L3 头部解析单项，复用既有每操作 CPU 阈值；输入预先构造，测量中不复制 payload 或分配。
+RX 调用者提供固定元数据窗口，临时类型化头只借当前 CPU 拥有的帧，退出批次不保留解析缓存；无新增锁、全局或堆对象。
+该单项覆盖批内头部机制，不包含 TCP/UDP checksum、FIB/协议状态、DMA 或跨核调度；不能据此宣称最终批处理图或实际吞吐达标。
+FIB 与 RIB 使用同一 `prefix-index` Poptrie 机制；算法、事务和字典所有权见[网络契约](../architecture-contract/ipc-network.md#rib-候选目录)。
+`tcp-lifecycle-bench` 使用生产 FIB 做 2,048 条与百万条随机查找、四路径带权选择、整批预备/发布/确认、独立下一跳更新及冻结快照。
+原 FIB/完整 NET blocking 项仍为 200 ns/op；冷准备、codec、快照与 RIB 管理查询只作诊断，不设置窄时间门限。
+来源基准沿实际正文→Source::capture_batch→Catalogue→select_resolved，分开记录编码/验证、捕获、目录、重选与冻结解析；不在产品内采样。
+
+宿主回归的保护边界：
+
+- 原 v4/v6 前缀线性 oracle、区间退休/恢复用例迁入 prefix-index；没有复制第二套产品索引。
+- 实际接口/FIB 事务用例覆盖逐分配故障、无分配发布/撤销、来源隔离、最终地址/MTU/网关/显式源准入及热拔出。
+  成员失效的临时位图只在需要时申请，退休根在 NET guard 外释放；大量撤回先预备压缩容量，失败保持原配置。
+- 既有网关/多路径用例覆盖重复 alias、精确重放零分配、加权比例/同流稳定、实际 UDP 出口与源地址及 DOWN→UP 不复活。
+  具名对象更新只交换槽，不重编译百万前缀；独立更新的分配故障、引用范围计数与零引用配置寿命按原事务验证。
+- 快照 codec 与真实 route_netlink 用例覆盖全部成员、精确权重约分、on-link/网关、截断/交叉引用/包尾、窗口边界和超过 16 KiB 消息；
+  UAPI 权重/长度溢出明确报错。接收先预备容量再推进游标，锁外退休与重取锁核对按代码审查确认，不新增生产采样或并发状态。
+- 复合正文用例覆盖保持/清除、接口/FIB 两段、截断与溢出；共用一个最终索引和选择器，邻接草稿只随接口数增长。
+  MTU 配置往返/默认/设备匹配沿已有协议/策略用例，DHCP 保留/替换与能力寿命按代码审查确认；没有另设每包基准。
+- RIB 候选用例覆盖来源替换/撤销、旧快照、字典压缩、跨来源偏好与同源代价、v4/v6 随机线性对照。
+  来源 codec 用例覆盖双栈/隐藏值/截断/引用，捕获联动用例覆盖路径比例/顺序去重、重复目标拒绝与地址族归属；既有 FIB 不覆盖这些信任边界。
+  解析回归覆盖双栈深链、环路、精确权重与组寿命；重选覆盖备用破环/依赖恢复、自捕获/drop、来源撤回与接口恢复。
+  聚合被 /32 遮住的用例以候选访问次数限定线性工作量，防止每个无关聚合都重编译全图；RIB→NET 沿原夹具验证共享出口、终止动作、发布/撤销/清除及编码拒绝。
+
+成本和证明边界：
+
+- FIB 常驻 Entry 的当前编译器布局为 64 bytes，百万属性数组约 61 MiB；RIB IPv4 来源记录 16 bytes，目录引用八字节/条。
+  这些数值不含容量余量、Poptrie、路径字典、原/候选两代或 RPC/VMO 正文，不是完整峰值内存或来宾 RSS。
+- Source 只捕获不可变整来源，按完整目标排序/GCD 约分后去重；没有逐路由 Arc、成员副本、实时接口状态缓存或新增每包锁。
+  来源映射/解析工作栈、无环 memo、重选位图/字典可用性和组去重表均为临时状态；冻结结果只存每前缀 u32 行号及来源字典结果引用，敏感前缀试探/有环子图最坏成本和增量更新尚未验收。
+- 编码只预留最终正文；RIB 只转换共享组并按需投影前缀，不收集逐行 DTO；借用解析线性验证，组查询不再扫描整组，VMO 调用前释放编码副本。
+  VMO 创建/捕获仍复制正文，传输时延和峰值占用不由 host codec 用例证明。
+- FIB 冷捕获/编译仍持 NET guard；快照编码后在 guard 外验证/建组索引，捕获加验证总时间不能当作持锁时间。
+  设备退出才过滤/重计，普通发布/撤销不分配；空表释放索引/数组，零引用具名定义按配置寿命保留。
+
+当前 macOS/AArch64 release host 的一次完整诊断记录（同进程先完成 FIB，再测来源/RIB）：
+
+| 生产路径 | 实测 | 范围 |
+|---|---|---|
+| 百万 FIB 随机查询 / 四路径查询 | 189.50 / 190.25 ns/op | 原 200 ns 门限；2,048 条约 29.04 ns/op |
+| 完整 NET poll | 26.02 ns/handle | 原门限；不是端到端包吞吐 |
+| 百万 FIB 集合预备 / 激活确认 | 81.3 ms / 3.04 µs | 冷路径；不含 RPC/VMO |
+| 独立共享下一跳更新预备 / 激活确认 | 2.75 / 0.83 µs | 不复制或重编译前缀 |
+| 冻结快照捕获加验证 | 17.9 ms | 38,078,236 bytes、3 组；还含原 2,048 条路由，不含 VMO |
+| 百万来源编码加验证 / 捕获 | 4.0 / 2.7 ms | 正文 13,000,047 bytes，类型化输入构造不计时 |
+| 百万 RIB 目录预备 / 查询 | 13.8 ms / 109.71 ns/op | 来源已捕获，单属性/单下一跳；不是服务收敛 |
+| 百万选路集重选解析 / 已解析视图查询 | 2.9 ms / 131.64 ns/op | 正常快路径，共用一个直接组；不代表递归图/环路最坏成本 |
+| 百万选路集到原生 FIB 编码加验证 | 21.9 ms | 正文 42,000,058 bytes；只转换一个共享组，不收集百万 DTO，不含 VMO |
+| 百万条共享下一跳同时失效的重选 | 8.3 ms | 无备用、无递归依赖；按对象批量暂退，最终零选择/零结果组 |
+
+以上为宿主诊断，历史样本存在超阈值抖动，日志保留且未改阈值；并行负载下壁钟变化不能独立证明性能因果，整机与目标硬件仍须验收。
+这些不替代真实 RPC/VMO、百万 IPv4/25 万 IPv6 的内存/更新/吞吐、RCU、per-VRF 与整机验收；阶段 3/6 仍未完成。
+
 桌面用户态库使用各 crate 的 `cargo bench -p canvas -p typeface` 作诊断，不设宿主时间阈值。
 单项光栅成本不能推导整帧瓶颈；窗口交互须分别测量应用绘制、像素传输、合成与显示完成，
 以实际分辨率、多窗口和缩放 workload 比较，不能由宿主微基准直接宣称 guest FPS。
@@ -178,6 +234,28 @@ production `VmaIndexState` transition tests 覆盖 stack grow、split/protect/me
 unpublished rollback；AVL neighbor tests 对 16,384 entries 校验 comparison bound。
 FallibleMap cost gate 还固定 RV64 iterator 不超过 16 bytes、4,096 项 persistent scan 至多一次
 key comparison、随机 `BTreeMap::retain` 模型、successor-link 与 retained node identity；
+retain 结构 gate 覆盖每节点一次 predicate、零 key comparison 和 predicate panic 后的有效空表。
+原生接口批次仅在冷配置路径分配候选根、设备依赖与预备 waiter，不新增包处理锁/缓存；故障夹具覆盖预备 OOM 和发布/撤销零分配。
+大规模配置持锁时长仍属整机诊断；不把这些结构/寿命检查当成百万路由提交时延或吞吐验收。
+配置提交与原文件补偿只在管理/故障路径申请空间；同一 Port 仅在有实际待处理工作时按截止重试，空闲不轮询。
+存储能力故障夹具覆盖替换前后失败、撤销首次创建、撤销结果不确定和原字节未变时不重写；这些是生产补偿逻辑的故障边界，
+不等于真实 FUSE/ext4 崩溃一致性或整机配置延迟验收，故不另设 host wall-clock microbenchmark。
+配置 JSON 编解码与按需 Schema 生成复用 no_std + alloc 的 Serde/Schemars，只在冷管理路径分配，不引入缓存、全局状态或包处理间接层。
+解除 libc 列表上限后，搜索域验证用有序集合检查大小写无关重复，避免长列表二次扫描；配置名和设备事实匹配不缓存第二份绑定。
+现有协议/配置夹具覆盖历史 1–5 迁移、仅名称策略继承、重复键拒绝及超出 libc 容量的完整列表往返，不增设耗时基准；最终管理延迟和内存仍待整机诊断。
+整份替换先编译全部接口再以一份 NET 批次发布，临时 DHCP 容器和批描述在激活前预留；健康网络的名称/DNS 修改不重建网络。
+DHCP/禁用模式下未生效的静态输入不参与网络重建判断；整批确认失败共用截止与一次唤醒，重试合并所有待应用接口，通知/批容器 OOM 不产生过期截止忙转。
+JSON 对比使用相同类型序列化的值树，递归对象、整项比较有序数组，变更记录借用前后值而不复制每份子树；属于冷审阅路径，未新增包处理分配或缓存。
+扩展配置用例检查 JSON Pointer 转义、null/缺失与列表顺序，NET 整批撤销和存储补偿沿用既有故障用例；不为冷审阅单独加入时间基准。
+大配置正文一律经 VMO/SCM_RIGHTS；控制帧与正文解耦，不因大文档增加 datagram 缓冲。native 独占读取缓冲使用 fallible 容量检查，私有文件不再有 48 KiB 内联上限。
+Linux 输入与驱动 ELF 更新复用 RegularFile::snapshot_vmo，以 32 KiB 捕获缓冲控制临时工作集；独立页对象保证源关闭后安全，不能假设底层 pager 的用户态 owner 仍存活。
+输出直接把原只读 VMO 包装为 regular OFD，无整份正文的适配层副本。IMPORT 只返回预留的固定确认，提交后不再分配文档。
+控制帧用例覆盖 u64 大长度与方法/尾部约束，既有 Linux ancillary 用例扩展正文截断的 fd 退休；后者当前未在真实 Linux 运行，不能替代整机传输/内存诊断。
+已发布配置改为不可变 Arc；导出与备份只增引用，在锁外编码/写盘。新 Arc 在持久副作用前准备，不改变唯一配置 owner 或持久决定语义。
+自动备份仅增加一个同服务后台线程及一个短状态锁，避免周期写盘占主设备/租约 Port；禁用时无周期唤醒，不增加服务、索引文件或包处理开销。
+保留阶段只枚举名字/元数据，不读取每个大备份；确认后释放大捕获缓冲，清理失败不重新创建副本，取消快照在状态锁外释放。
+目录 framing 无分配、两处消费者共用同一固定格式检查；私有目录 LOOKUP/OPENDIR 逐项归还。轻量故障用例覆盖已创建但未确认和已删除但回复失败，未执行真实定时/断电或内存基准。
+
 architecture-check 禁止 production one-shot iterator lookup、fixed path stack、逐节点 retain
 join 和 AF_UNIX detach 全图 retain。
 architecture fence 要求 100 VMA、1 MiB prepare-user-write 为 0 次 stack 全扫描，hinted mmap 为 0 次 range/RLIMIT/push/merge 全扫描。
@@ -191,9 +269,9 @@ UDP/TCP ephemeral allocator 使用 16,384-bit 占用投影；固定 N=1,024 endp
 buffer 和三个 1,024-fd pselect bitmap 为代表样本：copyin 前死写由 1,180,032 bytes 降为 0；
 publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁止恢复预清零双轨。
 
-PLIC level mask 不增加 benchmark：以一次 priority 写入替代逐 CPU enable bitmap 修改，
-unmask 保留原 affinity 装配并写回有效 priority。MMIO 时序不由 host 数值模拟；实际寄存器 owner
-回归固定 mask/complete 的 enable 不变量，RISC-V 混合 DMA 冷启动与持续 I/O 裁决活性。
+RISC-V APLIC/IMSIC 的 IRQ mask/ack 只修改源使能与本地 CSR，不逐 IRQ 发 IPI 或分配；
+冷迁移通过 GENMSI marker 与本地 CSR 确认退休。完整成本与寿命边界见[硬件资源契约](../architecture-contract/hardware-resources.md#risc-v-aia)。
+MMIO 时序不由 host 数值模拟；每队列路由、late MSI、level 重武装与持续 I/O 活性留待目标机统一验收。
 
 受限硬件视图的 normal/private 根具有独立 ASID，私有区共用唯一 owner 的下级页表，共享区只由共享地址空间装入一次。
 成员根只借用对应子树；已有全 ASID fence 覆盖所有别名，退休先完成 fence 再释放 owner。

@@ -5,16 +5,18 @@ edition = "2024"
 
 [dev-dependencies]
 packet-wire = { path = "../../libraries/packet-wire" }
+pci-config = { path = "../../libraries/pci-config" }
 native-abi = { path = "../../abi/native-abi" }
 mmio = { path = "../../libraries/mmio" }
 native-runtime = { path = "../../system/native-runtime" }
 span-heap = { path = "../../libraries/span-heap" }
 device-model = { path = "../../system/device-model" }
+filesystem-protocol = { path = "../../system/filesystem-protocol" }
 device-protocol = { path = "../../system/device-protocol" }
 network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
 fallible-tree = { path = "../../libraries/fallible-tree" }
-dtb-walker = "=0.2.0-alpha.3"
+dtb-walker = { path = "../../vendor/dtb-walker", version = "=0.2.0-alpha.3" }
 linux-abi = { path = "../../abi/linux-abi" }
 boot-scene = { path = "../../libraries/boot-scene" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }

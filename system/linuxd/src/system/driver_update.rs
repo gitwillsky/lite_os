@@ -1,9 +1,8 @@
 //! 通过 Linux AF_UNIX 和 SCM_RIGHTS 把管理员已打开的 ELF 交给原生更新控制面。
 
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec};
 use launch_protocol::driver_update::{self, IMAGE_LIMIT};
-use native_runtime::Vmo;
-use native_runtime::native_abi::{self, Status, rights};
+use native_runtime::native_abi::{self, Status};
 
 use crate::file::OpenFileDescription;
 use crate::net::{ReceivedMessage, Socket};
@@ -63,29 +62,14 @@ fn forward(bytes: &[u8; 16], message: ReceivedMessage) -> Result<[u8; 8], Status
     }
     // 传递只读副本，管理器装载、重绑及回退都不会再次打开可变路径。
     let content = file.regular_file().map_err(|_| native_abi::ERR_IO)?;
-    let image = Vmo::create(metadata.size, 0)?;
-    let mut buffer = Vec::new();
-    let chunk = 64 * 1024;
-    buffer
-        .try_reserve_exact(chunk)
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    buffer.resize(chunk, 0);
-    let mut offset = 0;
-    while offset < metadata.size {
-        let count = buffer.len().min((metadata.size - offset) as usize);
-        let read = content
-            .read(offset, &mut buffer[..count])
-            .map_err(|_| native_abi::ERR_IO)?;
-        if read.bytes == 0 {
-            return Err(native_abi::ERR_IO);
-        }
-        image.write(&buffer[..read.bytes], offset)?;
-        offset += read.bytes as u64;
-    }
+    let image = content
+        .snapshot_vmo(metadata.size)
+        .map_err(|error| match error {
+            crate::fs::FileSystemError::OutOfMemory => native_abi::ERR_NO_MEMORY,
+            _ => native_abi::ERR_IO,
+        })?;
     let channel = crate::handles::services().connect(service_directory::DRIVER_UPDATE)?;
-    let readonly =
-        image.duplicate(rights::READ | rights::TRANSFER | rights::DUPLICATE | rights::INSPECT)?;
-    channel.write(&bytes[8..], vec![readonly.into_handle()])?;
+    channel.write(&bytes[8..], vec![image.into_handle()])?;
     channel
         .read_wait(native_abi::DEADLINE_INFINITE)?
         .bytes

@@ -2,14 +2,14 @@
 //!
 //! 只关心由用户态驱动拥有的设备：VirtIO-MMIO transport、通用 PCI ECAM host 与 IOMMU。
 //! 中断控制器、串口、RTC 与定时器由内核拥有，这里不解析。中断说明符按架构解码：
-//! AArch64 为 GICv3 三 cell（SPI 号 + 32），RISC-V 为 PLIC 单 cell（source 号）。
+//! AArch64 为 GICv3 三 cell（SPI 号 + 32），RISC-V 为 APLIC 两 cell（source 号与触发标志）。
 
 use alloc::vec::Vec;
 use core::ops::Range;
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, WalkOperation};
 
-use super::pci_host::PciHost;
+use super::pci_host::{MessageRouting, PciHost, RequesterMap};
 use super::virtio_mmio::{VirtioMmioScan, VirtioMmioTransports};
 
 /// 设备树中的 IOMMU。
@@ -33,8 +33,16 @@ pub(crate) struct DeviceFacts {
 #[cfg(target_arch = "aarch64")]
 const INTERRUPT_CELLS: usize = 3;
 #[cfg(target_arch = "riscv64")]
-const INTERRUPT_CELLS: usize = 1;
-/// PCI `interrupt-map` 每项中父中断控制器的地址 cell 数（GICv3 为 2，PLIC 为 0）。
+const INTERRUPT_CELLS: usize = 2;
+#[cfg(target_arch = "aarch64")]
+const MESSAGE_COMPATIBLE: &str = "arm,gic-v3-its";
+#[cfg(target_arch = "aarch64")]
+const MESSAGE_CELLS: u32 = 1;
+#[cfg(target_arch = "riscv64")]
+const MESSAGE_COMPATIBLE: &str = "riscv,imsics";
+#[cfg(target_arch = "riscv64")]
+const MESSAGE_CELLS: u32 = 0;
+/// PCI `interrupt-map` 每项中父中断控制器的地址 cell 数（GICv3 为 2，APLIC 为 0）。
 #[cfg(target_arch = "aarch64")]
 const PARENT_ADDRESS_CELLS: usize = 2;
 #[cfg(target_arch = "riscv64")]
@@ -66,7 +74,12 @@ fn decode_interrupt(cells: &[u8]) -> Option<u32> {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        Some(be_u32(cells)).filter(|&source| source != 0)
+        assert_eq!(
+            be_u32(&cells[4..8]),
+            4,
+            "driver nodes require level-high APLIC interrupts"
+        );
+        Some(be_u32(&cells[..4])).filter(|&source| source != 0)
     }
 }
 
@@ -126,6 +139,9 @@ struct PciScan {
     /// (RID 基址, IOMMU phandle, stream 基址, 长度)。
     stream_map: Vec<(u32, u32, u32, u32)>,
     stream_mask: Option<u32>,
+    message_map: Vec<(u32, u32, u32, u32)>,
+    message_mask: Option<u32>,
+    message_parent: Option<u32>,
 }
 
 #[derive(Default)]
@@ -133,6 +149,54 @@ struct IommuScan {
     phandle: Option<u32>,
     kind: Option<u32>,
     reg: Option<Range<usize>>,
+}
+
+#[derive(Default)]
+struct MessageControllerScan {
+    compatible: bool,
+    controller: bool,
+    cells: Option<u32>,
+    phandle: Option<u32>,
+    supervisor: bool,
+}
+
+/// 把同一目标控制器的 phandle 映射归一；不复制控制器状态或假设 stream/message ID 相等。
+fn requester_map(
+    rows: Vec<(u32, u32, u32, u32)>,
+    target: Option<u32>,
+    mask: Option<u32>,
+) -> RequesterMap {
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(rows.len())
+        .expect("PCI requester map allocation");
+    for (base, phandle, target_base, length) in rows {
+        assert_eq!(
+            Some(phandle),
+            target,
+            "PCI map references an unknown controller"
+        );
+        ranges.push((base, target_base, length));
+    }
+    RequesterMap::new(ranges, mask.unwrap_or(u32::MAX))
+}
+
+/// 标准 map 条目为 RID、phandle、目标 ID、length，不能接受尾部截断。
+fn decode_map(bytes: &[u8], rows: &mut Vec<(u32, u32, u32, u32)>) {
+    assert!(
+        !bytes.is_empty() && bytes.len().is_multiple_of(16),
+        "invalid PCI requester map"
+    );
+    rows.try_reserve_exact(bytes.len() / 16)
+        .expect("PCI requester map allocation");
+    for row in bytes.as_chunks::<16>().0 {
+        rows.push((
+            be_u32(&row[0..4]),
+            be_u32(&row[4..8]),
+            be_u32(&row[8..12]),
+            be_u32(&row[12..16]),
+        ));
+    }
 }
 
 /// 解码设备事实。
@@ -146,30 +210,50 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
     let mut pci_found: Option<PciScan> = None;
     let mut iommu = IommuScan::default();
     let mut iommu_found: Option<IommuFacts> = None;
-    let mut commit = |pci: &mut PciScan, iommu: &mut IommuScan| {
-        let pending = core::mem::take(pci);
-        if pending.is_host && pci_found.is_none() {
-            pci_found = Some(pending);
-        }
-        let pending = core::mem::take(iommu);
-        if let Some(kind) = pending.kind {
-            let reg = pending.reg.expect("IOMMU node lacks reg");
-            assert!(
-                iommu_found.is_none(),
-                "multiple platform IOMMUs are not supported"
-            );
-            iommu_found = Some(IommuFacts {
-                kind,
-                base: reg.start,
-                size: reg.end - reg.start,
-                phandle: pending.phandle.expect("IOMMU lacks phandle"),
-            });
-        }
-    };
+    let mut messages = MessageControllerScan::default();
+    let mut message_phandle = None;
+    let mut commit =
+        |pci: &mut PciScan, iommu: &mut IommuScan, messages: &mut MessageControllerScan| {
+            let pending = core::mem::take(messages);
+            if pending.compatible && (MESSAGE_CELLS != 0 || pending.supervisor) {
+                assert!(
+                    pending.controller
+                        && if MESSAGE_CELLS == 0 {
+                            pending.cells.is_none_or(|cells| cells == 0)
+                        } else {
+                            pending.cells == Some(MESSAGE_CELLS)
+                        },
+                    "invalid MSI controller binding"
+                );
+                let phandle = pending.phandle.expect("MSI controller lacks phandle");
+                assert!(
+                    message_phandle.replace(phandle).is_none(),
+                    "multiple MSI controllers are not supported"
+                );
+            }
+            let pending = core::mem::take(pci);
+            if pending.is_host && pci_found.is_none() {
+                pci_found = Some(pending);
+            }
+            let pending = core::mem::take(iommu);
+            if let Some(kind) = pending.kind {
+                let reg = pending.reg.expect("IOMMU node lacks reg");
+                assert!(
+                    iommu_found.is_none(),
+                    "multiple platform IOMMUs are not supported"
+                );
+                iommu_found = Some(IommuFacts {
+                    kind,
+                    base: reg.start,
+                    size: reg.end - reg.start,
+                    phandle: pending.phandle.expect("IOMMU lacks phandle"),
+                });
+            }
+        };
     dtb.walk(|_, object| match object {
         DtbObj::SubNode { .. } => {
             virtio.begin_node();
-            commit(&mut pci, &mut iommu);
+            commit(&mut pci, &mut iommu, &mut messages);
             WalkOperation::StepInto
         }
         DtbObj::Property(Property::Reg(mut registers)) => {
@@ -184,11 +268,15 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
             pci.is_host |= compatible
                 .clone()
                 .any(|value| value == Str::from("pci-host-ecam-generic"));
+            messages.compatible |= compatible
+                .clone()
+                .any(|value| value == Str::from(MESSAGE_COMPATIBLE));
             iommu.kind = iommu.kind.or_else(|| iommu_kind(compatible));
             WalkOperation::StepOver
         }
         DtbObj::Property(Property::PHandle(phandle)) => {
             iommu.phandle = Some(phandle.value());
+            messages.phandle = Some(phandle.value());
             WalkOperation::StepOver
         }
         DtbObj::Property(Property::General { name, value }) => {
@@ -202,52 +290,65 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
                 assert_eq!(value.len(), 4, "invalid iommu-map-mask");
                 pci.stream_mask = Some(be_u32(value));
             } else if name == Str::from("iommu-map") {
-                assert!(
-                    !value.is_empty() && value.len().is_multiple_of(16),
-                    "invalid iommu-map"
-                );
-                for row in value.as_chunks::<16>().0 {
-                    pci.stream_map.push((
-                        be_u32(&row[0..4]),
-                        be_u32(&row[4..8]),
-                        be_u32(&row[8..12]),
-                        be_u32(&row[12..16]),
-                    ));
-                }
+                decode_map(value, &mut pci.stream_map);
+            } else if name == Str::from("msi-map-mask") {
+                assert_eq!(value.len(), 4, "invalid msi-map-mask");
+                pci.message_mask = Some(be_u32(value));
+            } else if name == Str::from("msi-map") {
+                decode_map(value, &mut pci.message_map);
+            } else if name == Str::from("msi-parent") {
+                assert_eq!(value.len(), 4, "direct MSI parent has no argument cells");
+                pci.message_parent = Some(be_u32(value));
+            } else if name == Str::from("interrupts-extended") {
+                messages.supervisor = value
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .any(|pair| be_u32(&pair[4..]) == 9);
+            } else if name == Str::from("msi-controller") {
+                assert!(value.is_empty(), "invalid msi-controller marker");
+                messages.controller = true;
+            } else if name == Str::from("#msi-cells") {
+                assert_eq!(value.len(), 4, "invalid #msi-cells");
+                messages.cells = Some(be_u32(value));
             }
             WalkOperation::StepOver
         }
         DtbObj::Property(_) => WalkOperation::StepOver,
     });
-    commit(&mut pci, &mut iommu);
+    commit(&mut pci, &mut iommu, &mut messages);
     let pci = pci_found.and_then(|scan| {
-        let mut stream_map = Vec::new();
-        for (base, phandle, stream_base, length) in scan.stream_map {
+        let stream = requester_map(
+            scan.stream_map,
+            iommu_found.map(|iommu| iommu.phandle),
+            scan.stream_mask,
+        );
+        let messages = if let Some(parent) = scan.message_parent {
             assert!(
-                iommu_found.is_some_and(|iommu| iommu.phandle == phandle),
-                "PCI map references an unknown IOMMU"
+                MESSAGE_CELLS == 0 && scan.message_map.is_empty() && scan.message_mask.is_none(),
+                "invalid direct MSI parent or overlapping msi-map"
             );
-            assert!(
-                length != 0
-                    && base.checked_add(length - 1).is_some()
-                    && stream_base.checked_add(length - 1).is_some(),
-                "invalid IOMMU stream range"
+            assert_eq!(
+                Some(parent),
+                message_phandle,
+                "PCI MSI parent must be the supervisor controller"
             );
-            assert!(
-                !stream_map.iter().any(|&(old_base, _, old_length)| {
-                    (old_base..=old_base + old_length - 1).contains(&base)
-                        || (base..=base + length - 1).contains(&old_base)
-                }),
-                "overlapping iommu-map ranges"
-            );
-            stream_map.push((base, stream_base, length));
-        }
+            MessageRouting::Direct
+        } else if scan.message_map.is_empty() {
+            MessageRouting::None
+        } else {
+            MessageRouting::Remapped(requester_map(
+                scan.message_map,
+                message_phandle,
+                scan.message_mask,
+            ))
+        };
         Some(PciHost::new(
             scan.ecam.filter(|range| range.end > range.start)?,
             scan.mmio32?,
             scan.intx,
-            stream_map,
-            scan.stream_mask.unwrap_or(u32::MAX),
+            stream,
+            messages,
         ))
     });
     DeviceFacts {

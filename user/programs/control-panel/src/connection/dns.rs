@@ -5,7 +5,7 @@ use liteos_ui::{
     Dialogs, Event, EventKind, EventStream, Layout, MessageButtons, MessageIcon, SheetStyle,
     ValidationError, Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
 };
-use network_config::{DNS_MAX, normalize_dns_suffix, valid_search_list};
+use network_config::{normalize_dns_suffix, valid_search_list};
 use std::{fmt::Display, net::Ipv4Addr};
 
 pub(super) struct Settings {
@@ -198,7 +198,7 @@ pub(super) async fn edit(
                 0
             }) | (if manual { state::DISABLED } else { 0 }),
         )?;
-        servers.buttons(addresses.len(), true, addresses.len() < DNS_MAX)?;
+        servers.buttons(addresses.len(), true, true)?;
         domains.buttons(search.len(), manual, true)?;
         let Some(event) = events.next().await? else {
             break;
@@ -242,9 +242,7 @@ pub(super) async fn edit(
                 append_parent_suffixes = parents.state()? & state::CHECKED != 0;
             }
             EventKind::Activate { .. } => {
-                if let Some(index) =
-                    servers.editor(&event, addresses.len(), addresses.len() < DNS_MAX)?
-                {
+                if let Some(index) = servers.editor(&event, addresses.len(), true)? {
                     if let Some(address) =
                         edit_address(dialogs, sheet.window(), &addresses, index).await?
                     {

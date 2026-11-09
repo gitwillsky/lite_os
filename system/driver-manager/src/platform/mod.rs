@@ -155,3 +155,16 @@ pub(crate) fn bti(stream: Option<u32>) -> Bti {
     Bti::create(iommu(stream), stream.unwrap_or(0))
         .unwrap_or_else(|status| panic!("BTI creation failed: {status}"))
 }
+
+/// 仅授予一个消息设备 ID；与该节点 BTI 一并交付，不授予原始 LPI/SPI 范围。
+/// # Panics
+/// 原生 authority 创建失败时 fail-stop。
+pub(crate) fn msi_resource(device: u32) -> Resource {
+    Resource::create(
+        crate::handles::resource(),
+        native_abi::resource::MSI,
+        u64::from(device),
+        1,
+    )
+    .unwrap_or_else(|status| panic!("MSI device {device:#x} resource: {status}"))
+}

@@ -1,10 +1,12 @@
 //! VirtIO 1.4 modern PCI transport register codec.
 
+mod msix;
 use super::transport::VirtQueueAddresses;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use mmio::BusError;
 use mmio::MmioBus;
+pub(in crate::drivers::virtio) use msix::Msix;
 
 const DEVICE_FEATURE_SELECT: usize = 0x00;
 const DEVICE_FEATURE: usize = 0x04;
@@ -24,13 +26,14 @@ const QUEUE_DRIVER: usize = 0x28;
 const QUEUE_DEVICE: usize = 0x30;
 const NO_VECTOR: u16 = u16::MAX;
 
-/// A validated modern VirtIO PCI capability set using legacy INTx.
+/// A validated modern VirtIO PCI capability set; the network adapter may own an MSI-X table.
 pub(crate) struct PciTransport {
     common: MmioBus,
     notify: MmioBus,
     isr: MmioBus,
     device: Option<MmioBus>,
     notify_multiplier: u32,
+    msix: Option<Msix>,
     // OWNER: configure_queue 在独占初始化事务内读取 queue_notify_off 并校验通知窗口后发表。
     // 运行时每队列只有原子读取与 doorbell write，不访问共享 queue_select；否则并发通知会串到别的队列。
     // usize::MAX 表示尚未配置，偏移 0 是合法通知位置（multiplier 可以是 0）。
@@ -52,12 +55,13 @@ impl PciTransport {
     ///
     /// A transport whose accesses stay inside capability windows; None if the queue count
     /// cannot be read, is zero, or notification storage cannot be allocated.
-    pub(crate) fn new(
+    pub(in crate::drivers::virtio) fn new(
         common: MmioBus,
         notify: MmioBus,
         isr: MmioBus,
         device: Option<MmioBus>,
         notify_multiplier: u32,
+        msix: Option<Msix>,
     ) -> Option<Self> {
         let queues = usize::from(common.read_u16(NUM_QUEUES).ok()?);
         if queues == 0 {
@@ -72,15 +76,43 @@ impl PciTransport {
             isr,
             device,
             notify_multiplier,
+            msix,
             queue_notifications,
         })
     }
 
     pub(crate) fn initialize(&self) -> Result<(), BusError> {
+        if let Some(msix) = &self.msix {
+            msix.initialize()?;
+        }
         for notification in &self.queue_notifications {
             notification.store(usize::MAX, Ordering::Release);
         }
         self.common.write_u16(CONFIG_MSIX_VECTOR, NO_VECTOR)
+    }
+
+    /// 本 transport 实际拥有的消息表；没有平台 MSI authority 或 adapter 支持时为 None。
+    pub(in crate::drivers::virtio) fn message_interrupts(&self) -> Option<&Msix> {
+        self.msix.as_ref()
+    }
+
+    /// 配置变化使用同组的专用表索引；设备拒绝时不能启用消息源。
+    pub(in crate::drivers::virtio) fn assign_config_interrupt(
+        &self,
+        vector: u16,
+    ) -> Result<(), BusError> {
+        if self
+            .msix
+            .as_ref()
+            .is_none_or(|msix| vector >= msix.capacity())
+        {
+            return Err(BusError::InvalidAddress);
+        }
+        self.common.write_u16(CONFIG_MSIX_VECTOR, vector)?;
+        if self.common.read_u16(CONFIG_MSIX_VECTOR)? != vector {
+            return Err(BusError::InvalidAddress);
+        }
+        Ok(())
     }
 
     pub(crate) fn set_driver_features(&self, features: u64) -> Result<(), BusError> {
@@ -125,6 +157,7 @@ impl PciTransport {
         index: u32,
         requested: u16,
         addresses: VirtQueueAddresses,
+        interrupt: Option<u16>,
     ) -> Result<(), BusError> {
         let index = u16::try_from(index).map_err(|_| BusError::InvalidAddress)?;
         let notification = self
@@ -141,7 +174,18 @@ impl PciTransport {
             return Err(BusError::InvalidAddress);
         }
         self.common.write_u16(QUEUE_SIZE, requested)?;
-        self.common.write_u16(QUEUE_MSIX_VECTOR, NO_VECTOR)?;
+        let vector = interrupt.unwrap_or(NO_VECTOR);
+        if interrupt.is_some_and(|vector| {
+            self.msix
+                .as_ref()
+                .is_none_or(|msix| vector >= msix.capacity())
+        }) {
+            return Err(BusError::InvalidAddress);
+        }
+        self.common.write_u16(QUEUE_MSIX_VECTOR, vector)?;
+        if self.common.read_u16(QUEUE_MSIX_VECTOR)? != vector {
+            return Err(BusError::InvalidAddress);
+        }
         self.write_u64(QUEUE_DESC, addresses.descriptor)?;
         self.write_u64(QUEUE_DRIVER, addresses.driver)?;
         self.write_u64(QUEUE_DEVICE, addresses.device)?;
@@ -239,7 +283,7 @@ mod tests {
         .unwrap();
         let isr = MmioBus::new(&raw mut isr_byte as usize, 1).unwrap();
         common.write_u16(NUM_QUEUES, 2).unwrap();
-        let device = PciTransport::new(common, notify, isr, None, 2).unwrap();
+        let device = PciTransport::new(common, notify, isr, None, 2, None).unwrap();
         device.initialize().unwrap();
         assert_eq!(device.notify_queue(0), Err(BusError::InvalidAddress));
         for queue in 0..2 {
@@ -256,6 +300,7 @@ mod tests {
                         driver: 0x2000,
                         device: 0x3000,
                     },
+                    None,
                 )
                 .unwrap();
         }

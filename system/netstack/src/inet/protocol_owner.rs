@@ -97,7 +97,22 @@ impl NetworkStackOwner {
     ///
     /// waiter metadata 分配失败时返回 `NoMemory`。
     pub(super) fn lock(&self) -> Result<NetworkStackGuard<'_>, SocketError> {
-        let mut state = self.state.lock().map_err(|_| SocketError::NoMemory)?;
+        let state = self.state.lock().map_err(|_| SocketError::NoMemory)?;
+        Ok(self.consume_completed_closes(state))
+    }
+
+    /// 预备好的配置回滚使用同一 owner 与 close 清理；即使竞争也不再申请 waiter。
+    pub(super) fn lock_prepared(
+        &self,
+        wait: &mut TaskMutexWaitPreparation,
+    ) -> NetworkStackGuard<'_> {
+        self.consume_completed_closes(self.state.lock_prepared(wait))
+    }
+
+    fn consume_completed_closes<'a>(
+        &'a self,
+        mut state: TaskMutexGuard<'a, NetworkStackState>,
+    ) -> NetworkStackGuard<'a> {
         // 新 task transaction 必须先消费已完成 fput 的 commands；否则 close 返回后的
         // bind/new/read 会仍看到旧 port lease，或误用尚未清理的 retired slot。
         // state guard 阻止新 endpoint admission；每个已存在 registration 只发布一次 command。
@@ -108,10 +123,10 @@ impl NetworkStackOwner {
             };
             super::cleanup_endpoint(&mut state.stack, endpoint);
         }
-        Ok(NetworkStackGuard {
+        NetworkStackGuard {
             state,
             cleanup_backlog: false,
-        })
+        }
     }
 
     /// deferred poll 无等待地取得完整协议状态。

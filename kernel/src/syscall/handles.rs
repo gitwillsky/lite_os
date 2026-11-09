@@ -174,6 +174,10 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             ),
             _ => Err(native_abi::ERR_WRONG_TYPE),
         },
+        info::MSI => match &entry.object {
+            Object::Msi(msi) => write_info(call, &msi.info()),
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
         info::BTI => match &entry.object {
             Object::Bti(bti) => write_info(call, &bti.info()),
             _ => Err(native_abi::ERR_WRONG_TYPE),

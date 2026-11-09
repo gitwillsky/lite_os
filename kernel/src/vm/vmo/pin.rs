@@ -12,6 +12,13 @@ pub(crate) struct PinnedRange {
 }
 
 impl PinnedRange {
+    /// 固定页的缓存属性来自最终页 owner；slice 已在 pin 时归一，不复制一份可变属性。
+    pub(crate) fn cache_policy(&self) -> CachePolicy {
+        match &self.vmo.kind {
+            Kind::Physical { cache, .. } => *cache,
+            _ => CachePolicy::Cached,
+        }
+    }
     /// 固定页的物理页号，按 VMO 页序。
     pub(crate) fn pages(&self) -> &[PhysicalPageNumber] {
         &self.pages

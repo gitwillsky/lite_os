@@ -1,4 +1,4 @@
-//! 系统属性。主 DNS 后缀在网络标识中编辑，由 netcfg 持久化。
+//! 系统属性。主 DNS 后缀在网络标识中编辑，由 router_config 持久化。
 use crate::{Apply, Page, Response, child, group, image, label, pair};
 use liteos_ui::{
     Dialogs, Event, EventKind, Layout, PropertySheet, SheetStyle, ValidationError, Widget,

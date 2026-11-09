@@ -14,7 +14,7 @@ use device_protocol::ActivityBinding;
 pub(super) use network_protocol::InetProtocol;
 use network_protocol::{
     InetOptionChange, InterfaceSnapshot, Ipv4RouteError, Ipv4RouteRequest, NetworkSnapshot,
-    RemoteInetSocket, RouteChange, RouteSnapshot, SocketEndpoint, TRANSFER_LIMIT,
+    RemoteInetSocket, RouteChange, RoutingSnapshot, SocketEndpoint, TRANSFER_LIMIT,
 };
 
 use super::{
@@ -297,7 +297,7 @@ pub(crate) fn network_snapshot(scope: &NetNamespace) -> Result<Vec<NetworkSnapsh
     netstack::protocol(scope)?.network_snapshot()
 }
 
-pub(crate) fn route_snapshot(scope: &NetNamespace) -> Result<Vec<RouteSnapshot>, SocketError> {
+pub(crate) fn route_snapshot(scope: &NetNamespace) -> Result<RoutingSnapshot, SocketError> {
     netstack::protocol(scope)?.route_snapshot()
 }
 

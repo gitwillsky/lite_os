@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use native_abi::{Status, rights};
 
 use super::Call;
-use crate::object::{Bti, Interrupt, Iommu, Object};
+use crate::object::{Bti, Interrupt, Iommu, Msi, Object};
 
 pub(super) fn resource_create(call: &Call<'_>) -> Result<(), Status> {
     let parent = call.resource(call.arg_handle(0), rights::WRITE)?;
@@ -116,4 +116,28 @@ pub(super) fn bti_release_quarantine(call: &Call<'_>) -> Result<(), Status> {
     call.bti(call.arg_handle(0), rights::WRITE)?
         .release_quarantine();
     Ok(())
+}
+
+/// MSI resource 与 BTI 必须来自同一设备的受信装配；内核只验证不可扩大 authority。
+pub(super) fn msi_allocate(call: &Call<'_>) -> Result<(), Status> {
+    let resource = call.resource(call.arg_handle(0), rights::WRITE)?;
+    let bti = call.bti(call.arg_handle(1), rights::READ | rights::WRITE)?;
+    let device = call.arg_u32(2);
+    if !resource.covers_msi(device) {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let group = Arc::try_new(Msi::create(bti, device, call.arg_u32(3))?)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    call.publish(Object::Msi(group), call.arg(4)).map(|_| ())
+}
+pub(super) fn msi_create_interrupt(call: &Call<'_>) -> Result<(), Status> {
+    let group = call.msi(call.arg_handle(0), rights::WRITE)?;
+    let table = call.vmo(
+        call.arg_handle(2),
+        rights::READ | rights::WRITE | rights::MAP,
+    )?;
+    let interrupt = Arc::try_new(group.interrupt(call.arg_u32(1), &table, call.arg(3))?)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    call.publish(Object::Interrupt(interrupt), call.arg(4))
+        .map(|_| ())
 }

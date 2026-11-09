@@ -291,7 +291,7 @@ fn retain_matches_random_btree_models_without_replacing_kept_nodes() {
 }
 
 #[test]
-fn retain_calls_predicate_once_per_node_without_key_comparisons() {
+fn retain_visits_each_node_once_without_key_comparisons() {
     const ENTRIES: usize = 4_096;
     let comparisons = Rc::new(Cell::new(0));
     let key = |value| CountingKey {
@@ -314,6 +314,29 @@ fn retain_calls_predicate_once_per_node_without_key_comparisons() {
     assert_eq!(visits.get(), ENTRIES);
     assert_eq!(comparisons.get(), 0);
     assert_eq!(node_addresses(&map), before);
+    map.test_assert_invariants();
+
+    visits.set(0);
+    comparisons.set(0);
+    map.retain(|_, value| {
+        visits.set(visits.get() + 1);
+        value % 2 != 0
+    });
+    assert_eq!(visits.get(), ENTRIES);
+    assert_eq!(comparisons.get(), 0);
+    assert_eq!(map.len(), ENTRIES / 2);
+    assert!(node_addresses(&map).is_subset(&before));
+    map.test_assert_invariants();
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            map.retain(|_, _| panic!("retention predicate failed"));
+        }))
+        .is_err()
+    );
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
+    map.test_assert_invariants();
+    map.try_insert(key(ENTRIES), ENTRIES).unwrap();
     map.test_assert_invariants();
 }
 

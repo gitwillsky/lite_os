@@ -53,7 +53,7 @@ pub(crate) use netstack::init;
 pub(crate) use network_protocol::{
     InetAddress, InterfaceSnapshot, InternetOption, InternetPacketInfo, InternetSendPacketInfo,
     Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress,
-    PacketChecksum, PacketInformation, RouteChange, RouteSnapshot, SocketError, SocketPollState,
+    PacketChecksum, PacketInformation, RouteChange, RoutingSnapshot, SocketError, SocketPollState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,9 +19,9 @@ use device_model::network::NetworkStatistics;
 use fallible_tree::FallibleMap;
 
 use super::{
-    CoreBufferLimit, InterfaceSnapshot, NetlinkAddress, ReceivedMessage, RouteSnapshot,
-    SocketAddress, SocketError, SocketIoDirection, SocketMemory, SocketPollState,
-    interface_snapshots, kobject, network_snapshot, route_snapshot,
+    CoreBufferLimit, InterfaceSnapshot, NetlinkAddress, ReceivedMessage, SocketAddress,
+    SocketError, SocketIoDirection, SocketMemory, SocketPollState, interface_snapshots, kobject,
+    network_snapshot, route_snapshot,
 };
 
 mod change;
@@ -29,7 +29,7 @@ mod codec;
 
 /// `NETLINK_ROUTE` 的协议号，作为 port 空间 key。
 const PROTOCOL_ROUTE: u8 = 0;
-/// 单个回复数据报的上限；容量更小的接收缓冲会截断，与 Linux 的 MSG_TRUNC 语义一致。
+/// dump 的打包目标；首条完整消息可超过该窗口，用户缓冲不足时按 Linux MSG_TRUNC 截断。
 const MAX_DATAGRAM: usize = 16384;
 /// 一次 sendmsg 内允许排队的 ACK/错误数据报个数，超出按 netlink overrun 处理。
 const MAX_CONTROL_DATAGRAMS: usize = 64;
@@ -42,14 +42,22 @@ const EINVAL: i32 = 22;
 const EOPNOTSUPP: i32 = 95;
 
 enum Rows {
+    Empty,
     Links(Vec<(InterfaceSnapshot, NetworkStatistics)>),
     Addresses(Vec<InterfaceSnapshot>),
-    Routes(Vec<RouteSnapshot>),
+    Routes(codec::RouteDump),
 }
 
 impl Rows {
+    fn maximum_message_size(&self) -> usize {
+        match self {
+            Self::Routes(rows) => rows.maximum_message_size(),
+            _ => 1024,
+        }
+    }
     fn len(&self) -> usize {
         match self {
+            Self::Empty => 0,
             Self::Links(rows) => rows.len(),
             Self::Addresses(rows) => rows.len(),
             Self::Routes(rows) => rows.len(),
@@ -322,15 +330,18 @@ impl RouteSocket {
                 }
                 let rows = if matches!(family, AF_UNSPEC | AF_INET) {
                     route_snapshot(scope)
+                        .map_err(|error| -errno_for(error))
+                        .and_then(codec::RouteDump::new)
+                        .map(Rows::Routes)
                 } else {
-                    Ok(Vec::new())
+                    Ok(Rows::Empty)
                 };
                 match rows {
                     Ok(rows) => {
-                        *dump = Some(new_dump(Rows::Routes(rows), header.sequence));
+                        *dump = Some(new_dump(rows, header.sequence));
                         Reply::None
                     }
-                    Err(error) => Reply::Error(-errno_for(error)),
+                    Err(error) => Reply::Error(error),
                 }
             }
             // 修改请求：先检查 CAP_NET_ADMIN（Linux rtnetlink_rcv_msg 的顺序），再分发。
@@ -430,42 +441,57 @@ impl RouteSocket {
         output: &mut ReceiveBuffer<'_>,
         peek: bool,
     ) -> Result<ReceivedMessage, SocketError> {
-        // 回复缓冲在 guard 外准备：至少容纳一条最大消息，其余按接收缓冲容量封顶。
         let capacity = output.remaining().clamp(1024, MAX_DATAGRAM);
         let mut chunk: Vec<u8> = Vec::new();
-        chunk
-            .try_reserve_exact(capacity)
-            .map_err(|_| SocketError::NoMemory)?;
-        // 被摘下的节点/游标在 guard 外释放。
-        let mut retired_control = None;
-        let mut retired_dump = None;
-        {
-            let mut guard = self.state.lock();
-            let state = guard.as_mut().ok_or(SocketError::NotConnected)?;
-            if state.pending_error {
-                state.pending_error = false;
-                return Err(SocketError::NoBuffer);
-            }
-            let port = state.address.map_or(0, |address| address.port_id);
-            if let Some(front) = state.control.front() {
-                chunk.extend_from_slice(front);
-                if !peek {
-                    retired_control = state.control.pop_front();
+        // 1. 只观察当前不可变回复的存储需求；分配和用户输出准备均不持有 state guard。
+        loop {
+            let required = {
+                let guard = self.state.lock();
+                let state = guard.as_ref().ok_or(SocketError::NotConnected)?;
+                reply_capacity(state, capacity)
+            };
+            chunk
+                .try_reserve_exact(required)
+                .map_err(|_| SocketError::NoMemory)?;
+            output
+                .prepare_append(required)
+                .map_err(|()| SocketError::NoMemory)?;
+            let mut retired_control = None;
+            let mut retired_dump = None;
+            {
+                let mut guard = self.state.lock();
+                let state = guard.as_mut().ok_or(SocketError::NotConnected)?;
+                // 2. 另一线程可能换入更大的回复；重做外部分配，不推进游标或摘除数据报。
+                let needed = reply_capacity(state, capacity);
+                if needed > chunk.capacity()
+                    || needed.min(output.remaining()) > output.prepared_remaining()
+                {
+                    continue;
                 }
-            } else if let Some(dump) = state.dump.as_mut() {
-                let finished = fill_chunk(dump, port, capacity, &mut chunk, peek);
-                if finished && !peek {
-                    retired_dump = state.dump.take();
+                if state.pending_error {
+                    state.pending_error = false;
+                    return Err(SocketError::NoBuffer);
                 }
-            } else {
-                return Err(SocketError::Again);
+                let port = state.address.map_or(0, |address| address.port_id);
+                if let Some(front) = state.control.front() {
+                    chunk.extend_from_slice(front);
+                    if !peek {
+                        retired_control = state.control.pop_front();
+                    }
+                } else if let Some(dump) = state.dump.as_mut() {
+                    let finished = fill_chunk(dump, port, capacity, &mut chunk, peek);
+                    if finished && !peek {
+                        retired_dump = state.dump.take();
+                    }
+                } else {
+                    return Err(SocketError::Again);
+                }
             }
+            // 3. 所有可失败准备已完成；guard 外释放退休对象，再无分配地复制已初始化正文。
+            drop((retired_control, retired_dump));
+            break;
         }
-        drop((retired_control, retired_dump));
         let full_length = chunk.len();
-        output
-            .prepare_append(full_length)
-            .map_err(|()| SocketError::NoMemory)?;
         let count = output.append(&chunk);
         Ok(ReceivedMessage {
             count,
@@ -628,6 +654,19 @@ fn collect_links(
     Ok(rows)
 }
 
+/// 当前待交付回复的容量上界；只读冻结布局，不在 guard 内分配。
+fn reply_capacity(state: &RouteSocketState, window: usize) -> usize {
+    window.max(state.control.front().map_or_else(
+        || {
+            state
+                .dump
+                .as_ref()
+                .map_or(0, |dump| dump.rows.maximum_message_size())
+        },
+        |front| front.len(),
+    ))
+}
+
 /// 把 dump 的下一个数据报写进 `chunk`；`peek` 时不推进游标。
 ///
 /// # Returns
@@ -647,6 +686,7 @@ fn fill_chunk(dump: &mut Dump, port: u32, limit: usize, chunk: &mut Vec<u8>, pee
     };
     while next < total {
         let encoded = match &dump.rows {
+            Rows::Empty => None,
             Rows::Links(rows) => {
                 let (snapshot, statistics) = &rows[next];
                 Some(codec::link(
@@ -658,7 +698,13 @@ fn fill_chunk(dump: &mut Dump, port: u32, limit: usize, chunk: &mut Vec<u8>, pee
                 ))
             }
             Rows::Addresses(rows) => codec::address(&rows[next], dump.sequence, port),
-            Rows::Routes(rows) => Some(codec::route(&rows[next], dump.sequence, port)),
+            Rows::Routes(rows) => {
+                if !rows.append(next, dump.sequence, port, limit, chunk) {
+                    break;
+                }
+                next += 1;
+                continue;
+            }
         };
         // 没有地址的行（理论上已被过滤）直接跳过。
         let Some(encoded) = encoded else {

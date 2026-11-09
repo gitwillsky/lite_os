@@ -476,3 +476,7 @@ ext4 的 FUSE channel 沿 `service-rpc::serve_messages` 的既有弹性线程池
 普通文件回写只登记本批内容 VMO 的 slice，避免固定整个大文件；登记的写解析完成后再 BEGIN，
 以免固定动作把 AwaitingClean 重新标脏。extent 分配后直接批量 DMA，完成并解除固定后才 END；无堆数据快照或 journal 数据副本。
 截断清零页尾保留有效前缀的脏状态，失败页保持可查询；重叠 mmap 写保留较新的 Dirty，不以旧快照覆盖。
+
+## 原生私有存储
+
+目录能力、整文件/枚举协议、原子创建与命名持久化的唯一 owner 见[服务私有存储契约](service-storage.md)。

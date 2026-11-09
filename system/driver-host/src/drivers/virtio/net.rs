@@ -6,6 +6,7 @@ use alloc::{
 use core::sync::atomic::{AtomicU8, Ordering};
 
 mod control;
+mod interrupts;
 mod offload;
 mod queue_pair;
 mod rx_slots;
@@ -60,8 +61,10 @@ pub(crate) struct VirtIONetworkDevice {
     maximum_pairs: u16,
     rss: Option<NetworkRssCapabilities>,
     completion_irq: VirtIOCompletionIrq,
+    // OWNER: 一条物理 NIC 一个 port；各活动会话绑定实际 RX/TX/config 向量，不为每个队列创建线程。
+    message_port: Option<native_runtime::Port>,
     // OWNER: 冷配置租约与 IRQ 回调；Some(Weak) 即使已不能 upgrade，也要等旧 Drop 撤销 DMA 后清空。
-    // 否则新 OPEN 可能在旧队列正在析构时重新启用设备。IRQ 不持有活动队列强引用。
+    // 否则新 OPEN 可能在旧队列正在析构时重新启用设备。IRQ registration 不保活会话，投递只短暂 upgrade。
     lease: Mutex<Lease>,
     // OWNER: 已 stop 的最后一个临时引用退休后唤醒重开者；避免把短暂析构窗口误报为永久安装失败。
     retired: native_runtime::Event,
@@ -69,6 +72,10 @@ pub(crate) struct VirtIONetworkDevice {
 struct Lease {
     active: Option<Weak<ActiveNetwork>>,
     activity: Vec<Option<device_model::Activity>>,
+    // OWNER: 配置中断的独立观察者；队列中断不能触发路由重算，缺失此分离会把每批 RX 变成控制面工作。
+    link_activity: Option<device_model::Activity>,
+    // OWNER: port key 的唯一会话代号；失败 OPEN 也消耗代号，防止已排队的旧消息命中新绑定。
+    generation: u32,
 }
 /// 同一独占会话的队列、DMA 与失败状态；最后一个持有者先 reset 再释放字段。
 struct ActiveNetwork {
@@ -79,6 +86,11 @@ struct ActiveNetwork {
     // OWNER: 0=运行，1=请求撤离，2=唯一 reset owner，3=DMA 已停止；stop 必须等到 3。
     failed: AtomicU8,
     control: Option<Mutex<ControlQueue>>,
+    // OWNER: native 子中断保活消息组；先 stop DMA/function-mask，再清空，最后才允许下一 OPEN。
+    interrupts: Vec<native_runtime::Interrupt>,
+    // OWNER: 串行化两个 native IRQ 组成的 CPU 配置；不能持数据队列/lease 锁跨可睡眠的路由调用。
+    // stop 可并发 reset，调用强引用保活 IRQ 句柄；结束复检 failed，不能向已停止设备报告配置成功。
+    interrupt_configuration: Mutex<()>,
 }
 impl core::ops::Deref for ActiveNetwork {
     type Target = VirtIONetworkDevice;
@@ -150,6 +162,13 @@ impl VirtIONetworkDevice {
             return None;
         }
 
+        // 每个 RX/TX 队列各一个向量，加配置向量；硬件 raw pair 上限仍决定 control queue 的位置。
+        if device
+            .message_interrupts()
+            .is_some_and(|msix| msix.capacity() < 3)
+        {
+            return None;
+        }
         let rss = if features & VIRTIO_NET_F_RSS != 0 {
             let cap = device
                 .read_config_consistent(|device| {
@@ -176,6 +195,11 @@ impl VirtIONetworkDevice {
                 Ok(mac)
             })
             .ok()?;
+        let message_port = device
+            .message_interrupts()
+            .map(|_| native_runtime::Port::create())
+            .transpose()
+            .ok()?;
         let controller = Arc::try_new(Self {
             device,
             mac,
@@ -183,9 +207,12 @@ impl VirtIONetworkDevice {
             maximum_pairs,
             rss,
             completion_irq: VirtIOCompletionIrq::new(),
+            message_port,
             lease: Mutex::new(Lease {
                 active: None,
                 activity: Vec::new(),
+                link_activity: None,
+                generation: 0,
             }),
             retired: native_runtime::Event::create().ok()?,
         })
@@ -211,13 +238,23 @@ impl VirtIONetworkDevice {
             self.notify_activity(queue as u16);
         }
     }
-    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
+    fn notify_link_activity(&self) {
+        let callback = self.lease.lock().link_activity.clone();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+    fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIONetworkIrqHandler {
             device: self.clone(),
         })
         .expect("VirtIO network IRQ handler allocation failed")
     }
-    fn create_queue(device: &VirtIODevice, index: u32) -> Option<VirtQueue> {
+    fn create_queue(
+        device: &VirtIODevice,
+        index: u32,
+        interrupt: Option<u16>,
+    ) -> Option<VirtQueue> {
         let maximum = device.queue_max_size(index).ok()?;
         let size = maximum.min(QUEUE_SIZE);
         if size == 0 || !size.is_power_of_two() {
@@ -225,14 +262,21 @@ impl VirtIONetworkDevice {
         }
         let queue = VirtQueue::new(size, device.bti())?;
         device
-            .configure_queue(index, size, queue.addresses())
+            .configure_queue(index, size, queue.addresses(), interrupt)
             .ok()?;
         Some(queue)
     }
 }
 impl NetworkController for VirtIONetworkDevice {
+    fn supports_queue_affinity(&self) -> bool {
+        self.device.message_interrupts().is_some()
+    }
     fn maximum_queue_pairs(&self) -> u16 {
-        self.maximum_pairs
+        self.device
+            .message_interrupts()
+            .map_or(self.maximum_pairs, |msix| {
+                self.maximum_pairs.min((msix.capacity() - 1) / 2)
+            })
     }
     fn transmit_capabilities(&self) -> NetworkTransmitCapabilities {
         let tcp_ipv4 = self.features & VIRTIO_NET_F_HOST_TSO4 != 0;
@@ -264,7 +308,7 @@ impl NetworkController for VirtIONetworkDevice {
         self: Arc<Self>,
         configuration: NetworkQueueConfiguration,
     ) -> Result<Arc<dyn NetworkProvider>, NetworkError> {
-        configuration.validate(self.maximum_pairs, self.transmit_capabilities())?;
+        configuration.validate(self.maximum_queue_pairs(), self.transmit_capabilities())?;
         let count = configuration.queue_pairs;
         let mut lease = loop {
             let lease = self.lease.lock();
@@ -290,6 +334,10 @@ impl NetworkController for VirtIONetworkDevice {
                 )
                 .map_err(|_| NetworkError::Device)?;
         };
+        lease.generation = lease
+            .generation
+            .checked_add(1)
+            .ok_or(NetworkError::Device)?;
         // 冷配置锁同时划分 IRQ 错误代际；旧实例的锁存不能延迟杀死重开的队列。
         self.completion_irq.take_transport_error();
         self.device.initialize().map_err(|_| NetworkError::Device)?;
@@ -305,6 +353,13 @@ impl NetworkController for VirtIONetworkDevice {
         {
             return Err(NetworkError::Device);
         }
+        let interrupts = self
+            .prepare_interrupts(count, lease.generation)
+            .map_err(|status| match status {
+                native_runtime::native_abi::ERR_NO_MEMORY => NetworkError::NoMemory,
+                native_runtime::native_abi::ERR_NO_RESOURCES => NetworkError::NoResources,
+                _ => NetworkError::Device,
+            })?;
         let mut queues = Vec::new();
         let mut activity = Vec::new();
         queues
@@ -335,8 +390,13 @@ impl NetworkController for VirtIONetworkDevice {
             queues,
             failed: AtomicU8::new(ActiveNetwork::LIVE),
             control,
+            interrupts,
+            interrupt_configuration: Mutex::new(()),
         })
         .map_err(|_| NetworkError::NoMemory)?;
+        if let Some(msix) = self.device.message_interrupts() {
+            msix.enable().map_err(|_| NetworkError::Device)?;
+        }
         let status = self.device.get_status().map_err(|_| NetworkError::Device)?;
         self.device
             .set_status(status | VIRTIO_CONFIG_S_DRIVER_OK)
@@ -388,6 +448,15 @@ impl ActiveNetwork {
     const STOP_REQUESTED: u8 = 1;
     const RESET_OWNER: u8 = 2;
     const QUIESCENT: u8 = 3;
+    /// 所有中途失败在仍持有配置临界区时先阻止新 DMA/配置，再在锁外完成 reset。
+    fn request_stop(&self) {
+        let _ = self.failed.compare_exchange(
+            Self::LIVE,
+            Self::STOP_REQUESTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
     fn queue(&self, queue: u16) -> Result<&Mutex<QueueState>, NetworkError> {
         self.queues.get(queue as usize).ok_or(NetworkError::Device)
     }
@@ -397,12 +466,7 @@ impl ActiveNetwork {
         if self.failed.load(Ordering::Acquire) == Self::QUIESCENT {
             return true;
         }
-        let _ = self.failed.compare_exchange(
-            Self::LIVE,
-            Self::STOP_REQUESTED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        self.request_stop();
         if self.failed.load(Ordering::Acquire) == Self::RESET_OWNER {
             return false;
         }
@@ -462,6 +526,7 @@ impl Drop for ActiveNetwork {
         // 否则新配置会与旧存储的延迟析构竞争地址空间和内存配额。
         self.queues.clear();
         drop(self.control.take());
+        self.interrupts.clear();
         if self.lease_published {
             let callbacks = {
                 let mut lease = self.owner.lease.lock();
@@ -471,7 +536,10 @@ impl Drop for ActiveNetwork {
                     .signal(0, native_runtime::native_abi::signals::SIGNALED)
                     .expect("network lease retirement event must remain valid");
                 lease.active = None;
-                core::mem::take(&mut lease.activity)
+                (
+                    core::mem::take(&mut lease.activity),
+                    lease.link_activity.take(),
+                )
             };
             drop(callbacks);
         }
@@ -529,6 +597,9 @@ impl InterruptHandler for VirtIONetworkIrqHandler {
         };
         if status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG) != 0 {
             self.device.notify_all_activity();
+        }
+        if status & VIRTIO_MMIO_INT_CONFIG != 0 {
+            self.device.notify_link_activity();
         }
         Ok(())
     }

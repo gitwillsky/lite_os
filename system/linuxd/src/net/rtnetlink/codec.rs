@@ -1,10 +1,12 @@
 //! NETLINK_ROUTE 的纯消息 codec：nlmsghdr、ifinfomsg/ifaddrmsg/rtmsg 与属性编码，以及请求解析。
 //!
-//! 不读取任何内核状态；调用者传入已冻结的 interface/route 快照。每条消息先写进固定大小的栈缓冲再
-//! 整体复制，所以编码不分配、不会写出半条消息。
+//! 不读取内核状态；调用者提供冻结快照与已预留的输出。固定头使用栈缓冲，变长路径组直接编码到
+//! 输出；路径布局在建立 dump 时验证，接收期间不分配，也不推进尚未准备好存储的消息。
 
-use crate::net::{InterfaceSnapshot, Ipv4RouteKind, RouteSnapshot};
+use crate::net::{InterfaceSnapshot, Ipv4RouteKind, RoutingSnapshot};
+use alloc::vec::Vec;
 use device_model::network::NetworkStatistics;
+use network_protocol::RouteSnapshot;
 
 pub(super) const NLMSG_ERROR: u16 = 2;
 pub(super) const NLMSG_DONE: u16 = 3;
@@ -69,6 +71,7 @@ const RTA_GATEWAY: u16 = 5;
 const RTA_PRIORITY: u16 = 6;
 const RTA_PREFSRC: u16 = 7;
 const RTA_METRICS: u16 = 8;
+const RTA_MULTIPATH: u16 = 9;
 const RTA_TABLE: u16 = 15;
 const RTAX_WINDOW: u16 = 3;
 const RTAX_RTT: u16 = 4;
@@ -78,6 +81,9 @@ const RT_TABLE_COMPAT: u8 = 252;
 
 /// 单条消息的栈缓冲上限；最大的 link 消息约 360 字节。
 const MESSAGE_CAPACITY: usize = 1024;
+const ENOMEM: i32 = 12;
+const EOVERFLOW: i32 = 75;
+const EMSGSIZE: i32 = 90;
 
 fn align4(value: usize) -> usize {
     (value + 3) & !3
@@ -258,21 +264,146 @@ fn route_type(kind: Ipv4RouteKind) -> u8 {
         Ipv4RouteKind::Unicast => 1,
         Ipv4RouteKind::Local => 2,
         Ipv4RouteKind::Broadcast => 3,
+        Ipv4RouteKind::Blackhole => 6,
+        Ipv4RouteKind::Prohibit => 8,
         Ipv4RouteKind::Unreachable => 7,
         Ipv4RouteKind::Throw => 9,
     }
 }
 
-/// `RTM_NEWROUTE`：FIB 中的一条 IPv4 路由。
-pub(super) fn route(
-    row: &RouteSnapshot,
+/// 冻结组的 Linux 表示：只保存长度与精确权重公因数，不复制成员或建立逐路由对象。
+struct GroupEncoding {
+    attribute_length: u16,
+    weight_divisor: u32,
+}
+
+/// Linux dump 的唯一捕获正文和每组表示；布局只由不可变正文推导，发布后无需人工同步。
+pub(super) struct RouteDump {
+    snapshot: RoutingSnapshot,
+    groups: Vec<GroupEncoding>,
+    maximum_message_size: usize,
+}
+impl RouteDump {
+    /// native 权重为 u32；Linux rtnh_hops 仅有八位。先约分，不能精确表示则 EOVERFLOW；
+    /// 完整 RTA_MULTIPATH 超出 u16 长度则 EMSGSIZE，均不截断或修改执行中的 FIB。
+    pub(super) fn new(snapshot: RoutingSnapshot) -> Result<Self, i32> {
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(snapshot.group_count())
+            .map_err(|_| -ENOMEM)?;
+        let mut maximum_message_size = MESSAGE_CAPACITY;
+        for index in 0..snapshot.group_count() {
+            let group = snapshot.group(index).expect("bounded snapshot group");
+            let mut length = 4usize;
+            let mut divisor = 0;
+            for member in group.members() {
+                i32::try_from(member.interface_index).map_err(|_| -EOVERFLOW)?;
+                length = length
+                    .checked_add(if member.gateway.is_some() { 16 } else { 8 })
+                    .ok_or(-EMSGSIZE)?;
+                divisor = gcd(divisor, member.weight);
+            }
+            let attribute_length = if group.len() > 1 {
+                let length = u16::try_from(length).map_err(|_| -EMSGSIZE)?;
+                if group.members().any(|member| member.weight / divisor > 256) {
+                    return Err(-EOVERFLOW);
+                }
+                // 104 是所有固定 route 属性同时出现时的保守上界；实际消息长度按需编码。
+                maximum_message_size = maximum_message_size.max(104 + usize::from(length));
+                length
+            } else {
+                0
+            };
+            groups.push(GroupEncoding {
+                attribute_length,
+                weight_divisor: divisor,
+            });
+        }
+        Ok(Self {
+            snapshot,
+            groups,
+            maximum_message_size,
+        })
+    }
+    pub(super) fn len(&self) -> usize {
+        self.snapshot.len()
+    }
+    pub(super) fn maximum_message_size(&self) -> usize {
+        self.maximum_message_size
+    }
+
+    /// 有足够容量才追加完整消息；首条允许超过用户缓冲，由 recvmsg 的截断语义处理。
+    pub(super) fn append(
+        &self,
+        index: usize,
+        sequence: u32,
+        port: u32,
+        limit: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let row = self.snapshot.row(index).expect("bounded dump row");
+        let (bytes, header_length) = route_header(row, sequence, port);
+        let layout = row
+            .next_hops
+            .map(|group| &self.groups[group.id as usize - 1]);
+        let length =
+            header_length + layout.map_or(0, |layout| usize::from(layout.attribute_length));
+        if !out.is_empty() && out.len() + length > limit {
+            return false;
+        }
+        // receive 在取 state guard 前已预留 max(window, maximum_message_size)，以下不得分配。
+        assert!(
+            out.capacity() - out.len() >= length,
+            "route dump append without prepared capacity"
+        );
+        let start = out.len();
+        out.extend_from_slice(&bytes[..header_length]);
+        if let Some(layout) = layout.filter(|layout| layout.attribute_length != 0) {
+            out.extend_from_slice(&layout.attribute_length.to_ne_bytes());
+            out.extend_from_slice(&RTA_MULTIPATH.to_ne_bytes());
+            for member in row.next_hops.expect("multipath group").members() {
+                let length: u16 = if member.gateway.is_some() { 16 } else { 8 };
+                out.extend_from_slice(&length.to_ne_bytes());
+                out.push(if member.on_link {
+                    RTNH_F_ONLINK as u8
+                } else {
+                    0
+                });
+                out.push((member.weight / layout.weight_divisor - 1) as u8);
+                out.extend_from_slice(&(member.interface_index as i32).to_ne_bytes());
+                if let Some(gateway) = member.gateway {
+                    out.extend_from_slice(&8u16.to_ne_bytes());
+                    out.extend_from_slice(&RTA_GATEWAY.to_ne_bytes());
+                    out.extend_from_slice(&gateway.octets());
+                }
+            }
+        }
+        out[start..start + 4].copy_from_slice(&(length as u32).to_ne_bytes());
+        true
+    }
+}
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `RTM_NEWROUTE` 的固定头与标量属性；多路径属性由 RouteDump 直接追加。
+fn route_header(
+    row: RouteSnapshot<'_>,
     sequence: u32,
     port: u32,
 ) -> ([u8; MESSAGE_CAPACITY], usize) {
-    let route = &row.route;
+    let route = row.route;
+    let single = row.single_path();
     let mut message = Message::new(RTM_NEWROUTE, NLM_F_MULTI, sequence, port);
     let compat_table = u8::try_from(route.table).unwrap_or(RT_TABLE_COMPAT);
-    let flags = if route.on_link { RTNH_F_ONLINK } else { 0 };
+    let flags = if single.is_some_and(|route| route.on_link) {
+        RTNH_F_ONLINK
+    } else {
+        0
+    };
     // rtmsg：family、dst_len、src_len、tos、table、protocol、scope、type、flags。
     message.put(&[
         AF_INET,
@@ -289,10 +420,10 @@ pub(super) fn route(
     if route.prefix_length > 0 {
         message.attribute(RTA_DST, &route.destination.octets());
     }
-    if let Some(index) = route.interface_index {
+    if let Some(index) = single.and_then(|route| route.interface_index) {
         message.attribute_u32(RTA_OIF, index);
     }
-    if let Some(gateway) = route.gateway {
+    if let Some(gateway) = single.and_then(|route| route.gateway) {
         message.attribute(RTA_GATEWAY, &gateway.octets());
     }
     if let Some(source) = route.preferred_source {

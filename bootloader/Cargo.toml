@@ -9,7 +9,7 @@ test = false
 bench = false
 
 [dependencies]
-dtb-walker = "=0.2.0-alpha.3"
+dtb-walker = { path = "../vendor/dtb-walker", version = "=0.2.0-alpha.3" }
 log = "0.4.27"
 riscv = "0.10.1"
 rustsbi = { version = "0.4.0", features = ["machine"] }
