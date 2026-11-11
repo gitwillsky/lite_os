@@ -1,5 +1,5 @@
 //! 实际IP-medium loopback队列；没有伪Ethernet/ARP或第二份transport owner。
-use super::{TcpReset, ingress::IngressFacts};
+use super::ingress::IngressFacts;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use device_model::network::NetworkStatistics;
@@ -21,6 +21,10 @@ struct Delivery {
     interface_index: u32,
 }
 impl Delivery {
+    fn accepts_ipv6(self) -> bool {
+        self.header[12..14] == [0x86, 0xdd]
+            && (self.header[..6] == [0; 6] || self.header[0] & 1 != 0)
+    }
     fn accepts_ipv4(self) -> bool {
         self.header[12..14] == [8, 0] && (self.header[..6] == [0; 6] || self.header[0] & 1 != 0)
     }
@@ -44,15 +48,20 @@ pub(crate) struct LoopbackDevice {
     queued_packets: Cell<usize>,
     dropped_packets: Cell<u64>,
     statistics: Cell<NetworkStatistics>,
-    ingress_reset: Cell<Option<TcpReset>>,
 }
 
 impl LoopbackDevice {
+    /// 在原 NET guard 下借用回环 TX；返回独占写入 token，队列满则 None，不复制槽或增加锁。
+    pub(super) fn transmit_shared(&self, _: Instant) -> Option<LoopbackTxToken<'_>> {
+        self.can_transmit().then_some(LoopbackTxToken {
+            device: self,
+            interface_index: 1,
+        })
+    }
     pub(super) fn can_receive(&self) -> bool {
         self.queued_packets.get() != 0 && !self.receive_claimed.get()
     }
     pub(super) fn receive_one(&self) -> Option<(LoopbackRxToken<'_>, LoopbackTxToken<'_>)> {
-        self.ingress_reset.set(None);
         if !self.can_receive() {
             return None;
         }
@@ -112,7 +121,6 @@ impl LoopbackDevice {
             queued_packets: Cell::new(0),
             dropped_packets: Cell::new(0),
             statistics: Cell::new(NetworkStatistics::default()),
-            ingress_reset: Cell::new(None),
         })
     }
     pub(super) fn record_transmit_drop(&self) {
@@ -123,9 +131,6 @@ impl LoopbackDevice {
         let mut statistics = self.statistics.get();
         statistics.transmitted_dropped = self.dropped_packets.get();
         statistics
-    }
-    pub(super) fn take_ingress_reset(&self) -> Option<TcpReset> {
-        self.ingress_reset.replace(None)
     }
     pub(crate) fn can_transmit(&self) -> bool {
         self.queued_packets.get() < LOOPBACK_QUEUE_PACKETS
@@ -144,10 +149,14 @@ impl LoopbackDevice {
         if !self.can_transmit() {
             return Err(SocketError::Again);
         }
-        self.with_transmit(header, 1, Some(sender), packet.len(), |output| {
+        let (_, sent) = self.with_transmit(header, 1, Some(sender), packet.len(), |output| {
             output.copy_from_slice(packet)
         });
-        Ok(())
+        if sent {
+            Ok(())
+        } else {
+            Err(SocketError::Again)
+        }
     }
     fn with_transmit<R>(
         &self,
@@ -156,7 +165,7 @@ impl LoopbackDevice {
         sender: Option<usize>,
         length: usize,
         operation: impl FnOnce(&mut [u8]) -> R,
-    ) -> R {
+    ) -> (R, bool) {
         assert!(length <= self.mtu, "IP packet exceeds actual loopback MTU");
         let encode = |packet: &mut [u8]| {
             let result = operation(packet);
@@ -179,17 +188,16 @@ impl LoopbackDevice {
         {
             Ok(Some(packet)) => {
                 self.queued_packets.set(self.queued_packets.get() + 1);
-                encode(packet)
+                (encode(packet), true)
             }
-            _ => {
-                self.dropped_packets
-                    .set(self.dropped_packets.get().saturating_add(1));
-                encode(&mut self.scratch.borrow_mut()[..length])
-            }
+            _ => (encode(&mut self.scratch.borrow_mut()[..length]), false),
         };
         let mut statistics = self.statistics.get();
-        statistics.transmitted_bytes = statistics.transmitted_bytes.saturating_add(length as u64);
-        statistics.transmitted_packets = statistics.transmitted_packets.saturating_add(1);
+        if result.1 {
+            statistics.transmitted_bytes =
+                statistics.transmitted_bytes.saturating_add(length as u64);
+            statistics.transmitted_packets = statistics.transmitted_packets.saturating_add(1);
+        }
         self.statistics.set(statistics);
         crate::worker::request_poll();
         result
@@ -200,6 +208,25 @@ pub(crate) struct LoopbackRxToken<'a> {
     device: &'a LoopbackDevice,
     // OWNER: claim 保证队列头在本 token 内不出队；格式事实只随本次借用存续，不跨领取缓存。
     pub(super) facts: Option<IngressFacts>,
+}
+impl LoopbackRxToken<'_> {
+    /// 只借当前队首作本机分片识别；claim 保证视图在原 RX token 存续期不出队。
+    pub(super) fn with_frame<R>(&self, inspect: impl FnOnce(&[u8]) -> R) -> R {
+        let mut queue = self.device.queue.borrow_mut();
+        let (delivery, packet) = queue.peek().expect("claimed loopback packet exists");
+        inspect(if delivery.accepts_ipv4() || delivery.accepts_ipv6() {
+            packet
+        } else {
+            &[]
+        })
+    }
+    pub(super) fn ipv6(&self) -> bool {
+        self.device
+            .queue
+            .borrow_mut()
+            .peek()
+            .is_ok_and(|(delivery, _)| delivery.accepts_ipv6())
+    }
 }
 impl Drop for LoopbackRxToken<'_> {
     fn drop(&mut self) {
@@ -246,9 +273,6 @@ impl RxToken for LoopbackRxToken<'_> {
                 .checked_sub(1)
                 .expect("loopback queue double receive"),
         );
-        self.device
-            .ingress_reset
-            .set(self.facts.and_then(|facts| facts.reset));
         let mut statistics = self.device.statistics.get();
         statistics.received_bytes = statistics
             .received_bytes
@@ -256,8 +280,12 @@ impl RxToken for LoopbackRxToken<'_> {
         statistics.received_packets = statistics.received_packets.saturating_add(1);
         self.device.statistics.set(statistics);
         crate::packet::deliver_loopback(self.device.net_id, header.header, packet);
-        // IP-medium仅解析ETH_P_IP；其他native packet协议仍由tap收到，不能误送进IPv4。
-        operation(if header.accepts_ipv4() { packet } else { &[] })
+        // IP-medium 的 IPv4/IPv6 由各自入口消费；其他协议仅由 tap 接收。
+        operation(if header.accepts_ipv4() || header.accepts_ipv6() {
+            packet
+        } else {
+            &[]
+        })
     }
 }
 impl TxToken for LoopbackTxToken<'_> {
@@ -268,8 +296,23 @@ impl TxToken for LoopbackTxToken<'_> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        let device = self.device;
+        let (result, sent) = self.consume_ip(length, 0x0800, operation);
+        if !sent {
+            device.record_transmit_drop();
+        }
+        result
+    }
+}
+impl LoopbackTxToken<'_> {
+    pub(super) fn consume_ip<R>(
+        self,
+        length: usize,
+        protocol: u16,
+        operation: impl FnOnce(&mut [u8]) -> R,
+    ) -> (R, bool) {
         let mut header = [0; 14];
-        header[12] = 8;
+        header[12..14].copy_from_slice(&protocol.to_be_bytes());
         self.device
             .with_transmit(header, self.interface_index, None, length, operation)
     }
@@ -280,11 +323,8 @@ impl Device for LoopbackDevice {
     fn receive(&mut self, _: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         self.receive_one()
     }
-    fn transmit(&mut self, _: Instant) -> Option<Self::TxToken<'_>> {
-        self.can_transmit().then_some(LoopbackTxToken {
-            device: self,
-            interface_index: 1,
-        })
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        self.transmit_shared(timestamp)
     }
     fn capabilities(&self) -> DeviceCapabilities {
         let mut capabilities = DeviceCapabilities::default();

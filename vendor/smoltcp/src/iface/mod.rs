@@ -22,7 +22,7 @@ mod packet;
 pub use self::interface::multicast::MulticastError;
 pub use self::interface::{
     Config, Interface, InterfaceInner as Context, IpRouteContext, PollIngressSingleResult,
-    PollResult,
+    PollResult, Ipv4Ingress,
 };
 
 #[cfg(feature = "proto-ipv4")]

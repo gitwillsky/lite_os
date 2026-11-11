@@ -1,8 +1,10 @@
 use std::{fs, path::Path};
 
 const NAMESPACE: &str = "system/netstack/src/inet/port_namespace.rs";
+const OCCUPANCY: &str = "system/netstack/src/inet/port_namespace/occupancy.rs";
 const BITMAP: &str = "system/netstack/src/inet/port_namespace/bitmap.rs";
 const TCP: &str = "system/netstack/src/inet/tcp.rs";
+const UDP_BINDING: &str = "system/netstack/src/inet/udp/address.rs";
 const UDP: &str = "system/netstack/src/inet/udp.rs";
 const EPHEMERAL_PORTS: usize = 16_384;
 const SAMPLE_ENDPOINTS: usize = 1_024;
@@ -36,27 +38,43 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 
 fn measure(root: &Path) -> Result<PortLookupCost, String> {
     let namespace = read(root, NAMESPACE)?;
+    let occupancy = read(root, OCCUPANCY)?;
     let bitmap = read(root, BITMAP)?;
-    let tcp = read(root, TCP)?;
+    let tcp = read(root, TCP)? + &read(root, "system/netstack/src/inet/tcp/connect.rs")?;
+    let tcp_binding: String = tcp.split_whitespace().collect();
     let udp = read(root, UDP)?;
+    let udp_binding = read(root, UDP_BINDING)?;
     let exact_owner = namespace.contains("entries: FallibleMap<u16, Occupancy>")
-        && namespace.contains("specific: FallibleMap<Ipv4Addr, AddressOccupancy>")
+        && occupancy.contains("specific: FallibleMap<IpAddr, AddressOccupancy>")
         && namespace.contains("prepare_retain_for_address")
         && namespace.contains("prepare_readdress")
-        && namespace.contains("claim_listener");
-    let bounded_bitmap = bitmap.contains("occupied: [u64; EPHEMERAL_WORDS]")
+        && namespace.contains("claim_listener")
+        && occupancy.contains("families: [FamilyOccupancy; 2]")
+        && occupancy.contains("devices: FallibleMap<u32, DeviceOccupancy>")
+        && namespace.contains("fn publish_port")
+        && namespace.contains("self.ephemeral.publish(port, families)");
+    let bounded_bitmap = bitmap.contains("occupied: [[u64; EPHEMERAL_WORDS]; 3]")
         && bitmap.contains("for offset in 0..EPHEMERAL_WORDS")
         && bitmap.contains("if start_bit != 0")
         && bitmap.contains("const EPHEMERAL_WORDS: usize")
-        && bitmap.contains(".div_ceil(u64::BITS as usize)");
+        && bitmap.contains(".div_ceil(u64::BITS as usize)")
+        && bitmap.contains("let occupied = &self.occupied[index]");
     let no_endpoint_scan = !namespace.contains("port_in_use")
         && !tcp.contains("tcp_port_in_use")
         && !udp.contains("udp_port_in_use")
         && !tcp.contains("for _ in EPHEMERAL_START")
         && !udp.contains("for _ in EPHEMERAL_START");
-    let exact_port_zero = tcp.contains(".acquire_ephemeral(address_filter, reuse_address)")
-        && udp.contains(".acquire_ephemeral(address_filter, reuse_address)")
-        && tcp.contains(".acquire_ephemeral(Some(local_address), reuse_address)");
+    let exact_port_zero = tcp_binding
+        .contains("PortBinding::new(address.ip(),state.options.ipv6_only)")
+        && tcp_binding.contains(".with_interface(device)")
+        && tcp_binding.contains(".acquire_ephemeral(binding,reuse_address)")
+        && tcp_binding.contains(".acquire_ephemeral(binding,reuse)")
+        && tcp_binding
+            .contains("PortBinding::new(exact.ip(),network.tcp_endpoints[&id].options.ipv6_only)")
+        && udp.contains("state.binding(address, device)?")
+        && udp.contains(".acquire_ephemeral(binding, reuse_address)")
+        && udp_binding.contains("PortBinding::new(address.ip(), self.options.ipv6_only)")
+        && udp_binding.contains("binding.with_interface(interface)");
     if exact_owner && bounded_bitmap && no_endpoint_scan && exact_port_zero {
         return Ok(PortLookupCost {
             endpoint_probes: 0,

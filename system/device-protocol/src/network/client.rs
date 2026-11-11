@@ -1,7 +1,7 @@
 use super::queue::{MAX_BATCH, Queue, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS,
-    decode_capabilities, decode_error, encode_checksum, encode_segmentation, queue_request,
+    MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS, decode_capabilities,
+    decode_error, encode_checksum, encode_segmentation, queue_request,
 };
 use crate::directory::{DirectoryClient, Entry};
 use crate::{ActivityBinding, EventHub, Writer, call, take_handle};
@@ -383,15 +383,11 @@ impl NetworkDevice for RemoteNetwork {
         &self.driver
     }
     fn link(&self) -> Result<NetworkLink, NetworkError> {
-        let reply =
-            call(&self.channel, &Writer::request(LINK), Vec::new()).map_err(decode_error)?;
-        let mut reader = reply.reader();
-        let carrier = reader.bool().map_err(decode_error)?;
-        let speed = reader.u32().map_err(decode_error)?;
-        Ok(NetworkLink {
-            carrier,
-            speed_mbps: (speed <= i32::MAX as u32).then_some(speed),
-        })
+        // 复用事件 owner 的永久关闭事实；宿主终止时共享页仍可存活，不能返回旧的 UP。
+        if self.link_activity.disconnected() {
+            return Err(NetworkError::Disconnected);
+        }
+        self.queues.first().ok_or(NetworkError::Device)?.ring.link()
     }
     fn receive_batch<'a>(
         &'a self,

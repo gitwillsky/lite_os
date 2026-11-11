@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::net::IpAddr;
 use fallible_tree::FallibleMap;
 use router_protocol::policy::{Action, Disposition, Policy};
-type Ipv4Source<M> = Arc<Source<u32, (), NextHop, M>>;
+type PolicySource<A, M> = Arc<Source<A, (), NextHop, M>>;
 
 #[derive(Clone, Copy)]
 struct Match {
@@ -183,17 +183,22 @@ impl Compiled {
             |action| *action,
         )
     }
-    pub(super) fn apply<M>(
+    pub(super) fn apply<A: crate::resolution::RibAddress, M>(
         &self,
-        source: &Ipv4Source<M>,
+        source: &PolicySource<A, M>,
         protocol: u8,
-    ) -> Result<Option<Ipv4Source<M>>, Error> {
+    ) -> Result<Option<PolicySource<A, M>>, Error>
+    where
+        A::Ip: Into<IpAddr>,
+    {
         let buckets = [self.bucket(0), self.bucket(u16::from(protocol) + 1)];
-        if buckets
-            .iter()
-            .flatten()
-            .all(|bucket| bucket.ipv4.order.is_empty())
-        {
+        if buckets.iter().flatten().all(|bucket| {
+            if A::BITS == 32 {
+                bucket.ipv4.order.is_empty()
+            } else {
+                bucket.ipv6.order.is_empty()
+            }
+        }) {
             return Ok((self.default == Disposition::Permit).then(|| source.clone()));
         }
         let mut routes = Vec::new();
@@ -201,7 +206,7 @@ impl Compiled {
         let mut by_value = FallibleMap::new();
         for route in source.routes() {
             let Action::Permit { preference, metric } =
-                self.decision(buckets, IpAddr::V4(route.network.into()), route.length)
+                self.decision(buckets, route.network.address().into(), route.length)
             else {
                 continue;
             };

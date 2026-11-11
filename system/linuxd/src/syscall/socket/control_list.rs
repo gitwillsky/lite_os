@@ -72,6 +72,7 @@ pub(super) struct ControlMessage<'a> {
     pub(super) data: &'a [u8],
 }
 /// 对 frozen native control snapshot 按 CMSG_FIRSTHDR/CMSG_NXTHDR 单路遍历。
+#[derive(Clone)]
 pub(super) struct ControlList<'a> {
     bytes: &'a [u8],
 }

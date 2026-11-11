@@ -31,7 +31,15 @@ mod socket_message_limit_tests {
         assert!(validate_send_length(MessageProtocol::UnixDatagram, 65_536).is_ok());
         assert!(validate_send_length(MessageProtocol::Ipv4Udp, 65_507).is_ok());
         assert!(validate_send_length(MessageProtocol::Ipv4Udp, 65_508).is_err());
+        assert!(validate_send_length(MessageProtocol::Ipv6Udp, 65_527).is_ok());
+        assert!(validate_send_length(MessageProtocol::Ipv6Udp, 65_528).is_err());
+        assert_eq!(
+            receive_capacity(MessageProtocol::Ipv6Udp, 65_536, 1),
+            65_527
+        );
         assert!(validate_send_length(MessageProtocol::Ipv4Raw, 65_535).is_ok());
+        assert!(validate_send_length(MessageProtocol::Ipv6Raw, 65_575).is_ok());
+        assert!(validate_send_length(MessageProtocol::Ipv6Raw, 65_576).is_err());
         assert!(validate_send_length(MessageProtocol::Ipv4Raw, 65_536).is_err());
         // 设备MTU属于实际link owner，通用gather不把lo/RAW截成1500字节。
         assert!(validate_send_length(MessageProtocol::Packet, 1_501).is_ok());

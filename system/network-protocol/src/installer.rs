@@ -3,35 +3,69 @@
 use alloc::vec::Vec;
 
 use native_runtime::native_abi::{self, Status};
-use native_runtime::{Channel, Handle, Vmo};
+use native_runtime::{Channel, Event, Handle, Vmo};
+use router_protocol::connections::{Cursor, Identity, changes};
+use router_protocol::firewall::counters;
 use service_rpc::{Reader, Writer, call};
 
 pub(super) const INSTALL_DEVICE: u32 = 1;
+const INSTALL_DEVICE_VERSION: u32 = 2;
 pub(super) const PREPARE_CONFIGURATION: u32 = 2;
 const PREPARE_NEXT_HOP: u32 = 4;
-const WATCH_INTERFACES: u32 = 5;
+const WATCH_ROUTING_INPUTS: u32 = 5;
+pub(super) const CONNECTIONS: u32 = 8;
+pub(super) const CLEAR_CONNECTION: u32 = 9;
+pub(super) const CONNECTION_CHANGES: u32 = 10;
+pub(super) const ARM_CONNECTION_WATCH: u32 = 11;
+pub(super) const FIREWALL_COUNTERS: u32 = 12;
 
 /// 服务端：原生 RIB 独占的网卡/FIB 执行能力。
 pub trait InstallerService: Send + Sync {
-    /// 订阅实际接口变化的合并通知；消费者 clear/arm 后重新读快照，不从事件重建接口状态。
+    /// 读取默认域当前规则链的一页命中计数。
+    /// # Errors
+    /// 网络域不可用、游标失效或资源不足。
+    fn firewall_counters(&self, cursor: counters::Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 读取默认网络域的一页连接正文。
+    /// # Errors
+    /// 过期游标、域不可用、资源不足或回复非法。
+    fn connections(&self, cursor: Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 清除由实例和 ID 共同指定的活动连接。
+    /// # Errors
+    /// 身份已失效或网络域不可用。
+    fn clear_connection(&self, identity: Identity) -> Result<(), Status>;
+
+    /// 读取默认域的连接增量正文。
+    /// # Errors
+    /// 域不可用、资源不足或回复非法。
+    fn connection_changes(&self, cursor: changes::Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 游标已读到末尾时返回下一次变化的等待能力，否则立即返回空。
+    /// # Errors
+    /// 域不可用或资源不足。
+    fn arm_connection_watch(&self, cursor: changes::Cursor) -> Result<Option<Event>, Status>;
+
+    /// 订阅执行域路由输入的合并通知。消费者清除并重新武装所需信号，然后读取对应快照。
     /// # Errors
     /// 能力不授权、资源不足或执行域失效。
-    fn watch_interfaces(&self) -> Result<native_runtime::Event, Status>;
+    fn watch_routing_inputs(&self) -> Result<native_runtime::Event, Status>;
     /// 预备更新一个具名下一跳；所有引用保留身份，不逐前缀修改。
     /// # Errors
     /// 对象不存在、字段/设备/网关无效、引用范围不允许、事务冲突或资源不足。
     fn prepare_next_hop(
         &self,
-        definition: super::routes::NextHopConfiguration<'_>,
+        definition: super::routes::NextHopConfiguration<'_, core::net::Ipv4Addr>,
     ) -> Result<Channel, Status>;
 
-    /// 预备接口与可选完整 FIB，并返回独立的确认/回滚能力；预备不改变活动状态。
-    ///
+    /// 预备接口/FIB 与可选 IPv4 转发策略，返回同一确认/回滚能力；预备不改变活动状态。
+    /// `batch=None` 只允许显式转发策略；策略 None 保持当前运行值，不默认为开启。
     /// # Errors
     /// 配置冲突、资源不足、设备/网关无效或协议不可用；失败不保留配置租约。
     fn prepare_configuration(
         &self,
-        batch: super::ConfigurationBatch<'_>,
+        batch: Option<super::ConfigurationBatch<'_>>,
+        forwarding: Option<crate::Forwarding>,
     ) -> Result<Channel, Status>;
 
     /// 把授权目录中的 device_id 安装为新接口；netstack 按 worker 配置打开会话，handles 只携带目录能力。
@@ -39,7 +73,7 @@ pub trait InstallerService: Send + Sync {
     /// # Returns
     ///
     /// 接口序号，以及接口的 lifetime channel：接口移除（网卡会话关闭）时服务端关闭对端，
-    /// 使用者在其上观察到 `PEER_CLOSED`（同 Fuchsia `interfaces.admin.Control` 的移除终止）。
+    /// 独立 Event 以 USER_0 通知此网卡链路变化。使用者在寿命通道观察到 `PEER_CLOSED`（同 Fuchsia `interfaces.admin.Control` 的移除终止）。
     ///
     /// # Errors
     ///
@@ -49,7 +83,7 @@ pub trait InstallerService: Send + Sync {
         device_id: u64,
         description: Vec<u8>,
         handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status>;
+    ) -> Result<(u32, Channel, native_runtime::Event), Status>;
 }
 
 /// 分派安装 channel 的一条请求；签名与 `service_rpc::Handler` 一致。
@@ -65,7 +99,12 @@ pub fn dispatch_installer(
     reply: &mut Writer,
 ) -> Result<Vec<Handle>, Status> {
     match ordinal {
-        WATCH_INTERFACES => {
+        CONNECTIONS => dispatch_connections(request, handles, reply, |cursor| service.connections(cursor)),
+        CLEAR_CONNECTION => dispatch_clear_connection(request, handles, |identity| service.clear_connection(identity)),
+        CONNECTION_CHANGES => dispatch_connection_changes(request, handles, reply, |cursor| service.connection_changes(cursor)),
+        ARM_CONNECTION_WATCH => dispatch_arm_connection_watch(request, handles, |cursor| service.arm_connection_watch(cursor)),
+        FIREWALL_COUNTERS => dispatch_firewall_counters(request, handles, reply, |cursor| service.firewall_counters(cursor)),
+        WATCH_ROUTING_INPUTS => {
             request.finish()?;
             if !handles.is_empty() {
                 return Err(native_abi::ERR_INVALID_ARGS);
@@ -74,7 +113,7 @@ pub fn dispatch_installer(
             returned
                 .try_reserve_exact(1)
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            returned.push(service.watch_interfaces()?.into_handle());
+            returned.push(service.watch_routing_inputs()?.into_handle());
             Ok(returned)
         }
         PREPARE_NEXT_HOP => {
@@ -95,21 +134,26 @@ pub fn dispatch_installer(
             Ok(returned)
         }
         PREPARE_CONFIGURATION => {
-            let length = request.u64()?;
-            request.finish()?;
-            if handles.len() != 1 {
-                return Err(native_abi::ERR_INVALID_ARGS);
-            }
-            let mut handles = handles;
-            let content =
-                Vmo::from_handle(service_rpc::take_handle(&mut handles, 0)?).read_bytes(length)?;
-            let batch = super::ConfigurationBatch::parse(&content)
+            let captured = super::configuration::capture_prepare(request, handles)?;
+            let policy = captured.policy()?;
+            let batch = captured.body
+                .as_deref()
+                .map(super::ConfigurationBatch::parse)
+                .transpose()
                 .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             let mut returned = Vec::new();
             returned
                 .try_reserve_exact(1)
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            returned.push(service.prepare_configuration(batch)?.into_handle());
+            let batch = match policy.prerouting {
+                Some(chain) => Some(batch.unwrap_or_default().with_prerouting(chain)),
+                None => batch,
+            };
+            returned.push(
+                service
+                    .prepare_configuration(batch, policy.forwarding)?
+                    .into_handle(),
+            );
             Ok(returned)
         }
         INSTALL_DEVICE => {
@@ -121,12 +165,104 @@ pub fn dispatch_installer(
     }
 }
 
+pub(super) fn dispatch_firewall_counters(
+    request: &mut Reader<'_>,
+    handles: Vec<Handle>,
+    reply: &mut Writer,
+    query: impl FnOnce(counters::Cursor) -> Result<Vec<u8>, Status>,
+) -> Result<Vec<Handle>, Status> {
+    let cursor = counters::Cursor::parse(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    request.finish()?;
+    if !handles.is_empty() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    write_bounded_reply(reply, &query(cursor)?, counters::MAX_BYTES)
+}
+
+pub(super) fn dispatch_connections(
+    request: &mut Reader<'_>,
+    handles: Vec<Handle>,
+    reply: &mut Writer,
+    query: impl FnOnce(Cursor) -> Result<Vec<u8>, Status>,
+) -> Result<Vec<Handle>, Status> {
+    use router_protocol::connections::MAX_PAGE_BYTES;
+    let cursor = Cursor::parse(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    request.finish()?;
+    if !handles.is_empty() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    write_bounded_reply(reply, &query(cursor)?, MAX_PAGE_BYTES as usize)
+}
+
+fn write_bounded_reply(reply: &mut Writer, bytes: &[u8], maximum: usize) -> Result<Vec<Handle>, Status> {
+    if bytes.len() > maximum {
+        return Err(native_abi::ERR_OUT_OF_RANGE);
+    }
+    reply.try_reserve(4 + bytes.len())?;
+    reply.bytes(bytes);
+    Ok(Vec::new())
+}
+
+fn change_cursor(request: &mut Reader<'_>, handles: &[Handle]) -> Result<changes::Cursor, Status> {
+    let cursor = changes::Cursor::parse(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    request.finish()?;
+    if !handles.is_empty() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok(cursor)
+}
+
+pub(super) fn dispatch_connection_changes(
+    request: &mut Reader<'_>,
+    handles: Vec<Handle>,
+    reply: &mut Writer,
+    query: impl FnOnce(changes::Cursor) -> Result<Vec<u8>, Status>,
+) -> Result<Vec<Handle>, Status> {
+    let cursor = change_cursor(request, &handles)?;
+    write_bounded_reply(reply, &query(cursor)?, changes::MAX_BYTES)
+}
+
+pub(super) fn dispatch_arm_connection_watch(
+    request: &mut Reader<'_>,
+    handles: Vec<Handle>,
+    arm: impl FnOnce(changes::Cursor) -> Result<Option<Event>, Status>,
+) -> Result<Vec<Handle>, Status> {
+    let cursor = change_cursor(request, &handles)?;
+    let mut handles = Vec::new();
+    handles.try_reserve_exact(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    if let Some(event) = arm(cursor)? {
+        handles.push(event.into_handle());
+    }
+    Ok(handles)
+}
+
+pub(super) fn dispatch_clear_connection(
+    request: &mut Reader<'_>,
+    handles: Vec<Handle>,
+    clear: impl FnOnce(Identity) -> Result<(), Status>,
+) -> Result<Vec<Handle>, Status> {
+    let identity = Identity::parse(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    request.finish()?;
+    if !handles.is_empty() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    clear(identity)?;
+    Ok(Vec::new())
+}
+
 pub(super) fn dispatch_install_device(
     request: &mut Reader<'_>,
     handles: Vec<Handle>,
     reply: &mut Writer,
-    install: impl FnOnce(u64, Vec<u8>, Vec<Handle>) -> Result<(u32, Channel), Status>,
+    install: impl FnOnce(
+        u64,
+        Vec<u8>,
+        Vec<Handle>,
+    ) -> Result<(u32, Channel, native_runtime::Event), Status>,
 ) -> Result<Vec<Handle>, Status> {
+    if request.u32()? != INSTALL_DEVICE_VERSION {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     let device_id = request.u64()?;
     let description = request.bytes()?;
     request.finish()?;
@@ -134,15 +270,16 @@ pub(super) fn dispatch_install_device(
     reply.try_reserve(4)?;
     let mut returned = Vec::new();
     returned
-        .try_reserve_exact(1)
+        .try_reserve_exact(2)
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut copy = Vec::new();
     copy.try_reserve_exact(description.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     copy.extend_from_slice(description);
-    let (index, lifetime) = install(device_id, copy, handles)?;
+    let (index, lifetime, link_changed) = install(device_id, copy, handles)?;
     reply.u32(index);
     returned.push(lifetime.into_handle());
+    returned.push(link_changed.into_handle());
     Ok(returned)
 }
 
@@ -152,13 +289,88 @@ pub struct NetworkInstaller {
 }
 
 impl NetworkInstaller {
-    /// 取得实际接口/地址/MTU/管理状态/载波变化的合并通知；清除并武装后读取完整快照，允许合并中间变化。
+    /// 读取一页规则计数正文。
+    /// # Errors
+    /// 规则链换版、游标或回复非法，或域不可用。
+    pub fn firewall_counters(&self, cursor: counters::Cursor) -> Result<Vec<u8>, Status> {
+        self.read_bounded_bytes(FIREWALL_COUNTERS, &cursor.encode(), counters::MAX_BYTES)
+    }
+
+    /// 从获授权的默认网络读取一页连接，返回唯一分页 codec 的正文。
+    /// # Errors
+    /// 游标失效、畸形回复、资源不足或服务不可用。
+    pub fn connections(&self, cursor: Cursor) -> Result<Vec<u8>, Status> {
+        self.read_bounded_bytes(CONNECTIONS, &cursor.encode(), router_protocol::connections::MAX_PAGE_BYTES as usize)
+    }
+
+    /// 读取增量页，返回唯一变更 codec 的正文。
+    /// # Errors
+    /// 回复畸形、资源不足或服务不可用。
+    pub fn connection_changes(&self, cursor: changes::Cursor) -> Result<Vec<u8>, Status> {
+        self.read_bounded_bytes(CONNECTION_CHANGES, &cursor.encode(), changes::MAX_BYTES)
+    }
+
+    fn read_bounded_bytes(&self, ordinal: u32, selector: &[u8], maximum: usize) -> Result<Vec<u8>, Status> {
+        let response = self.selector_request(ordinal, selector)?;
+        if !response.handles.is_empty() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let mut reader = response.reader();
+        let bytes = reader.bytes()?;
+        reader.finish()?;
+        if bytes.len() > maximum {
+            return Err(native_abi::ERR_OUT_OF_RANGE);
+        }
+        let mut page = Vec::new();
+        page.try_reserve_exact(bytes.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        page.extend_from_slice(bytes);
+        Ok(page)
+    }
+
+    /// 清除目标转发域中的一条连接并确认完成。
+    /// # Errors
+    /// 身份已失效、回复畸形或服务不可用。
+    pub fn clear_connection(&self, identity: Identity) -> Result<(), Status> {
+        let response = self.selector_request(CLEAR_CONNECTION, &identity.encode())?;
+        if !response.handles.is_empty() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        response.reader().finish()
+    }
+
+    /// 取得只读的下一次连接变化等待能力，或立即重查的空回复。
+    /// # Errors
+    /// 回复畸形、资源不足或服务不可用。
+    pub fn arm_connection_watch(&self, cursor: changes::Cursor) -> Result<Option<Event>, Status> {
+        let response = self.selector_request(ARM_CONNECTION_WATCH, &cursor.encode())?;
+        response.reader().finish()?;
+        let mut handles = response.handles.into_iter();
+        let event = handles.next().map(Event::from_handle);
+        if handles.next().is_some() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        Ok(event)
+    }
+
+    fn selector_request(&self, ordinal: u32, selector: &[u8]) -> Result<service_rpc::Reply, Status> {
+        let mut request = Writer::request(ordinal);
+        request.try_reserve(4 + selector.len())?;
+        request.bytes(selector);
+        call(&self.channel, &request, Vec::new())
+    }
+
+    /// 接口、地址或链路事实需要重新捕获。
+    pub const TOPOLOGY_CHANGED: u32 = native_abi::signals::USER_0;
+    /// 网关的已知失败集合变化，需要重新捕获双栈邻居事实。
+    pub const GATEWAYS_CHANGED: u32 = native_abi::signals::USER_1;
+
+    /// 取得路由输入的合并通知。两个信号可独立武装，信号不包含状态或历史。
     /// # Errors
     /// 资源不足、畸形回复或执行服务不可用。
-    pub fn watch_interfaces(&self) -> Result<native_runtime::Event, Status> {
+    pub fn watch_routing_inputs(&self) -> Result<native_runtime::Event, Status> {
         let mut reply = call(
             &self.channel,
-            &Writer::request(WATCH_INTERFACES),
+            &Writer::request(WATCH_ROUTING_INPUTS),
             Vec::new(),
         )?;
         reply.reader().finish()?;
@@ -183,7 +395,7 @@ impl NetworkInstaller {
     /// 对象不存在、路径/引用范围无效、事务冲突、资源不足或服务不可用。
     pub fn prepare_next_hop(
         &self,
-        definition: super::routes::NextHopConfiguration<'_>,
+        definition: super::routes::NextHopConfiguration<'_, core::net::Ipv4Addr>,
     ) -> Result<super::PreparedConfiguration, Status> {
         let encoded = definition.encode()?;
         let content = Vmo::from_bytes(encoded.as_bytes())?;
@@ -215,25 +427,18 @@ impl NetworkInstaller {
         )))
     }
 
-    /// 通过单个只读 VMO 预备已经编译的接口/FIB 正文；关闭或 abort 撤销未确认变更。
+    /// 预备已编译接口/FIB 与可选转发策略；关闭或 abort 撤销未确认变更。
     /// # Parameters
-    /// `encoded` 由 ConfigurationBatch 的唯一 codec 构造并移交；本层只拥有传输，服务端仍完整验证正文。
+    /// `encoded` 由 ConfigurationBatch 的唯一 codec 构造并移交；只有接口/FIB 实际变更才为该正文创建 VMO。
+    /// 策略字段缺席时保持运行值；本层只拥有传输，编码存储在 RPC 前释放，服务端仍完整验证。
     /// # Errors
     /// 正文/配置非法、事务冲突、执行服务拒绝、资源不足或服务不可用。
     pub fn prepare_configuration(
         &self,
         encoded: Vec<u8>,
+        policy: crate::ExecutionPolicy<'_>,
     ) -> Result<super::PreparedConfiguration, Status> {
-        let content = Vmo::from_bytes(&encoded)?;
-        let mut request = Writer::request(PREPARE_CONFIGURATION);
-        request.try_reserve(8)?;
-        request.u64(encoded.len() as u64);
-        drop(encoded);
-        let mut handles = Vec::new();
-        handles
-            .try_reserve_exact(1)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        handles.push(content.into_handle());
+        let (request, handles) = super::configuration::prepare_request(encoded, policy)?;
         self.call_prepared(&request, handles)
     }
 
@@ -247,22 +452,27 @@ impl NetworkInstaller {
         device_id: u64,
         description: &[u8],
         handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status> {
+    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
         let mut writer = Writer::request(INSTALL_DEVICE);
         writer.try_reserve(
-            12usize
+            16usize
                 .checked_add(description.len())
                 .ok_or(native_abi::ERR_OUT_OF_RANGE)?,
         )?;
-        writer.u64(device_id).bytes(description);
+        writer
+            .u32(INSTALL_DEVICE_VERSION)
+            .u64(device_id)
+            .bytes(description);
         let mut reply = call(&self.channel, &writer, handles)?;
-        if reply.handles.len() != 1 {
+        if reply.handles.len() != 2 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let (mut reader, handles) = reply.split();
         let index = reader.u32()?;
         reader.finish()?;
+        let link_changed =
+            native_runtime::Event::from_handle(service_rpc::take_handle(handles, 1)?);
         let lifetime = Channel::from_handle(service_rpc::take_handle(handles, 0)?);
-        Ok((index, lifetime))
+        Ok((index, lifetime, link_changed))
     }
 }

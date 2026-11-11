@@ -7,6 +7,7 @@ impl InterfaceInner {
         meta: crate::phy::PacketMeta,
         frame: &'frame [u8],
         fragments: &'frame mut FragmentsBuffer,
+        datagram: &mut impl FnMut(Ipv4Ingress<'_>) -> bool,
     ) -> Option<EthernetPacket<'frame>> {
         let eth_frame = check!(EthernetFrame::new_checked(frame));
 
@@ -31,6 +32,7 @@ impl InterfaceInner {
                     eth_frame.src_addr().into(),
                     &ipv4_packet,
                     fragments,
+                    datagram,
                 )
                 .map(EthernetPacket::Ip)
             }

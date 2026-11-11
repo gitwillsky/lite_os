@@ -5,6 +5,15 @@ pub struct Iter<'a, K, V> {
     current: Option<&'a Node<K, V>>,
 }
 
+impl<K, V> Clone for Iter<'_, K, V> {
+    fn clone(&self) -> Self {
+        // 两个 cursor 共享同一不可变借用；复制位置不克隆节点，也不扩大树的可变权限。
+        Self {
+            current: self.current,
+        }
+    }
+}
+
 impl<'a, K, V> Iter<'a, K, V> {
     pub(super) fn new(root: Option<&'a Node<K, V>>) -> Self {
         let mut current = root;

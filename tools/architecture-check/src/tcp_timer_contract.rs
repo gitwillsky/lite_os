@@ -2,6 +2,24 @@
 use super::SourceFile;
 use std::path::Path;
 
+fn transport_source(root: &Path) -> std::io::Result<String> {
+    let mut source = String::new();
+    for path in [
+        "libraries/tcp/src/socket.rs",
+        "libraries/tcp/src/socket/options.rs",
+        "libraries/tcp/src/socket/connection.rs",
+        "libraries/tcp/src/socket/ack.rs",
+        "libraries/tcp/src/socket/stream.rs",
+        "libraries/tcp/src/socket/receive.rs",
+        "libraries/tcp/src/socket/output.rs",
+        "libraries/tcp/src/socket/timers.rs",
+    ] {
+        source.push_str(&std::fs::read_to_string(root.join(path))?);
+        source.push('\n');
+    }
+    Ok(source)
+}
+
 fn normalize(text: &str) -> String {
     text.split_whitespace().collect()
 }
@@ -73,21 +91,24 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     let owner = source("system/netstack/src/inet/tcp/io.rs");
     let options = source("system/netstack/src/inet/options.rs");
     let lifecycle = source("system/netstack/src/inet/tcp/lifecycle.rs");
-    let replies = source("system/netstack/src/inet/route_reply.rs");
+    let packets = source("system/netstack/src/inet/tcp/packet.rs");
+    let connection = source("system/netstack/src/inet/tcp.rs");
     if !matches!((poll.find("tcp::maintain_clocks(self,timestamp)"), poll.find("if!interface.state.up")), (Some(a), Some(b)) if a < b)
-        || !timing.contains("tcp.maintenance_deadline()")
-        || !owner.contains("socket.maintain(timestamp)")
-        || !owner.contains("tcp.failure_reason()==Some(tcp::FailureReason::TimedOut)")
+        || !timing.contains("network.tcp_due(timestamp)")
+        || !packets.contains("entry.transport.maintenance_deadline()")
+        || !owner.contains("entry.transport.maintain(super::at(timestamp))")
+        || !connection.contains("tcp.failure_reason()==Some(transport::FailureReason::TimedOut)")
         || !options.contains("socket.set_keep_alive_policy(")
         || !options.contains("socket.set_user_timeout(")
         || !options.contains("socket.set_syn_retries(self.syn_retries)")
         || !options.contains("socket.set_linger2(self.linger2)")
-        || !lifecycle.contains("tcp.close_orphan(super::super::now())")
+        || !lifecycle.contains("entry.transport.close_orphan(at(super::super::now()))")
         || !lifecycle.contains("network.queue_tcp_resets(super::super::now())")
         || !poll.contains("self.queue_tcp_resets(timestamp)")
-        || !poll.contains("socket.output_unavailable(timestamp,smoltcp::socket::tcp::OutputFailure::PathUnavailable,)")
-        || !replies.contains("socket.take_reset()")
-        || !replies.contains("Ipv4Reply::tcp_reset(packet,socket.bound_interface())")
+        || !packets.contains("entry.transport.output_unavailable(at(timestamp),transport::OutputFailure::PathUnavailable,)")
+        || !packets.contains("entry.transport.take_reset()")
+        || !packets.contains("replies.enqueue_tcp(ip,segment,entry.egress(state.options.mark),route.interface_index,timestamp,")
+        || !packets.contains("self.transport.bound_interface(),self.passive.as_ref().map_or(endpoint_mark,|policy|policy.options.mark),")
         || lifecycle.contains("retain_transport(")
         || lifecycle.contains("slot.fill(orphan_id,orphan)")
         || !options.contains(
@@ -97,7 +118,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     {
         errors.push("tcp-timer: actual NET clock phase must precede NIC admission and deliver timeout once; native policy must configure real TCP handles".into());
     }
-    match std::fs::read_to_string(root.join("vendor/smoltcp/src/socket/tcp.rs")) {
+    match transport_source(root) {
         Ok(text) => check_transport(&text, errors),
         Err(error) => errors.push(format!("TCP transport source: {error}")),
     }
@@ -117,7 +138,7 @@ mod tests {
     #[test]
     fn rejects_counting_failed_local_transmission() {
         let root = super::super::repository_root();
-        let text = std::fs::read_to_string(root.join("vendor/smoltcp/src/socket/tcp.rs")).unwrap();
+        let text = transport_source(&root).unwrap();
         let old = "self.keep_alive_probes.saturating_add(1)";
         assert!(text.contains(old));
         let text = text.replace(old, "self.keep_alive_probes.saturating_add(2)");
@@ -132,13 +153,12 @@ mod tests {
         let mut sources = super::super::load_sources(&root).unwrap();
         let file = sources
             .iter_mut()
-            .find(|file| file.relative == "system/netstack/src/inet/timing.rs")
+            .find(|file| file.relative == "system/netstack/src/inet/tcp/packet.rs")
             .unwrap();
-        assert!(file.text.contains("tcp.maintenance_deadline()"));
-        file.text = file.text.replace(
-            "tcp.maintenance_deadline()",
-            "None::<smoltcp::time::Instant>",
-        );
+        assert!(file.text.contains(".maintenance_deadline()"));
+        file.text = file
+            .text
+            .replace(".maintenance_deadline()", ".removed_deadline()");
         file.syntax = syn::parse_file(&file.text).unwrap();
         let mut errors = Vec::new();
         check(&root, &sources, &mut errors);
@@ -148,7 +168,7 @@ mod tests {
     #[test]
     fn rejects_attaching_fin_deadline_to_a_live_shutdown() {
         let root = super::super::repository_root();
-        let text = std::fs::read_to_string(root.join("vendor/smoltcp/src/socket/tcp.rs")).unwrap();
+        let text = transport_source(&root).unwrap();
         let old = "self.orphaned && self.state == State::FinWait2";
         assert!(text.contains(old));
         let text = text.replace(old, "self.state == State::FinWait2");
@@ -178,7 +198,7 @@ mod tests {
     #[test]
     fn rejects_resetting_user_deadline_on_nonprogress_ack() {
         let root = super::super::repository_root();
-        let text = std::fs::read_to_string(root.join("vendor/smoltcp/src/socket/tcp.rs")).unwrap();
+        let text = transport_source(&root).unwrap();
         assert!(text.contains("if ack_progress {"));
         let text = text.replace("if ack_progress {", "if ack_all || ack_len > 0 {");
         syn::parse_file(&text).unwrap();
@@ -191,7 +211,7 @@ mod tests {
     #[test]
     fn rejects_using_queued_bytes_as_ack_upper_bound() {
         let root = super::super::repository_root();
-        let text = std::fs::read_to_string(root.join("vendor/smoltcp/src/socket/tcp.rs")).unwrap();
+        let text = transport_source(&root).unwrap();
         let old = "let ack_max = self.send_seq_no";
         assert!(text.contains(old));
         let text = text.replace(

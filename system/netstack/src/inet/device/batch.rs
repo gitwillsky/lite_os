@@ -54,7 +54,6 @@ impl EthernetDevice {
         frames: &'b mut [Option<NetworkReceiveFrame<'a>>],
         facts: &'b mut [Option<IngressFacts>],
     ) -> Option<EthernetReceiveBatch<'a, 'b>> {
-        self.ingress_reset.set(None);
         let limit = frames.len().min(RECEIVE_BATCH_CAPACITY);
         if limit == 0 {
             return None;
@@ -132,7 +131,6 @@ impl<'a> Iterator for EthernetReceiveBatch<'a, '_> {
         let facts = self.facts[self.next];
         self.next += 1;
         let device = self.device;
-        device.ingress_reset.set(None);
         let reservation = match device_error::classify_optional(
             device.device.reserve_transmit(self.queue),
             |error| *error == NetworkError::WouldBlock,
@@ -160,7 +158,6 @@ impl<'a> Iterator for EthernetReceiveBatch<'a, '_> {
                 facts,
                 received_errors: &device.received_errors,
                 pending_error: &device.pending_error,
-                ingress_reset: &device.ingress_reset,
             },
             EthernetTxToken {
                 net_id: device.net_id,

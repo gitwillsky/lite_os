@@ -79,21 +79,32 @@ receive_buf/start_xmit：丢帧与FIFO故障计device stats，TX失败best-effor
 更改阈值；设备terminal recovery/限频诊断和
 多 NIC、完整 rtnetlink、veth 与迁移不在本轮支持范围。
 
-本轮支持目标已收敛为学习型内核、一张物理网卡加 lo 的 IPv4 TCP/UDP。IPv6、多网卡、
-rtnetlink/veth/设备迁移、多地址、组播、通用 raw protocol 与复杂 PMTU 策略不作为本轮
-新增要求。已有入口须符合声明范围并通过集中门禁。
+主机 IPv6 UDP、[自动链路地址/ND](ipv6-link.md)及其状态已接通；地址/DAD 由 RTM_GETADDR 查询，IPv4 ARP 和 IPv6 ND 均可通过 RTM_GETNEIGH 枚举或单条查询。
+完整双栈、多网卡路由能力持续按路由计划补齐；veth/设备迁移、多地址、应用组播与复杂 PMTU 尚不声明可用。
+已有入口须符合声明范围，局部宿主用例不能代替集中系统门禁。
 
 ### NETLINK_ROUTE actual 域与 owner
 
 `RouteSocket` 与 `KobjectSocket` 是两个独立 backend，共享同一张 `(协议, NET, port)` 端口表（`kobject::with_ports`/`choose_port`），
 加锁顺序固定为 endpoint state -> 端口表，close 不在持有端口表时取 state。报文 codec 全部在 `net/rtnetlink/codec.rs`，
-不读内核状态；快照只来自 `interface_snapshots`/`network_snapshot`/`route_snapshot`，不保存第二份接口或 FIB，
+不读内核状态；快照只来自 `interface_snapshots`/`network_snapshot`/`address_snapshot`/`route_snapshot`/`neighbor_snapshot`，不保存第二份接口或 FIB，
 `ifi_flags` 与 `SIOCGIFFLAGS` 共用 `InterfaceSnapshot::flags`。dump 不预先排队：endpoint 只持有冻结快照与游标，回复内存有界。
-路由快照以完整组字典经只读 VMO 传输；Linux 每组只保留不可变表示布局，不按前缀复制成员。多路径/表示边界见
+双族路由快照以完整组字典经只读 VMO 传输；AF_UNSPEC 在同一 NET guard 捕获两族，各族沿同一类型化 codec。Linux 每组只保留不可变表示布局，不按前缀复制成员。边界见
 [路由快照契约](ipc-network.md#路由只读快照) 与 [UAPI 范围](../syscall-support/socket.md#netlink_route)。
+非 dump 的 RTM_GETROUTE 默认查询本机输出。RTA_IIF 选择输入路径，RTA_OIF 仅约束本机输出。两族均可指定 u32 RTA_MARK 并在单条 RTM_NEWROUTE 回复中读取非零标记。
+回复给出实际表、出口和立即网关；输入回复附 RTA_IIF 并保留源地址，输出可返回自动选源。异族网关沿用 RTA_VIA。查询不创建邻居、启动复探或建立逐流 FIB 缓存。
+路由查询的原生错误经 Linux 网络域的 `socket_errno` 映射；netlink 与 socket syscall 共用该映射，接口不存在与规则拒绝分别返回 ENODEV 和 EACCES。
+规则 dump 从同一个 NET guard 冻结生效规则及实际入接口名。地址族与优先级顺序稳定，接口消失后无法匹配的绑定不进入新快照。内建本地表和主表规则由 NET 投影。
+Linux 按游标输出 RTM_NEWRULE 及 FRA_SRC、FRA_IIFNAME、FRA_PRIORITY、FRA_TABLE 和适用的 FRA_FWMARK/FRA_FWMASK，最后发送 NLMSG_DONE。快照只有一份正文，逐行投影不分配或查询接口。
+RTM_GETRULE 接受标准 fib_rule_hdr，以及 BusyBox 使用的 rtgenmsg。规则写操作返回 EPERM；协议布局参考 [Linux v6.12 fib_rules](https://github.com/torvalds/linux/blob/v6.12/net/core/fib_rules.c#L952)。
+点查在冷路径编码固定大小的请求和回复，实际发送和点查共用选表及选源。规则扫描和自动选源后的重选见[策略选路](ip-forwarding.md#策略选路)。
 接收先在 guard 外预留 chunk 和输出容量，重取锁后核对需求，随后才推进游标；准备失败不丢消息，退休快照在 guard 外释放。
 
 修改请求在 `net/rtnetlink/change.rs`：先完整解析校验、再调用既有 `configure_address/netmask/broadcast/mtu/up/route`，
 校验失败不改变状态；路由进入同一 FIB 的 create/exclusive/replace/append 事务，`Ipv4RouteError::errno` 与 ioctl 共用。
 socket 层不依赖 task：发送者是否有 CAP_NET_ADMIN 由 syscall 层在每次发送时按 socket 所属 NET 的 owning UserNS 判定并作为
 `net_admin` 传入，旧 socket、SCM 传递或 setns 都不会保留配置权。范围见 `docs/syscall-support/socket.md`；多播订阅不实现。
+
+地址 dump 统一使用原生 AddressSnapshot 的冻结行，按请求族逐条生成，不把每接口固定成两个地址槽。
+IPv4 与 IPv6 共用 RTM_NEWADDR 投影；::1/128、以太网自动/静态地址的前缀及资格来自实际 owner，无直连意图的 IPv6 地址带 NOPREFIXROUTE；接口号不能表示时在整批发布前返回 EOVERFLOW。
+轻量 InterfaceSnapshot 的 codec 为版本 3，不携带地址列表；地址消息、成本与范围由[地址查询契约](ipv6-link.md#地址查询与版本)拥有。

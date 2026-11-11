@@ -1,4 +1,4 @@
-//! 配置管理的控制帧。JSON 文档一律经 fd/VMO 传递，长度为 u64，不随内联消息发送。
+//! 配置管理的控制帧。正文经 fd/VMO 传递，长度为 u64，不随内联消息发送。
 
 use crate::{Decoder, Encoder, Invalid, VERSION, ordinal};
 use alloc::vec::Vec;
@@ -18,13 +18,26 @@ impl Request {
     fn validate(self, operation: u32) -> Result<(), Invalid> {
         let document = matches!(
             operation,
-            ordinal::VALIDATE | ordinal::IMPORT | ordinal::DIFF
+            ordinal::VALIDATE
+                | ordinal::IMPORT
+                | ordinal::DIFF
+                | ordinal::BGP_ROUTES
+                | ordinal::BGP_REFRESH
+                | ordinal::DHCP_SERVER_BINDINGS
+                | ordinal::CONNECTIONS
+                | ordinal::CLEAR_CONNECTION
+                | ordinal::CONNECTION_CHANGES
+                | ordinal::FIREWALL_COUNTERS
         );
         if !ordinal::is_configuration(operation)
             || self.backup.is_some()
                 != matches!(operation, ordinal::BACKUP_EXPORT | ordinal::BACKUP_DELETE)
             || self.generation.is_some() != (operation == ordinal::IMPORT)
             || (self.length != 0) != document
+            || (matches!(operation, ordinal::CONNECTIONS | ordinal::CLEAR_CONNECTION | ordinal::CONNECTION_CHANGES)
+                && self.length != crate::connections::CURSOR_BYTES as u64)
+            || (operation == ordinal::FIREWALL_COUNTERS
+                && self.length != crate::firewall::counters::CURSOR_BYTES as u64)
         {
             return Err(Invalid);
         }
@@ -75,19 +88,22 @@ impl Request {
     }
 }
 
-/// 管理回复的元数据；IMPORT/备份删除没有文档，其他操作各带一个内容能力。
+/// 管理回复的元数据；无正文的操作只确认结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reply {
     /// 操作所观察/提交的服务实例内代际。
     pub generation: u64,
-    /// 文档逻辑长度；内容可为空，IMPORT/备份删除确认必须为零。
+    /// 文档逻辑长度；无正文的确认必须为零。
     pub length: u64,
 }
 impl Reply {
     /// 当前操作的成功回复是否携带内容能力；零字节备份仍必须与无正文确认区分。
     pub fn has_document(operation: u32) -> bool {
         ordinal::is_configuration(operation)
-            && !matches!(operation, ordinal::IMPORT | ordinal::BACKUP_DELETE)
+            && !matches!(
+                operation,
+                ordinal::IMPORT | ordinal::BACKUP_DELETE | ordinal::BGP_REFRESH | ordinal::CLEAR_CONNECTION
+            )
     }
 
     /// 固定 20-byte 的回复控制帧。
@@ -112,6 +128,12 @@ impl Reply {
         if !ordinal::is_configuration(operation)
             || reply.generation == 0
             || (!Self::has_document(operation) && reply.length != 0)
+            || (operation == ordinal::CONNECTIONS
+                && !crate::connections::valid_page_length(reply.length))
+            || (operation == ordinal::CONNECTION_CHANGES
+                && !crate::connections::changes::valid_length(reply.length))
+            || (operation == ordinal::FIREWALL_COUNTERS
+                && !crate::firewall::counters::valid_length(reply.length))
         {
             return Err(Invalid);
         }
@@ -178,5 +200,95 @@ mod tests {
         );
         assert!(Reply::has_document(ordinal::BACKUP_EXPORT));
         assert!(!Reply::has_document(ordinal::BACKUP_DELETE));
+        let status = Request {
+            backup: None,
+            generation: None,
+            length: 0,
+        };
+        assert_eq!(
+            Request::decode(
+                ordinal::BGP_STATUS,
+                &status.encode(ordinal::BGP_STATUS).unwrap()
+            ),
+            Ok(status)
+        );
+        assert!(request.encode(ordinal::BGP_STATUS).is_err());
+        let query = crate::tracking::IpPrefix {
+            network: "198.51.100.0".parse().unwrap(),
+            length: 24,
+        };
+        let json = query.encode().unwrap();
+        assert_eq!(crate::tracking::IpPrefix::parse(&json), Ok(query));
+        assert!(
+            crate::tracking::IpPrefix {
+                network: "198.51.100.1".parse().unwrap(),
+                ..query
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            crate::tracking::IpPrefix {
+                length: 33,
+                ..query
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            crate::tracking::IpPrefix::parse(
+                br#"{"network":"198.51.100.0","length":24,"extra":true}"#
+            )
+            .is_err()
+        );
+        assert!(status.encode(ordinal::BGP_ROUTES).is_err());
+        let lookup = Request {
+            length: json.len() as u64,
+            ..status
+        };
+        assert_eq!(
+            Request::decode(
+                ordinal::BGP_ROUTES,
+                &lookup.encode(ordinal::BGP_ROUTES).unwrap()
+            ),
+            Ok(lookup)
+        );
+        assert!(Reply::has_document(ordinal::BGP_ROUTES));
+
+        let refresh =
+            crate::bgp::RefreshRequest::parse(r#"{"neighbor":"上联","family":"ipv6"}"#.as_bytes())
+                .unwrap();
+        let document = refresh.encode().unwrap();
+        assert_eq!(crate::bgp::RefreshRequest::parse(&document), Ok(refresh));
+        assert!(crate::bgp::RefreshRequest::parse(br#"{"neighbor":"","family":"ipv4"}"#).is_err());
+        assert!(
+            crate::bgp::RefreshRequest::parse(br#"{"neighbor":"upstream","family":"any"}"#)
+                .is_err()
+        );
+        let command = Request {
+            length: document.len() as u64,
+            ..status
+        };
+        assert!(status.encode(ordinal::BGP_REFRESH).is_err());
+        assert_eq!(
+            Request::decode(
+                ordinal::BGP_REFRESH,
+                &command.encode(ordinal::BGP_REFRESH).unwrap()
+            ),
+            Ok(command)
+        );
+        assert!(!Reply::has_document(ordinal::BGP_REFRESH));
+        assert!(Reply::decode(ordinal::BGP_REFRESH, &reply.encode()).is_err());
+        let accepted = Reply { length: 0, ..reply };
+        assert_eq!(
+            Reply::decode(ordinal::BGP_REFRESH, &accepted.encode()),
+            Ok(accepted)
+        );
+
+        assert!(Reply::has_document(ordinal::BGP_STATUS));
+        assert_eq!(
+            Reply::decode(ordinal::BGP_STATUS, &reply.encode()),
+            Ok(reply)
+        );
     }
 }

@@ -9,69 +9,47 @@ use crate::socket::udp::Socket as UdpSocket;
 impl InterfaceInner {
     pub(super) fn process_udp<'frame>(
         &mut self,
-        sockets: &mut SocketSet,
-        meta: PacketMeta,
+        _sockets: &mut SocketSet,
+        _meta: PacketMeta,
         handled_by_raw_socket: bool,
         ip_repr: IpRepr,
         ip_payload: &'frame [u8],
+        datagram: &mut impl FnMut(Ipv4Ingress<'_>) -> bool,
     ) -> Option<Packet<'frame>> {
         let (src_addr, dst_addr) = (ip_repr.src_addr(), ip_repr.dst_addr());
+        if datagram(Ipv4Ingress {
+            packet:None,
+            protocol:17, hop_limit:ip_repr.hop_limit(), handled_by_raw:handled_by_raw_socket,
+            reverse_route:None, bound_reverse_route:None,
+            source: src_addr,
+            destination: dst_addr,
+            specific_destination: self.ingress_spec_address(&ip_repr),
+            interface_index: self.interface_index(),
+            multicast: self.is_broadcast(&dst_addr) || dst_addr.is_multicast(),
+            checksum_valid: _meta.rx_checksum_valid,
+            payload: ip_payload,
+        }) { return None; }
         let udp_packet = check!(UdpPacket::new_checked(ip_payload));
-        let udp_repr = check!(UdpRepr::parse(
-            &udp_packet,
-            &src_addr,
-            &dst_addr,
-            &self.caps.checksum
-        ));
+        let _udp_repr = check!(UdpRepr::parse(&udp_packet, &src_addr, &dst_addr, &self.caps.checksum));
 
         #[cfg(feature = "socket-udp")]
+        for udp_socket in _sockets
+            .items_mut()
+            .filter_map(|i| UdpSocket::downcast_mut(&mut i.socket))
         {
-            // 广播/组播交付每个真实匹配 socket；单播只在完整 admission 后选择一个最高优先级目标。
-            // 在入队前匹配 peer，不能通过 dequeue/drop 模拟 connected socket 的隔离。
-            if self.is_broadcast(&dst_addr) || dst_addr.is_multicast() {
-                let mut delivered = false;
-                for udp_socket in sockets
-                    .items_mut()
-                    .filter_map(|i| UdpSocket::downcast_mut(&mut i.socket))
-                {
-                    if udp_socket.accepts(self, &ip_repr, &udp_repr) {
-                        udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_packet.payload());
-                        delivered = true;
-                    }
-                }
-                if delivered {
-                    return None;
-                }
-            } else {
-                let selected = sockets
-                    .items()
-                    .filter_map(|item| {
-                        let socket = UdpSocket::downcast(&item.socket)?;
-                        socket
-                            .accepts(self, &ip_repr, &udp_repr)
-                            .then(|| (socket.admission_priority(), item.meta.handle))
-                    })
-                    .max_by_key(|(priority, _)| *priority);
-                if let Some((_, handle)) = selected {
-                    sockets.get_mut::<UdpSocket>(handle).process(
-                        self,
-                        meta,
-                        &ip_repr,
-                        &udp_repr,
-                        udp_packet.payload(),
-                    );
-                    return None;
-                }
+            if udp_socket.accepts(self, &ip_repr, &_udp_repr) {
+                udp_socket.process(self, _meta, &ip_repr, &_udp_repr, udp_packet.payload());
+                return None;
             }
         }
 
         #[cfg(feature = "socket-dns")]
-        for dns_socket in sockets
+        for dns_socket in _sockets
             .items_mut()
             .filter_map(|i| DnsSocket::downcast_mut(&mut i.socket))
         {
-            if dns_socket.accepts(&ip_repr, &udp_repr) {
-                dns_socket.process(self, &ip_repr, &udp_repr, udp_packet.payload());
+            if dns_socket.accepts(&ip_repr, &_udp_repr) {
+                dns_socket.process(self, &ip_repr, &_udp_repr, udp_packet.payload());
                 return None;
             }
         }

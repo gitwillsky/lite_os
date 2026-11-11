@@ -1,7 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use smoltcp::socket::tcp;
-
 use native_runtime::Event;
 
 use crate::namespace::Namespace;
@@ -19,7 +17,7 @@ use super::*;
 ///
 /// # Returns
 ///
-/// 持有原 established smoltcp handle 的 accepted endpoint。
+/// 持有原 established 连接的 accepted endpoint。
 ///
 /// # Errors
 ///
@@ -64,32 +62,38 @@ pub(in crate::inet) fn accept(
                 .expect("TCP listener lost local port lease"),
         )
     };
-    let local_address = network.tcp_endpoints[&listener_id].handles[position]
+    let policy = network.tcp_endpoints[&listener_id].handles[position]
         .passive
         .as_ref()
-        .expect("pending TCP child lost connection")
-        .connection
-        .local
-        .address;
-    // exact-address node 在 replacement 加入 SocketSet 前预留；之后的 commit/handle transfer 均不分配。
-    let prepared_lease = network
-        .tcp_ports
-        .prepare_retain_for_address(port_lease, local_address)
-        .map_err(port_error)?;
+        .expect("pending TCP child lost connection");
+    // parent 改设备后 child 已独立持有原 membership；只有仍借 parent 的 child 才需要准备新节点。
+    let prepared_lease = if policy.port_lease.is_none() {
+        Some(
+            network
+                .tcp_ports
+                .prepare_retain_for_address(
+                    port_lease,
+                    PortBinding::new(policy.connection.local.ip(), policy.options.ipv6_only)
+                        .map_err(port_error)?
+                        .with_interface(policy.options.bound_to_device),
+                )
+                .map_err(port_error)?,
+        )
+    } else {
+        None
+    };
     let id = allocate_endpoint_id(&mut network)?;
-    let replacement = add_socket(&mut network)?;
-    let listener_options = network.tcp_endpoints[&listener_id].options;
-    listener_options.apply_tcp(network.sockets.get_mut::<tcp::Socket<'static>>(replacement));
-    if network
-        .sockets
-        .get_mut::<tcp::Socket<'static>>(replacement)
-        .listen(endpoint)
-        .is_err()
+    if network.socket_count() + network.udp_endpoints.len() >= super::super::SOCKET_STORAGE_CAPACITY
     {
-        network.sockets.remove(replacement);
-        return Err(SocketError::AddressNotAvailable);
+        return Err(SocketError::NoMemory);
     }
-    let accepted_lease = network.tcp_ports.commit_retained(prepared_lease);
+    let mut replacement = allocate_socket()?;
+    let listener_options = network.tcp_endpoints[&listener_id].options;
+    listener_options.apply_tcp(&mut replacement);
+    replacement
+        .listen(listen_endpoint(endpoint))
+        .map_err(|_| SocketError::AddressNotAvailable)?;
+    let accepted_lease = prepared_lease.map(|prepared| network.tcp_ports.commit_retained(prepared));
     let mut entry = network
         .tcp_endpoints
         .get_mut(&listener_id)
@@ -103,21 +107,25 @@ pub(in crate::inet) fn accept(
             .expect("TCP listener disappeared while replenishing backlog")
             .handles
             .push(TcpHandle::new(replacement));
-    } else {
-        network.sockets.remove(replacement);
     }
     let policy = entry
         .passive
         .take()
         .expect("accepted child must have handshake policy");
     let options = policy.options;
-    let accepted_lease = network
-        .tcp_ports
-        .set_reuse(accepted_lease, options.reuse_address);
+    let accepted_lease = network.tcp_ports.set_reuse(
+        policy
+            .port_lease
+            .or(accepted_lease)
+            .expect("accepted child lost port lease"),
+        options.reuse_address,
+    );
     accepted_handles.push(entry);
+    let family = network.tcp_endpoints[&listener_id].family;
     network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
         id,
         TcpEndpointState {
+            family,
             endpoint: Weak::new(),
             handles: accepted_handles,
             mode: TcpMode::Connected(policy.connection),
@@ -125,6 +133,7 @@ pub(in crate::inet) fn accept(
             port_lease: Some(accepted_lease),
             orphaned: false,
             options,
+            md5_keys: policy.md5_keys,
             readiness: network_protocol::SocketPollState::error(),
             notification_pending: false,
         },

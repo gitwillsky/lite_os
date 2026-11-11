@@ -60,9 +60,9 @@ fn recursive_chains_flatten_exact_weights_and_keep_frozen_readers() {
     let middle = [recursive("192.0.2.1", 2), direct(4, 1)];
     let root = [recursive("198.51.100.1", 1)];
     let hops = [
-        routing::NextHop::new(Action::Forward, &leaf),
-        routing::NextHop::new(Action::Forward, &middle),
-        routing::NextHop::new(Action::Forward, &root),
+        routing::NextHop::new(routing::Action::Forward, &leaf),
+        routing::NextHop::new(routing::Action::Forward, &middle),
+        routing::NextHop::new(routing::Action::Forward, &root),
     ];
     let table = capture_table(
         &[
@@ -146,8 +146,8 @@ fn recursive_chains_flatten_exact_weights_and_keep_frozen_readers() {
     let overflow = capture_table(
         &[row("192.0.2.0", 24, 0), row("198.51.100.0", 24, 1)],
         &[
-            routing::NextHop::new(Action::Forward, &wide_leaf),
-            routing::NextHop::new(Action::Forward, &wide_root),
+            routing::NextHop::new(routing::Action::Forward, &wide_leaf),
+            routing::NextHop::new(routing::Action::Forward, &wide_root),
         ],
     );
     assert!(
@@ -167,14 +167,44 @@ fn recursive_chains_flatten_exact_weights_and_keep_frozen_readers() {
     let merged = capture_table(
         &[row("192.0.2.0", 24, 0), row("198.51.100.0", 24, 1)],
         &[
-            routing::NextHop::new(Action::Forward, &leaf),
-            routing::NextHop::new(Action::Forward, &converging),
+            routing::NextHop::new(routing::Action::Forward, &leaf),
+            routing::NextHop::new(routing::Action::Forward, &converging),
         ],
     );
     let merged = merged.resolve(|_| true, |_| true).unwrap();
     let merged = lookup(&merged, "198.51.100.9");
     assert_eq!(merged.next_hop.unwrap().members().len(), 1);
     assert_eq!(merged.next_hop.unwrap().members()[0].weight, 1);
+    // 同一字典经不同地址进入时，立即网关准入不能被节点去重提前跳过。
+    let aliases = [recursive("192.0.2.1", 1), recursive("192.0.2.2", 1)];
+    let aliases = capture_table(
+        &[row("192.0.2.0", 24, 0), row("198.51.100.0", 24, 1)],
+        &[
+            routing::NextHop::new(routing::Action::Forward, &leaf),
+            routing::NextHop::new(routing::Action::Forward, &aliases),
+        ],
+    );
+    let usable = |target: &Adjacency| {
+        target
+            .gateway
+            .is_none_or(|address| address == "192.0.2.2".parse::<IpAddr>().unwrap())
+    };
+    let aliases = aliases.resolve(|_| true, usable).unwrap();
+    let probe = router_protocol::tracking::installation::Installation {
+        interface: None,
+        network: "203.0.113.0".parse().unwrap(),
+        length: 24,
+        next_hop: router_protocol::tracking::Query { prefix_length: None,
+            address: "198.51.100.1".parse().unwrap(),
+            resolve_via_default: false,
+        },
+    };
+    assert!(
+        aliases
+            .evaluate_installations(&[probe], usable, |_| None)
+            .unwrap()[0]
+            .reachable
+    );
 }
 #[test]
 fn mutual_recursion_does_not_poison_another_root_or_bypass_a_selected_drop() {
@@ -184,12 +214,12 @@ fn mutual_recursion_does_not_poison_another_root_or_bypass_a_selected_drop() {
     let via_drop = [recursive("10.0.0.1", 1)];
     let parent = [direct(9, 1)];
     let hops = [
-        routing::NextHop::new(Action::Forward, &a),
-        routing::NextHop::new(Action::Forward, &b),
-        routing::NextHop::new(Action::Forward, &cycle),
-        routing::NextHop::new(Action::Forward, &via_drop),
-        routing::NextHop::new(Action::Discard, &[]),
-        routing::NextHop::new(Action::Forward, &parent),
+        routing::NextHop::new(routing::Action::Forward, &a),
+        routing::NextHop::new(routing::Action::Forward, &b),
+        routing::NextHop::new(routing::Action::Forward, &cycle),
+        routing::NextHop::new(routing::Action::Forward, &via_drop),
+        routing::NextHop::new(routing::Action::Discard, &[]),
+        routing::NextHop::new(routing::Action::Forward, &parent),
     ];
     let table = capture_table(
         &[
@@ -230,6 +260,55 @@ fn mutual_recursion_does_not_poison_another_root_or_bypass_a_selected_drop() {
     );
     let dropped = lookup(&result, "172.16.0.1");
     assert!(dropped.next_hop.is_none() && dropped.issues.unreachable);
+    use router_protocol::tracking::{Query, installation::Installation};
+    let probe = |address: &str, allow_default| Installation {
+        interface: None,
+        network: "172.30.0.0".parse().unwrap(),
+        length: 16,
+        next_hop: Query { prefix_length: None,
+            address: address.parse().unwrap(),
+            resolve_via_default: allow_default,
+        },
+    };
+    let checks = [
+        probe("203.0.113.1", true),
+        probe("10.0.0.1", true),
+        probe("8.8.8.8", false),
+        probe("8.8.8.8", true),
+    ];
+    assert_eq!(
+        result
+            .evaluate_installations(&checks, |_| true, |_| None)
+            .unwrap()
+            .iter()
+            .map(|outcome| outcome.reachable)
+            .collect::<Vec<_>>(),
+        [false, false, false, true]
+    );
+    let constrained = table
+        .resolve(|_| true, |target| target.interface_index == 3)
+        .unwrap();
+    let cut = Installation {
+        interface: None,
+        network: "198.51.100.0".parse().unwrap(),
+        length: 24,
+        next_hop: Query { prefix_length: None,
+            address: "192.0.2.1".parse().unwrap(),
+            resolve_via_default: false,
+        },
+    };
+    assert!(
+        !constrained
+            .evaluate_installations(&[cut], |target| target.interface_index == 3, |_| None)
+            .unwrap()[0]
+            .reachable
+    );
+    assert!(
+        result
+            .evaluate_installations(&[cut], |_| true, |_| None)
+            .unwrap()[0]
+            .reachable
+    );
 }
 
 #[test]
@@ -257,7 +336,7 @@ fn deep_dual_stack_chains_use_the_explicit_work_stack_and_share_final_groups() {
             .collect();
         let hops: Vec<_> = members
             .iter()
-            .map(|members| routing::NextHop::new(Action::Forward, members))
+            .map(|members| routing::NextHop::new(routing::Action::Forward, members))
             .collect();
         let rows: Vec<_> = addresses
             .iter()
@@ -342,9 +421,9 @@ fn reselection_restores_a_recursive_peer_after_choosing_a_loop_breaking_backup()
             row("198.51.100.0", 24, 1),
         ],
         &[
-            routing::NextHop::new(Action::Forward, &a),
-            routing::NextHop::new(Action::Forward, &b),
-            routing::NextHop::new(Action::Forward, &backup),
+            routing::NextHop::new(routing::Action::Forward, &a),
+            routing::NextHop::new(routing::Action::Forward, &b),
+            routing::NextHop::new(routing::Action::Forward, &backup),
         ],
     );
     let frozen = table.resolve(|_| true, |_| true).unwrap();
@@ -376,6 +455,45 @@ fn reselection_restores_a_recursive_peer_after_choosing_a_loop_breaking_backup()
         lookup(&frozen, "192.0.2.9").next_hop.is_none(),
         "selection cannot change a frozen reader"
     );
+    // 旧 NHT 两端均可达，但把 A 的递归候选安装后会 A→B→A；不得借旧备用出口证明新路由。
+    use router_protocol::tracking::{Query, installation::Installation};
+    let self_capture = Installation {
+        interface: None,
+        network: "192.0.2.0".parse().unwrap(),
+        length: 24,
+        next_hop: Query { prefix_length: None,
+            address: "198.51.100.1".parse().unwrap(),
+            resolve_via_default: false,
+        },
+    };
+    let outside = Installation {
+        network: "203.0.113.0".parse().unwrap(),
+        ..self_capture
+    };
+    let less_specific = Installation {
+        network: "192.0.0.0".parse().unwrap(),
+        length: 16,
+        ..self_capture
+    };
+    let results = selected
+        .evaluate_installations(
+            &[self_capture, outside, less_specific, self_capture],
+            |_| true,
+            |_| None,
+        )
+        .unwrap();
+    assert_eq!(
+        results
+            .iter()
+            .map(|outcome| outcome.reachable)
+            .collect::<Vec<_>>(),
+        [false, true, true, false]
+    );
+    assert!(
+        results
+            .iter()
+            .all(|outcome| outcome.interior_cost.is_none())
+    );
 }
 
 #[test]
@@ -394,11 +512,11 @@ fn reselection_withdraws_self_capture_without_bypassing_a_selected_drop() {
             row("198.51.100.0", 24, 4),
         ],
         &[
-            routing::NextHop::new(Action::Forward, &parent),
-            routing::NextHop::new(Action::Discard, &[]),
-            routing::NextHop::new(Action::Forward, &blocked),
-            routing::NextHop::new(Action::Forward, &backup),
-            routing::NextHop::new(Action::Forward, &recursive),
+            routing::NextHop::new(routing::Action::Forward, &parent),
+            routing::NextHop::new(routing::Action::Discard, &[]),
+            routing::NextHop::new(routing::Action::Forward, &blocked),
+            routing::NextHop::new(routing::Action::Forward, &backup),
+            routing::NextHop::new(routing::Action::Forward, &recursive),
         ],
     );
     let selected = table.select_resolved(|_| true, |_| true).unwrap();
@@ -430,7 +548,7 @@ fn source_withdrawal_and_interface_recovery_recompute_choices_without_stale_excl
     let attached = [direct(2, 1)];
     let first = capture_table(
         &[row("192.0.2.0", 24, 0)],
-        &[routing::NextHop::new(Action::Forward, &attached)],
+        &[routing::NextHop::new(routing::Action::Forward, &attached)],
     );
     let first = first.sources()[0].clone();
     let recursive = [recursive("192.0.2.1", 1)];
@@ -441,11 +559,11 @@ fn source_withdrawal_and_interface_recovery_recompute_choices_without_stale_excl
             preference: 1,
             metric: 0,
         }],
-        &[
-            routing::NextHop::new(Action::Forward, &recursive),
-            routing::NextHop::new(Action::Forward, &backup),
+        [
+            routing::NextHop::new(routing::Action::Forward, &recursive),
+            routing::NextHop::new(routing::Action::Forward, &backup),
         ],
-        &[row("198.51.100.0", 24, 0), row("198.51.100.0", 24, 1)],
+        [row("198.51.100.0", 24, 0), row("198.51.100.0", 24, 1)],
     )
     .unwrap();
     let second = Source::<u32, (), super::super::NextHop>::capture_batch(
@@ -537,7 +655,7 @@ fn shadowed_aggregate_failures_do_not_trigger_a_full_graph_trial_per_prefix() {
     }
     let hops = members
         .iter()
-        .map(|members| routing::NextHop::new(Action::Forward, members))
+        .map(|members| routing::NextHop::new(routing::Action::Forward, members))
         .collect::<Vec<_>>();
     let table = capture_table(&rows, &hops);
     let visits = core::cell::Cell::new(0);

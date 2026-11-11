@@ -41,56 +41,138 @@ pub(super) fn default_route(
     }))
 }
 
+pub(super) struct Compiled {
+    pub(super) main: [Vec<u8>; 2],
+    pub(super) tables: Vec<u8>,
+}
+
 pub(super) fn compile(
+    configuration: Option<&Configuration>,
+    interfaces: &[Interface],
+) -> Result<Compiled, Status> {
+    let empty = Configuration::default();
+    let configuration = configuration.unwrap_or(&empty);
+    let resolve = |device: &router_protocol::configuration::DeviceMatch| {
+        resolve_device(interfaces, device)
+    };
+    Ok(Compiled {
+        main: [
+            configuration
+                .route_source(router_protocol::routing::Family::Ipv4, resolve)
+                .map_err(encode_status)?,
+            configuration
+                .route_source(router_protocol::routing::Family::Ipv6, resolve)
+                .map_err(encode_status)?,
+        ],
+        tables: configuration.policy_source(resolve).map_err(encode_status)?,
+    })
+}
+
+pub(super) fn prerouting(
     configuration: Option<&Configuration>,
     interfaces: &[Interface],
 ) -> Result<Vec<u8>, Status> {
     let empty = Configuration::default();
     configuration
         .unwrap_or(&empty)
-        .route_source(|device| {
-            let mut matching = interfaces
-                .iter()
-                .filter(|interface| device.matches(&interface.name, interface.mac));
-            let result = matching.next().map(|interface| interface.index);
-            if matching.next().is_some() {
-                Err(router_protocol::Invalid)
-            } else {
-                Ok(result)
-            }
-        })
-        .map_err(|error| match error {
-            router_protocol::routing::EncodeError::NoMemory => native_abi::ERR_NO_MEMORY,
-            router_protocol::routing::EncodeError::Invalid => native_abi::ERR_INVALID_ARGS,
-        })
+        .firewall_source(|device| resolve_device(interfaces, device))
+        .map_err(encode_status)
+}
+
+fn resolve_device(
+    interfaces: &[Interface],
+    device: &router_protocol::configuration::DeviceMatch,
+) -> Result<Option<u32>, router_protocol::Invalid> {
+    let mut matching = interfaces
+        .iter()
+        .filter(|interface| device.matches(&interface.name, interface.mac));
+    let result = matching.next().map(|interface| interface.index);
+    if matching.next().is_some() {
+        Err(router_protocol::Invalid)
+    } else {
+        Ok(result)
+    }
+}
+
+fn encode_status(error: router_protocol::routing::EncodeError) -> Status {
+    match error {
+        router_protocol::routing::EncodeError::NoMemory => native_abi::ERR_NO_MEMORY,
+        router_protocol::routing::EncodeError::Invalid => native_abi::ERR_INVALID_ARGS,
+    }
 }
 
 pub(super) fn changed(previous: Option<&Configuration>, candidate: &Configuration) -> bool {
+    previous.is_none_or(|previous| {
+        previous.ipv4_forwarding != candidate.ipv4_forwarding
+            || previous.ipv6_forwarding != candidate.ipv6_forwarding
+    }) || firewall_changed(previous, candidate) || sources_changed(previous, candidate)
+}
+
+pub(super) fn firewall_changed(
+    previous: Option<&Configuration>,
+    candidate: &Configuration,
+) -> bool {
+    previous.is_none_or(|previous| {
+        previous.firewall != candidate.firewall
+            || candidate
+                .firewall
+                .rules()
+                .filter_map(|rule| rule.ingress.as_ref())
+                .any(|name| {
+                    previous.interfaces.get(name).map(|profile| &profile.device)
+                        != candidate.interfaces.get(name).map(|profile| &profile.device)
+                })
+    })
+}
+
+/// 只有静态来源/策略或稳定设备绑定改变时才需要重新编译；执行转发开关不属于 RIB 状态。
+pub(super) fn sources_changed(previous: Option<&Configuration>, candidate: &Configuration) -> bool {
     let Some(previous) = previous else {
         // 没有有效前像不能把空意图当作已应用；尤其需要清除 RIB 仍保留的旧策略。
         return true;
     };
+    let binding_changed = |interface| {
+        previous
+            .interfaces
+            .get(interface)
+            .map(|profile| &profile.device)
+            != candidate
+                .interfaces
+                .get(interface)
+                .map(|profile| &profile.device)
+    };
     previous.route_policy != candidate.route_policy
         || previous.routes != candidate.routes
-        || candidate.routes.iter().any(|route| {
-            if let router_protocol::configuration::StaticAction::Forward { members } = &route.action
-            {
-                members.iter().any(|member| {
-                    if let StaticTarget::Direct { interface, .. } = &member.target {
-                        previous
-                            .interfaces
-                            .get(interface)
-                            .map(|profile| &profile.device)
-                            != candidate
-                                .interfaces
-                                .get(interface)
-                                .map(|profile| &profile.device)
-                    } else {
-                        false
-                    }
-                })
-            } else {
-                false
-            }
-        })
+        || previous.policy_routing != candidate.policy_routing
+        || candidate
+            .policy_routing
+            .rules
+            .iter()
+            .filter_map(|rule| rule.ingress.as_ref())
+            .any(binding_changed)
+        || candidate
+            .routes
+            .iter()
+            .chain(
+                candidate
+                    .policy_routing
+                    .tables
+                    .iter()
+                    .flat_map(|table| &table.routes),
+            )
+            .any(|route| {
+                if let router_protocol::configuration::StaticAction::Forward { members } =
+                    &route.action
+                {
+                    members.iter().any(|member| {
+                        if let StaticTarget::Direct { interface, .. } = &member.target {
+                            binding_changed(interface)
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    false
+                }
+            })
 }

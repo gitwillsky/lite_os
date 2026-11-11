@@ -4,7 +4,7 @@ use super::*;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use device_model::DeviceBacking;
 
-pub(super) const MAGIC: u64 = u64::from_le_bytes(*b"LSOCK002");
+pub(super) const MAGIC: u64 = u64::from_le_bytes(*b"LSOCK004");
 pub(super) const CAPACITY: usize = 8;
 const _: () = assert!(CAPACITY.is_power_of_two() && CAPACITY <= u32::BITS as usize);
 pub(super) const WORDS: usize = 16;
@@ -133,7 +133,22 @@ impl Queue {
     }
     /// 字节不作整数端序转换；每槽按 8 字节对齐，最后不足一字的部分填零且不跨槽。
     pub(super) fn write_payload(&self, ticket: u64, bytes: &[u8]) -> Result<(), Status> {
-        let base = Self::payload_base(ticket, bytes.len())?;
+        self.write_payload_at(ticket, 0, bytes)
+    }
+    /// 控制记录与 payload 分段写同一槽；offset 必须按原子字对齐，不能创建跨槽或非原子别名。
+    pub(super) fn write_payload_at(
+        &self,
+        ticket: u64,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), Status> {
+        let total = offset
+            .checked_add(bytes.len())
+            .ok_or(native_abi::ERR_INVALID_ARGS)?;
+        if !offset.is_multiple_of(8) {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let base = Self::payload_base(ticket, total)? + offset;
         for (index, bytes) in bytes.chunks(8).enumerate() {
             let mut word = [0; 8];
             word[..bytes.len()].copy_from_slice(bytes);

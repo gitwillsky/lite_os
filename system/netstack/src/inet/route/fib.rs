@@ -1,7 +1,8 @@
 //! 唯一活动 FIB 的连续记录、共享下一跳与 Poptrie；前缀直接引用自己的 alias 区间。
 use super::*;
 use network_protocol::RouteChange;
-use nexthop::{NextHop, NextHops};
+type NextHop = nexthop::NextHop<Ipv4Addr>;
+type NextHops = nexthop::NextHops<Ipv4Addr>;
 
 /// 常驻路由只保存前缀/策略属性与下一跳槽；网关和出口不随每个前缀重复。
 #[derive(Clone, Copy)]
@@ -12,9 +13,9 @@ struct StoredRecord {
     metric: u32,
     scope: u8,
     protocol: u8,
-    kind: Ipv4RouteKind,
+    kind: RouteKind,
     preferred_source: Option<Ipv4Addr>,
-    metrics: Ipv4RouteMetrics,
+    metrics: RouteMetrics,
     // 无下一跳形态保留请求标志；有下一跳时只读取对象的声明，具名更新不改前缀。
     on_link: bool,
     origin: Origin,
@@ -86,10 +87,7 @@ impl StoredRecord {
         // 只在同一匹配组内按最终源重选；常态直接投影选中成员，不先复制首成员记录。
         if members.len() > 1 && flow.source.is_unspecified() {
             frozen_source = stored.preferred_source.or_else(|| {
-                interfaces
-                    .clone()
-                    .find(|interface| interface.index == member.interface_index)
-                    .and_then(|interface| interface.address)
+                source_for_ipv4_path(member.interface_index, member.gateway, interfaces.clone())
             });
             if let Some(source) = frozen_source {
                 member = group::select(
@@ -166,15 +164,22 @@ impl Draft {
     }
     pub(super) fn define(
         &mut self,
-        definition: network_protocol::routes::NextHopConfiguration<'_>,
+        definition: network_protocol::routes::NextHopConfiguration<'_, core::net::Ipv4Addr>,
     ) -> Result<(), SocketError> {
         self.define_group(definition.id, group::Group::capture(definition)?)
     }
-    pub(super) fn define_group(&mut self, id: u64, group: group::Group) -> Result<(), SocketError> {
+    pub(super) fn define_group(
+        &mut self,
+        id: u64,
+        group: group::Group<Ipv4Addr>,
+    ) -> Result<(), SocketError> {
         self.hops
             .define(nexthop::Name::new(id).ok_or(SocketError::Invalid)?, group)
     }
-    pub(super) fn named(&self, name: nexthop::Name) -> Result<&group::Group, SocketError> {
+    pub(super) fn named(
+        &self,
+        name: nexthop::Name,
+    ) -> Result<&group::Group<Ipv4Addr>, SocketError> {
         self.hops.named_group(name)
     }
     pub(super) fn retire_interface(&mut self, index: u32, force: bool) {
@@ -254,7 +259,16 @@ pub(super) struct Fib {
     hops: NextHops,
     index: poptrie::Poptrie<u32>,
 }
+
 impl Fib {
+    pub(super) fn has_gateway(&self, index: u32, gateway: IpAddr) -> bool {
+        self.hops.active_groups().any(|(_, members)| {
+            members.iter().any(|member| {
+                member.interface_index == index && member.gateway == Some(gateway)
+            })
+        })
+    }
+
     pub(super) fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -265,11 +279,14 @@ impl Fib {
     pub(super) fn prepare_next_hop(
         &self,
         name: nexthop::Name,
-        hop: group::Group,
-    ) -> Result<nexthop::Change, SocketError> {
+        hop: group::Group<Ipv4Addr>,
+    ) -> Result<nexthop::Change<Ipv4Addr>, SocketError> {
         self.hops.prepare_change(name, hop)
     }
-    pub(super) fn exchange_next_hop(&mut self, change: &mut nexthop::Change) -> &group::Group {
+    pub(super) fn exchange_next_hop(
+        &mut self,
+        change: &mut nexthop::Change<Ipv4Addr>,
+    ) -> &group::Group<Ipv4Addr> {
         self.hops.exchange(change)
     }
     pub(super) fn iter(&self) -> impl ExactSizeIterator<Item = Record> + '_ {

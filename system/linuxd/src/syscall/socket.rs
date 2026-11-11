@@ -33,6 +33,7 @@ pub(crate) use options::{sys_getsockopt, sys_setsockopt};
 
 const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
+const AF_INET6: usize = 10;
 const AF_PACKET: usize = 17;
 const AF_NETLINK: usize = 16;
 const SOCK_STREAM: usize = 1;
@@ -43,6 +44,7 @@ pub(in crate::syscall) const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
 pub(in crate::syscall) const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
 const MSG_PEEK: usize = 0x2;
 const MSG_TRUNC: usize = 0x20;
+const MSG_ERRQUEUE: usize = 0x2000;
 pub(in crate::syscall) const MSG_DONTWAIT: usize = 0x40;
 pub(in crate::syscall) const MSG_NOSIGNAL: usize = 0x4000;
 const IFNAMSIZ: usize = 16;
@@ -77,37 +79,7 @@ pub(in crate::syscall) fn interrupted_wait(deadline: Option<u64>) -> isize {
 }
 
 pub(super) fn socket_error(error: SocketError) -> isize {
-    -match error {
-        SocketError::Invalid | SocketError::WrongType => errno::EINVAL,
-        SocketError::NoMemory => errno::ENOMEM,
-        SocketError::NoBuffer => errno::ENOBUFS,
-        SocketError::NoSpace => errno::ENOSPC,
-        SocketError::AddressInUse => errno::EADDRINUSE,
-        SocketError::AddressNotAvailable => errno::EADDRNOTAVAIL,
-        SocketError::ConnectionRefused => errno::ECONNREFUSED,
-        SocketError::ConnectionReset => errno::ECONNRESET,
-        SocketError::ConnectionAborted => errno::ECONNABORTED,
-        SocketError::TimedOut => errno::ETIMEDOUT,
-        SocketError::Device => errno::EIO,
-        SocketError::NetworkUnreachable => errno::ENETUNREACH,
-        SocketError::HostUnreachable => errno::EHOSTUNREACH,
-        SocketError::DestinationRequired => errno::EDESTADDRREQ,
-        SocketError::MessageTooLarge => errno::EMSGSIZE,
-        SocketError::ProtocolNotSupported => errno::EPROTONOSUPPORT,
-        SocketError::OperationNotSupported => errno::EOPNOTSUPP,
-        SocketError::NotConnected => errno::ENOTCONN,
-        SocketError::AlreadyConnected => errno::EISCONN,
-        SocketError::InProgress => errno::EINPROGRESS,
-        SocketError::AlreadyInProgress => errno::EALREADY,
-        SocketError::Again => errno::EAGAIN,
-        SocketError::BrokenPipe => errno::EPIPE,
-        SocketError::PermissionDenied => errno::EACCES,
-        SocketError::OperationNotPermitted => errno::EPERM,
-        SocketError::NoDevice => errno::ENODEV,
-        SocketError::DeviceNotAvailable => errno::ENXIO,
-        SocketError::NetworkDown => errno::ENETDOWN,
-        SocketError::TooManyReferences => errno::ETOOMANYREFS,
-    }
+    -(crate::net::socket_errno(error) as isize)
 }
 
 fn decode_flags(raw: usize) -> Result<(usize, u32, bool), isize> {
@@ -124,6 +96,7 @@ fn decode_domain(raw: usize) -> Result<SocketDomain, isize> {
     match raw {
         AF_UNIX => Ok(SocketDomain::Unix),
         AF_INET => Ok(SocketDomain::Inet),
+        AF_INET6 => Ok(SocketDomain::Inet6),
         AF_PACKET => Ok(SocketDomain::Packet),
         AF_NETLINK => Ok(SocketDomain::Netlink),
         _ => Err(-errno::EAFNOSUPPORT),
@@ -207,10 +180,25 @@ fn decode_address(bytes: &[u8], allow_unnamed: bool) -> Result<SocketAddress, is
                 .map_err(socket_error)
         }
         AF_UNIX => Err(-errno::EINVAL),
-        AF_INET if length >= 16 => Ok(SocketAddress::Inet(InetAddress {
-            address: core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[4..8]).unwrap()),
-            port: u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
-        })),
+        AF_INET if length >= 16 => Ok(SocketAddress::Inet(InetAddress::V4(
+            core::net::SocketAddrV4::new(
+                core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[4..8]).unwrap()),
+                u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+            ),
+        ))),
+        AF_INET6 if length >= 24 => Ok(SocketAddress::Inet(InetAddress::V6(
+            core::net::SocketAddrV6::new(
+                core::net::Ipv6Addr::from(<[u8; 16]>::try_from(&bytes[8..24]).unwrap()),
+                u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+                u32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+                if length >= 28 {
+                    u32::from_ne_bytes(bytes[24..28].try_into().unwrap())
+                } else {
+                    0
+                },
+            ),
+        ))),
+        AF_INET | AF_INET6 => Err(-errno::EINVAL),
         AF_PACKET if length >= 20 => Ok(SocketAddress::Packet(PacketAddress {
             protocol: u16::from_ne_bytes(bytes[2..4].try_into().unwrap()),
             interface_index: i32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
@@ -262,11 +250,19 @@ fn encode_address(address: Option<SocketAddress>) -> ([u8; UNIX_ADDRESS_OUTPUT_B
             encoded[2..2 + count].copy_from_slice(&address.bytes()[..count]);
             2 + count + usize::from(!address.is_unnamed() && !address.is_abstract())
         }
-        Some(SocketAddress::Inet(address)) => {
+        Some(SocketAddress::Inet(InetAddress::V4(address))) => {
             encoded[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
-            encoded[2..4].copy_from_slice(&address.port.to_be_bytes());
-            encoded[4..8].copy_from_slice(&address.address.octets());
+            encoded[2..4].copy_from_slice(&address.port().to_be_bytes());
+            encoded[4..8].copy_from_slice(&address.ip().octets());
             16
+        }
+        Some(SocketAddress::Inet(InetAddress::V6(address))) => {
+            encoded[..2].copy_from_slice(&(AF_INET6 as u16).to_ne_bytes());
+            encoded[2..4].copy_from_slice(&address.port().to_be_bytes());
+            encoded[4..8].copy_from_slice(&address.flowinfo().to_ne_bytes());
+            encoded[8..24].copy_from_slice(&address.ip().octets());
+            encoded[24..28].copy_from_slice(&address.scope_id().to_ne_bytes());
+            28
         }
         Some(SocketAddress::Packet(address)) => {
             encoded[..2].copy_from_slice(&(AF_PACKET as u16).to_ne_bytes());
@@ -319,7 +315,7 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
         Ok(request) => request,
         Err(error) => return socket_error(error),
     };
-    if domain == SocketDomain::Inet
+    if matches!(domain, SocketDomain::Inet | SocketDomain::Inet6)
         && kind == SocketType::Raw
         && !task.has_namespace_capability(
             &net.user_namespace(),
@@ -597,7 +593,7 @@ pub(in crate::syscall) fn accept_once(
         Ok(prepared) => prepared,
         Err(_) => return -errno::ENOMEM,
     };
-    let accept_notify = if listener.domain() == SocketDomain::Inet {
+    let accept_notify = if matches!(listener.domain(), SocketDomain::Inet | SocketDomain::Inet6) {
         match crate::ipc::Pipe::notification_pair() {
             Ok(value) => Some(value),
             Err(_) => return -errno::ENOMEM,

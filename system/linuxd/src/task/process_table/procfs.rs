@@ -293,11 +293,13 @@ impl ProcSource for KernelProcSource {
         &self,
         target: &crate::net::NetNamespace,
     ) -> Result<alloc::vec::Vec<ProcRouteSnapshot>, crate::fs::FileSystemError> {
-        use crate::net::Ipv4RouteKind;
-        let routes = crate::net::route_snapshot(target).map_err(|error| match error {
-            crate::net::SocketError::NoMemory => crate::fs::FileSystemError::OutOfMemory,
-            _ => crate::fs::FileSystemError::IoError,
-        })?;
+        use crate::net::RouteKind;
+        let routes = crate::net::route_snapshot::<core::net::Ipv4Addr>(target).map_err(
+            |error| match error {
+                crate::net::SocketError::NoMemory => crate::fs::FileSystemError::OutOfMemory,
+                _ => crate::fs::FileSystemError::IoError,
+            },
+        )?;
         let mut rows = alloc::vec::Vec::new();
         rows.try_reserve_exact(routes.len())
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
@@ -305,7 +307,7 @@ impl ProcSource for KernelProcSource {
             routes
                 .iter()
                 .filter(|snapshot| {
-                    snapshot.route.table == 254 && snapshot.route.kind != Ipv4RouteKind::Broadcast
+                    snapshot.route.table == 254 && snapshot.route.kind != RouteKind::Broadcast
                 })
                 .map(|snapshot| {
                     let route = snapshot.route;
@@ -317,7 +319,10 @@ impl ProcSource for KernelProcSource {
                             .and_then(|member| routes.interface_name(member.interface_index))
                             .unwrap_or([0; 16]),
                         destination: route.destination.octets(),
-                        gateway: gateway.unwrap_or(core::net::Ipv4Addr::UNSPECIFIED).octets(),
+                        gateway: match gateway {
+                            Some(core::net::IpAddr::V4(address)) => address.octets(),
+                            _ => [0; 4],
+                        },
                         prefix_length: route.prefix_length,
                         metric: route.metric,
                         mtu: if route.metrics.advertised_mss == 0 {
@@ -330,10 +335,8 @@ impl ProcSource for KernelProcSource {
                         flags: 1
                             | if gateway.is_some() { 2 } else { 0 }
                             | if route.prefix_length == 32 { 4 } else { 0 }
-                            | if matches!(
-                                route.kind,
-                                Ipv4RouteKind::Unreachable | Ipv4RouteKind::Prohibit
-                            ) {
+                            | if matches!(route.kind, RouteKind::Unreachable | RouteKind::Prohibit)
+                            {
                                 0x200
                             } else {
                                 0

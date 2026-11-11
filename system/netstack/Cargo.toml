@@ -9,6 +9,11 @@ test = false
 bench = false
 
 [dependencies]
+tcp = { path = "../../libraries/tcp" }
+hashbrown = { version = "=0.16.1", default-features = false }
+siphasher = { version = "=1.0.1", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 prefix-index = { path = "../../libraries/prefix-index" }
 router-protocol = { path = "../router-protocol" }
 packet-wire = { path = "../../libraries/packet-wire" }
@@ -21,7 +26,7 @@ device-protocol = { path = "../device-protocol" }
 network-protocol = { path = "../network-protocol" }
 launch-protocol = { path = "../launch-protocol" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
-smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }
+smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw"] }
 
 [build-dependencies]
 launch-protocol = { path = "../launch-protocol" }

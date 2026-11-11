@@ -1,5 +1,6 @@
 //! 静态路由的持久意图；与声明正文分离，因为配置名不是运行时接口身份。
 use super::*;
+use core::net::IpAddr;
 fn preference() -> u32 {
     1
 }
@@ -7,13 +8,14 @@ fn weight() -> u32 {
     1
 }
 
-/// 静态 IPv4 前缀；同前缀可有不同偏好/下一跳候选，按原 RIB 规则裁决。
+/// 静态双栈前缀；同前缀可有不同偏好/下一跳候选，按原 RIB 规则裁决。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StaticRoute {
-    #[schemars(schema_with = "ipv4_schema")]
-    pub destination: Ipv4Addr,
-    #[schemars(range(max = 32))]
+    #[schemars(schema_with = "address_schema")]
+    pub destination: IpAddr,
+    /// 目标前缀位数：IPv4 为 0..=32，IPv6 为 0..=128。
+    #[schemars(range(max = 128))]
     pub prefix_length: u8,
     /// 较小优先；0 留给实际接口事实。
     #[serde(default = "preference")]
@@ -48,31 +50,46 @@ pub enum StaticTarget {
     Direct {
         interface: Name,
         #[serde(default)]
-        #[schemars(schema_with = "optional_ipv4_schema")]
-        gateway: Option<Ipv4Addr>,
+        #[schemars(schema_with = "optional_address_schema")]
+        gateway: Option<IpAddr>,
         #[serde(default)]
         on_link: bool,
     },
     Recursive {
-        #[schemars(schema_with = "ipv4_schema")]
-        address: Ipv4Addr,
+        #[schemars(schema_with = "address_schema")]
+        address: IpAddr,
     },
 }
-fn optional_ipv4_schema(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({"anyOf":[{"type":"string","format":"ipv4"},{"type":"null"}]})
+fn unicast(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            !address.is_unspecified() && !address.is_multicast() && !address.is_broadcast()
+        }
+        IpAddr::V6(address) => {
+            !address.is_unspecified()
+                && !address.is_multicast()
+                && !address.is_loopback()
+                && address.to_ipv4_mapped().is_none()
+        }
+    }
 }
-fn unicast(address: Ipv4Addr) -> bool {
-    !address.is_unspecified() && !address.is_multicast() && !address.is_broadcast()
-}
-pub(super) fn validate(configuration: &Configuration) -> Result<(), ValidationError> {
-    for (index, route) in configuration.routes.iter().enumerate() {
-        let path = format!("/routes/{index}");
-        let mask = u32::MAX
-            .checked_shl(32 - u32::from(route.prefix_length.min(32)))
+pub(super) fn validate(
+    configuration: &Configuration,
+    routes: &[StaticRoute],
+    section: &str,
+) -> Result<(), ValidationError> {
+    for (index, route) in routes.iter().enumerate() {
+        let path = format!("{section}/{index}");
+        let (width, network) = match route.destination {
+            IpAddr::V4(address) => (32, u128::from(u32::from(address))),
+            IpAddr::V6(address) => (128, u128::from(address)),
+        };
+        let mask = u128::MAX
+            .checked_shl(width - u32::from(route.prefix_length).min(width))
             .unwrap_or(0);
-        if route.prefix_length > 32
+        if u32::from(route.prefix_length) > width
             || route.preference == 0
-            || u32::from(route.destination) & mask != u32::from(route.destination)
+            || network & mask != network
         {
             return Err(invalid(path, "invalid canonical prefix or preference"));
         }
@@ -105,7 +122,10 @@ pub(super) fn validate(configuration: &Configuration) -> Result<(), ValidationEr
                             ));
                         }
                         if *on_link && gateway.is_none()
-                            || gateway.is_some_and(|gateway| !unicast(gateway))
+                            || gateway.is_some_and(|gateway| {
+                                !unicast(gateway)
+                                    || gateway.is_ipv4() && route.destination.is_ipv6()
+                            })
                         {
                             return Err(invalid(
                                 format!("{path}/target"),
@@ -113,7 +133,11 @@ pub(super) fn validate(configuration: &Configuration) -> Result<(), ValidationEr
                             ));
                         }
                     }
-                    StaticTarget::Recursive { address } if !unicast(*address) => {
+                    StaticTarget::Recursive { address }
+                        if !unicast(*address)
+                            || address.is_ipv4() && route.destination.is_ipv6()
+                            || matches!(address, IpAddr::V6(address) if address.is_unicast_link_local()) =>
+                    {
                         return Err(invalid(
                             format!("{path}/target/address"),
                             "invalid recursive gateway",
@@ -131,27 +155,35 @@ pub(super) fn validate(configuration: &Configuration) -> Result<(), ValidationEr
 /// # Parameters
 /// `resolve` 对稳定设备匹配返回当前非零 ifindex；None 表示设备缺席，含糊匹配应返回 Invalid。
 /// # Returns
-/// 可捕获的完整 IPv4 来源；没有实际成员的转发组暂退，设备重现后重新投影持久声明。
+/// 可捕获的指定地址族完整来源；没有实际成员的转发组暂退，设备重现后重新投影持久声明。
 /// # Errors
 /// 未知引用、无效正文/数量、设备匹配含糊或内存不足；没有部分结果。
 pub(super) fn compile(
     configuration: &Configuration,
+    declared: &[StaticRoute],
+    family: crate::routing::Family,
     mut resolve: impl FnMut(&DeviceMatch) -> Result<Option<u32>, Invalid>,
 ) -> Result<Vec<u8>, crate::routing::EncodeError> {
     use crate::routing::{self, Action, Batch, Family, Member, NextHop, Target};
-    let declarations = &configuration.routes;
+    let declarations = declared.iter().filter(|route| {
+        matches!(
+            (family, route.destination),
+            (Family::Ipv4, IpAddr::V4(_)) | (Family::Ipv6, IpAddr::V6(_))
+        )
+    });
+    let count = declarations.clone().count();
     let mut attributes = Vec::new();
     let mut paths = Vec::new();
     let mut routes = Vec::new();
-    u32::try_from(declarations.len()).map_err(|_| routing::EncodeError::Invalid)?;
+    u32::try_from(count).map_err(|_| routing::EncodeError::Invalid)?;
     attributes
-        .try_reserve_exact(declarations.len())
+        .try_reserve_exact(count)
         .map_err(|_| routing::EncodeError::NoMemory)?;
     paths
-        .try_reserve_exact(declarations.len())
+        .try_reserve_exact(count)
         .map_err(|_| routing::EncodeError::NoMemory)?;
     routes
-        .try_reserve_exact(declarations.len())
+        .try_reserve_exact(count)
         .map_err(|_| routing::EncodeError::NoMemory)?;
     for declaration in declarations {
         let mut members = Vec::new();
@@ -165,7 +197,7 @@ pub(super) fn compile(
                     .map_err(|_| routing::EncodeError::NoMemory)?;
                 for member in declared {
                     let target = match &member.target {
-                        StaticTarget::Recursive { address } => Target::Recursive((*address).into()),
+                        StaticTarget::Recursive { address } => Target::Recursive(*address),
                         StaticTarget::Direct {
                             interface,
                             gateway,
@@ -182,7 +214,7 @@ pub(super) fn compile(
                             };
                             Target::Direct {
                                 interface_index: index,
-                                gateway: gateway.map(Into::into),
+                                gateway: *gateway,
                                 on_link: *on_link,
                             }
                         }
@@ -206,7 +238,7 @@ pub(super) fn compile(
         });
         paths.push((action, members));
         routes.push(routing::Route {
-            network: declaration.destination.into(),
+            network: declaration.destination,
             length: declaration.prefix_length,
             attributes: ordinal,
             next_hop: ordinal,
@@ -220,5 +252,5 @@ pub(super) fn compile(
             .iter()
             .map(|(action, members)| NextHop::new(*action, members)),
     );
-    Batch::encode(Family::Ipv4, &attributes, &hops, &routes)
+    Batch::encode(family, &attributes, &hops, &routes)
 }

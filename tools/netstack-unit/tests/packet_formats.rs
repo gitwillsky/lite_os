@@ -521,6 +521,16 @@ fn ipv6_jumbo_payload_and_udp_use_real_lengths_and_reject_fragment_combination()
     .unwrap();
     header.emit(&mut bytes).unwrap();
     let packet = Ipv6Packet::parse(&bytes).unwrap();
+    let quote = packet_wire::ipv6::Ipv6Quote::parse(&bytes[..56]).unwrap();
+    assert_eq!(quote.original_length(), bytes.len());
+    assert_eq!(quote.upper_protocol(), 17);
+    assert_eq!(
+        UdpPacket::parse_quote(quote.upper_layer().unwrap(), true)
+            .unwrap()
+            .source_port(),
+        1000
+    );
+
     assert_eq!(&packet.bytes()[4..6], &[0, 0]);
     assert_eq!(&packet.upper_layer().unwrap()[4..8], &[0, 0, 6, 0x9e]);
     assert_eq!(
@@ -932,4 +942,42 @@ fn untrusted_prefixes_and_byte_mutations_never_escape_validated_option_bounds() 
             }
         }
     }
+}
+
+// 完整接收的长度检查不能套在 ICMP 引用上；扩展链和 UDP 头却必须真正可见。
+#[test]
+fn ipv6_icmp_quote_accepts_body_truncation_but_requires_visible_extension_and_udp_headers() {
+    use packet_wire::ipv6::Ipv6Quote;
+    let mut bytes = [0; 56];
+    bytes[..8].copy_from_slice(&[0x60, 0, 0, 0, 0x05, 0x88, 60, 64]);
+    let source: Ipv6Addr = "fe80::1".parse().unwrap();
+    let destination: Ipv6Addr = "fe80::2".parse().unwrap();
+    bytes[8..24].copy_from_slice(&source.octets());
+    bytes[24..40].copy_from_slice(&destination.octets());
+    bytes[40] = 17;
+    bytes[48..].copy_from_slice(&[3, 232, 3, 233, 0x05, 0x80, 0xab, 0xcd]);
+    assert!(Ipv6Packet::parse(&bytes).is_err());
+    let quote = Ipv6Quote::parse(&bytes).unwrap();
+    assert_eq!(quote.original_length(), 1456);
+    assert_eq!(
+        (quote.source(), quote.destination(), quote.upper_protocol()),
+        (source, destination, 17)
+    );
+    let upper = quote.upper_layer().unwrap();
+    assert!(UdpPacket::parse_header(upper, true).is_err());
+    let udp = UdpPacket::parse_quote(upper, true).unwrap();
+    assert_eq!(
+        (
+            udp.source_port(),
+            udp.destination_port(),
+            udp.payload().len()
+        ),
+        (1000, 1001, 0)
+    );
+    let short = Ipv6Quote::parse(&bytes[..55]).unwrap();
+    assert!(UdpPacket::parse_quote(short.upper_layer().unwrap(), true).is_err());
+    bytes[41] = 2;
+    assert!(Ipv6Quote::parse(&bytes).is_err());
+    bytes[0] = 0x40;
+    assert!(Ipv6Quote::parse(&bytes).is_err());
 }

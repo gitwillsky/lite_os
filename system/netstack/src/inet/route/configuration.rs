@@ -13,7 +13,7 @@ pub(in crate::inet) struct PreparedRouteChange {
 
 enum Change {
     Root(Fib),
-    NextHop(nexthop::Change),
+    NextHop(nexthop::Change<Ipv4Addr>),
 }
 impl PreparedRouteChange {
     fn new(change: Change, interfaces: &[NetworkInterface]) -> Result<Self, SocketError> {
@@ -36,7 +36,7 @@ pub(super) fn configuration_facts<'a>(
     interfaces.iter().map(|interface| {
         let change = changes
             .iter()
-            .find(|change| change.plan.index == interface.index);
+            .find(|change| change.index == interface.index);
         let state = change.map_or(interface.state, |change| change.next);
         InterfaceFacts {
             index: interface.index,
@@ -48,7 +48,7 @@ pub(super) fn configuration_facts<'a>(
 }
 pub(super) fn replaced(record: &Record, changes: &[InterfaceChange], fib: &Fib) -> bool {
     changes.iter().any(|change| {
-        let index = change.plan.index;
+        let index = change.index;
         record.origin == Origin::Interface(index)
             || !fib.is_multipath(record.next_hop_name)
                 && record.interface_index == Some(index)
@@ -70,9 +70,9 @@ impl RoutingTable {
         candidate.inherit_named(&self.fib)?;
         for change in changes {
             if change.next_mtu() < 68 || change.previous.address != change.next.address {
-                candidate.retire_interface(change.plan.index, true);
+                candidate.retire_interface(change.index, true);
             } else if change.previous.up && !change.next.up {
-                candidate.retire_interface(change.plan.index, false);
+                candidate.retire_interface(change.index, false);
             }
         }
         candidate.extend(adjacency)?;
@@ -88,7 +88,7 @@ impl RoutingTable {
     pub(super) fn configuration_draft(changes: &[InterfaceChange]) -> Result<Draft, SocketError> {
         let mut candidate = Draft::new(changes.len().checked_mul(5).ok_or(SocketError::NoMemory)?)?;
         for change in changes {
-            candidate.extend(Self::interface_entries(change.plan.index, change.next)?)?;
+            candidate.extend(Self::interface_entries(change.index, change.next)?)?;
         }
         Ok(candidate)
     }
@@ -108,7 +108,7 @@ impl RoutingTable {
 
     pub(in crate::inet) fn prepare_next_hop(
         &self,
-        definition: network_protocol::routes::NextHopConfiguration<'_>,
+        definition: network_protocol::routes::NextHopConfiguration<'_, core::net::Ipv4Addr>,
         interfaces: &[NetworkInterface],
     ) -> Result<PreparedRouteChange, SocketError> {
         let name = nexthop::Name::new(definition.id).ok_or(SocketError::Invalid)?;
@@ -140,7 +140,7 @@ impl RoutingTable {
                     (!replace_forwarding || record.origin != Origin::Forwarding)
                         && !replaced(record, changes, &self.fib)
                         && !changes.iter().any(|change| {
-                            record.interface_index == Some(change.plan.index)
+                            record.interface_index == Some(change.index)
                                 && (change.next_mtu() < 68
                                     || change.previous.address != change.next.address
                                     || change.previous.up
@@ -167,7 +167,7 @@ impl RoutingTable {
                 (old, new) => old.or(new),
             };
             if let Some(record) = selected
-                && record.request.kind != Ipv4RouteKind::Throw
+                && record.request.kind != RouteKind::Throw
             {
                 return Some(record);
             }

@@ -201,6 +201,7 @@ impl NetworkProvider for ActiveNetwork {
                 };
                 Ok(NetworkLink {
                     carrier,
+                    carrier_epoch: 0,
                     speed_mbps,
                 })
             })

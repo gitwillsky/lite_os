@@ -1,4 +1,6 @@
 //! DHCPv6 不可信嵌套边界与固定 wire 对照；旧 DHCPv4 夹具不能保护 24-bit ID、PD 和中继链。
+extern crate alloc;
+
 use packet_wire::{
     PacketError,
     dhcpv6::{
@@ -419,4 +421,228 @@ fn every_typed_field_roundtrips_with_actual_widths_and_untrusted_prefixes() {
             inspect(&changed[..length]);
         }
     }
+}
+
+#[path = "../../../system/dhcp-client/src/delegation/wire.rs"]
+mod delegation_wire;
+
+#[test]
+fn pd_exchange_checks_identity_and_keeps_explicit_prefix_withdrawals() {
+    use delegation_wire::{Exchange, Lifetime, OUTPUT_BYTES, Prefix};
+    use router_protocol::delegation::{DelegatedPrefix, decode, encode};
+
+    let client = [0, 3, 1, 1];
+    let server = [0, 3, 1, 2];
+    let exchange = Exchange {
+        message: MessageType::Renew,
+        transaction: 0x123456,
+        client: &client,
+        server: Some(&server),
+        iaid: 13,
+        accept_reconfigure: false,
+    };
+    let prefix = Prefix {
+        address: "2001:db8:abc::".parse().unwrap(),
+        length: 56,
+    };
+    let mut bytes = [0; OUTPUT_BYTES];
+    let length = Exchange {
+        message: MessageType::Reply,
+        ..exchange
+    }
+    .encode(
+        0,
+        [Lifetime {
+            prefix,
+            preferred: 0,
+            valid: 0,
+        }],
+        &mut bytes,
+    )
+    .unwrap();
+    let response = exchange.decode(&bytes[..length]).unwrap();
+    assert_eq!(response.server, server);
+    assert_eq!(response.preference, 0);
+    assert_eq!(response.solicit_maximum, None);
+    assert_eq!(response.status, 0);
+    assert_eq!(response.information_maximum, None);
+    assert_eq!(response.information_refresh, None);
+    assert!(response.reconfigure_key.is_none());
+    let association = response.association.unwrap();
+    assert_eq!(
+        (association.renew, association.rebind, association.status),
+        (0, 0, 0)
+    );
+    assert_eq!(association.prefixes.len(), 1);
+    assert_eq!(association.prefixes[0].prefix, prefix);
+    assert_eq!(
+        (
+            association.prefixes[0].preferred,
+            association.prefixes[0].valid
+        ),
+        (0, 0)
+    );
+    assert!(
+        Exchange {
+            transaction: 2,
+            ..exchange
+        }
+        .decode(&bytes[..length])
+        .is_err()
+    );
+    assert!(
+        Exchange {
+            server: Some(&client),
+            ..exchange
+        }
+        .decode(&bytes[..length])
+        .is_err()
+    );
+    assert!(
+        Exchange {
+            iaid: 14,
+            ..exchange
+        }
+        .decode(&bytes[..length])
+        .unwrap()
+        .association
+        .is_none()
+    );
+
+    let snapshot = [DelegatedPrefix {
+        address: prefix.address,
+        length: prefix.length,
+        preferred_until: 60,
+        valid_until: 120,
+    }];
+    assert_eq!(decode(&encode(&snapshot).unwrap()).unwrap(), snapshot);
+    assert!(decode(&encode(&[]).unwrap()).unwrap().is_empty());
+}
+
+// 固定 HMAC 向量覆盖认证选项之后的字节和仅校验成功后推进的防重放状态。
+#[test]
+fn rkap_validates_full_message_and_accepts_each_standard_trigger() {
+    use delegation_wire::{Exchange, OUTPUT_BYTES, ReconfigureAuth};
+
+    let client = [0, 3, 1, 1];
+    let server = [0, 3, 1, 2];
+    let exchange = Exchange {
+        message: MessageType::Request,
+        transaction: 0x123456,
+        client: &client,
+        server: Some(&server),
+        iaid: 7,
+        accept_reconfigure: true,
+    };
+    let mut bytes = [0; OUTPUT_BYTES];
+    let length = exchange.encode(0, [], &mut bytes).unwrap();
+    let request = Dhcpv6Packet::parse(&bytes[..length]).unwrap();
+    assert!(matches!(
+        request.single_option(20).unwrap().unwrap().decode(),
+        Ok(OptionValue::ReconfigureAccept)
+    ));
+
+    let mut reply = [0u8; 64];
+    let mut options = OptionsBuilder::new(&mut reply[4..]);
+    options
+        .push(OptionValue::ClientIdentifier(Duid::parse(&client).unwrap()))
+        .unwrap();
+    options
+        .push(OptionValue::ServerIdentifier(Duid::parse(&server).unwrap()))
+        .unwrap();
+    options
+        .push(OptionValue::Authentication {
+            protocol: 3,
+            algorithm: 1,
+            replay_method: 0,
+            replay: 1,
+            information: &[1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        })
+        .unwrap();
+    let length = 4 + options.finish().len();
+    Dhcpv6Header::Client {
+        message_type: MessageType::Reply as u8,
+        transaction_id: exchange.transaction,
+    }
+    .emit(&mut reply[..length])
+    .unwrap();
+    let decoded = exchange.decode(&reply[..length]).unwrap();
+    assert!(
+        Exchange {
+            accept_reconfigure: false,
+            ..exchange
+        }
+        .decode(&reply[..length])
+        .unwrap()
+        .reconfigure_key
+        .is_none()
+    );
+
+    // 每个摘要用同一 0..15 密钥按 RFC 9915 线布局独立计算。
+    let mut frame = [
+        10, 0x31, 0x42, 0x53, 0, 1, 0, 4, 0, 3, 1, 1, 0, 2, 0, 4, 0, 3, 1, 2, 0, 19, 0, 1, 5, 0,
+        11, 0, 28, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0xff, 0xdc, 0, 2, 0x9a, 0x8b,
+    ];
+    for (kind, digest) in [
+        (
+            MessageType::Renew,
+            [
+                0x01, 0x26, 0xcb, 0xa8, 0xba, 0xe0, 0xa4, 0x7e, 0xc7, 0x09, 0xc5, 0x03, 0xf8, 0x75,
+                0xe3, 0xde,
+            ],
+        ),
+        (
+            MessageType::Rebind,
+            [
+                0x76, 0xd0, 0x0f, 0x63, 0xbd, 0xce, 0xc0, 0x6f, 0xaf, 0xbf, 0x03, 0x83, 0x8e, 0x72,
+                0xbc, 0x60,
+            ],
+        ),
+        (
+            MessageType::InformationRequest,
+            [
+                0x9f, 0xf1, 0x39, 0x82, 0xfe, 0x04, 0xdc, 0x24, 0x5f, 0x5e, 0xc2, 0x5a, 0x58, 0x0f,
+                0xc1, 0x46,
+            ],
+        ),
+    ] {
+        frame[24] = kind as u8;
+        frame[41..57].copy_from_slice(&digest);
+        let mut auth = ReconfigureAuth::from_reply(
+            exchange
+                .decode(&reply[..length])
+                .unwrap()
+                .reconfigure_key
+                .unwrap(),
+        );
+        assert!(auth.accept(&frame, &client, &client, 0).is_err());
+        let mut tampered = frame;
+        tampered[62] ^= 1;
+        assert!(auth.accept(&tampered, &client, &server, 0).is_err());
+        assert_eq!(auth.accept(&frame, &client, &server, 0), Ok(kind));
+        auth.update(
+            exchange
+                .decode(&reply[..length])
+                .unwrap()
+                .reconfigure_key
+                .unwrap(),
+        );
+        assert!(
+            auth.accept(&frame, &client, &server, 1_000_000_000)
+                .is_err()
+        );
+    }
+    assert!(decoded.reconfigure_key.is_some());
+
+    let length = Exchange {
+        message: MessageType::InformationRequest,
+        ..exchange
+    }
+    .encode(0, [], &mut bytes)
+    .unwrap();
+    let info = Dhcpv6Packet::parse(&bytes[..length]).unwrap();
+    assert!(info.single_option(25).unwrap().is_none());
+    assert!(matches!(info.single_option(6).unwrap().unwrap().decode(),
+        Ok(OptionValue::RequestedOptions(codes)) if codes == [83u16.to_be_bytes(), 32u16.to_be_bytes()]));
 }

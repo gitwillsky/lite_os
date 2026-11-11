@@ -21,7 +21,7 @@ mod sixlowpan;
 pub(crate) mod multicast;
 #[cfg(feature = "socket-tcp")]
 mod tcp;
-#[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+#[cfg(any(feature = "proto-ipv4", feature = "socket-udp", feature = "socket-dns"))]
 mod udp;
 
 use super::packet::*;
@@ -128,6 +128,25 @@ pub struct Ipv4IngressFacts {
     /// 同一个FIB冻结的反向route MTU；本次接收只可能匹配unbound或实际logical iif绑定。
     pub reverse_route: Option<IpRouteContext>,
     pub bound_reverse_route: Option<IpRouteContext>,
+}
+/// 一次已完成 IP 校验与目的准入的借用 UDP transport；UDP 长度/checksum 由原生接收 owner 验证。
+/// 原生传输只在 callback 存续期间消费 payload，返回 true 表示已经消费（包括无效报文或接收队列已满）；false 才进入标准无人接收处理。
+#[derive(Clone, Copy)]
+pub struct Ipv4Ingress<'a> {
+    /// Complete validated unfragmented IP bytes, without link padding; borrowed for this callback only.
+    pub packet: Option<&'a [u8]>,
+    pub protocol:u8,
+    pub hop_limit:u8,
+    pub handled_by_raw:bool,
+    pub reverse_route: Option<&'a IpRouteContext>,
+    pub bound_reverse_route: Option<&'a IpRouteContext>,
+    pub source: IpAddress,
+    pub destination: IpAddress,
+    pub specific_destination: Option<IpAddress>,
+    pub interface_index: u32,
+    pub multicast: bool,
+    pub checksum_valid: bool,
+    pub payload: &'a [u8],
 }
 /// 原codec产生的借用IPv4回复；caller只能在callback内编码到自己的有预算队列。
 #[cfg(feature = "proto-ipv4")]
@@ -765,7 +784,7 @@ impl Interface {
             return PollIngressSingleResult::None;
         };
 
-        self.poll_ingress_received(sockets, rx_token, tx_token, |_, _| None, |_| false)
+        self.poll_ingress_received(sockets, rx_token, tx_token, |_, _| None, |_| false, |_| false)
     }
 
     /// 消费已经准备的actual tokens；普通poll和kernel routed ingress共享一个解析/dispatch算法。
@@ -778,6 +797,7 @@ impl Interface {
         tx_token: Tx,
         mut routing: impl FnMut(&[u8], PacketMeta) -> Option<Ipv4IngressFacts>,
         mut reply: impl FnMut(&Ipv4Reply<'_>) -> bool,
+        mut datagram: impl FnMut(Ipv4Ingress<'_>) -> bool,
     ) -> PollIngressSingleResult {
         let rx_meta = rx_token.meta();
         // 单一 ingress owner 的作用域策略；仅本帧省略 L4 RX 校验，保留 TX 和 IP/ICMP 语义。
@@ -800,7 +820,7 @@ impl Interface {
                 Medium::Ethernet => {
                     if let Some(packet) =
                         self.inner
-                            .process_ethernet(sockets, rx_meta, frame, &mut self.fragments)
+                            .process_ethernet(sockets, rx_meta, frame, &mut self.fragments, &mut datagram)
                     {
                         let packet = match packet {
                             EthernetPacket::Ip(packet) => {
@@ -827,7 +847,7 @@ impl Interface {
                 Medium::Ip => {
                     if let Some(packet) =
                         self.inner
-                            .process_ip(sockets, rx_meta, frame, &mut self.fragments)
+                            .process_ip(sockets, rx_meta, frame, &mut self.fragments, &mut datagram)
                     {
                         let wrapper = Ipv4Reply {
                             packet,
@@ -867,39 +887,6 @@ impl Interface {
         self.inner.caps.checksum = checksum;
         self.inner.ingress_facts = None;
         self.inner.reply_bound_interface = None;
-        result
-    }
-
-    /// 同一原Packet/neighbor/dispatch机制发送有预算的kernel回复，失败保留caller队列。
-    #[cfg(feature = "proto-ipv4")]
-    pub fn dispatch_ipv4_packet<Tx: TxToken>(
-        &mut self,
-        token: Tx,
-        packet: &[u8],
-        next_hop: Ipv4Address,
-        logical_interface: u32,
-    ) -> bool {
-        let Ok(ip) = Ipv4Packet::new_checked(packet) else {
-            return true;
-        };
-        let Ok(repr) = Ipv4Repr::parse(&ip, &ChecksumCapabilities::default()) else {
-            return true;
-        };
-        if packet.len() > self.inner.caps.ip_mtu() {
-            return true;
-        }
-        self.inner
-            .set_egress_route(next_hop.into(), logical_interface, false, None);
-        let result = self
-            .inner
-            .dispatch_ip(
-                token,
-                PacketMeta::default(),
-                Packet::new_ipv4(repr, IpPayload::Raw(ip.payload())),
-                &mut self.fragmenter,
-            )
-            .is_ok();
-        self.inner.egress_route = None;
         result
     }
 
@@ -1144,7 +1131,7 @@ impl InterfaceInner {
 
     /// 入队时冻结IP_PKTINFO specific destination；单播LOCAL保持原目的地址，
     /// 广播/组播从实际入口的源地址选择机制取值，不能在recv时读取已更改的地址。
-    #[cfg(any(feature = "socket-udp", feature = "socket-raw"))]
+    #[cfg(any(feature = "proto-ipv4", feature = "socket-udp", feature = "socket-raw"))]
     pub(crate) fn ingress_spec_address(&self, repr: &IpRepr) -> Option<IpAddress> {
         #[cfg(feature = "proto-ipv4")]
         if let Some(facts) = self.ingress_facts {
@@ -1235,12 +1222,13 @@ impl InterfaceInner {
         meta: PacketMeta,
         ip_payload: &'frame [u8],
         frag: &'frame mut FragmentsBuffer,
+        datagram: &mut impl FnMut(Ipv4Ingress<'_>) -> bool,
     ) -> Option<Packet<'frame>> {
         match IpVersion::of_packet(ip_payload) {
             #[cfg(feature = "proto-ipv4")]
             Ok(IpVersion::Ipv4) => {
                 let ipv4_packet = check!(Ipv4Packet::new_checked(ip_payload));
-                self.process_ipv4(sockets, meta, HardwareAddress::Ip, &ipv4_packet, frag)
+                self.process_ipv4(sockets, meta, HardwareAddress::Ip, &ipv4_packet, frag, datagram)
             }
             #[cfg(feature = "proto-ipv6")]
             Ok(IpVersion::Ipv6) => {

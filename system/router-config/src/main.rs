@@ -18,6 +18,10 @@ extern crate native_runtime;
 
 mod administration;
 mod backup;
+mod bgp;
+mod delegation;
+mod dhcp_server;
+mod dns_cache;
 mod leases;
 mod policy;
 mod routing;
@@ -36,7 +40,7 @@ use native_runtime::{Channel, Event, Port, Startup, Vmo};
 use network_protocol::routing::RoutingConfigurator;
 use network_protocol::{NetworkClient, PreparedConfiguration, RemoteNamespace, SocketError};
 use router_protocol::configuration::Configuration;
-use router_protocol::interface::Ipv4InterfaceConfiguration;
+use router_protocol::interface::InterfaceConfiguration;
 use router_protocol::{
     Decoder, DhcpAction, Encoder, InterfaceConfig, InterfaceState, LeaseEvent, LeaseStatus,
     LeaseTiming, Method, Snapshot,
@@ -55,6 +59,10 @@ const KEY_CONFIGURATION: u64 = 3;
 const KEY_STORAGE: u64 = 4;
 /// 原生 RIB 终止后重新连接并重放持久决定；NET 仍活着时不重复安装设备。
 const KEY_ROUTING: u64 = 5;
+/// BGP 域能力终止；仅重放已决定的 BGP 配置，不重建网卡或 DHCP。
+const KEY_BGP: u64 = 6;
+/// 通告 DNS 集合变更，唤醒设置快照观察者。
+const KEY_DNS: u64 = 7;
 /// Port key 的起点：各接口 DHCP 会话的租约事件 channel 与接口 lifetime channel（每个一个新 key）。
 const KEY_DHCP_FIRST: u64 = 1 << 32;
 /// dhcp-client 的 DHCP 请求序号（与 dhcp-client 一致）。
@@ -69,6 +77,7 @@ const RTPROT_BOOT: u8 = 3;
 struct Link {
     installer: RoutingConfigurator,
     network: RemoteNamespace,
+    dns_changed: Event,
 }
 
 /// 已成功应用的 DHCP 租约；保存服务器提供的 DNS，手动覆盖不改写租约事实。
@@ -95,20 +104,25 @@ struct Interface {
     retry_at: Option<i64>,
     // OWNER: 本接口的 DHCP 会话（Port key 与租约事件 channel）；丢弃即关闭 channel，dhcp-client 随之停止。
     dhcp: Option<(u64, Channel)>,
+    dhcp_server: Option<dhcp_server::PoolSession>,
     // netstack 交出的接口 lifetime（Port key 与 channel）：网卡会话关闭、接口被移除时 `PEER_CLOSED`。
     // 缺失时网卡热拔后本记录与 DHCP 会话残留，重新出现的网卡被当作第二个接口。
     lifetime: (u64, Channel),
+    link_changed: Event,
 }
 
 impl Interface {
     /// 仅执行服务确认后发布生效地址；租约由随后成功的 Bound 事件单独持有。
-    fn publish_address(&mut self, plan: Ipv4InterfaceConfiguration) {
-        self.address = plan.address.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        self.prefix_length = plan.prefix_length;
-        self.gateway = plan
-            .route
-            .map_or(Ipv4Addr::UNSPECIFIED, |route| route.gateway);
-        self.connected = plan.address.map(|_| native_runtime::system::monotonic());
+    fn publish_address(
+        &mut self,
+        address: Option<Ipv4Addr>,
+        prefix_length: u8,
+        route: Option<router_protocol::interface::DefaultRoute>,
+    ) {
+        self.address = address.unwrap_or(Ipv4Addr::UNSPECIFIED);
+        self.prefix_length = prefix_length;
+        self.gateway = route.map_or(Ipv4Addr::UNSPECIFIED, |route| route.gateway);
+        self.connected = address.map(|_| native_runtime::system::monotonic());
         self.lease = None;
         self.retry_at = None;
     }
@@ -161,6 +175,11 @@ struct Inner {
     rollback: Option<StorageRollback>,
     // OWNER: 尚未确认的完整路由意图工作（静态来源/准入策略）；无接口时也必须推进，不是链路/下一跳状态缓存。
     source_retry_at: Option<i64>,
+    // OWNER: 当前 BGP 域能力及实际未完成的应用截止；期望配置只从 saved 借用，不保存同步副本。
+    bgp: Option<network_protocol::bgp::BgpInstance>,
+    bgp_retry_at: Option<i64>,
+    delegation: delegation::Delegation,
+    dns: dns_cache::DnsExecution,
     // OWNER: 安装失败的目录声明与唯一重试截止；没有此队列，推进发现游标会永久漏掉 OOM/回复丢失的设备。
     pending_devices: Vec<device_protocol::directory::Entry>,
     device_retry_at: Option<i64>,
@@ -234,6 +253,10 @@ fn main(mut startup: Startup) -> i64 {
             pending_devices: Vec::new(),
             device_retry_at: None,
             source_retry_at: None,
+            bgp: None,
+            bgp_retry_at: None,
+            delegation: Default::default(),
+            dns: Default::default(),
             watch_wait: None,
             link: None,
             interfaces: Vec::new(),
@@ -352,6 +375,27 @@ impl RouterConfig {
                         }
                     }
                     KEY_DIRECTORY => self.devices_changed(),
+                    KEY_BGP => self.bgp_closed(),
+                    KEY_DNS => {
+                        let mut inner = self.inner.lock();
+                        if let Some(link) = &inner.link
+                            && link.dns_changed.wait_one(signals::USER_0, 0).is_ok()
+                        {
+                            let result =
+                                link.dns_changed.signal(signals::USER_0, 0).and_then(|()| {
+                                    link.dns_changed.wait_async(
+                                        &self.port,
+                                        KEY_DNS,
+                                        signals::USER_0,
+                                    )
+                                });
+                            if let Err(status) = result {
+                                error!("router-config: DNS observer rearm failed: {status}");
+                                return -1;
+                            }
+                            Self::changed(&mut inner);
+                        }
+                    }
                     KEY_CONFIGURATION => {
                         let _ = self.control.signal(signals::USER_0, 0);
                         if let Err(status) =
@@ -363,7 +407,10 @@ impl RouterConfig {
                         }
                         self.retry_pending();
                     }
-                    key if self.interface_removed(key) => {}
+                    key if self.interface_removed(key)
+                        || self.delegation_ready(key)
+                        || self.pool_closed(key)
+                        || self.dns_closed(key) => {}
                     key => self.lease_ready(key),
                 }
             }
@@ -373,6 +420,8 @@ impl RouterConfig {
             inner.pending_devices.clear();
             inner.device_retry_at = None;
             inner.interfaces.clear();
+            inner.delegation = Default::default();
+            inner.dns = Default::default();
             inner.last_device = 0;
             Self::changed(&mut inner);
         }
@@ -395,6 +444,8 @@ impl RouterConfig {
             let mut inner = self.inner.lock();
             inner.link = Some(link);
             self.queue_sources(&mut inner);
+            self.queue_bgp(&mut inner);
+            self.queue_dns(&mut inner);
         }
         self.devices_changed();
     }
@@ -406,13 +457,19 @@ impl RouterConfig {
         );
         let control = NetworkClient::new(self.services.connect(service_directory::NETWORK)?);
         let network = control.create_namespace(true)?;
+        let dns_changed = network.watch_dns().map_err(configuration_status)?;
+        dns_changed.wait_async(&self.port, KEY_DNS, signals::USER_0)?;
         network
             .channel()
             .wait_async(&self.port, KEY_NETSTACK, signals::PEER_CLOSED)?;
         installer
             .channel()
             .wait_async(&self.port, KEY_ROUTING, signals::PEER_CLOSED)?;
-        Ok(Link { installer, network })
+        Ok(Link {
+            installer,
+            network,
+            dns_changed,
+        })
     }
 
     /// RIB 重启不代表网卡已退出；只重放持久接口决定，不再打开正在使用的设备。
@@ -539,7 +596,7 @@ impl RouterConfig {
         let Some(link) = inner.link.as_ref() else {
             return Err(native_abi::ERR_PEER_CLOSED);
         };
-        let (index, lifetime) =
+        let (index, lifetime, link_changed) =
             link.installer
                 .install_device(entry.id, &entry.description, delegated)?;
         if inner
@@ -591,11 +648,14 @@ impl RouterConfig {
             lease: None,
             retry_at: None,
             dhcp: None,
+            dhcp_server: None,
             lifetime: (key, lifetime),
+            link_changed,
         });
         let position = inner.interfaces.len() - 1;
         // 安装已登记，配置应用失败由接口原重试 owner 接管，不能再排一次设备安装或重复建立 DHCP。
         let _ = self.apply(&mut inner, position);
+        self.queue_delegation(&mut inner);
         Self::changed(&mut inner);
         Ok(())
     }
@@ -615,6 +675,8 @@ impl RouterConfig {
             return false;
         };
         let interface = inner.interfaces.remove(position);
+        self.delegation_interface_removed(&mut inner, interface.index);
+        self.queue_dns(&mut inner);
         info!(
             "router-config: interface {} removed",
             core::str::from_utf8(&interface.name).unwrap_or("<non-utf8>")
@@ -646,16 +708,26 @@ impl RouterConfig {
         let _ = previous.signal(0, signals::USER_0);
     }
 
-    fn snapshot(inner: &Inner) -> Snapshot {
+    fn snapshot(inner: &Inner) -> Result<Snapshot, Status> {
         let now = native_runtime::system::monotonic();
         let utc_offset = native_runtime::system::utc().saturating_sub(now);
-        Snapshot {
+        let learned_dns = inner
+            .link
+            .as_ref()
+            .map(|link| link.network.learned_dns())
+            .transpose()
+            .map_err(configuration_status)?
+            .unwrap_or_default();
+        Ok(Snapshot {
             generation: inner.generation,
             configuration_status: if inner.saved.is_none() {
                 router_protocol::ConfigurationStatus::Rejected
             } else if inner.rollback.is_some() {
                 router_protocol::ConfigurationStatus::RollingBack
             } else if inner.source_retry_at.is_some()
+                || inner.bgp_retry_at.is_some()
+                || inner.dns.retry_at.is_some()
+                || inner.delegation.retry_at.is_some()
                 || inner
                     .interfaces
                     .iter()
@@ -677,6 +749,7 @@ impl RouterConfig {
                 .saved
                 .as_ref()
                 .is_some_and(|saved| saved.dns.append_parent_suffixes),
+            learned_dns,
             interfaces: inner
                 .interfaces
                 .iter()
@@ -728,7 +801,7 @@ impl RouterConfig {
                     }),
                 })
                 .collect(),
-        }
+        })
     }
 
     /// 等待代际超过 `generation`，返回新的代际。
@@ -802,7 +875,7 @@ fn serve_settings(router_config: Arc<RouterConfig>, channel: Channel) -> Result<
                     router_protocol::ordinal::GET => {
                         request.finish()?;
                         let mut encoder = Encoder::default();
-                        encoder.snapshot(&RouterConfig::snapshot(&router_config.inner.lock()));
+                        encoder.snapshot(&RouterConfig::snapshot(&router_config.inner.lock())?);
                         reply.bytes(&encoder.0);
                     }
                     router_protocol::ordinal::SET => {
@@ -816,6 +889,11 @@ fn serve_settings(router_config: Arc<RouterConfig>, channel: Channel) -> Result<
                         let generation = request.u64()?;
                         request.finish()?;
                         reply.u64(router_config.wait(generation)?);
+                    }
+                    router_protocol::ordinal::WAIT_CONNECTION_CHANGES => {
+                        let cursor = request.bytes()?;
+                        request.finish()?;
+                        administration::wait_connection_changes(&router_config, cursor)?;
                     }
                     router_protocol::ordinal::DHCP => {
                         let name = request.bytes()?;

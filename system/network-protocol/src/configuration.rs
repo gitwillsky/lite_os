@@ -2,15 +2,131 @@
 
 use alloc::vec::Vec;
 use native_runtime::{
-    Channel, Handle,
+    Channel, Handle, Vmo,
     native_abi::{self, Status},
 };
 use service_rpc::{Reader, Writer};
+
+use router_protocol::firewall::Prerouting;
 
 use super::SocketError;
 
 mod batch;
 pub use batch::ConfigurationBatch;
+
+/// 一次配置事务中的双栈转发策略；None 保持整组，Some 原子替换两族，不复制接口/FIB。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Forwarding {
+    /// 是否转发目的不是本机的 IPv4 单播。
+    pub ipv4: bool,
+    /// 是否转发目的不是本机的 IPv6 单播；不授予跨 zone 转发权限。
+    pub ipv6: bool,
+}
+
+/// 同一配置事务中的执行策略。缺席的字段保持运行值。
+#[derive(Clone, Copy, Default)]
+pub struct ExecutionPolicy<'a> {
+    /// 双栈转发开关。
+    pub forwarding: Option<Forwarding>,
+    /// 预路由规则；显式空链清除原规则。
+    pub prerouting: Option<Prerouting<'a>>,
+}
+
+const PREPARE_VERSION: u32 = 4;
+/// 冻结预备请求；正文由 RIB 意图或 NET 执行 codec 拥有，此处只拥有通用事务传输。
+/// 消费编码所有权并在返回前释放该副本，避免调用者等待 RPC 时仍保留全表。
+/// 只为非空正文创建 VMO，单改执行策略无需复制路由表。
+/// # Errors
+/// 无实际变更、资源不足或 VMO 创建失败。
+pub(crate) fn prepare_request(
+    encoded: Vec<u8>,
+    policy: ExecutionPolicy<'_>,
+) -> Result<(Writer, Vec<Handle>), Status> {
+    if encoded.is_empty() && policy.forwarding.is_none() && policy.prerouting.is_none() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let mut request = Writer::request(crate::installer::PREPARE_CONFIGURATION);
+    request.try_reserve(24)?;
+    request
+        .u32(PREPARE_VERSION)
+        .u32(match policy.forwarding {
+            None => 0,
+            Some(policy) => 4 | u32::from(policy.ipv4) | (u32::from(policy.ipv6) << 1),
+        })
+        .u64(encoded.len() as u64)
+        .u64(policy.prerouting.map_or(0, |chain| chain.bytes().len() as u64));
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(usize::from(!encoded.is_empty()) + usize::from(policy.prerouting.is_some()))
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    if !encoded.is_empty() {
+        handles.push(Vmo::from_bytes(&encoded)?.into_handle());
+    }
+    if let Some(chain) = policy.prerouting {
+        handles.push(Vmo::from_bytes(chain.bytes())?.into_handle());
+    }
+    Ok((request, handles))
+}
+pub(crate) struct CapturedPrepare {
+    pub body: Option<Vec<u8>>,
+    forwarding: Option<Forwarding>,
+    prerouting: Option<Vec<u8>>,
+}
+
+impl CapturedPrepare {
+    pub(crate) fn policy(&self) -> Result<ExecutionPolicy<'_>, Status> {
+        Ok(ExecutionPolicy {
+            forwarding: self.forwarding,
+            prerouting: self
+                .prerouting
+                .as_deref()
+                .map(Prerouting::parse)
+                .transpose()
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+        })
+    }
+}
+
+/// 完整捕获预备控制帧及可选正文；业务 owner 在产生副作用前再解码唯一领域格式。
+/// # Errors
+/// 版本、可选值、尾部、空操作、句柄或 VMO 非法；资源不足。
+pub(crate) fn capture_prepare(
+    request: &mut Reader<'_>,
+    mut handles: Vec<Handle>,
+) -> Result<CapturedPrepare, Status> {
+    if request.u32()? != PREPARE_VERSION {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let forwarding = match request.u32()? {
+        0 => None,
+        bits @ 4..=7 => Some(Forwarding {
+            ipv4: bits & 1 != 0,
+            ipv6: bits & 2 != 0,
+        }),
+        _ => return Err(native_abi::ERR_INVALID_ARGS),
+    };
+    let length = request.u64()?;
+    let firewall_length = request.u64()?;
+    request.finish()?;
+    if handles.len() != usize::from(length != 0) + usize::from(firewall_length != 0)
+        || length == 0 && firewall_length == 0 && forwarding.is_none()
+    {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let mut capture = |length, index| {
+        if length == 0 {
+            return Ok(None);
+        }
+        Vmo::from_handle(service_rpc::take_handle(&mut handles, index)?)
+            .read_bytes(length)
+            .map(Some)
+    };
+    Ok(CapturedPrepare {
+        body: capture(length, 0)?,
+        forwarding,
+        prerouting: capture(firewall_length, usize::from(length != 0))?,
+    })
+}
 
 const ACTIVATE: u32 = 1;
 const CONFIRM: u32 = 2;
@@ -66,6 +182,10 @@ impl PreparedConfiguration {
     pub(super) fn new(channel: Channel) -> Self {
         Self(channel)
     }
+    /// 移交同一执行事务的寿命能力；不复制、不扩大授权，关闭仍撤销未确认配置。
+    pub fn into_channel(self) -> Channel {
+        self.0
+    }
 
     fn command(&self, ordinal: u32) -> Result<(), SocketError> {
         let reply = service_rpc::call(&self.0, &Writer::request(ordinal), Vec::new())
@@ -98,5 +218,40 @@ impl PreparedConfiguration {
     /// 设备已消失、事务无效或服务不可用。
     pub fn abort(self) -> Result<(), SocketError> {
         self.command(ABORT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prepare_control_requires_canonical_intent_and_exact_body_capabilities() {
+        for (ipv4, ipv6) in [(false, false), (false, true), (true, false), (true, true)] {
+            let enabled = Forwarding { ipv4, ipv6 };
+            let (request, handles) = prepare_request(Vec::new(), ExecutionPolicy { forwarding: Some(enabled), prerouting: None }).unwrap();
+            assert!(handles.is_empty());
+            let bytes = &request.as_bytes()[8..];
+            let captured = capture_prepare(&mut Reader::new(bytes), handles).unwrap();
+            assert!(captured.body.is_none());
+            assert_eq!(captured.policy().unwrap().forwarding, Some(enabled));
+            for length in 0..bytes.len() {
+                assert!(capture_prepare(&mut Reader::new(&bytes[..length]), Vec::new()).is_err());
+            }
+            let mut extra = bytes.to_vec();
+            extra.push(0);
+            assert!(capture_prepare(&mut Reader::new(&extra), Vec::new()).is_err());
+            let mut invalid = bytes.to_vec();
+            invalid[..4].copy_from_slice(&999u32.to_le_bytes());
+            assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+            invalid[..4].copy_from_slice(&PREPARE_VERSION.to_le_bytes());
+            invalid[4..8].copy_from_slice(&3u32.to_le_bytes());
+            assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+            invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
+            assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+            invalid[4..8].copy_from_slice(&4u32.to_le_bytes());
+            invalid[8..16].copy_from_slice(&1u64.to_le_bytes());
+            assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+        }
+        assert!(prepare_request(Vec::new(), ExecutionPolicy::default()).is_err());
     }
 }

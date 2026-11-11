@@ -7,21 +7,19 @@ use core::{
 };
 use packet_wire::bgp::attributes::SegmentKind;
 
-/// 该邻居的语义关系；由配置/会话 owner 冻结，不从收到的 AS_PATH 推断。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PeerKind {
-    External,
-    Internal,
-}
+pub use router_protocol::bgp::PeerKind;
 /// 同一路由域内已建立邻居的只读投影，不是另一个可变会话/配置 owner。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
-    /// 配置邻居的稳定身份，域内唯一；完整协议平局时用于本地确定性消歧，不使用 PID/指针。
+    /// 域内邻居身份；原生 actor 使用不复用的 TCP 连接身份，旧撤回确认前不能复用。
+    /// 完整协议平局时用于本地确定性消歧，不使用 PID/指针。
     pub id: u64,
     pub address: IpAddr,
     pub identifier: Ipv4Addr,
     pub asn: u32,
     pub kind: PeerKind,
+    /// 此 iBGP 邻居在本反射簇中的客户端角色，不从 OPEN 或 AS_PATH 猜测。
+    pub route_reflector_client: bool,
 }
 /// 只有通过权威下一跳解析/递归准入后才可提供 Resolved，普通 metric 不是可达证明。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +43,8 @@ impl Reachability {
 pub struct Candidate<'a> {
     pub peer: &'a Peer,
     pub attributes: &'a RouteAttributes,
+    /// 原始接收路径只借用 Adj-RIB-In；入口编辑不能删除本地 AS 来绕过协议去环。
+    pub received_path: &'a crate::StoredPath,
     /// 后政策逻辑下一跳，与 reachability 的权威解析对象必须一致。
     pub next_hop: NextHop,
     /// Phase 1 的入口政策 degree of preference，越大越优；不同于统一 RIB 的管理距离。
@@ -67,31 +67,43 @@ pub enum Rejection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectionContext {
     local_as: u32,
+    confederation: Option<u32>,
     identifier: Ipv4Addr,
     cluster_id: Option<Ipv4Addr>,
 }
 impl SelectionContext {
     /// 捕获本地 AS/非零 Identifier；cluster_id 为有效 RR cluster（缺省值由配置 owner 提供），None 表示不是 RR。
+    /// confederation 是可选公开联盟身份；存在时 local_as 是成员身份，两者不要求数值不同。
     /// # Errors
-    /// 本地 AS 或 Identifier 为零；不添加另一份持久配置。
+    /// 本地 AS、联盟身份或 Identifier 为零；不添加另一份持久配置。
     pub fn new(
         local_as: u32,
         identifier: Ipv4Addr,
         cluster_id: Option<Ipv4Addr>,
+        confederation: Option<u32>,
     ) -> Result<Self, InvalidConfig> {
-        if local_as == 0 || identifier.is_unspecified() {
+        if local_as == 0 || identifier.is_unspecified() || confederation == Some(0) {
             return Err(InvalidConfig);
         }
         Ok(Self {
             local_as,
+            confederation,
             identifier,
             cluster_id,
         })
     }
+    pub(crate) fn cluster_id(self) -> Option<Ipv4Addr> {
+        self.cluster_id
+    }
     /// 按固定顺序检查候选是否被拒绝；不改变原始宣告，也不代替连接/下一跳 owner 的授权检查。
     pub fn rejection(self, candidate: &Candidate<'_>) -> Option<Rejection> {
+        self.rejection_with::<true>(candidate)
+    }
+    fn rejection_with<const RESOLVED: bool>(self, candidate: &Candidate<'_>) -> Option<Rejection> {
         let peer = candidate.peer;
-        if peer.asn == 0
+        if peer.kind == PeerKind::Confederation && self.confederation.is_none()
+            || peer.route_reflector_client && peer.kind != PeerKind::Internal
+            || peer.asn == 0
             || peer.identifier.is_unspecified()
             || peer.address.is_unspecified()
             || peer.address.is_multicast()
@@ -102,10 +114,27 @@ impl SelectionContext {
         if candidate.preference.is_none() {
             return Some(Rejection::ImportPolicy);
         }
-        if candidate.reachability == Reachability::Unresolved {
+        if RESOLVED && candidate.reachability == Reachability::Unresolved {
             return Some(Rejection::Unresolved);
         }
-        if candidate.attributes.path().contains(self.local_as) {
+        let looped = |path: &crate::StoredPath| {
+            self.confederation.map_or_else(
+                || path.contains(self.local_as),
+                |identifier| {
+                    path.contains(identifier)
+                        || path.segments().any(|(kind, asns)| {
+                            matches!(
+                                kind,
+                                SegmentKind::ConfederationSequence | SegmentKind::ConfederationSet
+                            ) && asns.contains(&self.local_as)
+                        })
+                },
+            )
+        };
+        if looped(candidate.received_path)
+            || !core::ptr::eq(candidate.received_path, candidate.attributes.path())
+                && looped(candidate.attributes.path())
+        {
             return Some(Rejection::AsLoop);
         }
         if candidate.attributes.originator_id() == Some(self.identifier) {
@@ -127,7 +156,7 @@ impl SelectionContext {
             .find(|(kind, _)| matches!(kind, SegmentKind::Sequence | SegmentKind::Set));
         match first {
             Some((SegmentKind::Sequence, asns)) => asns[0],
-            _ if candidate.peer.kind == PeerKind::Internal => self.local_as,
+            _ if candidate.peer.kind != PeerKind::External => self.local_as,
             _ => candidate.peer.asn,
         }
     }
@@ -165,13 +194,62 @@ impl Selector {
         context: SelectionContext,
         candidates: &[Candidate<'_>],
     ) -> Result<Option<usize>, OutOfMemory> {
+        self.choose::<true>(context, candidates, |_, _| {})
+    }
+    /// 只为 RIB 反事实检查形成未验证提案，不跳过政策或协议去环；结果不得直接发表到 Loc-RIB。
+    /// 所有未知可达性保持 Unresolved，不伪造 Resolved 或 IGP 代价。
+    /// # Errors
+    /// 工作区分配失败。
+    pub fn propose(
+        &mut self,
+        context: SelectionContext,
+        candidates: &[Candidate<'_>],
+    ) -> Result<Option<usize>, OutOfMemory> {
+        self.choose::<false>(context, candidates, |_, _| {})
+    }
+    /// 在同一次选择中为每条候选捕获确认后发布的判定，不重复扫描去环属性。
+    pub(crate) fn select_observed(
+        &mut self,
+        context: SelectionContext,
+        candidates: &[Candidate<'_>],
+        decisions: &mut Vec<router_protocol::bgp::RouteDecision>,
+    ) -> Result<Option<usize>, OutOfMemory> {
+        use router_protocol::bgp::RouteDecision;
+        let start = decisions.len();
+        decisions
+            .try_reserve(candidates.len())
+            .map_err(|_| OutOfMemory)?;
+        let selected = self.choose::<true>(context, candidates, |_, rejection| {
+            decisions.push(match rejection {
+                None => RouteDecision::NotBest,
+                Some(Rejection::InvalidPeer) => RouteDecision::InvalidPeer,
+                Some(Rejection::ImportPolicy) => RouteDecision::ImportPolicy,
+                Some(Rejection::Unresolved) => RouteDecision::Unresolved,
+                Some(Rejection::AsLoop) => RouteDecision::AsLoop,
+                Some(Rejection::OriginatorLoop) => RouteDecision::OriginatorLoop,
+                Some(Rejection::ClusterLoop) => RouteDecision::ClusterLoop,
+            });
+        })?;
+        if let Some(index) = selected {
+            decisions[start + index] = RouteDecision::Selected;
+        }
+        Ok(selected)
+    }
+    fn choose<const RESOLVED: bool>(
+        &mut self,
+        context: SelectionContext,
+        candidates: &[Candidate<'_>],
+        mut observe: impl FnMut(usize, Option<Rejection>),
+    ) -> Result<Option<usize>, OutOfMemory> {
         self.scratch.clear();
         self.scratch
             .try_reserve_exact(candidates.len())
             .map_err(|_| OutOfMemory)?;
         // 1. 去除不合格候选，再按入口偏好、AS 长度、ORIGIN 消除。AS_SET 一跳，联盟不占跳数。
         for (index, candidate) in candidates.iter().enumerate() {
-            if context.rejection(candidate).is_some() {
+            let rejection = context.rejection_with::<RESOLVED>(candidate);
+            observe(index, rejection);
+            if rejection.is_some() {
                 continue;
             }
             self.scratch.push(Ranked {
@@ -211,11 +289,12 @@ impl Selector {
         let kind = self
             .scratch
             .iter()
-            .map(|candidate| candidates[candidate.index].peer.kind)
+            .map(|candidate| candidates[candidate.index].peer.kind != PeerKind::External)
             .min()
             .expect("MED keeps a minimum per group");
-        self.scratch
-            .retain(|candidate| candidates[candidate.index].peer.kind == kind);
+        self.scratch.retain(|candidate| {
+            (candidates[candidate.index].peer.kind != PeerKind::External) == kind
+        });
         if self
             .scratch
             .iter()

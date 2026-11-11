@@ -8,22 +8,23 @@ use network_protocol::routes::NextHopConfiguration;
 pub(super) type Id = NonZeroU32;
 pub(super) type Name = NonZeroU64;
 use super::group::Group;
-pub(super) use network_protocol::routes::NextHopMember as NextHop;
+use network_protocol::routes::RouteAddress;
+pub(super) type NextHop<A> = network_protocol::routes::NextHopMember<A>;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Key {
-    Path(NextHop),
+enum Key<A: RouteAddress> {
+    Path(NextHop<A>),
     Named(Name),
 }
-enum Slot {
+enum Slot<A: RouteAddress> {
     Anonymous {
-        hop: NextHop,
+        hop: NextHop<A>,
         references: u32,
         link_scope: u32,
         host_scope: u32,
     },
     Named {
         name: Name,
-        group: Group,
+        group: Group<A>,
         references: u32,
         link_scope: u32,
         host_scope: u32,
@@ -33,26 +34,26 @@ enum Slot {
     },
 }
 /// 预备不增加引用或占用槽；同一 NET guard 内消费，不能跨路径变更保留 token。
-pub(super) struct Prepared(Reservation);
-enum Reservation {
+pub(super) struct Prepared<A: RouteAddress>(Reservation<A>);
+enum Reservation<A: RouteAddress> {
     Existing(Id),
     New {
-        entry: VacantEntry<Key, Id>,
-        hop: NextHop,
+        entry: VacantEntry<Key<A>, Id>,
+        hop: NextHop<A>,
     },
 }
 /// 更新前像只包含一个槽的路径值；槽身份/引用数和全部前缀均保持不动。
-pub(super) struct Change {
+pub(super) struct Change<A: RouteAddress> {
     index: Id,
-    replacement: Group,
+    replacement: Group<A>,
 }
-pub(super) struct NextHops {
-    slots: Vec<Slot>,
+pub(super) struct NextHops<A: RouteAddress> {
+    slots: Vec<Slot<A>>,
     // OWNER: 身份/值索引与槽属于同一复合 owner；不复制设备在线状态，不进入每包查询。
-    by_key: FallibleMap<Key, Id>,
+    by_key: FallibleMap<Key<A>, Id>,
     free: Option<Id>,
 }
-impl NextHops {
+impl<A: RouteAddress> NextHops<A> {
     pub(super) fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -63,17 +64,17 @@ impl NextHops {
     pub(super) fn is_empty(&self) -> bool {
         self.by_key.is_empty()
     }
-    pub(super) fn view(&self, index: Id) -> (&[NextHop], Option<Name>) {
+    pub(super) fn view(&self, index: Id) -> (&[NextHop<A>], Option<Name>) {
         match &self.slots[index.get() as usize - 1] {
             Slot::Anonymous { hop, .. } => (core::slice::from_ref(hop), None),
             Slot::Named { name, group, .. } => (group.members(), Some(*name)),
             Slot::Free { .. } => unreachable!("FIB route references a retired next hop"),
         }
     }
-    pub(super) fn members(&self, index: Id) -> &[NextHop] {
+    pub(super) fn members(&self, index: Id) -> &[NextHop<A>] {
         self.view(index).0
     }
-    pub(super) fn get(&self, index: Id) -> (NextHop, Option<Name>) {
+    pub(super) fn get(&self, index: Id) -> (NextHop<A>, Option<Name>) {
         let (members, name) = self.view(index);
         (
             *members
@@ -85,7 +86,7 @@ impl NextHops {
     pub(super) fn named(&self, name: Name) -> Option<Id> {
         self.by_key.get(&Key::Named(name)).copied()
     }
-    pub(super) fn named_group(&self, name: Name) -> Result<&Group, SocketError> {
+    pub(super) fn named_group(&self, name: Name) -> Result<&Group<A>, SocketError> {
         let index = self.named(name).ok_or(SocketError::Invalid)?;
         match &self.slots[index.get() as usize - 1] {
             Slot::Named { group, .. } => Ok(group),
@@ -95,7 +96,7 @@ impl NextHops {
     pub(super) fn slot_count(&self) -> usize {
         self.slots.len()
     }
-    pub(super) fn active_groups(&self) -> impl Clone + Iterator<Item = (Id, &[NextHop])> {
+    pub(super) fn active_groups(&self) -> impl Clone + Iterator<Item = (Id, &[NextHop<A>])> {
         self.slots
             .iter()
             .enumerate()
@@ -115,7 +116,7 @@ impl NextHops {
                 ))
             })
     }
-    pub(super) fn definitions(&self) -> impl Iterator<Item = NextHopConfiguration<'_>> + '_ {
+    pub(super) fn definitions(&self) -> impl Iterator<Item = NextHopConfiguration<'_, A>> + '_ {
         self.slots.iter().filter_map(|slot| match slot {
             Slot::Named { name, group, .. } => {
                 Some(NextHopConfiguration::new(name.get(), group.members()))
@@ -123,7 +124,7 @@ impl NextHops {
             _ => None,
         })
     }
-    pub(super) fn define(&mut self, name: Name, group: Group) -> Result<(), SocketError> {
+    pub(super) fn define(&mut self, name: Name, group: Group<A>) -> Result<(), SocketError> {
         let key = Key::Named(name);
         if self.by_key.contains_key(&key) {
             return Err(SocketError::Invalid);
@@ -159,7 +160,7 @@ impl NextHops {
             .map_err(|_| SocketError::NoMemory)?;
         Ok(index)
     }
-    fn publish(&mut self, entry: VacantEntry<Key, Id>, slot: Slot) -> Id {
+    fn publish(&mut self, entry: VacantEntry<Key<A>, Id>, slot: Slot<A>) -> Id {
         let index = *entry.value();
         if index.get() as usize - 1 == self.slots.len() {
             self.slots.push(slot);
@@ -173,23 +174,11 @@ impl NextHops {
         self.by_key.commit_vacant(entry);
         index
     }
-    fn prepare_new(
-        &mut self,
-        key: Key,
-        hop: NextHop,
-    ) -> Result<(VacantEntry<Key, Id>, NextHop), SocketError> {
-        let index = self.reserve_slot()?;
-        let entry = self
-            .by_key
-            .try_prepare_vacant(key, index)
-            .map_err(|_| SocketError::NoMemory)?;
-        Ok((entry, hop))
-    }
     pub(super) fn prepare(
         &mut self,
-        hop: NextHop,
+        hop: NextHop<A>,
         name: Option<Name>,
-    ) -> Result<Prepared, SocketError> {
+    ) -> Result<Prepared<A>, SocketError> {
         let key = name.map_or(Key::Path(hop), Key::Named);
         if let Some(&index) = self.by_key.get(&key) {
             let references = match self.slots[index.get() as usize - 1] {
@@ -204,10 +193,14 @@ impl NextHops {
         if name.is_some() {
             return Err(SocketError::Invalid);
         }
-        let (entry, hop) = self.prepare_new(key, hop)?;
+        let index = self.reserve_slot()?;
+        let entry = self
+            .by_key
+            .try_prepare_vacant(key, index)
+            .map_err(|_| SocketError::NoMemory)?;
         Ok(Prepared(Reservation::New { entry, hop }))
     }
-    fn commit_new(&mut self, entry: VacantEntry<Key, Id>, hop: NextHop, scope: u8) -> Id {
+    fn commit_new(&mut self, entry: VacantEntry<Key<A>, Id>, hop: NextHop<A>, scope: u8) -> Id {
         self.publish(
             entry,
             Slot::Anonymous {
@@ -218,7 +211,7 @@ impl NextHops {
             },
         )
     }
-    pub(super) fn acquire(&mut self, prepared: Prepared, scope: u8) -> Id {
+    pub(super) fn acquire(&mut self, prepared: Prepared<A>, scope: u8) -> Id {
         match prepared.0 {
             Reservation::Existing(index) => {
                 match &mut self.slots[index.get() as usize - 1] {
@@ -314,8 +307,8 @@ impl NextHops {
     pub(super) fn prepare_change(
         &self,
         name: Name,
-        replacement: Group,
-    ) -> Result<Change, SocketError> {
+        replacement: Group<A>,
+    ) -> Result<Change<A>, SocketError> {
         let index = self.named(name).ok_or(SocketError::NoDevice)?;
         if let Slot::Named {
             link_scope,
@@ -333,7 +326,7 @@ impl NextHops {
         }
         Ok(Change { index, replacement })
     }
-    pub(super) fn exchange(&mut self, change: &mut Change) -> &Group {
+    pub(super) fn exchange(&mut self, change: &mut Change<A>) -> &Group<A> {
         let Slot::Named { group, .. } = &mut self.slots[change.index.get() as usize - 1] else {
             unreachable!("configuration lease lost a named next hop");
         };

@@ -61,24 +61,42 @@ pub fn checksum(bytes: &[u8]) -> u16 {
 }
 
 /// 传输校验和；IPv4/IPv6 伪头从实际地址族构造，不复制 payload 或分配。
-pub(crate) fn transport_checksum(
+/// # Errors
+/// 地址族不一致或传输长度超出所选伪头的长度字段。
+pub fn transport_checksum(
     source: core::net::IpAddr,
     destination: core::net::IpAddr,
     protocol: u8,
     bytes: &[u8],
 ) -> Result<u16, crate::PacketError> {
+    transport_checksum_parts(
+        source,
+        destination,
+        protocol,
+        bytes.len(),
+        core::iter::once(bytes),
+    )
+}
+
+pub(crate) fn transport_checksum_parts<'a>(
+    source: core::net::IpAddr,
+    destination: core::net::IpAddr,
+    protocol: u8,
+    length: usize,
+    parts: impl Iterator<Item = &'a [u8]>,
+) -> Result<u16, crate::PacketError> {
     use core::net::IpAddr;
     let mut state = InternetChecksum::new();
     match (source, destination) {
         (IpAddr::V4(source), IpAddr::V4(destination)) => {
-            let length = u16::try_from(bytes.len()).map_err(|_| crate::PacketError::Malformed)?;
+            let length = u16::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
             state.add(&source.octets());
             state.add(&destination.octets());
             state.add(&[0, protocol]);
             state.add(&length.to_be_bytes());
         }
         (IpAddr::V6(source), IpAddr::V6(destination)) => {
-            let length = u32::try_from(bytes.len()).map_err(|_| crate::PacketError::Malformed)?;
+            let length = u32::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
             state.add(&source.octets());
             state.add(&destination.octets());
             state.add(&length.to_be_bytes());
@@ -86,7 +104,9 @@ pub(crate) fn transport_checksum(
         }
         _ => return Err(crate::PacketError::Malformed),
     }
-    state.add(bytes);
+    for bytes in parts {
+        state.add(bytes);
+    }
     Ok(state.checksum())
 }
 

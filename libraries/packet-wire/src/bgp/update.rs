@@ -14,6 +14,51 @@ pub struct Update<'a> {
     announced: &'a [u8],
 }
 impl<'a> Update<'a> {
+    /// 在最终 UPDATE 的属性区直接生成属性，避免协议 owner 复制字段布局或中间属性正文。
+    /// withdrawn/announced 必须为 IPv4；生产者生成合法属性并返回实际长度，所有区间仍由本 codec 装配。
+    /// # Errors
+    /// 族、长度或容量非法，或生产者失败；失败时输出内容未定义，不得发送。
+    pub fn emit_with(
+        bytes: &mut [u8],
+        withdrawn: Nlri<'_>,
+        announced: Nlri<'_>,
+        extended: bool,
+        attributes: impl FnOnce(&mut [u8]) -> Result<usize, PacketError>,
+    ) -> Result<usize, PacketError> {
+        if withdrawn.family() != Family::Ipv4 || announced.family() != Family::Ipv4 {
+            return Err(PacketError::Malformed);
+        }
+        let withdrawn = withdrawn.bytes();
+        let announced = announced.bytes();
+        let limit = if extended {
+            usize::from(u16::MAX)
+        } else {
+            super::STANDARD_LIMIT
+        };
+        let capacity = bytes.len().min(limit);
+        let fixed = (HEADER_BYTES + 4)
+            .checked_add(withdrawn.len())
+            .and_then(|size| size.checked_add(announced.len()))
+            .ok_or(PacketError::Malformed)?;
+        if fixed > capacity {
+            return Err(PacketError::Capacity);
+        }
+        let start = HEADER_BYTES + 4 + withdrawn.len();
+        let length = attributes(&mut bytes[start..capacity - announced.len()])?;
+        let total = fixed.checked_add(length).ok_or(PacketError::Malformed)?;
+        if total > capacity {
+            return Err(PacketError::Capacity);
+        }
+        let attribute_length = u16::try_from(length).map_err(|_| PacketError::Malformed)?;
+        let withdrawn_length =
+            u16::try_from(withdrawn.len()).map_err(|_| PacketError::Malformed)?;
+        bytes[19..21].copy_from_slice(&withdrawn_length.to_be_bytes());
+        bytes[21..21 + withdrawn.len()].copy_from_slice(withdrawn);
+        bytes[21 + withdrawn.len()..start].copy_from_slice(&attribute_length.to_be_bytes());
+        bytes[start + length..total].copy_from_slice(announced);
+        super::emit(&mut bytes[..total], Kind::Update, extended)?;
+        Ok(total)
+    }
     /// 检查共同头之后的 UPDATE 固定长度与两个区间边界。
     /// # Errors
     /// 长度字段截断或声明区间超出消息。

@@ -116,6 +116,7 @@ impl InterfaceInner {
         source_hardware_addr: HardwareAddress,
         ipv4_packet: &Ipv4Packet<&'a [u8]>,
         _frag: &'a mut FragmentsBuffer,
+        datagram: &mut impl FnMut(Ipv4Ingress<'_>) -> bool,
     ) -> Option<Packet<'a>> {
         let ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
         #[cfg(feature = "proto-ipv4-fragmentation")]
@@ -235,7 +236,7 @@ impl InterfaceInner {
         }
 
         #[cfg(feature = "medium-ethernet")]
-        if self.is_unicast_v4(ipv4_repr.dst_addr) {
+        if self.ingress_facts.is_none() && self.is_unicast_v4(ipv4_repr.dst_addr) {
             self.neighbor_cache.reset_expiry_if_existing(
                 IpAddress::Ipv4(ipv4_repr.src_addr),
                 source_hardware_addr,
@@ -243,15 +244,28 @@ impl InterfaceInner {
             );
         }
 
+        // All native upper protocols and RAW observe the same admitted complete IP frame once.
+        let handled_by_native = datagram(Ipv4Ingress {
+            packet: (!ipv4_packet.more_frags() && ipv4_packet.frag_offset() == 0)
+                .then(|| &ipv4_packet.as_ref()[..ipv4_packet.total_len() as usize]),
+            protocol: ipv4_repr.next_header.into(), hop_limit: ip_repr.hop_limit(), handled_by_raw: false,
+            reverse_route:self.ingress_facts.as_ref().and_then(|facts|facts.reverse_route.as_ref()),
+            bound_reverse_route:self.ingress_facts.as_ref().and_then(|facts|facts.bound_reverse_route.as_ref()),
+            source:ip_repr.src_addr(),destination:ip_repr.dst_addr(),
+            specific_destination:self.ingress_spec_address(&ip_repr),
+            interface_index:self.interface_index(),
+            multicast:self.is_broadcast(&ip_repr.dst_addr()) || ip_repr.dst_addr().is_multicast(),
+            checksum_valid:meta.rx_checksum_valid,payload:ip_payload,
+        });
         #[cfg(feature = "socket-raw")]
         let handled_by_raw_socket = {
-            // 未分片 ingress 已验证 total length；只保存实际 IP bytes，不包括 Ethernet padding。
             let preserved = (!ipv4_packet.more_frags() && ipv4_packet.frag_offset() == 0)
                 .then(|| &ipv4_packet.as_ref()[..ipv4_packet.total_len() as usize]);
             self.raw_socket_filter_frame(sockets, &ip_repr, ip_payload, preserved)
         };
         #[cfg(not(feature = "socket-raw"))]
         let handled_by_raw_socket = false;
+        let handled_by_raw_socket = handled_by_raw_socket || handled_by_native;
 
         match ipv4_repr.next_header {
             IpProtocol::Icmp => self.process_icmpv4(sockets, ipv4_repr, ip_payload),
@@ -259,18 +273,16 @@ impl InterfaceInner {
             #[cfg(feature = "multicast")]
             IpProtocol::Igmp => self.process_igmp(ipv4_repr, ip_payload),
 
-            #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+            #[cfg(any(feature = "proto-ipv4", feature = "socket-udp", feature = "socket-dns"))]
+            IpProtocol::Udp if handled_by_native => None,
             IpProtocol::Udp => {
-                self.process_udp(sockets, meta, handled_by_raw_socket, ip_repr, ip_payload)
+                self.process_udp(sockets, meta, handled_by_raw_socket, ip_repr, ip_payload, &mut |_| false)
             }
 
-            #[cfg(feature = "socket-tcp")]
-            IpProtocol::Tcp => {
-                self.process_tcp(sockets, handled_by_raw_socket, ip_repr, ip_payload)
-            }
+            IpProtocol::Tcp => None,
 
+            // A raw receiver is the local protocol handler; do not also declare it unsupported.
             _ if handled_by_raw_socket => None,
-
             _ => {
                 // Send back as much of the original payload as we can.
                 let payload_len =

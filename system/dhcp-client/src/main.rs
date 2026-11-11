@@ -1,16 +1,19 @@
 #![no_std]
 #![no_main]
 
-//! dhcp-client：DHCPv4 客户端（Fuchsia dhcp-client）。
+//! dhcp-client：DHCPv4 与 DHCPv6 前缀委派客户端。
 //!
 //! 1. router_config 经 `liteos.network.Dhcp` 为一个接口请求 DHCP：请求携带接口序号与 MAC，回复一条租约事件
 //!    channel；router_config 关闭该 channel 即停止该接口的 DHCP。
 //! 2. 每个接口一个线程，经 netstack 默认网络的 datagram packet socket（EtherType IPv4）收发 IPv4/UDP/DHCP
 //!    报文（与 udhcpc 的 raw socket 做法相同），按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND →
 //!    RENEWING → REBINDING；取得、续租、失效时向 router_config 发租约事件，地址由 router_config 配置。
-//! 3. netstack 终止使 packet socket 失效：线程报告租约失效后结束，router_config 在重新安装接口后再次请求。
+//! 3. DHCPv6 委派经同一授权服务开启，使用绑定到上联的 IPv6 UDP 和独立的 IA_PD 租约。
+//! 4. netstack 终止使 packet socket 失效：线程报告租约失效后结束，router_config 在重新安装接口后再次请求。
 
 extern crate alloc;
+
+mod delegation;
 #[macro_use]
 extern crate native_runtime;
 
@@ -85,6 +88,9 @@ fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status
                   request: &mut service_rpc::Reader<'_>,
                   handles: Vec<native_runtime::Handle>,
                   _: &mut service_rpc::Writer| {
+                if ordinal == router_protocol::delegation::START {
+                    return delegation::start(&services, request, handles);
+                }
                 if ordinal != START {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
                 }

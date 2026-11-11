@@ -5,7 +5,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
             {
                 let receiver = scoped_endpoint(namespace(), InetProtocol::Udp);
                 receiver.bind(address(49590)).unwrap();
-                let peer = InetAddress { address: Ipv4Addr::new(10, 0, 2, 16), port: 44000 };
+                let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44000));
                 let packets: Vec<_> = (0..8).map(|number| peer_udp_frame(peer, 49590, &[number])).collect();
                 let input: [&[u8]; 8] = core::array::from_fn(|index| packets[index].as_slice());
                 let mut headers = [Err(packet_wire::batch::FrameError::Packet(packet_wire::PacketError::Truncated)); 8];
@@ -43,11 +43,11 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                         metric: 1,
                         scope: 253,
                         protocol: 3,
-                        kind: network_protocol::Ipv4RouteKind::Unicast,
+                        kind: network_protocol::RouteKind::Unicast,
                         interface_index: Some(2),
                         gateway: None,
                         preferred_source: None,
-                        metrics: network_protocol::Ipv4RouteMetrics::default(),
+                        metrics: network_protocol::RouteMetrics::default(),
                         on_link: false,
                     };
                     let NetworkStack {
@@ -68,22 +68,24 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                     &mut || {
                         std::hint::black_box(
                             network
-                                .route(Ipv4Addr::UNSPECIFIED, std::hint::black_box(destination), None)
+                                .ip_output(Ipv4Addr::UNSPECIFIED.into(), network_protocol::InetAddress::new(std::hint::black_box(destination).into(), 0), (None, 0), now())
                                 .unwrap(),
                         );
                     },
                 );
             }
             {
-                let begin = std::time::Instant::now();
                 let members = [network_protocol::routes::NextHopMember { interface_index: 2, gateway: None, on_link: false, weight: 1 }];
                 let hop = network_protocol::routes::NextHopConfiguration::new(1, &members);
-                let transaction = prepare_routes(namespace(), core::iter::empty(), [hop].into_iter(), (0..1_000_000u32).map(|number| network_protocol::routes::RouteConfiguration::Via { next_hop: 1, route: network_protocol::routes::RouteAttributes {
+                let bytes = network_protocol::ConfigurationBatch::encode_forwarding(&[], [hop].into_iter(), (0..1_000_000u32).map(|number| network_protocol::routes::RouteConfiguration::Via { next_hop: 1, route: network_protocol::routes::RouteAttributes {
                     destination: Ipv4Addr::from(0xc600_0000 + number), prefix_length: 32,
                     table: 254, metric: 1, scope: 0, protocol: 3,
-                    kind: network_protocol::Ipv4RouteKind::Unicast, preferred_source: None,
-                    metrics: network_protocol::Ipv4RouteMetrics::default(),
-                }})).unwrap();
+                    kind: network_protocol::RouteKind::Unicast, preferred_source: None,
+                    metrics: network_protocol::RouteMetrics::default(),
+                }}), core::iter::empty(), core::iter::empty(), &[], None).unwrap();
+                let batch = network_protocol::ConfigurationBatch::parse(&bytes).unwrap();
+                let begin = std::time::Instant::now();
+                let transaction = crate::inet::prepare_configuration(namespace(), Some(batch), None).unwrap();
                 let preparation = begin.elapsed();
                 let publication = std::time::Instant::now();
                 transaction.activate().unwrap();
@@ -97,19 +99,19 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                     &mut || {
                         sequence = sequence.wrapping_add(0x9e37_79b9);
                         let destination = Ipv4Addr::from(0xc600_0000 + sequence % 1_000_000);
-                        std::hint::black_box(network.route(Ipv4Addr::UNSPECIFIED, std::hint::black_box(destination), None).unwrap());
+                        std::hint::black_box(network.ip_output(Ipv4Addr::UNSPECIFIED.into(), network_protocol::InetAddress::new(std::hint::black_box(destination).into(), 0), (None, 0), now()).unwrap());
                     },
                 );
                 drop(network);
                 let begin = std::time::Instant::now();
-                let change = prepare_next_hop(namespace(), network_protocol::routes::NextHopConfiguration::new(1, &[network_protocol::routes::NextHopMember { gateway: Some(Ipv4Addr::new(10, 0, 2, 2)), ..members[0] }])).unwrap();
+                let change = prepare_next_hop(namespace(), network_protocol::routes::NextHopConfiguration::new(1, &[network_protocol::routes::NextHopMember { gateway: Some(Ipv4Addr::new(10, 0, 2, 2).into()), ..members[0] }])).unwrap();
                 let preparation = begin.elapsed();
                 let publish = std::time::Instant::now();
                 change.activate().unwrap(); change.confirm().unwrap();
                 std::eprintln!("actual million-route shared next-hop update: prepare={preparation:?}, activate/confirm={:?}", publish.elapsed());
-                assert_eq!(initial_stack().unwrap().lock().unwrap().route(Ipv4Addr::UNSPECIFIED, Ipv4Addr::from(0xc600_0001), None).unwrap().next_hop, Ipv4Addr::new(10, 0, 2, 2));
+                assert_eq!(initial_stack().unwrap().lock().unwrap().ip_output(Ipv4Addr::UNSPECIFIED.into(), network_protocol::InetAddress::new(Ipv4Addr::from(0xc600_0001).into(), 0), (None, 0), now()).unwrap().neighbor, core::net::IpAddr::V4(Ipv4Addr::new(10, 0, 2, 2)));
                 let weighted = core::array::from_fn::<_, 4, _>(|number| network_protocol::routes::NextHopMember {
-                    interface_index: 2, gateway: Some(Ipv4Addr::new(10, 0, 2, 2 + number as u8)),
+                    interface_index: 2, gateway: Some(Ipv4Addr::new(10, 0, 2, 2 + number as u8).into()),
                     on_link: false, weight: 1 + number as u32,
                 });
                 let change = prepare_next_hop(namespace(), network_protocol::routes::NextHopConfiguration::new(1, &weighted)).unwrap();
@@ -118,18 +120,18 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 measure("actual million-route weighted four-path lookup", 20_000, 1, true, &mut || {
                     sequence = sequence.wrapping_add(0x9e37_79b9);
                     let destination = Ipv4Addr::from(0xc600_0000 + sequence % 1_000_000);
-                    std::hint::black_box(network.route(Ipv4Addr::new(10, 0, 2, 15), std::hint::black_box(destination), None).unwrap());
+                    std::hint::black_box(network.ip_output(Ipv4Addr::new(10, 0, 2, 15).into(), network_protocol::InetAddress::new(std::hint::black_box(destination).into(), 0), (None, 0), now()).unwrap());
                 });
                 drop(network);
                 let begin = std::time::Instant::now();
-                let snapshot = route_snapshot(namespace()).unwrap();
+                let snapshot = route_snapshot::<Ipv4Addr>(namespace()).unwrap();
                 let elapsed = begin.elapsed();
                 assert!(snapshot.len() >= 1_000_000);
                 let route = snapshot.iter().find(|row| row.route.destination == Ipv4Addr::from(0xc600_0001)).unwrap();
                 assert!(route.next_hops.unwrap().members().eq(weighted));
                 std::eprintln!("actual million-route frozen snapshot: capture/validate={elapsed:?}, bytes={}, groups={}", snapshot.as_bytes().len(), snapshot.group_count());
                 drop(snapshot);
-                let clear = prepare_routes(namespace(), core::iter::empty(), [].into_iter(), core::iter::empty()).unwrap();
+                let clear = prepare_routes(namespace(), core::iter::empty(), [].into_iter(), core::iter::empty(), None).unwrap();
                 clear.activate().unwrap();
                 clear.confirm().unwrap();
             }
@@ -140,7 +142,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 let hops = [NextHop::new(Action::Forward, &members)];
                 let rows: alloc::vec::Vec<_> = (0..1_000_000u32).map(|number| Route { network: Ipv4Addr::from(0xc600_0000 + number).into(), length: 32, attributes: 0, next_hop: 0 }).collect();
                 let begin = std::time::Instant::now();
-                let bytes = Batch::encode(Family::Ipv4, &attributes, &hops, &rows).unwrap();
+                let bytes = Batch::encode(Family::Ipv4, &attributes, hops, &rows).unwrap();
                 let batch = Batch::parse(&bytes).unwrap();
                 std::eprintln!("actual million-route RIB source wire: encode/validate={:?}, bytes={}", begin.elapsed(), bytes.len());
                 drop(rows);
@@ -155,7 +157,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 measure("actual million-route RIB candidate lookup", 20_000, 1, false, &mut || {
                     sequence = sequence.wrapping_add(0x9e37_79b9);
                     let destination = std::hint::black_box(0xc600_0000 + sequence % 1_000_000);
-                    std::hint::black_box(catalogue.lookup(destination, |candidate| candidate.next_hop().action() == Action::Forward).unwrap());
+                    std::hint::black_box(catalogue.lookup(destination, |candidate| candidate.next_hop().action() == routing_rib::Action::Forward).unwrap());
                 });
                 let begin = std::time::Instant::now();
                 let resolved = catalogue.select_resolved(|_| true, |_| true).unwrap();
@@ -177,6 +179,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 std::eprintln!("actual million-route unavailable shared next-hop reselection: prepare={:?}, groups={}", begin.elapsed(), unavailable.group_count());
             }
             let listener = InetSocket::new(
+        network_protocol::InetFamily::Ipv4,
                 InetProtocol::Tcp,
                 Arc::new(crate::Event::default()), namespace().clone(),
             )
@@ -207,7 +210,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 2_000_000,
                 1,
                 true,
-                &mut || { let NetworkStack { tcp_endpoints, sockets, .. } = &mut *network; tcp::maintain(tcp_endpoints, sockets, None); },
+                &mut || { let NetworkStack { tcp_endpoints, .. } = &mut *network; tcp::maintain(tcp_endpoints); },
             );
             drop(network);
             // 仅 boundary producer 提供重复 wire frame；parser 与 protocol poll 均为实际代码。
@@ -224,6 +227,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
             for _ in 0..SOCKET_STORAGE_CAPACITY {
                 endpoints.push(
                     InetSocket::new(
+        network_protocol::InetFamily::Ipv4,
                         InetProtocol::Tcp,
                         Arc::new(crate::Event::default()), namespace().clone(),
                     )
@@ -236,7 +240,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 20_000,
                 SOCKET_STORAGE_CAPACITY,
                 true,
-                &mut || { let NetworkStack { tcp_endpoints, sockets, .. } = &mut *network; tcp::maintain(tcp_endpoints, sockets, None); },
+                &mut || { let NetworkStack { tcp_endpoints, .. } = &mut *network; tcp::maintain(tcp_endpoints); },
             );
             let clock_time = now();
             measure(
@@ -261,16 +265,14 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
             }
             initial_stack().unwrap().lock().unwrap().poll();
             let datagram = InetSocket::new(
+        network_protocol::InetFamily::Ipv4,
                 InetProtocol::Udp,
                 Arc::new(crate::Event::default()), namespace().clone(),
             )
             .unwrap();
             datagram.bind(address(43110)).unwrap();
             datagram
-                .connect(InetAddress {
-                    address: Ipv4Addr::new(10, 0, 2, 16),
-                    port: 44000,
-                })
+                .connect(InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44000)))
                 .unwrap();
             measure(
                 "actual UDP native readiness",
@@ -282,10 +284,7 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 },
             );
             let rejected = peer_udp_frame(
-                InetAddress {
-                    address: Ipv4Addr::new(10, 0, 2, 16),
-                    port: 44001,
-                },
+                InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44001)),
                 43110,
                 b"rejected",
             );

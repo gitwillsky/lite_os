@@ -87,7 +87,13 @@ fn serve(socket: Arc<Socket>, writable: bool) {
         } else {
             None
         };
-        if matches!(ordinal, ordinal::WAIT | ordinal::DHCP) {
+        if matches!(ordinal, ordinal::WAIT | ordinal::DHCP | ordinal::WAIT_CONNECTION_CHANGES) {
+            if ordinal == ordinal::WAIT_CONNECTION_CHANGES
+                && router_protocol::connections::changes::Cursor::parse(payload).is_err()
+            {
+                super::endpoint::reply(&socket, source, &frame(Err(native_abi::ERR_INVALID_ARGS)));
+                continue;
+            }
             forward_waiting(&socket, source, ordinal, payload);
             continue;
         }
@@ -101,6 +107,12 @@ fn serve(socket: Arc<Socket>, writable: bool) {
                 | ordinal::DIFF
                 | ordinal::BACKUPS
                 | ordinal::BACKUP_EXPORT
+                | ordinal::BGP_STATUS
+                | ordinal::BGP_ROUTES
+                | ordinal::DHCP_SERVER_BINDINGS
+                | ordinal::CONNECTIONS
+                | ordinal::CONNECTION_CHANGES
+                | ordinal::FIREWALL_COUNTERS
         );
         let mut result = Err(native_abi::ERR_PEER_CLOSED);
         for _ in 0..2 {
@@ -141,6 +153,9 @@ fn forward(channel: &Channel, ordinal: u32, payload: &[u8]) -> Result<Vec<u8>, S
     match ordinal {
         ordinal::GET => decoder.finish().map_err(invalid)?,
         ordinal::SET => {
+            request.bytes(payload);
+        }
+        ordinal::WAIT_CONNECTION_CHANGES => {
             request.bytes(payload);
         }
         ordinal::WAIT => {

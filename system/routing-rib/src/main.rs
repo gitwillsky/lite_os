@@ -41,38 +41,59 @@ struct Rib {
     source_changes: Event,
 }
 impl Rib {
-    fn facts(&self) -> Result<Vec<network_protocol::InterfaceSnapshot>, Status> {
-        self.network
-            .interface_snapshots()
-            .map_err(|error| match error {
-                network_protocol::SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-                _ => native_abi::ERR_BAD_STATE,
-            })
+    fn facts(&self) -> Result<routing_rib::sources::Facts, Status> {
+        // 调用者持有唯一 RIB 写租约/状态锁，逻辑配置不会在两次查询间改变；物理变化仍由 NET 预备核对。
+        let error = |error| match error {
+            network_protocol::SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+            _ => native_abi::ERR_BAD_STATE,
+        };
+        Ok(routing_rib::sources::Facts {
+            interfaces: self.network.interface_snapshots().map_err(error)?,
+            addresses: self.network.address_snapshot(0).map_err(error)?,
+            neighbors: self.network.neighbor_snapshot(0).map_err(error)?,
+        })
     }
     fn stage(
         &self,
         state: &State,
-        plans: &[router_protocol::interface::Ipv4InterfaceConfiguration],
-        routes: Option<router_protocol::routing::Batch<'_>>,
-        policy: Option<router_protocol::policy::Policy>,
+        configuration: network_protocol::routing::Configuration<'_>,
+        policy: network_protocol::ExecutionPolicy<'_>,
     ) -> Result<(Routes, network_protocol::PreparedConfiguration), Status> {
         let facts = self.facts()?;
-        let replacement = routes
-            .map(|batch| {
-                Routes::capture_source(
-                    state.configuration_source,
-                    routing_rib::sources::CONFIGURATION_DOMAIN,
-                    4,
-                    1,
-                    batch,
-                )
-            })
-            .transpose()?;
-        let PreparedRoutes { next, encoded } =
+        let mut plans = Vec::new();
+        plans
+            .try_reserve_exact(configuration.interfaces().iter().len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        plans.extend(configuration.interfaces().iter());
+        let mut replacement = Vec::new();
+        replacement
+            .try_reserve_exact(2)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        for batch in [
+            router_protocol::routing::Family::Ipv4,
+            router_protocol::routing::Family::Ipv6,
+        ]
+        .into_iter()
+        .filter_map(|family| configuration.routes(family))
+        {
+            replacement.push(Routes::capture_source(
+                state.configuration_source,
+                routing_rib::sources::CONFIGURATION_DOMAIN,
+                routing_rib::sources::STATIC_PROTOCOL,
+                1,
+                batch,
+            )?);
+        }
+        let tables = configuration.tables();
+        let admission = configuration.into_policy();
+        let PreparedRoutes { next, encoded, .. } =
             state
                 .routes
-                .prepare_configuration(&facts, plans, replacement, policy)?;
-        Ok((next, self.installer.prepare_configuration(encoded)?))
+                .prepare_configuration(&facts, &plans, &replacement, admission, tables)?;
+        Ok((
+            next,
+            self.installer.prepare_configuration(encoded, policy)?,
+        ))
     }
 
     fn refresh(&self) -> Result<RecomputeWork, Status> {
@@ -91,11 +112,11 @@ impl Rib {
                 .filter(|source| source.retiring)
                 .map(|source| source.id),
         );
-        let PreparedRoutes { next, encoded } =
+        let PreparedRoutes { next, encoded, .. } =
             state
                 .routes
                 .prepare_sources(&self.facts()?, None, &removed)?;
-        let execution = self.installer.prepare_configuration(encoded)?;
+        let execution = self.installer.prepare_configuration(encoded, network_protocol::ExecutionPolicy::default())?;
         if execution.activate().is_err() {
             let _ = execution.abort();
             return Err(native_abi::ERR_BAD_STATE);
@@ -110,9 +131,8 @@ impl Rib {
 
     fn prepare(
         self: &Arc<Self>,
-        plans: &[router_protocol::interface::Ipv4InterfaceConfiguration],
-        routes: Option<router_protocol::routing::Batch<'_>>,
-        policy: Option<router_protocol::policy::Policy>,
+        configuration: network_protocol::routing::Configuration<'_>,
+        policy: network_protocol::ExecutionPolicy<'_>,
     ) -> Result<Channel, Status> {
         let (client, server) = Channel::create()?;
         let (id, candidate, execution) = {
@@ -120,7 +140,7 @@ impl Rib {
             if state.pending.is_some() {
                 return Err(native_abi::ERR_SHOULD_WAIT);
             }
-            let (candidate, execution) = self.stage(&state, plans, routes, policy)?;
+            let (candidate, execution) = self.stage(&state, configuration, policy)?;
             let id = state
                 .next
                 .checked_add(1)
@@ -130,35 +150,37 @@ impl Rib {
             (id, candidate, execution)
         };
         // 租约 guard 只能在 state 解锁后创建/丢弃；分配或启动线程失败时关闭 NET 能力并归还租约，不在锁内 Drop 重入。
-        let session = Arc::try_new(transaction::Transaction::new(
-            self.clone(),
-            id,
-            candidate,
-            execution,
-        ))
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let handler = Arc::try_new(
-            move |ordinal,
-                  request: &mut service_rpc::Reader<'_>,
-                  handles,
-                  reply: &mut service_rpc::Writer| {
-                network_protocol::dispatch_configuration(
-                    &*session, ordinal, request, handles, reply,
-                )
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        service_rpc::serve(server, 1, b"rib-transaction", handler)?;
+        transaction::Transaction::serve(self.clone(), id, None, candidate, execution, server)?;
         Ok(client)
     }
 }
 struct Controller(Arc<Rib>);
 impl network_protocol::routing::RoutingConfigurationService for Controller {
+    fn firewall_counters(&self, cursor: router_protocol::firewall::counters::Cursor) -> Result<Vec<u8>, Status> {
+        self.0.installer.firewall_counters(cursor)
+    }
+
+    fn connection_changes(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Vec<u8>, Status> {
+        self.0.installer.connection_changes(cursor)
+    }
+
+    fn arm_connection_watch(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Option<Event>, Status> {
+        self.0.installer.arm_connection_watch(cursor)
+    }
+
+    fn clear_connection(&self, identity: router_protocol::connections::Identity) -> Result<(), Status> {
+        self.0.installer.clear_connection(identity)
+    }
+
+    fn connections(&self, cursor: router_protocol::connections::Cursor) -> Result<Vec<u8>, Status> {
+        self.0.installer.connections(cursor)
+    }
+
     fn track(
         &self,
         queries: Vec<router_protocol::tracking::Query>,
     ) -> Result<(Channel, Event), Status> {
-        self.0.track(queries)
+        self.0.track(queries, None)
     }
     fn open_source(&self, grant: network_protocol::routing::Grant) -> Result<Channel, Status> {
         self.0.open_source(grant)
@@ -168,21 +190,23 @@ impl network_protocol::routing::RoutingConfigurationService for Controller {
         id: u64,
         description: Vec<u8>,
         handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status> {
+    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
         self.0.installer.install_device(id, &description, handles)
     }
     fn prepare_configuration(
         &self,
-        configuration: network_protocol::routing::Configuration<'_>,
+        configuration: Option<network_protocol::routing::Configuration<'_>>,
+        policy: network_protocol::ExecutionPolicy<'_>,
     ) -> Result<Channel, Status> {
-        let mut plans = Vec::new();
-        plans
-            .try_reserve_exact(configuration.interfaces().iter().len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        plans.extend(configuration.interfaces().iter());
-        let routes = configuration.routes();
-        let policy = configuration.into_policy();
-        self.0.prepare(&plans, routes, policy)
+        // 仅执行策略不改变候选目录；直接移交 NET 的同一写租约，避免全表求解及虚假的 RIB 代际。
+        let Some(configuration) = configuration else {
+            return Ok(self
+                .0
+                .installer
+                .prepare_configuration(Vec::new(), policy)?
+                .into_channel());
+        };
+        self.0.prepare(configuration, policy)
     }
 }
 
@@ -195,11 +219,12 @@ enum RecomputeWork {
 
 fn watch_changes(rib: &Rib) -> Result<(), Status> {
     let port = Port::create()?;
-    let changes = rib.installer.watch_interfaces()?;
+    let changes = rib.installer.watch_routing_inputs()?;
+    let routing_inputs = NetworkInstaller::TOPOLOGY_CHANGED | NetworkInstaller::GATEWAYS_CHANGED;
     rib.installer
         .channel()
         .wait_async(&port, 0, signals::PEER_CLOSED)?;
-    changes.wait_async(&port, 1, signals::USER_0)?;
+    changes.wait_async(&port, 1, routing_inputs)?;
     rib.released.wait_async(&port, 2, signals::USER_0)?;
     rib.source_changes.wait_async(&port, 3, signals::USER_0)?;
     let mut work = RecomputeWork::Retry(native_runtime::system::monotonic());
@@ -217,8 +242,8 @@ fn watch_changes(rib: &Rib) -> Result<(), Status> {
                 match packet.key {
                     1 => {
                         // clear -> arm -> snapshot：计算期间的新变化仍留在 port，不把合并事件当作变化历史。
-                        changes.signal(signals::USER_0, 0)?;
-                        changes.wait_async(&port, 1, signals::USER_0)?;
+                        changes.signal(routing_inputs, 0)?;
+                        changes.wait_async(&port, 1, routing_inputs)?;
                         work = RecomputeWork::Retry(native_runtime::system::monotonic());
                     }
                     2 => {

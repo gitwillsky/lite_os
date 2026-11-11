@@ -23,7 +23,8 @@ use alloc::vec;
 
 use device_protocol::directory::{ALL_CLASSES, Class, Directory, DirectoryClient};
 use launch_protocol::{
-    audio_core, dhcp_client, ext4, fshost, linuxd, netstack, router_config, routing_rib,
+    audio_core, bgp, dhcp_client, dhcp_server, dns_cache, ext4, fshost, linuxd, netstack, router_config,
+    routing_rib,
 };
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
@@ -42,6 +43,7 @@ const FSHOST_STACK_SIZE: usize = 128 * 1024;
 const ROUTER_CONFIG_STACK_SIZE: usize = 128 * 1024;
 const RIB_STACK_SIZE: usize = 128 * 1024;
 const DHCP_STACK_SIZE: usize = 128 * 1024;
+const BGP_STACK_SIZE: usize = 128 * 1024;
 const AUDIO_STACK_SIZE: usize = 128 * 1024;
 
 // OWNER: bootfs 映射永不解除；监督任务重启服务时重复从中取映像。
@@ -104,6 +106,9 @@ enum Provider {
     Fshost,
     RouterConfig,
     Dhcp,
+    DhcpServer,
+    DnsCache,
+    Bgp,
     AudioCore,
 }
 
@@ -114,6 +119,12 @@ static ROUTING_RIB: Once<Supervised> = Once::new();
 static FSHOST: Once<Supervised> = Once::new();
 static ROUTER_CONFIG: Once<Supervised> = Once::new();
 static DHCP: Once<Supervised> = Once::new();
+// OWNER: 下游 DHCP 执行服务的唯一当前实例，租约仅由执行服务持有。
+static DHCP_SERVER: Once<Supervised> = Once::new();
+// OWNER: 发布当前 DNS 执行工厂。缓存、查询和监听器只归该服务。
+static DNS_CACHE: Once<Supervised> = Once::new();
+// OWNER: BGP 提供者的唯一当前实例，只保存服务路由寿命；邻居/路由状态在实际 bgp 进程。
+static BGP: Once<Supervised> = Once::new();
 // OWNER: audio-core 的实例状态；linuxd 的音频连接经它转发给当前实例。
 static AUDIO_CORE: Once<Supervised> = Once::new();
 
@@ -125,6 +136,9 @@ impl Provider {
             Self::Fshost => &FSHOST,
             Self::RouterConfig => &ROUTER_CONFIG,
             Self::Dhcp => &DHCP,
+            Self::DhcpServer => &DHCP_SERVER,
+            Self::DnsCache => &DNS_CACHE,
+            Self::Bgp => &BGP,
             Self::AudioCore => &AUDIO_CORE,
         };
         slot.call_once(Supervised::new)
@@ -144,6 +158,9 @@ const ROUTES: &[(&[u8], Provider)] = &[
     (service_directory::STORAGE_ADMIN, Provider::Fshost),
     (service_directory::NETWORK_SETTINGS, Provider::RouterConfig),
     (service_directory::DHCP, Provider::Dhcp),
+    (service_directory::DHCP_SERVER, Provider::DhcpServer),
+    (service_directory::DNS_CACHE, Provider::DnsCache),
+    (service_directory::BGP_CONFIGURATOR, Provider::Bgp),
     (service_directory::AUDIO, Provider::AudioCore),
 ];
 
@@ -160,12 +177,16 @@ const ROUTER_CONFIG_USES: &[&[u8]] = &[
     service_directory::NETWORK,
     service_directory::ROUTING_CONFIGURATOR,
     service_directory::DHCP,
+    service_directory::DHCP_SERVER,
+    service_directory::DNS_CACHE,
+    service_directory::BGP_CONFIGURATOR,
 ];
 const ROUTING_RIB_USES: &[&[u8]] = &[
     service_directory::NETWORK,
     service_directory::NETWORK_INSTALLER,
 ];
-const DHCP_USES: &[&[u8]] = &[service_directory::NETWORK];
+const ADDRESS_SERVICES_USES: &[&[u8]] = &[service_directory::NETWORK];
+const BGP_USES: &[&[u8]] = &[service_directory::NETWORK];
 
 /// 一个受监督原生服务的启动描述。
 struct ServiceSpec {
@@ -204,6 +225,25 @@ const DHCP_SPEC: ServiceSpec = ServiceSpec {
     label: "dhcp-client",
     image: dhcp_client::IMAGE,
     stack_size: DHCP_STACK_SIZE,
+};
+const DHCP_SERVER_SPEC: ServiceSpec = ServiceSpec {
+    name: b"dhcp-server",
+    label: "dhcp-server",
+    image: dhcp_server::IMAGE,
+    stack_size: DHCP_STACK_SIZE,
+};
+
+const DNS_CACHE_SPEC: ServiceSpec = ServiceSpec {
+    name: b"dns-cache",
+    label: "dns-cache",
+    image: dns_cache::IMAGE,
+    stack_size: DHCP_STACK_SIZE,
+};
+const BGP_SPEC: ServiceSpec = ServiceSpec {
+    name: b"bgp",
+    label: "bgp",
+    image: bgp::IMAGE,
+    stack_size: BGP_STACK_SIZE,
 };
 
 fn main(mut startup: Startup) -> i64 {
@@ -292,6 +332,13 @@ fn main(mut startup: Startup) -> i64 {
         )
         .await;
     });
+    let bgp_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(executor, &bgp_job, bootfs, &BGP_SPEC, Provider::Bgp, || {
+            vec![services(BGP_USES).into_handle()]
+        })
+        .await;
+    });
     let dhcp_job = job.duplicate(rights::SAME).expect("root job duplicate");
     executor.spawn(async move {
         supervise(
@@ -300,7 +347,31 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &DHCP_SPEC,
             Provider::Dhcp,
-            || vec![services(DHCP_USES).into_handle()],
+            || vec![services(ADDRESS_SERVICES_USES).into_handle()],
+        )
+        .await;
+    });
+    let dhcp_server_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &dhcp_server_job,
+            bootfs,
+            &DHCP_SERVER_SPEC,
+            Provider::DhcpServer,
+            || vec![services(ADDRESS_SERVICES_USES).into_handle()],
+        )
+        .await;
+    });
+    let dns_cache_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &dns_cache_job,
+            bootfs,
+            &DNS_CACHE_SPEC,
+            Provider::DnsCache,
+            || vec![services(ADDRESS_SERVICES_USES).into_handle()],
         )
         .await;
     });

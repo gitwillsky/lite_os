@@ -1,15 +1,15 @@
-//! `NETLINK_ROUTE` endpoint：`getifaddrs`、`ip link/addr/route` 使用的网络状态查询。
+//! `NETLINK_ROUTE` endpoint：`getifaddrs`、`ip link/addr/route/neigh/rule` 使用的网络状态查询。
 //!
 //! # 惰性 dump
 //!
-//! 请求（`RTM_GETLINK/GETADDR/GETROUTE` + `NLM_F_DUMP`）到达时只冻结一份 interface/FIB 快照和游标；
+//! dump 请求到达时只冻结一份网络快照和游标；
 //! 回复在 `recvmsg` 时按接收缓冲区容量逐个数据报生成，最后以 `NLMSG_DONE` 结束。与 Linux 一样，
 //! 回复不预先排队，队列内存有界，不需要接收预算；快照冻结保证一次 dump 内部一致。
 //!
 //! # 范围
 //!
-//! 只支持查询：`RTM_GETLINK`（dump 与按 index/name 的单设备查询）、`RTM_GETADDR` 与 `RTM_GETROUTE` 的
-//! dump，覆盖 IPv4。修改请求（`NEW/DEL/SET*`）与多播订阅返回 `EOPNOTSUPP`，不伪造成功。
+//! 支持设备、地址、路由、邻居和规则查询。两族 `RTM_GETROUTE` 支持 dump 及双向路径点查。
+//! 配置写入归统一配置 owner，Linux 侧按权限/受管约束拒绝；多播订阅尚未开放。
 
 use crate::sync::Mutex;
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
@@ -18,10 +18,12 @@ use crate::ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer};
 use device_model::network::NetworkStatistics;
 use fallible_tree::FallibleMap;
 
+use super::inet::rule_snapshot;
 use super::{
     CoreBufferLimit, InterfaceSnapshot, NetlinkAddress, ReceivedMessage, SocketAddress,
-    SocketError, SocketIoDirection, SocketMemory, SocketPollState, interface_snapshots, kobject,
-    network_snapshot, route_snapshot,
+    SocketError, SocketIoDirection, SocketMemory, SocketPollState, address_snapshot,
+    interface_snapshots, kobject, neighbor_snapshot, network_snapshot, route_lookup,
+    route_snapshot, route_snapshots, socket_errno,
 };
 
 mod change;
@@ -35,6 +37,7 @@ const MAX_DATAGRAM: usize = 16384;
 const MAX_CONTROL_DATAGRAMS: usize = 64;
 const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
 const ENOMEM: i32 = 12;
 const ENODEV: i32 = 19;
 const EBUSY: i32 = 16;
@@ -44,14 +47,29 @@ const EOPNOTSUPP: i32 = 95;
 enum Rows {
     Empty,
     Links(Vec<(InterfaceSnapshot, NetworkStatistics)>),
-    Addresses(Vec<InterfaceSnapshot>),
-    Routes(codec::RouteDump),
+    Addresses {
+        family: u8,
+        rows: network_protocol::AddressSnapshot,
+    },
+    Routes {
+        ipv4: Option<codec::RouteDump<core::net::Ipv4Addr>>,
+        ipv6: Option<codec::RouteDump<core::net::Ipv6Addr>>,
+    },
+    Rules(network_protocol::routes::RuleSnapshot),
+    Neighbors {
+        rows: network_protocol::NeighborSnapshot,
+        interface: u32,
+        family: u8,
+    },
 }
 
 impl Rows {
     fn maximum_message_size(&self) -> usize {
         match self {
-            Self::Routes(rows) => rows.maximum_message_size(),
+            Self::Routes { ipv4, ipv6 } => ipv4
+                .as_ref()
+                .map_or(0, |rows| rows.maximum_message_size())
+                .max(ipv6.as_ref().map_or(0, |rows| rows.maximum_message_size())),
             _ => 1024,
         }
     }
@@ -59,8 +77,13 @@ impl Rows {
         match self {
             Self::Empty => 0,
             Self::Links(rows) => rows.len(),
-            Self::Addresses(rows) => rows.len(),
-            Self::Routes(rows) => rows.len(),
+            Self::Addresses { rows, .. } => rows.len(),
+            Self::Routes { ipv4, ipv6 } => {
+                ipv4.as_ref().map_or(0, |rows| rows.len())
+                    + ipv6.as_ref().map_or(0, |rows| rows.len())
+            }
+            Self::Rules(rows) => rows.len(),
+            Self::Neighbors { rows, .. } => rows.len(),
         }
     }
 }
@@ -298,7 +321,7 @@ impl RouteSocket {
                         *dump = Some(new_dump(Rows::Links(rows), header.sequence));
                         Reply::None
                     }
-                    Err(error) => Reply::Error(-errno_for(error)),
+                    Err(error) => Reply::Error(-socket_errno(error)),
                 }
             }
             codec::RTM_GETLINK => self.single_link(scope, header, payload, port),
@@ -306,36 +329,56 @@ impl RouteSocket {
                 if dump.is_some() {
                     return Reply::Error(-EBUSY);
                 }
-                // 只有 IPv4；其他地址族的 dump 是空的，仍以 DONE 结束。
-                let rows = if matches!(family, AF_UNSPEC | AF_INET) {
-                    interface_snapshots(scope).map(|rows| {
-                        rows.into_iter()
-                            .filter(|row| row.address.is_some())
-                            .collect()
-                    })
-                } else {
-                    Ok(Vec::new())
-                };
-                match rows {
-                    Ok(rows) => {
-                        *dump = Some(new_dump(Rows::Addresses(rows), header.sequence));
-                        Reply::None
-                    }
-                    Err(error) => Reply::Error(-errno_for(error)),
+                if !matches!(family, AF_UNSPEC | AF_INET | AF_INET6) {
+                    *dump = Some(new_dump(Rows::Empty, header.sequence));
+                    return Reply::None;
+                }
+                match address_snapshot(scope, 0) {
+                    Ok(rows) => match codec::validate_addresses(&rows, family) {
+                        Ok(()) => {
+                            *dump =
+                                Some(new_dump(Rows::Addresses { family, rows }, header.sequence));
+                            Reply::None
+                        }
+                        Err(error) => Reply::Error(-error),
+                    },
+                    Err(error) => Reply::Error(-socket_errno(error)),
                 }
             }
             codec::RTM_GETROUTE if is_dump => {
                 if dump.is_some() {
                     return Reply::Error(-EBUSY);
                 }
-                let rows = if matches!(family, AF_UNSPEC | AF_INET) {
-                    route_snapshot(scope)
-                        .map_err(|error| -errno_for(error))
-                        .and_then(codec::RouteDump::new)
-                        .map(Rows::Routes)
-                } else {
-                    Ok(Rows::Empty)
-                };
+                let rows = (|| {
+                    if !matches!(family, AF_UNSPEC | AF_INET | AF_INET6) {
+                        return Ok(Rows::Empty);
+                    }
+                    if family == AF_UNSPEC {
+                        let (four, six) =
+                            route_snapshots(scope).map_err(|error| -socket_errno(error))?;
+                        return Ok(Rows::Routes {
+                            ipv4: Some(codec::RouteDump::new(four)?),
+                            ipv6: Some(codec::RouteDump::new(six)?),
+                        });
+                    }
+                    let ipv4 = if family == AF_INET {
+                        Some(codec::RouteDump::new(
+                            route_snapshot::<core::net::Ipv4Addr>(scope)
+                                .map_err(|error| -socket_errno(error))?,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let ipv6 = if family == AF_INET6 {
+                        Some(codec::RouteDump::new(
+                            route_snapshot::<core::net::Ipv6Addr>(scope)
+                                .map_err(|error| -socket_errno(error))?,
+                        )?)
+                    } else {
+                        None
+                    };
+                    Ok(Rows::Routes { ipv4, ipv6 })
+                })();
                 match rows {
                     Ok(rows) => {
                         *dump = Some(new_dump(rows, header.sequence));
@@ -343,6 +386,64 @@ impl RouteSocket {
                     }
                     Err(error) => Reply::Error(error),
                 }
+            }
+            codec::RTM_GETROUTE => {
+                let result = (|| {
+                    let query = codec::route_query(payload)?;
+                    let path = route_lookup(scope, query).map_err(socket_errno)?;
+                    codec::route_path(query, path, header.sequence, port)
+                })();
+                match result {
+                    Ok(datagram) => Reply::Datagram(datagram),
+                    Err(error) => Reply::Error(-error),
+                }
+            }
+            codec::RTM_GETRULE if is_dump => {
+                if dump.is_some() {
+                    return Reply::Error(-EBUSY);
+                }
+                let result = codec::rule_query(payload)
+                    .and_then(|family| rule_snapshot(scope, family).map_err(socket_errno));
+                match result {
+                    Ok(rows) => {
+                        *dump = Some(new_dump(Rows::Rules(rows), header.sequence));
+                        Reply::None
+                    }
+                    Err(error) => Reply::Error(-error),
+                }
+            }
+            codec::RTM_GETNEIGH if is_dump => {
+                if dump.is_some() {
+                    return Reply::Error(-EBUSY);
+                }
+                let (index, proxy) = match codec::neighbor_dump(payload) {
+                    Ok(query) => query,
+                    Err(errno) => return Reply::Error(-errno),
+                };
+                let rows = if proxy || !matches!(family, AF_UNSPEC | AF_INET | AF_INET6) {
+                    Ok(Rows::Empty)
+                } else {
+                    match neighbor_snapshot(scope, index) {
+                        Ok(rows) => codec::validate_neighbors(&rows).map(|()| Rows::Neighbors {
+                            rows,
+                            interface: index,
+                            family,
+                        }),
+                        Err(SocketError::NoDevice) => Ok(Rows::Empty),
+                        Err(error) => Err(socket_errno(error)),
+                    }
+                };
+                match rows {
+                    Ok(rows) => {
+                        *dump = Some(new_dump(rows, header.sequence));
+                        Reply::None
+                    }
+                    Err(error) => Reply::Error(-error),
+                }
+            }
+            codec::RTM_GETNEIGH => self.single_neighbor(scope, header, payload, port),
+            codec::RTM_NEWNEIGH | codec::RTM_DELNEIGH | codec::RTM_NEWRULE | codec::RTM_DELRULE => {
+                Reply::Error(-change::EPERM)
             }
             // 修改请求：先检查 CAP_NET_ADMIN（Linux rtnetlink_rcv_msg 的顺序），再分发。
             codec::RTM_NEWLINK
@@ -363,9 +464,43 @@ impl RouteSocket {
             codec::RTM_DELADDR => changed(change::address_delete(scope, payload)),
             codec::RTM_NEWROUTE => changed(change::route(scope, false, header.flags, payload)),
             codec::RTM_DELROUTE => changed(change::route(scope, true, header.flags, payload)),
-            // 非 dump 的 GETADDR/GETROUTE，以及删除设备、规则、邻居等其他类型：本实现不支持。
+            // 非 dump 的 GETADDR/GETRULE，以及删除设备等其他类型尚未实现。
             _ => Reply::Error(-EOPNOTSUPP),
         }
+    }
+
+    /// 查找指定接口/地址的真实 ARP/ND 条目；未知设备与未命中分别返回 ENODEV/ENOENT。
+    fn single_neighbor(
+        &self,
+        scope: &super::NetNamespace,
+        header: &codec::RequestHeader,
+        payload: &[u8],
+        port: u32,
+    ) -> Reply {
+        let (index, address, proxy) = match codec::neighbor_get(payload) {
+            Ok(query) => query,
+            Err(errno) => return Reply::Error(-errno),
+        };
+        let snapshot = match neighbor_snapshot(scope, index) {
+            Ok(rows) => rows,
+            Err(error) => return Reply::Error(-socket_errno(error)),
+        };
+        if let Err(errno) = codec::validate_neighbors(&snapshot) {
+            return Reply::Error(-errno);
+        }
+        let row = (0..snapshot.len())
+            .filter_map(|index| snapshot.get(index))
+            .find(|row| !proxy && row.address == address);
+        let Some(row) = row else {
+            return Reply::Error(-2);
+        };
+        let (bytes, length) = codec::neighbor(row, 0, header.sequence, port);
+        let mut datagram = Vec::new();
+        if datagram.try_reserve_exact(length).is_err() {
+            return Reply::Error(-ENOMEM);
+        }
+        datagram.extend_from_slice(&bytes[..length]);
+        Reply::Datagram(datagram)
     }
 
     /// 非 dump 的 `RTM_GETLINK`：按 `ifi_index` 或 `IFLA_IFNAME` 查询一个设备。
@@ -384,7 +519,7 @@ impl RouteSocket {
         let name = codec::find_attribute(payload, 16, codec::IFLA_IFNAME_ATTRIBUTE);
         let rows = match collect_links(scope) {
             Ok(rows) => rows,
-            Err(error) => return Reply::Error(-errno_for(error)),
+            Err(error) => return Reply::Error(-socket_errno(error)),
         };
         let selected = if index > 0 {
             rows.iter()
@@ -501,6 +636,7 @@ impl RouteSocket {
                 port_id: 0,
                 groups: 0,
             })),
+            internet_error: None,
             internet_packet_info: None,
             packet_information: None,
             rights: None,
@@ -628,13 +764,6 @@ fn new_dump(rows: Rows, sequence: u32) -> Dump {
     }
 }
 
-fn errno_for(error: SocketError) -> i32 {
-    match error {
-        SocketError::NoMemory => ENOMEM,
-        _ => EINVAL,
-    }
-}
-
 fn collect_links(
     scope: &super::NetNamespace,
 ) -> Result<Vec<(InterfaceSnapshot, NetworkStatistics)>, SocketError> {
@@ -697,16 +826,68 @@ fn fill_chunk(dump: &mut Dump, port: u32, limit: usize, chunk: &mut Vec<u8>, pee
                     port,
                 ))
             }
-            Rows::Addresses(rows) => codec::address(&rows[next], dump.sequence, port),
-            Rows::Routes(rows) => {
-                if !rows.append(next, dump.sequence, port, limit, chunk) {
+            Rows::Addresses { family, rows } => {
+                let row = rows.get(next).expect("frozen address row");
+                if *family == AF_UNSPEC || (*family == AF_INET) == row.address.is_ipv4() {
+                    Some(codec::address(row, dump.sequence, port))
+                } else {
+                    None
+                }
+            }
+            Rows::Rules(rows) => Some(codec::rule(
+                rows.get(next).expect("frozen rule row"),
+                dump.sequence,
+                port,
+            )),
+            Rows::Neighbors {
+                rows,
+                interface,
+                family,
+            } => {
+                let row = rows.get(next).expect("frozen neighbor row");
+                if *family == AF_UNSPEC || (*family == AF_INET) == row.address.is_ipv4() {
+                    Some(codec::neighbor(
+                        row,
+                        codec::NLM_F_MULTI
+                            | if *interface != 0 {
+                                codec::NLM_F_DUMP_FILTERED
+                            } else {
+                                0
+                            },
+                        dump.sequence,
+                        port,
+                    ))
+                } else {
+                    None
+                }
+            }
+            Rows::Routes { ipv4, ipv6 } => {
+                let count4 = ipv4.as_ref().map_or(0, |rows| rows.len());
+                let appended = if next < count4 {
+                    ipv4.as_ref().expect("IPv4 dump range").append(
+                        next,
+                        dump.sequence,
+                        port,
+                        limit,
+                        chunk,
+                    )
+                } else {
+                    ipv6.as_ref().expect("IPv6 dump range").append(
+                        next - count4,
+                        dump.sequence,
+                        port,
+                        limit,
+                        chunk,
+                    )
+                };
+                if !appended {
                     break;
                 }
                 next += 1;
                 continue;
             }
         };
-        // 没有地址的行（理论上已被过滤）直接跳过。
+        // 当前地址族没有地址的接口直接跳过，仍保留同一冻结快照和游标。
         let Some(encoded) = encoded else {
             next += 1;
             continue;

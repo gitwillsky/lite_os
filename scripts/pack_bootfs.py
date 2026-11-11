@@ -3,7 +3,7 @@
 
 1. 内核从 initrd 取出 ``bin/component-manager`` 并启动它；
 2. 根服务再从同一 bootfs 启动 ``bin/driver-manager``（它再按节点启动 ``bin/driver-host``）、``bin/ext4``、``bin/fshost``、``bin/netstack``、
-   ``bin/dhcp-client``、``bin/routing-rib``、``bin/router-config``、``bin/audio-core`` 与 ``bin/linuxd``，并把 ``data/`` 下的只读配置交给对应服务
+   ``bin/dhcp-client``、``bin/bgp``、``bin/routing-rib``、``bin/router-config``、``bin/audio-core`` 与 ``bin/linuxd``，并把 ``data/`` 下的只读配置交给对应服务
    （Fuchsia 的 ``/config/data``）；
 3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节；
 4. 文件内容按 4 KiB 页对齐，使装载 ELF 段与交付大文件成为 bootfs VMO 的写时复制子对象而不复制。
@@ -27,6 +27,9 @@ SERVICES: tuple[tuple[str, str], ...] = (
     ("bin/driver-host", "driver-host"),
     ("bin/audio-core", "audio-core"),
     ("bin/dhcp-client", "dhcp-client"),
+    ("bin/dhcp-server", "dhcp-server"),
+    ("bin/dns-cache", "dns-cache"),
+    ("bin/bgp", "bgp"),
     ("bin/ext4", "ext4"),
     ("bin/fshost", "fshost"),
     ("bin/router-config", "router-config"),

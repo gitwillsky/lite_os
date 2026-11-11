@@ -1,24 +1,52 @@
 //! 接口配置 owner 到原生 RIB 的能力；复用安装/复合正文与事务传输，不开放执行 FIB 或独立下一跳写入。
-use crate::{NetworkInstaller, PreparedConfiguration};
+use crate::{ExecutionPolicy, NetworkInstaller, PreparedConfiguration};
 use alloc::vec::Vec;
 use native_runtime::{
     Channel, Handle,
     native_abi::{self, Status},
 };
-use router_protocol::interface::Ipv4InterfaceConfiguration;
+use router_protocol::{connections::{Cursor, Identity, changes}, interface::InterfaceConfiguration};
+use router_protocol::firewall::counters;
 use service_rpc::{Reader, Writer};
 mod configuration;
 mod source;
 mod tracking;
 pub use configuration::Configuration;
-pub use source::{Grant, RoutingSource, SourceService, dispatch_source};
+pub use source::{
+    Grant, PreparedSource, RoutingSource, SourcePreparation, SourceService, dispatch_source,
+};
 pub use tracking::{Tracking, TrackingService, dispatch_tracking};
 const OPEN_SOURCE: u32 = 6;
 const TRACK: u32 = 7;
 
 /// 授权配置 owner 可委托独立来源能力；被委托者不能另开来源或改变授权。
 pub trait RoutingConfigurationService: Send + Sync {
-    /// 派生默认 IPv4 范围的独立只读跟踪能力，不创建额外路由来源。
+    /// 读取获授权的默认域规则计数页。
+    /// # Errors
+    /// 游标失效、域不可用或资源不足。
+    fn firewall_counters(&self, cursor: counters::Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 经既有管理能力查询默认域的一页连接。
+    /// # Errors
+    /// 游标失效或执行域不可用。
+    fn connections(&self, cursor: Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 经授权管理能力清除默认域内指定连接。
+    /// # Errors
+    /// 连接身份已失效或执行域不可用。
+    fn clear_connection(&self, identity: Identity) -> Result<(), Status>;
+
+    /// 读取获授权的连接变更页。
+    /// # Errors
+    /// 域不可用、资源不足或回复非法。
+    fn connection_changes(&self, cursor: changes::Cursor) -> Result<Vec<u8>, Status>;
+
+    /// 为已读到末尾的游标取得等待能力。
+    /// # Errors
+    /// 域不可用或资源不足。
+    fn arm_connection_watch(&self, cursor: changes::Cursor) -> Result<Option<native_runtime::Event>, Status>;
+
+    /// 派生默认实例双栈范围的独立只读跟踪能力，不创建额外路由来源。
     /// # Errors
     /// 查询非法、资源不足或服务不可用。
     fn track(
@@ -34,11 +62,15 @@ pub trait RoutingConfigurationService: Send + Sync {
         id: u64,
         description: Vec<u8>,
         handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status>;
-    /// 预备接口意图和可选静态来源的复合变更；不接受执行 FIB。
+    ) -> Result<(u32, Channel, native_runtime::Event), Status>;
+    /// 预备接口、静态来源与可选转发策略；configuration=None 只改变执行策略，不接受执行 FIB。
     /// # Errors
     /// 格式/来源非法、资源不足、并发租约或服务失败。
-    fn prepare_configuration(&self, configuration: Configuration<'_>) -> Result<Channel, Status>;
+    fn prepare_configuration(
+        &self,
+        configuration: Option<Configuration<'_>>,
+        execution: ExecutionPolicy<'_>,
+    ) -> Result<Channel, Status>;
     /// 创建一份独立来源寿命能力；关闭最后一个客户端句柄会撤回该来源。
     /// # Errors
     /// 授权非法、事务冲突、资源不足或服务不可用。
@@ -55,7 +87,17 @@ pub fn dispatch_routing_configuration(
     handles: Vec<Handle>,
     reply: &mut Writer,
 ) -> Result<Vec<Handle>, Status> {
-    if ordinal == TRACK {
+    if ordinal == crate::installer::CONNECTIONS {
+        crate::installer::dispatch_connections(request, handles, reply, |cursor| service.connections(cursor))
+    } else if ordinal == crate::installer::CLEAR_CONNECTION {
+        crate::installer::dispatch_clear_connection(request, handles, |identity| service.clear_connection(identity))
+    } else if ordinal == crate::installer::CONNECTION_CHANGES {
+        crate::installer::dispatch_connection_changes(request, handles, reply, |cursor| service.connection_changes(cursor))
+    } else if ordinal == crate::installer::ARM_CONNECTION_WATCH {
+        crate::installer::dispatch_arm_connection_watch(request, handles, |cursor| service.arm_connection_watch(cursor))
+    } else if ordinal == crate::installer::FIREWALL_COUNTERS {
+        crate::installer::dispatch_firewall_counters(request, handles, reply, |cursor| service.firewall_counters(cursor))
+    } else if ordinal == TRACK {
         tracking::returned(|| service.track(tracking::queries(request, handles)?))
     } else if ordinal == OPEN_SOURCE {
         let grant = Grant::decode(request)?;
@@ -77,21 +119,15 @@ pub fn dispatch_routing_configuration(
             |id, description, handles| service.install_device(id, description, handles),
         )
     } else if ordinal == crate::installer::PREPARE_CONFIGURATION {
-        let length = request.u64()?;
-        request.finish()?;
-        if handles.len() != 1 {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
+        let captured = super::configuration::capture_prepare(request, handles)?;
+        let configuration = captured.body.as_deref().map(Configuration::parse).transpose()?;
         let mut returned = Vec::new();
         returned
             .try_reserve_exact(1)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let mut handles = handles;
-        let bytes = native_runtime::Vmo::from_handle(service_rpc::take_handle(&mut handles, 0)?)
-            .read_bytes(length)?;
         returned.push(
             service
-                .prepare_configuration(Configuration::parse(&bytes)?)?
+                .prepare_configuration(configuration, captured.policy()?)?
                 .into_handle(),
         );
         Ok(returned)
@@ -103,6 +139,41 @@ pub fn dispatch_routing_configuration(
 /// 仅 router-config 获得的配置来源；没有向 netstack 直接提交 FIB 的方法。
 pub struct RoutingConfigurator(NetworkInstaller);
 impl RoutingConfigurator {
+    /// 查询执行域中已安装规则的一页计数。
+    /// # Errors
+    /// 游标或回复无效、规则链换版或执行域不可用。
+    pub fn firewall_counters(&self, cursor: counters::Cursor) -> Result<Vec<u8>, Status> {
+        self.0.firewall_counters(cursor)
+    }
+
+    /// 读取获授权的默认域连接页正文。
+    /// # Errors
+    /// 游标失效、服务不可用或回复无效。
+    pub fn connections(&self, cursor: Cursor) -> Result<Vec<u8>, Status> {
+        self.0.connections(cursor)
+    }
+
+    /// 清除获授权的默认域连接。
+    /// # Errors
+    /// 身份已失效、服务不可用或回复无效。
+    pub fn clear_connection(&self, identity: Identity) -> Result<(), Status> {
+        self.0.clear_connection(identity)
+    }
+
+    /// 读取默认域的有界连接增量页。
+    /// # Errors
+    /// 域不可用、资源不足或回复非法。
+    pub fn connection_changes(&self, cursor: changes::Cursor) -> Result<Vec<u8>, Status> {
+        self.0.connection_changes(cursor)
+    }
+
+    /// 获取下一次变更的等待能力。落后或需重新同步时立即返回空。
+    /// # Errors
+    /// 域不可用、资源不足或回复非法。
+    pub fn arm_connection_watch(&self, cursor: changes::Cursor) -> Result<Option<native_runtime::Event>, Status> {
+        self.0.arm_connection_watch(cursor)
+    }
+
     /// 直接派生只读跟踪会话；不需要为观察创建空来源。
     /// # Errors
     /// 查询非法、资源不足、回复畸形或服务不可用。
@@ -117,7 +188,7 @@ impl RoutingConfigurator {
     pub fn open_source(&self, grant: Grant) -> Result<RoutingSource, Status> {
         grant.validate()?;
         let mut request = Writer::request(OPEN_SOURCE);
-        request.try_reserve(9)?;
+        request.try_reserve(10)?;
         grant.encode(&mut request);
         let mut reply = service_rpc::call(self.channel(), &request, Vec::new())?;
         reply.reader().finish()?;
@@ -144,29 +215,31 @@ impl RoutingConfigurator {
         id: u64,
         description: &[u8],
         handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status> {
+    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
         self.0.install_device(id, description, handles)
     }
-    /// 冻结接口配置意图，返回同一激活/确认/回滚能力；选路与执行正文由 RIB 拥有。
+    /// 冻结接口配置与可选转发意图，返回同一激活/确认/回滚能力；有路由变化时由 RIB 选路。
+    /// routes 按 IPv4/IPv6 排列，None 保持、显式空 Batch 撤回；只设置执行策略时不重编译 FIB。
     /// # Errors
     /// 无效输入、事务冲突、内存不足或服务不可用。
     pub fn prepare_configuration(
         &self,
-        plans: &[Ipv4InterfaceConfiguration],
-        routes: Option<&[u8]>,
+        plans: &[InterfaceConfiguration],
+        routes: [Option<&[u8]>; 2],
         policy: Option<&router_protocol::policy::Policy>,
+        tables: Option<&[u8]>,
+        execution: ExecutionPolicy<'_>,
     ) -> Result<PreparedConfiguration, Status> {
-        let encoded = Configuration::encode(plans, routes, policy)?;
-        let content = native_runtime::Vmo::from_bytes(&encoded)?;
-        let mut request = Writer::request(crate::installer::PREPARE_CONFIGURATION);
-        request.try_reserve(8)?;
-        request.u64(encoded.len() as u64);
-        drop(encoded);
-        let mut handles = Vec::new();
-        handles
-            .try_reserve_exact(1)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        handles.push(content.into_handle());
+        let encoded = if plans.is_empty()
+            && routes.iter().all(Option::is_none)
+            && policy.is_none()
+            && tables.is_none()
+        {
+            Vec::new()
+        } else {
+            Configuration::encode(plans, routes, policy, tables)?
+        };
+        let (request, handles) = super::configuration::prepare_request(encoded, execution)?;
         let mut reply = service_rpc::call(self.channel(), &request, handles)?;
         reply.reader().finish()?;
         if reply.handles.len() != 1 {

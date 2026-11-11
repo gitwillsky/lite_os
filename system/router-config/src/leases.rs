@@ -21,7 +21,11 @@ impl RouterConfig {
     }
 
     fn clear_address(link: &Link, interface: &mut Interface) -> Result<(), Status> {
-        let plan = Ipv4InterfaceConfiguration {
+        let plan = InterfaceConfiguration {
+            ipv6: None,
+            delegated: None,
+            accept_ra: None,
+            advertise: None,
             index: interface.index,
             up: true,
             mtu: None,
@@ -29,11 +33,11 @@ impl RouterConfig {
             prefix_length: 0,
             route: None,
         };
-        link.activate_configuration(&[plan], None, None)
+        link.activate_configuration(&[plan], [None, None], None, None, network_protocol::ExecutionPolicy::default())
             .map_err(StageError::status)?
             .confirm()
             .map_err(configuration_status)?;
-        interface.publish_address(plan);
+        interface.publish_address(plan.address, plan.prefix_length, plan.route);
         Ok(())
     }
 
@@ -44,7 +48,11 @@ impl RouterConfig {
         prefix_length: u8,
         route: Option<router_protocol::interface::DefaultRoute>,
     ) -> Result<(), Status> {
-        let plan = Ipv4InterfaceConfiguration {
+        let plan = InterfaceConfiguration {
+            ipv6: None,
+            delegated: None,
+            accept_ra: None,
+            advertise: None,
             index: interface.index,
             up: true,
             mtu: None,
@@ -52,11 +60,11 @@ impl RouterConfig {
             prefix_length,
             route,
         };
-        link.activate_configuration(&[plan], None, None)
+        link.activate_configuration(&[plan], [None, None], None, None, network_protocol::ExecutionPolicy::default())
             .map_err(StageError::status)?
             .confirm()
             .map_err(configuration_status)?;
-        interface.publish_address(plan);
+        interface.publish_address(plan.address, plan.prefix_length, plan.route);
         Ok(())
     }
 

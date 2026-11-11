@@ -106,16 +106,6 @@ fn dropping_actual_batch_preserves_issued_frame_until_its_own_release() {
         1
     );
     rx.consume(|bytes| assert_eq!(bytes, reset));
-    assert!(adapter.take_ingress_reset().unwrap().matches(
-        InetAddress {
-            address: Ipv4Addr::new(10, 0, 2, 15),
-            port: 49599
-        },
-        InetAddress {
-            address: Ipv4Addr::new(10, 0, 2, 16),
-            port: 44000
-        }
-    ));
     drop(tx);
     assert!(
         nic.wire

@@ -1,0 +1,25 @@
+[package]
+name = "dns-cache"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "dns-cache"
+test = false
+bench = false
+
+[dependencies]
+launch-protocol = { path = "../launch-protocol" }
+native-runtime = { path = "../native-runtime" }
+network-protocol = { path = "../network-protocol" }
+router-protocol = { path = "../router-protocol" }
+service-directory = { path = "../service-directory" }
+service-rpc = { path = "../service-rpc" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
+packet-wire = { path = "../../libraries/packet-wire" }
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }
+
+[lints]
+workspace = true

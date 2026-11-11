@@ -51,16 +51,10 @@ fn actual_packet_socket_uses_captured_domain_link_and_native_rebinding() {
     let only_second = scoped_packet(&second, 0x0800);
     only_second.bind(packet_address(2, 0x0800)).unwrap();
     let disabled = scoped_packet(&first, 0);
-    let first_peer = InetAddress {
-        address: Ipv4Addr::new(10, 0, 3, 16),
-        port: 44000,
-    };
+    let first_peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 3, 16), 44000));
     b.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
         first_peer,
-        InetAddress {
-            address: local_b,
-            port: 43217,
-        },
+        InetAddress::V4(core::net::SocketAddrV4::new(local_b, 43217)),
         b"first-only",
     ));
     advance_actual_domains();

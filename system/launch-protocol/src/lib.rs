@@ -390,6 +390,32 @@ pub mod component_manager {
     pub const BASE: usize = 0x20_0000;
 }
 
+/// 由路由配置 owner 激活的原生 DNS 转发服务。
+pub mod dns_cache {
+    use super::ROLE_HANDLES;
+    /// Bootfs 中的 DNS 执行服务。
+    pub const IMAGE: &[u8] = b"bin/dns-cache";
+    /// 独立进程的静态链接基址。
+    pub const BASE: usize = 0x40_0000;
+    /// 仅发布执行会话工厂的目录。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只包含原生网络控制服务的路由目录。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
+}
+
+/// BGP 原生协议服务；配置工厂只委托给配置 owner，实例能力关闭即停止相应路由域。
+pub mod bgp {
+    use super::ROLE_HANDLES;
+    /// bootfs 中的 BGP 服务映像。
+    pub const IMAGE: &[u8] = b"bin/bgp";
+    /// 独立进程的静态链接基址。
+    pub const BASE: usize = 0x40_0000;
+    /// 只提供 BGP 配置工厂的 outgoing 目录。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只包含网络控制协议的路由目录。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
+}
+
 /// 原生 RIB：接管受授权配置来源，选择候选并委托 netstack 执行。
 pub mod routing_rib {
     use super::ROLE_HANDLES;
@@ -438,5 +464,19 @@ pub mod dhcp_client {
     /// outgoing 服务目录的服务端：接受 `service_directory::DHCP` 连接。
     pub const OUTGOING: usize = ROLE_HANDLES;
     /// 根服务的服务路由目录（netstack 控制）。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
+}
+
+/// 下游 DHCPv4 地址分发，由 router-config 按接口开启。
+pub mod dhcp_server {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/dhcp-server";
+    /// 静态链接基址。
+    pub const BASE: usize = 0x40_0000;
+    /// 服务目录的提供端。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 根服务路由目录，只包含网络控制能力。
     pub const SERVICES: usize = ROLE_HANDLES + 1;
 }

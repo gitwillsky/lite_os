@@ -124,7 +124,7 @@ impl<'a> Path<'a> {
         emit_path_attributes(
             self.segments()
                 .map(|segment| (segment.kind(), segment.asns())),
-            bytes,
+            Some(bytes),
             width,
             aggregator,
             self.auxiliary_partial,
@@ -134,7 +134,7 @@ impl<'a> Path<'a> {
 
 fn emit_path_attributes<S, A>(
     segments: S,
-    bytes: &mut [u8],
+    bytes: Option<&mut [u8]>,
     width: AsnWidth,
     aggregator: Option<Aggregator>,
     auxiliary_partial: bool,
@@ -186,6 +186,10 @@ where
         }
     }
     u16::try_from(length).map_err(|_| PacketError::Malformed)?;
+    // 同一条预检路径既支持精确尺寸也支持最终输出，避免每帧清零最大缓冲或另写尺寸算法。
+    let Some(bytes) = bytes else {
+        return Ok(length);
+    };
     let bytes = bytes.get_mut(..length).ok_or(PacketError::Capacity)?;
     let mut at = Attribute::emit_with(bytes, 0x40, 2, base_length, |output| {
         AsPath::emit(output, width, base).expect("path dimensions prevalidated");

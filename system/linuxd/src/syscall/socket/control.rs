@@ -13,6 +13,10 @@ const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
 const IPPROTO_IP: i32 = 0;
 const IP_PKTINFO: i32 = 8;
+const IPPROTO_IPV6: i32 = 41;
+const IPV6_PKTINFO: i32 = 50;
+const IP_RECVERR: i32 = 11;
+const IPV6_RECVERR: i32 = 25;
 const SOL_PACKET: i32 = 263;
 const PACKET_AUXDATA: i32 = 8;
 
@@ -21,6 +25,83 @@ pub(super) const MSG_CMSG_CLOEXEC: usize = 0x4000_0000;
 
 fn align(length: usize) -> Option<usize> {
     length.checked_add(7).map(|value| value & !7)
+}
+
+/// 只借已冻结并完整验证 framing 的 cmsg，保留顺序和目的族相关的失败；不分配第二份控制缓冲。
+#[derive(Clone)]
+pub(super) struct PacketInfos<'a> {
+    messages: ControlList<'a>,
+    remaining: usize,
+    ipv6: bool,
+}
+impl<'a> PacketInfos<'a> {
+    pub(super) fn new(bytes: &'a [u8], remaining: usize, ipv6: bool) -> Self {
+        Self {
+            messages: ControlList::new(bytes),
+            remaining,
+            ipv6,
+        }
+    }
+    pub(super) fn empty() -> Self {
+        Self::new(&[], 0, false)
+    }
+}
+impl Iterator for PacketInfos<'_> {
+    type Item = network_protocol::InternetSendPacketInfo;
+    fn next(&mut self) -> Option<Self::Item> {
+        use network_protocol::{InetFamily, InternetSendPacketInfo};
+        if self.remaining == 0 {
+            return None;
+        }
+        for message in self.messages.by_ref() {
+            let message = message.expect("packet info borrows prevalidated frozen cmsg framing");
+            let item = match (message.level, message.kind) {
+                (IPPROTO_IP, IP_PKTINFO) => {
+                    if message.data.len() != 12 {
+                        InternetSendPacketInfo::Invalid(InetFamily::Ipv4)
+                    } else {
+                        let index =
+                            u32::from_ne_bytes(message.data[..4].try_into().expect("IPv4 index"));
+                        InternetSendPacketInfo::Ipv4 {
+                            interface_index: (index != 0).then_some(index),
+                            source_address: core::net::Ipv4Addr::from(
+                                <[u8; 4]>::try_from(&message.data[4..8]).expect("IPv4 source"),
+                            ),
+                        }
+                    }
+                }
+                (IPPROTO_IPV6, IPV6_PKTINFO) if self.ipv6 => {
+                    if message.data.len() < 20 {
+                        InternetSendPacketInfo::Invalid(InetFamily::Ipv6)
+                    } else {
+                        let index = u32::from_ne_bytes(
+                            message.data[16..20].try_into().expect("IPv6 index"),
+                        );
+                        InternetSendPacketInfo::Ipv6 {
+                            interface_index: (index != 0).then_some(index),
+                            source_address: core::net::Ipv6Addr::from(
+                                <[u8; 16]>::try_from(&message.data[..16]).expect("IPv6 source"),
+                            ),
+                        }
+                    }
+                }
+                _ => continue,
+            };
+            self.remaining -= 1;
+            return Some(item);
+        }
+        unreachable!("validated packet-info count must match immutable cmsg snapshot")
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+impl ExactSizeIterator for PacketInfos<'_> {}
+
+pub(super) struct SendAncillary<'a> {
+    pub(super) rights: Option<UnixRights>,
+    pub(super) credentials: crate::net::UnixSendCredentials,
+    pub(super) packet_info: PacketInfos<'a>,
 }
 
 /// 解析 sendmsg control list，并在一次 fd-table snapshot 中捕获 SCM_RIGHTS。
@@ -38,20 +119,14 @@ fn align(length: usize) -> Option<usize> {
 /// # Errors
 ///
 /// malformed/unsupported cmsg、无效 fd、地址 policy 或 OOM 返回标准 errno。
-pub(super) struct SendAncillary {
-    pub(super) rights: Option<UnixRights>,
-    pub(super) credentials: crate::net::UnixSendCredentials,
-    pub(super) packet_info: Option<crate::net::InternetSendPacketInfo>,
-}
-
-pub(super) fn parse_send(
+pub(super) fn parse_send<'a>(
     task: &TaskControlBlock,
     socket: &Arc<Socket>,
-    snapshot: &ControlSnapshot,
-) -> Result<SendAncillary, isize> {
+    snapshot: &'a ControlSnapshot,
+) -> Result<SendAncillary<'a>, isize> {
     let mut credentials = super::credentials::sender(task);
     let mut descriptors = Vec::new();
-    let mut packet_info: Option<crate::net::InternetSendPacketInfo> = None;
+    let mut packet_info_count = 0;
     for message in ControlList::new(snapshot.bytes()) {
         let message = message.map_err(|_| -errno::EINVAL)?;
         match (message.level, message.kind) {
@@ -76,25 +151,27 @@ pub(super) fn parse_send(
                     descriptors.push(fd as usize);
                 }
             }
-            (IPPROTO_IP, IP_PKTINFO) if socket.domain() == SocketDomain::Inet => {
-                if message.data.len() != 12 {
-                    return Err(-errno::EINVAL);
-                }
-                let index = i32::from_ne_bytes(message.data[..4].try_into().unwrap()) as u32;
-                let source =
-                    core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&message.data[4..8]).unwrap());
-                let info = packet_info.get_or_insert_with(Default::default);
-                if index != 0 {
-                    info.interface_index = Some(index);
-                }
-                info.source_address = (!source.is_unspecified()).then_some(source);
+            (IPPROTO_IP, IP_PKTINFO)
+                if matches!(socket.domain(), SocketDomain::Inet | SocketDomain::Inet6) =>
+            {
+                packet_info_count += 1
             }
+            (IPPROTO_IPV6, IPV6_PKTINFO) if socket.domain() == SocketDomain::Inet6 => {
+                packet_info_count += 1
+            }
+            // IPv4 的 ip_cmsg_send 不处理 SOL_IPV6，不能误用其中的地址覆盖本次 IPv4 源。
+            (IPPROTO_IPV6, IPV6_PKTINFO) if socket.domain() == SocketDomain::Inet => {}
             // AF_UNIX 的 scm parser 忽略非 SOL_SOCKET level；SOL_SOCKET 未知 type 为 EINVAL。
             (level, _) if socket.domain() == SocketDomain::Unix && level != SOL_SOCKET => {}
             (SOL_SOCKET, _) => return Err(-errno::EINVAL),
             _ => return Err(-errno::EOPNOTSUPP),
         }
     }
+    let packet_info = PacketInfos::new(
+        snapshot.bytes(),
+        packet_info_count,
+        socket.domain() == SocketDomain::Inet6,
+    );
     if descriptors.is_empty() {
         return Ok(SendAncillary {
             rights: None,
@@ -242,12 +319,12 @@ pub(super) struct ReceiveTarget<'a> {
 pub(super) struct ReceiveContent {
     /// backend source address。
     pub(super) source: Option<SocketAddress>,
+    /// An error queue record carries sock_extended_err and the reporting address.
+    pub(super) internet_error: Option<network_protocol::InternetError>,
     /// actual ingress冻结的IP_PKTINFO；不查询当前caller或已变更接口。
     pub(super) internet_packet_info: Option<crate::net::InternetPacketInfo>,
     /// 实际帧状态及完整长度，仅启用 PACKET_AUXDATA 时提供。
     pub(super) packet_auxiliary: Option<(crate::net::PacketInformation, usize)>,
-    /// 当前 socket 是否请求 IP_PKTINFO。
-    pub(super) packet_info: bool,
     /// AF_UNIX transport 转交的 descriptor capabilities。
     pub(super) rights: Option<crate::net::UnixReceivedRights>,
     /// transport 保存的实际消息凭据；None 与 peer credentials 无关。
@@ -286,9 +363,9 @@ pub(super) fn write_receive(
     } = target;
     let ReceiveContent {
         source,
+        internet_error,
         internet_packet_info,
         packet_auxiliary,
-        packet_info,
         rights,
         credentials,
         pass_credentials,
@@ -334,24 +411,45 @@ pub(super) fn write_receive(
             }
         }
     }
-    if packet_info && let Some(info) = internet_packet_info {
-        let mut data = [0u8; 12];
-        data[..4].copy_from_slice(&(info.interface_index as i32).to_ne_bytes());
-        data[4..8].copy_from_slice(&info.specific_address.octets());
-        data[8..].copy_from_slice(&info.destination.octets());
-        written += write_control(
-            task,
-            if control == 0 {
-                0
-            } else {
-                control.wrapping_add(written)
-            },
-            control_length.saturating_sub(written),
-            IPPROTO_IP,
-            IP_PKTINFO,
-            &data,
-            &mut output_flags,
-        );
+    if let Some(info) = internet_packet_info {
+        // 双栈 IPv4 的标准输出先 IPv6 mapped 投影，再 IPv4；短缓冲与 copy fault 沿原 put_cmsg 路径。
+        if let Some((index, destination)) = info.ipv6() {
+            let mut data = [0; 20];
+            data[..16].copy_from_slice(&destination.octets());
+            data[16..].copy_from_slice(&index.to_ne_bytes());
+            written += write_control(
+                task,
+                if control == 0 {
+                    0
+                } else {
+                    control.wrapping_add(written)
+                },
+                control_length.saturating_sub(written),
+                IPPROTO_IPV6,
+                IPV6_PKTINFO,
+                &data,
+                &mut output_flags,
+            );
+        }
+        if let Some((index, specific, destination)) = info.ipv4() {
+            let mut data = [0; 12];
+            data[..4].copy_from_slice(&index.to_ne_bytes());
+            data[4..8].copy_from_slice(&specific.octets());
+            data[8..].copy_from_slice(&destination.octets());
+            written += write_control(
+                task,
+                if control == 0 {
+                    0
+                } else {
+                    control.wrapping_add(written)
+                },
+                control_length.saturating_sub(written),
+                IPPROTO_IP,
+                IP_PKTINFO,
+                &data,
+                &mut output_flags,
+            );
+        }
     }
     if let Some((information, full_length)) = packet_auxiliary {
         // Linux tpacket_auxdata：USER | 实际 checksum 状态，未启用 BPF 截短，snaplen 与原长相同。
@@ -378,6 +476,38 @@ pub(super) fn write_receive(
             SOL_PACKET,
             PACKET_AUXDATA,
             &data,
+            &mut output_flags,
+        );
+    }
+    if let Some(error) = internet_error {
+        use network_protocol::InternetErrorOrigin;
+        output_flags |= super::MSG_ERRQUEUE as i32;
+        let ipv6 = error.destination.is_ipv6();
+        let mut data = [0u8; 44];
+        data[..4].copy_from_slice(&((-super::socket_error(error.error)) as u32).to_ne_bytes());
+        data[4] = match error.origin {
+            InternetErrorOrigin::Local => 1,
+            InternetErrorOrigin::Icmpv4 => 2,
+            InternetErrorOrigin::Icmpv6 => 3,
+        };
+        data[5] = error.kind;
+        data[6] = error.code;
+        data[8..12].copy_from_slice(&error.info.to_ne_bytes());
+        if let Some(offender) = error.offender {
+            let (address, length) = encode_address(Some(SocketAddress::Inet(offender)));
+            data[16..16 + length].copy_from_slice(&address[..length]);
+        }
+        written += write_control(
+            task,
+            if control == 0 {
+                0
+            } else {
+                control.wrapping_add(written)
+            },
+            control_length.saturating_sub(written),
+            if ipv6 { IPPROTO_IPV6 } else { IPPROTO_IP },
+            if ipv6 { IPV6_RECVERR } else { IP_RECVERR },
+            &data[..if ipv6 { 44 } else { 32 }],
             &mut output_flags,
         );
     }

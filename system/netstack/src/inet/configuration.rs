@@ -11,13 +11,17 @@ use network_protocol::{
 
 mod transaction;
 pub(super) use transaction::Transaction;
-pub(crate) use transaction::{
-    ConfigurationSession, prepare_configuration, prepare_next_hop, prepare_routes,
-};
+pub(crate) use transaction::{ConfigurationSession, prepare_configuration, prepare_next_hop};
 
 /// 事务期间的接口变更事实；只在预备和逆向发布之间存续。
 pub(super) struct InterfaceChange {
-    pub(super) plan: router_protocol::interface::Ipv4InterfaceConfiguration,
+    pub(super) index: u32,
+    pub(super) mtu: Option<u32>,
+    pub(super) ipv6: Option<super::ipv6::PreparedAddresses>,
+    pub(super) delegated: Option<Vec<router_protocol::delegation::DelegatedPrefix>>,
+    /// 预备时为目标策略，激活后保存前像，随同一事务撤销。
+    pub(super) accept_ra: Option<router_protocol::configuration::RouterAdvertisementPolicy>,
+    pub(super) advertise: Option<router_protocol::configuration::RouterAdvertisements>,
     pub(super) previous: InterfaceState,
     // 事务唯一 MTU 前像；不作为常驻接口状态副本，撤销后随事务释放。
     pub(super) previous_mtu: usize,
@@ -27,7 +31,7 @@ pub(super) struct InterfaceChange {
 impl InterfaceChange {
     /// 从可选覆盖与唯一事务前像推导候选 MTU，不再读取发布后的可变设备。
     pub(super) fn next_mtu(&self) -> usize {
-        self.plan.mtu.map_or(self.previous_mtu, |mtu| mtu as usize)
+        self.mtu.map_or(self.previous_mtu, |mtu| mtu as usize)
     }
 }
 
@@ -63,28 +67,54 @@ pub(crate) fn install_interface(
     scope: &Namespace,
     device: alloc::sync::Arc<dyn device_model::network::NetworkDevice>,
     lifetime: native_runtime::Channel,
+    link_changed: native_runtime::Event,
 ) -> Result<u32, SocketError> {
     let mut network = stack(scope)?.lock()?;
-    // 新接口初始 DOWN 且无地址，不改变已准备事务的退休集合；热插拔无需等配置 I/O。
     network
         .interfaces
         .try_reserve(1)
         .map_err(|_| SocketError::NoMemory)?;
     let index = network.next_ethernet_index;
     let unit = network.free_ethernet_unit();
-    if let Some(event) = &network.interface_observer {
-        let event = event.clone();
+    {
+        let event = network.interface_observer.clone();
         device.bind_link_activity(
             alloc::sync::Arc::try_new(move || {
-                event
+                crate::worker::request_poll();
+                link_changed
                     .signal(0, native_runtime::native_abi::signals::USER_0)
-                    .expect("interface observer event remains valid");
+                    .expect("link observer event remains valid");
+                if let Some(event) = &event {
+                    event
+                        .signal(0, network_protocol::NetworkInstaller::TOPOLOGY_CHANGED)
+                        .expect("routing input event remains valid");
+                }
             })
             .map_err(|_| SocketError::NoMemory)?,
         );
     }
     let interface = NetworkInterface::ethernet(scope.id(), index, unit, device, Some(lifetime))?;
+    let ipv6_routing = super::route::Ipv6Routes::prepare(
+        network
+            .interfaces
+            .iter()
+            .chain(core::iter::once(&interface)),
+        &[],
+        Some(&network.ipv6_routing),
+        None,
+    )?;
+    {
+        let super::NetworkStack {
+            configuration,
+            interfaces,
+            ..
+        } = &mut *network;
+        if let Some(transaction) = configuration {
+            transaction.include_interface(interfaces.iter().chain(core::iter::once(&interface)))?;
+        }
+    }
     network.interfaces.push(interface);
+    network.ipv6_routing = ipv6_routing;
     network.next_ethernet_index = index + 1;
     network.notify_interfaces();
     Ok(index)
@@ -112,6 +142,41 @@ pub(crate) fn observe_interfaces(
 
 pub(crate) fn interface_index(scope: &Namespace, name: &[u8]) -> Result<u32, SocketError> {
     stack(scope)?.lock()?.interface_index(name)
+}
+
+/// 在网络域中替换配置服务的 DNS 观察事件。
+pub(crate) fn observe_dns(
+    scope: &Namespace,
+    event: native_runtime::Event,
+) -> Result<(), SocketError> {
+    stack(scope)?.lock()?.dns_observer = Some(event);
+    Ok(())
+}
+
+/// 冻结域内仍有效的通告 DNS，资源不足时不发表部分集合。
+pub(crate) fn learned_dns(
+    scope: &Namespace,
+) -> Result<router_protocol::dns::LearnedDns, SocketError> {
+    let network = stack(scope)?.lock()?;
+    capture_dns(&network, super::now().total_millis().max(0) as u64)
+}
+
+pub(super) fn capture_dns(
+    network: &NetworkStack,
+    now: u64,
+) -> Result<router_protocol::dns::LearnedDns, SocketError> {
+    let mut output = router_protocol::dns::LearnedDns::default();
+    for interface in &network.interfaces {
+        if interface.state.up
+            && let super::device::ProtocolDevice::Ethernet(device) = &interface.device
+            && device.carrier()
+            && interface.device.ip_mtu() >= 1280
+            && let Some(owner) = &interface.ipv6
+        {
+            owner.capture_dns(interface.index, now, &mut output)?;
+        }
+    }
+    Ok(output)
 }
 pub(crate) fn interface_snapshot(
     scope: &Namespace,
@@ -144,7 +209,7 @@ pub(crate) fn interface_snapshots(
             .map(|interface| capture(interface, None)),
     );
     devices.extend(network.interfaces.iter().map(physical_device));
-    // 只借 NET 捕获逻辑字段，Arc 在锁外保活硬件会话；慢 LINK RPC 不能阻塞同域收发。
+    // 只借 NET 捕获逻辑字段，Arc 在锁外保活设备会话；物理事实不扩大逻辑状态临界区。
     drop(network);
     for (snapshot, device) in snapshots.iter_mut().zip(devices) {
         snapshot.link = device.and_then(|device| device.link().ok());
@@ -348,11 +413,176 @@ pub(crate) fn configure_route(
         )
     }
 }
+/// 冻结本域的真实地址，轻量接口事实不持动态地址列表；未知非零接口拒绝。
+/// # Errors
+/// owner/接口不可用、编码或资源失败，不发布部分集合。
+pub(crate) fn address_snapshot(
+    scope: &Namespace,
+    index: u32,
+) -> Result<network_protocol::AddressSnapshot, SocketError> {
+    let network = stack(scope)?.lock()?;
+    capture_addresses(&network, index, super::now().total_millis().max(0) as u64)
+}
+
+/// 在持有 NET guard 时，从同一时刻投影接口状态和剩余寿命。
+pub(super) fn capture_addresses(
+    network: &NetworkStack,
+    index: u32,
+    now: u64,
+) -> Result<network_protocol::AddressSnapshot, SocketError> {
+    use core::net::IpAddr;
+    use network_protocol::{AddressState, InterfaceAddress};
+    if index != 0 {
+        network.interface(index)?;
+    }
+    network_protocol::AddressSnapshot::capture(
+        network
+            .interfaces
+            .iter()
+            .filter(|interface| index == 0 || interface.index == index)
+            .flat_map(|interface| {
+                let ready = interface.state.up
+                    && match &interface.device {
+                        super::device::ProtocolDevice::Ethernet(device) => device.carrier(),
+                        super::device::ProtocolDevice::Loopback(_) => true,
+                    };
+                let common = |address, prefix_length, state, broadcast| InterfaceAddress {
+                    interface_index: interface.index,
+                    name: interface.name,
+                    address,
+                    prefix_length,
+                    state,
+                    usable: ready
+                        && state == AddressState::Preferred
+                        && interface.device.ip_mtu() >= 68,
+                    origin: if interface.index == 1 {
+                        network_protocol::AddressOrigin::Interface
+                    } else {
+                        network_protocol::AddressOrigin::Configured
+                    },
+                    on_link: true,
+                    broadcast,
+                    preferred_lifetime: u32::MAX,
+                    valid_lifetime: u32::MAX,
+                };
+                let v4 = interface.state.address.map(|address| {
+                    common(
+                        IpAddr::V4(address),
+                        interface.state.prefix_length,
+                        AddressState::Preferred,
+                        (interface.index != 1).then_some(interface.state.broadcast),
+                    )
+                });
+                v4.into_iter()
+                    .chain(interface.ipv6.iter().flat_map(move |owner| {
+                        owner.rows(
+                            interface.index,
+                            interface.name,
+                            ready && interface.device.ip_mtu() >= 1280,
+                            now,
+                        )
+                    }))
+            }),
+    )
+}
+
+/// 在同一 NET guard 冻结双栈邻居。读取不改变解析、NUD 或地址资格。
+/// # Errors
+/// owner 或接口不可用、快照存储不足时不发表部分结果。
+pub(crate) fn neighbor_snapshot(
+    scope: &Namespace,
+    index: u32,
+) -> Result<network_protocol::NeighborSnapshot, SocketError> {
+    let network = stack(scope)?.lock()?;
+    if index != 0 {
+        network.interface(index)?;
+    }
+    network_protocol::NeighborSnapshot::capture(
+        network
+            .interfaces
+            .iter()
+            .filter(|interface| index == 0 || interface.index == index)
+            .flat_map(|interface| {
+                interface.arp.rows(interface.index).chain(
+                    interface
+                        .ipv6
+                        .iter()
+                        .flat_map(move |state| state.neighbors(interface.index)),
+                )
+            }),
+    )
+}
+
+/// 在本域同一读取 guard 内查询输入或输出路径。
+pub(crate) fn route_lookup(
+    scope: &Namespace,
+    query: network_protocol::routes::RouteLookup,
+) -> Result<network_protocol::routes::RoutePath, SocketError> {
+    stack(scope)?
+        .lock()?
+        .route_lookup(query, crate::inet::now())
+}
+
+/// 冻结实际规则与当代入接口名；接口已移除的规则不能匹配，因而不进入快照。
+/// # Errors
+/// 域不可用、规则无效或内存不足。
+pub(crate) fn rule_snapshot(
+    scope: &Namespace,
+    requested: Option<network_protocol::InetFamily>,
+) -> Result<network_protocol::routes::RuleSnapshot, SocketError> {
+    use network_protocol::{
+        InetFamily,
+        routes::{RuleEntry, RuleSnapshot},
+    };
+    use router_protocol::{policy_routing::Rule, routing::Family};
+
+    let network = stack(scope)?.lock()?;
+    let families = [
+        (InetFamily::Ipv4, Family::Ipv4),
+        (InetFamily::Ipv6, Family::Ipv6),
+    ];
+    let rows = families
+        .into_iter()
+        .filter(|(family, _)| requested.is_none_or(|requested| requested == *family))
+        .flat_map(|(_, family)| {
+            let [local, main] = Rule::implicit(family).map(|rule| RuleEntry {
+                rule,
+                ingress_name: [0; 16],
+            });
+            let configured = network
+                .selection_rules
+                .ordered()
+                .filter(move |rule| rule.family() == family)
+                .filter_map(|rule| {
+                    let ingress_name = if rule.ingress == 0 {
+                        [0; 16]
+                    } else {
+                        let position = network
+                            .interfaces
+                            .binary_search_by_key(&rule.ingress, |entry| entry.index)
+                            .ok()?;
+                        network.interfaces[position].name
+                    };
+                    Some(RuleEntry { rule, ingress_name })
+                });
+            core::iter::once(local)
+                .chain(configured)
+                .chain(core::iter::once(main))
+        });
+    RuleSnapshot::capture(rows)
+}
+
 /// 当前实际 FIB 及设备名字；快照没有可写路由权，也不派生缺省路由。
-pub(crate) fn route_snapshot(scope: &Namespace) -> Result<RoutingSnapshot, SocketError> {
+pub(crate) fn route_snapshot<A: network_protocol::routes::RouteAddress>(
+    scope: &Namespace,
+) -> Result<RoutingSnapshot<A>, SocketError> {
     let bytes = {
         let network = stack(scope)?.lock()?;
-        network.routing.snapshot_bytes(&network.interfaces)?
+        match A::FAMILY {
+            4 => network.routing.snapshot_bytes(&network.interfaces)?,
+            6 => network.ipv6_routing.snapshot_bytes(&network.interfaces)?,
+            _ => unreachable!("RouteAddress only admits IPv4/IPv6"),
+        }
     };
     // 捕获正文独占且不变；完整验证/组偏移分配与失败退休均不再阻塞 NET 收发。
     RoutingSnapshot::parse(bytes).map_err(|error| {
@@ -364,13 +594,111 @@ pub(crate) fn route_snapshot(scope: &Namespace) -> Result<RoutingSnapshot, Socke
     })
 }
 
+/// 两族快照在同一 guard 捕获，不能把跨配置代际的根合成一次域查询。
+/// # Errors
+/// 域不可用、任一捕获/验证失败或资源不足；不返回部分集合。
+pub(crate) fn route_snapshots(
+    scope: &Namespace,
+) -> Result<
+    (
+        RoutingSnapshot<core::net::Ipv4Addr>,
+        RoutingSnapshot<core::net::Ipv6Addr>,
+    ),
+    SocketError,
+> {
+    let (four, six) = {
+        let network = stack(scope)?.lock()?;
+        (
+            network.routing.snapshot_bytes(&network.interfaces)?,
+            network.ipv6_routing.snapshot_bytes(&network.interfaces)?,
+        )
+    };
+    let parse_error = |status| {
+        if status == native_runtime::native_abi::ERR_NO_MEMORY {
+            SocketError::NoMemory
+        } else {
+            SocketError::Invalid
+        }
+    };
+    Ok((
+        RoutingSnapshot::parse(four).map_err(parse_error)?,
+        RoutingSnapshot::parse(six).map_err(parse_error)?,
+    ))
+}
+
 impl NetworkStack {
-    pub(super) fn notify_interfaces(&self) {
+    /// 发布或撤销复探登记。只重排已失败邻居预留的时钟节点，不分配或创建邻居。
+    pub(super) fn exchange_gateway_probes(
+        &mut self,
+        replacement: &mut Vec<(u32, core::net::IpAddr)>,
+    ) {
+        replacement.retain(|(index, _)| self.interface(*index).is_ok());
+        if self.gateway_probes == *replacement {
+            return;
+        }
+        core::mem::swap(&mut self.gateway_probes, replacement);
+        for (entries, enable) in [
+            (replacement.as_slice(), false),
+            (self.gateway_probes.as_slice(), true),
+        ] {
+            for &(index, address) in entries {
+                if !enable && self.gateway_probes.binary_search(&(index, address)).is_ok() {
+                    continue;
+                }
+                let Ok(position) = self
+                    .interfaces
+                    .binary_search_by_key(&index, |interface| interface.index)
+                else {
+                    continue;
+                };
+                let interface = &mut self.interfaces[position];
+                match address {
+                    core::net::IpAddr::V4(address) => {
+                        interface.arp.monitor_failed_gateway(address, enable)
+                    }
+                    core::net::IpAddr::V6(address) => {
+                        if let Some(owner) = &mut interface.ipv6 {
+                            owner.monitor_failed_gateway(address, enable);
+                        }
+                    }
+                }
+            }
+        }
+        crate::worker::request_poll();
+    }
+
+    pub(super) fn notify_routing_inputs(&self, signals: u32) {
         if let Some(event) = &self.interface_observer {
-            // 私有有效 Event；登记已预留 port packet，signal 不分配，也不反向执行观察者的用户态代码。
+            // 私有有效 Event，观察者在武装时预留 port packet；通知不分配或执行对端代码。
+            event
+                .signal(0, signals)
+                .expect("routing input event remains valid");
+        }
+    }
+
+    /// 在同一 NET guard 下退休失效地址的路径估计，再发布接口变化；观察者不能读到旧地址的派生状态。
+    pub(super) fn notify_interfaces(&mut self) {
+        self.path_mtu.retain(|path| {
+            let min_mtu = if path.source.is_ipv4() { 68 } else { 1280 };
+            self.interfaces.iter().any(|interface| {
+                interface.index == path.interface
+                    && interface.state.up
+                    && interface.device.ip_mtu() >= min_mtu
+            }) && self.interfaces.iter().any(|interface| match path.source {
+                core::net::IpAddr::V4(source) => {
+                    interface.state.up && interface.state.address == Some(source)
+                }
+                core::net::IpAddr::V6(source) => {
+                    (!source.is_unicast_link_local() || interface.index == path.interface)
+                        && interface.has_ipv6_address(source)
+                }
+            })
+        });
+        self.notify_routing_inputs(network_protocol::NetworkInstaller::TOPOLOGY_CHANGED);
+        if let Some(event) = &self.dns_observer {
             event
                 .signal(0, native_runtime::native_abi::signals::USER_0)
-                .expect("interface observer event remains valid");
+                .expect("DNS observer event remains valid");
         }
     }
     /// 租约只排斥配置写入；读者和数据面继续观察当前已发布的状态。

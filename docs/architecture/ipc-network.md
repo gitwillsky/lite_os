@@ -67,7 +67,7 @@ socket 控制与数据分离：低频配置/关闭走 channel，send/receive/pol
   做精确 level recheck，避免 deferred callback 睡眠或丢失 edge。
 - `net` façade 拥有 domain dispatch；AF_UNIX namespace/queue/SCM graph、IPv4 stack、
   AF_PACKET registry 与 kobject listener 各自拥有复合状态。IPv4 `TaskMutex` protocol owner 保持
-  唯一 `SocketSet`；endpoint data-plane 通过稳定 placeholder slot 临时借出真实 socket，在 owner 外
+  唯一 TCP/RAW `SocketSet` 与原生 UDP 目录；载荷操作临时借出实际传输对象，在 owner 外
   复制 payload；独立 endpoint 只共享 O(1) loan count，不共享互斥 guard、也不互相串行。poll 只在
   全部 loan 归还时 `try_lock` 完整 state，冲突立即回投而不 busy-wait。
 - AF_UNIX 最后 OFD close 与 Arc observer 的 lifetime 分离：实际 Closed state 先发布，再撤销
@@ -85,9 +85,9 @@ socket 控制与数据分离：低频配置/关闭走 channel，send/receive/pol
 - pipe、AF_UNIX、IPv4、AF_PACKET 与 kobject receive 共同写入 `ipc::ReceiveBuffer` 的
   initialized prefix；短读、control barrier 与错误路径不暴露未初始化 capacity，syscall 不保留
   另一个 zeroed staging 路径。两条 64KiB heap receive 的预清零成本由 131,072B 降为 0。
-- smoltcp 只负责 Ethernet/ARP/IPv4/UDP/TCP protocol state，不定义 Linux socket UAPI、fd 或 errno。
+- smoltcp 仍负责 IPv4 链路、ARP、TCP/RAW 机制；UDP tuple、队列、校验与收发已归原生 owner，不定义 Linux socket UAPI、fd 或 errno。
 - UDP/TCP 各自的 `PortNamespace` 是 local tuple 占用唯一 owner：per-port summary
-  与 exact IPv4 嵌套索引保留 wildcard/`SO_REUSEADDR` 语义，ephemeral bitmap
+  与双族 exact 地址索引保留 wildcard/`SO_REUSEADDR` 语义，按地址空间选择的 ephemeral bitmap
   只投影“整个 port 完全空闲”。TCP listener claim、accepted exact tuple 与 active
   connect source-address 迁移都在该 owner 内 prepare/commit；raw socket local port 固定为 0，
   不参与 UDP/TCP port namespace。
@@ -101,7 +101,7 @@ socket 控制与数据分离：低频配置/关闭走 channel，send/receive/pol
 
 ## Known limits
 
-- 本轮目标为单物理网卡加 IP-medium loopback 的 IPv4 TCP/UDP；已有有限 raw ICMP、send-only IPPROTO_RAW、AF_PACKET RAW/DGRAM 和 KOBJECT netlink 保留声明范围。启动只装配首张物理网卡；接口容器沿单一路径同时承载 eth0 和 lo。
+- 当前双栈 TCP/UDP 支持多接口与 IP-medium loopback；有限 raw ICMP、send-only IPPROTO_RAW、AF_PACKET 与 KOBJECT 保留声明范围。真实硬件和完整路由系统仍待验收。
 - IPv6、多网卡、完整 rtnetlink/veth/设备迁移、multicast 及高级 TCP 扩展不作为本轮要求。
 - IPv4 分片/重组未开放；UDP/raw 根据真实出口 MTU 在入队前拒绝超长报文。IPPROTO_RAW 使用实际队列和唯一 FIB/neighbor engine，默认 HDRINCL 且不接收；基本完整 header 发送保留用户 ID/TOS/DF/protocol，未开放形态明确拒绝。
   INET 保留固定有界 transport buffers，未开放的缓冲调优明确报错。

@@ -300,9 +300,17 @@ impl<K: Ord, V> FallibleMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        self.get_by(|stored| key.cmp(stored.borrow()))
+    }
+
+    /// 按借用查询与存储 key 的比较结果精确查找，不构造拥有的查询 key。
+    /// compare 必须与 K 的排序一致，返回“查询相对存储 key”的顺序；不分配、不修改树。
+    /// # Returns
+    /// 比较相等时返回对应 value 的借用；未命中返回 None。
+    pub fn get_by(&self, mut compare: impl FnMut(&K) -> Ordering) -> Option<&V> {
         let mut cursor = self.root.as_deref();
         while let Some(node) = cursor {
-            match key.cmp(node.key.borrow()) {
+            match compare(&node.key) {
                 Ordering::Less => cursor = node.left.as_deref(),
                 Ordering::Greater => cursor = node.right.as_deref(),
                 Ordering::Equal => return Some(&node.value),

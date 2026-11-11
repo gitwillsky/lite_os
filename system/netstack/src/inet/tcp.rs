@@ -1,21 +1,22 @@
 use alloc::{sync::Weak, vec::Vec};
-use core::net::Ipv4Addr;
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV6};
+use network_protocol::{InetAddress, InetFamily};
 
-use smoltcp::{
-    iface::SocketHandle,
-    socket::tcp::{self, State},
-    wire::{IpEndpoint, IpListenEndpoint},
-};
+use ::tcp::{self as transport, Endpoint as IpEndpoint, ListenEndpoint as IpListenEndpoint, State};
+use smoltcp::time::Instant;
 
 use fallible_tree::FallibleMap;
 
 use super::{
-    InetEndpoint, InetSocket, InetSocketOptions, NetworkStack, PortLease, SocketError, from_ip,
-    ipv4, port_error,
+    InetEndpoint, InetSocket, InetSocketOptions, NetworkStack, PortBinding, PortLease, SocketError,
+    port_error,
 };
-use network_protocol::InetAddress;
 
 mod accept;
+mod authentication;
+use authentication::{Binding, SharedKeys};
+mod connect;
+pub(super) use connect::{connect, connection_result};
 mod io;
 mod lifecycle;
 mod storage;
@@ -24,19 +25,24 @@ pub(super) use io::{
     maintain, maintain_clocks, poll_state, reap_orphans, receive, send, shutdown, take_error,
 };
 pub(super) use lifecycle::{disconnect, drop_endpoint};
-use storage::{add_socket, placeholder_socket};
+use storage::{allocate_socket, placeholder_socket};
+mod packet;
+mod path;
+pub(super) use packet::{ingress, ingress_ipv6, match_too_big};
+use path::{Path, at};
+pub(super) use path::{SequenceKey, sequence_key};
 
 const TCP_BACKLOG_MAX: usize = 16;
 
 #[derive(Clone, Copy)]
 enum TcpMode {
     Closed {
-        bound: Option<IpListenEndpoint>,
+        bound: Option<InetAddress>,
         shutdown_read: bool,
     },
     Connecting {
         local: InetAddress,
-        bound: IpListenEndpoint,
+        bound: InetAddress,
         // SYN_RECV 半关闭仍属于未完成的实际握手；最终 ACK 才移交权限并发送 FIN。
         shutdown_read: bool,
         shutdown_write: bool,
@@ -45,7 +51,7 @@ enum TcpMode {
     },
     Connected(TcpConnection),
     Listening {
-        endpoint: IpListenEndpoint,
+        endpoint: InetAddress,
         backlog: usize,
         // 实际 parent listener 的 mss_cache；每个 passive child 自己持协商 cache，不借 child 反推。
         send_mss: usize,
@@ -55,8 +61,8 @@ enum TcpMode {
 /// 实际连接的地址与半关闭生命周期；协议库 tuple 仅负责路由，RST 清除它不释放绑定。
 #[derive(Clone, Copy)]
 struct TcpConnection {
-    // 原始 bind identity，与握手选择的 source address 不同；disconnect 必须恢复 user bind。
-    bound: IpListenEndpoint,
+    // 原始 bind identity 由生命周期 owner 保存；只在调用协议引擎时转换其类型，disconnect 恢复 user bind。
+    bound: InetAddress,
     local: InetAddress,
     peer: InetAddress,
     peer_closed: bool,
@@ -68,7 +74,7 @@ struct TcpConnection {
 }
 
 impl TcpConnection {
-    fn established(tcp: &tcp::Socket<'_>, bound: IpListenEndpoint) -> Self {
+    fn established(tcp: &transport::Socket<'_>, bound: InetAddress, family: InetFamily) -> Self {
         let local = tcp
             .local_endpoint()
             .expect("established TCP lost local tuple");
@@ -77,14 +83,16 @@ impl TcpConnection {
             .expect("established TCP lost peer tuple");
         Self {
             bound,
-            local: InetAddress {
-                address: from_ip(local.addr),
-                port: local.port,
-            },
-            peer: InetAddress {
-                address: from_ip(peer.addr),
-                port: peer.port,
-            },
+            local: present(
+                family,
+                InetAddress::new(local.addr, local.port),
+                tcp.bound_interface(),
+            ),
+            peer: present(
+                family,
+                InetAddress::new(peer.addr, peer.port),
+                tcp.bound_interface(),
+            ),
             peer_closed: tcp.state() == State::CloseWait,
             shutdown_read: false,
             shutdown_write: false,
@@ -93,11 +101,7 @@ impl TcpConnection {
     }
 
     /// 消费一次实际终止事件；FIN 后的合法 RST 仍产生 SO_ERROR，但读 EOF 优先。
-    fn observe(
-        &mut self,
-        tcp: &mut tcp::Socket<'_>,
-        reset: Option<super::device::TcpReset>,
-    ) -> Option<SocketError> {
+    fn observe(&mut self, tcp: &mut transport::Socket<'_>) -> Option<SocketError> {
         if self.shutdown_write && matches!(tcp.state(), State::Established | State::CloseWait) {
             tcp.close();
         }
@@ -111,11 +115,10 @@ impl TcpConnection {
             return None;
         }
         self.terminal = true;
-        if tcp.failure_reason() == Some(tcp::FailureReason::TimedOut) {
+        if tcp.failure_reason() == Some(transport::FailureReason::TimedOut) {
             return Some(SocketError::TimedOut);
         }
-        let reset = reset.is_some_and(|reset| reset.matches(self.local, self.peer));
-        if reset || !self.peer_closed {
+        if tcp.failure_reason() == Some(transport::FailureReason::Reset) || !self.peer_closed {
             Some(SocketError::ConnectionReset)
         } else {
             None
@@ -126,26 +129,35 @@ impl TcpConnection {
 /// 实际 passive child 的不可变握手快照；accept 后由新 endpoint 唯一保存 live policy。
 struct PassivePolicy {
     options: InetSocketOptions,
+    md5_keys: SharedKeys,
     connection: TcpConnection,
     pending_error: Option<SocketError>,
+    // OWNER: 通常借 parent 覆盖；parent 改设备前转为独立 membership，accept 移交而非复制。
+    port_lease: Option<PortLease>,
 }
 
-/// 一个实际 smoltcp handle 及其尚未交付的 child policy；不另建平行 pending index。
+/// 一个实际原生连接及其尚未交付的 child policy；不另建平行 pending index。
 struct TcpHandle {
-    handle: SocketHandle,
+    transport: transport::Socket<'static>,
     passive: Option<PassivePolicy>,
+    md5: Option<Binding>,
+    // OWNER: 本机制的最早输出重试时间；设备/邻居背压不能让持续 writable 的流忙轮询，实际事件可以提前重试。
+    transmit_at: Instant,
 }
 impl TcpHandle {
-    fn new(handle: SocketHandle) -> Self {
+    fn new(transport: transport::Socket<'static>) -> Self {
         Self {
-            handle,
+            transport,
             passive: None,
+            md5: None,
+            transmit_at: Instant::from_millis(0),
         }
     }
 }
 
-/// NetworkStack 唯一拥有的 TCP endpoint lifecycle 与 smoltcp handle 集合。
+/// NetworkStack 唯一拥有的 TCP endpoint lifecycle 与原生连接集合。
 pub(super) struct TcpEndpointState {
+    family: InetFamily,
     /// 只在释放 stack lock 后用于 readiness notification 的 OFD-facing 弱引用。
     pub(super) endpoint: Weak<InetSocket>,
     handles: Vec<TcpHandle>,
@@ -157,17 +169,30 @@ pub(super) struct TcpEndpointState {
     orphaned: bool,
     /// 当前 endpoint 的 SOL_SOCKET policy；passive child 在握手完成时冻结，而非 accept 时复制。
     pub(super) options: InetSocketOptions,
+    md5_keys: SharedKeys,
     // 协议 poll 前的唯一 edge 快照；缺失时长期 writable TCP 会持续唤醒全部 waiter。
     pub(super) readiness: network_protocol::SocketPollState,
     // 只跨越 stack unlock 保存一次 transition；缺失会在持 stack lock 时反向进入 wait owner。
     pub(super) notification_pending: bool,
 }
 
+impl TcpEndpointState {
+    pub(super) fn is_ipv6(&self) -> bool {
+        self.family == InetFamily::Ipv6
+    }
+    pub(super) fn slot_count(&self) -> usize {
+        self.handles.len()
+    }
+}
+
 #[cfg(test)]
 impl TcpEndpointState {
     /// host 回归只观察实际 handle，不扩大 production lifecycle 字段可见性。
-    pub(super) fn first_handle_for_test(&self) -> SocketHandle {
-        self.handles[0].handle
+    pub(super) fn transport_for_test(&self) -> &transport::Socket<'static> {
+        &self.handles[0].transport
+    }
+    pub(super) fn transport_for_test_mut(&mut self) -> &mut transport::Socket<'static> {
+        &mut self.handles[0].transport
     }
     pub(super) fn pending_error_for_test(&self) -> Option<SocketError> {
         self.pending_error
@@ -183,7 +208,7 @@ fn allocate_endpoint_id(network: &mut NetworkStack) -> Result<usize, SocketError
     Ok(id)
 }
 
-/// 分配 closed TCP handle，并注册唯一 endpoint state。
+/// 注册 closed TCP handle 与唯一 endpoint state；流缓冲由首次 connect/listen 完整准备。
 ///
 /// # Parameters
 ///
@@ -196,10 +221,11 @@ fn allocate_endpoint_id(network: &mut NetworkStack) -> Result<usize, SocketError
 ///
 /// # Errors
 ///
-/// id 或 buffer 分配失败返回 `NoMemory`。
+/// id、句柄或状态节点分配失败返回 `NoMemory`。
 pub(super) fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
+    family: InetFamily,
 ) -> Result<usize, SocketError> {
     let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
         .map_err(|_| SocketError::NoMemory)?;
@@ -208,11 +234,16 @@ pub(super) fn create_endpoint(
         .try_reserve_exact(1)
         .map_err(|_| SocketError::NoMemory)?;
     let id = allocate_endpoint_id(network)?;
-    let handle = add_socket(network)?;
-    handles.push(TcpHandle::new(handle));
+    // CLOSED 没有可收发流量；提前分配两份 32 KiB 缓冲会让空闲 socket 消耗与活动连接相同的载荷空间。
+    // 首次打开复用 prepare_closed_transport，只有双向缓冲完整准备后才替换此实际 slot。
+    if network.socket_count() + network.udp_endpoints.len() >= super::SOCKET_STORAGE_CAPACITY {
+        return Err(SocketError::NoMemory);
+    }
+    handles.push(TcpHandle::new(placeholder_socket()));
     network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
         id,
         TcpEndpointState {
+            family,
             endpoint,
             handles,
             mode: TcpMode::Closed {
@@ -223,6 +254,7 @@ pub(super) fn create_endpoint(
             port_lease: None,
             orphaned: false,
             options: InetSocketOptions::default(),
+            md5_keys: None,
             readiness: network_protocol::SocketPollState::error(),
             notification_pending: false,
         },
@@ -256,27 +288,164 @@ pub(super) fn set_hop_limit(socket: &InetSocket, value: Option<u8>) -> Result<()
     update_transport_options(socket, |options| options.hop_limit = value)
 }
 
-pub(super) fn set_max_segment(socket: &InetSocket, value: Option<u16>) -> Result<(), SocketError> {
-    update_transport_options(socket, |options| options.user_mss = value)
+/// IPv6 TCP policy 与原端口资格在同一 NET guard 更新；已绑定不能改变覆盖的地址族。
+pub(super) fn set_ipv6_option(
+    socket: &InetSocket,
+    option: super::InternetOption,
+    value: i32,
+) -> Result<(), SocketError> {
+    let mut network = socket.stack()?.lock()?;
+    let state = network
+        .tcp_endpoints
+        .get_mut(&endpoint_id(socket))
+        .ok_or(SocketError::NotConnected)?;
+    if !state.is_ipv6() {
+        return Err(SocketError::OperationNotSupported);
+    }
+    match option {
+        super::InternetOption::Ipv6MulticastAll => state.options.ipv6_multicast_all = value != 0,
+        super::InternetOption::Ipv6Only if state.port_lease.is_none() => {
+            state.options.ipv6_only = value != 0
+        }
+        super::InternetOption::Ipv6Only => return Err(SocketError::Invalid),
+        super::InternetOption::Ipv6HopLimit if (-1..=255).contains(&value) => {
+            state.options.ipv6_hop_limit = u8::try_from(value).ok()
+        }
+        super::InternetOption::Ipv6Mtu if value == 0 || value >= 1280 => {
+            state.options.ipv6_mtu = (value != 0).then_some(value as u32)
+        }
+        super::InternetOption::Ipv6DontFragment => {
+            // TCP 仍按 MSS 分段。保存标准 socket 选项供查询。
+            state.options.ipv6_dont_fragment = value != 0;
+        }
+        super::InternetOption::Ipv6PacketInfo => return Err(SocketError::OperationNotSupported),
+        _ => return Err(SocketError::Invalid),
+    }
+    for entry in &mut state.handles {
+        if entry.passive.is_none() {
+            state.options.apply_tcp(&mut entry.transport);
+        }
+    }
+    Ok(())
+}
+/// 返回已关联 IPv6 TCP 的实际 IP 路径 MTU，不把 socket 手工上限冒充路径学习值。
+pub(super) fn path_mtu(network: &NetworkStack, id: usize, ipv4: bool) -> Result<i32, SocketError> {
+    i32::try_from(connected_output(network, id, ipv4)?.mtu).map_err(|_| SocketError::Invalid)
 }
 
-/// 已在同一network guard提交native parent policy；只更新未冻结child的实际准入机制。
-pub(super) fn apply_bound_interface(
-    network: &mut NetworkStack,
-    id: usize,
-    index: Option<u32>,
-) -> Result<(), SocketError> {
+/// 按连接端点、绑定接口及标记解析本次 IP 路径。未关联或没有路径时返回领域错误。
+pub(super) fn connected_output(network: &NetworkStack, id: usize, ipv4: bool) -> Result<super::route::Output, SocketError> {
     let state = network
         .tcp_endpoints
         .get(&id)
         .ok_or(SocketError::NotConnected)?;
-    debug_assert_eq!(state.options.bound_to_device, index);
-    for entry in &state.handles {
+    if !ipv4 && !state.is_ipv6() {
+        return Err(SocketError::OperationNotSupported);
+    }
+    let tcp = &state.handles[0].transport;
+    let local = tcp.local_endpoint().ok_or(SocketError::NotConnected)?;
+    let peer = tcp.remote_endpoint().ok_or(SocketError::NotConnected)?;
+    if ipv4 && !peer.addr.is_ipv4() {
+        return Err(SocketError::OperationNotSupported);
+    }
+    network.ip_output(
+        local.addr,
+        InetAddress::new(peer.addr, peer.port),
+        (tcp.bound_interface(), state.options.mark),
+        super::now(),
+    )
+}
+
+pub(super) fn set_max_segment(socket: &InetSocket, value: Option<u16>) -> Result<(), SocketError> {
+    update_transport_options(socket, |options| options.user_mss = value)
+}
+
+/// 原子更新设备 policy、端口占用及未冻结的 transport；已建立 child 保留原握手设备。
+/// # Parameters
+/// `network` 是独占 NET owner，`id` 为端点，`index` 已完成接口与权限验证。
+/// # Returns
+/// 更新全部提交后返回 unit；相同接口不产生存储工作。
+/// # Errors
+/// OOM 时撤销本次预留的 child memberships，不改变 parent 或已建立 child。
+pub(super) fn bind_to_device(
+    network: &mut NetworkStack,
+    id: usize,
+    index: Option<u32>,
+) -> Result<(), SocketError> {
+    let NetworkStack {
+        tcp_endpoints,
+        tcp_ports,
+        ..
+    } = network;
+    let state = tcp_endpoints.get(&id).ok_or(SocketError::NotConnected)?;
+    if state.options.bound_to_device == index {
+        return Ok(());
+    }
+    // 1. 握手热路径不分配额外端口节点；只有 parent 改设备时，才为不再受其覆盖的 child 保留原绑定。
+    // 2. 逐项准备并在同一 NET guard 内提交，后续项能复用已有节点；失败先释放临时 memberships。
+    // 3. 所有可失败工作结束后，一次发布 parent、child policy 与实际 transport。
+    let count = state
+        .handles
+        .iter()
+        .filter(|entry| {
+            entry
+                .passive
+                .as_ref()
+                .is_some_and(|policy| policy.port_lease.is_none())
+        })
+        .count();
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(count)
+        .map_err(|_| SocketError::NoMemory)?;
+    let prepared = (|| {
+        if let Some(parent) = state.port_lease {
+            for (position, entry) in state.handles.iter().enumerate() {
+                let Some(policy) = &entry.passive else {
+                    continue;
+                };
+                if policy.port_lease.is_some() {
+                    continue;
+                }
+                let binding =
+                    PortBinding::new(policy.connection.local.ip(), policy.options.ipv6_only)?
+                        .with_interface(policy.options.bound_to_device);
+                let prepared = tcp_ports.prepare_retain_for_address(parent, binding)?;
+                let lease = tcp_ports.commit_retained(prepared);
+                let lease = tcp_ports.set_reuse(lease, policy.options.reuse_address);
+                retained.push((position, lease));
+            }
+        }
+        state
+            .port_lease
+            .map(|lease| tcp_ports.prepare_rebind(lease, lease.binding().with_interface(index)))
+            .transpose()
+    })();
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            for (_, lease) in retained {
+                tcp_ports.release(lease);
+            }
+            return Err(port_error(error));
+        }
+    };
+    let lease = prepared.map(|prepared| tcp_ports.commit_readdress(prepared));
+    let state = tcp_endpoints
+        .get_mut(&id)
+        .expect("TCP endpoint disappeared");
+    state.options.bound_to_device = index;
+    state.port_lease = lease;
+    for (position, lease) in retained {
+        state.handles[position]
+            .passive
+            .as_mut()
+            .expect("retained child disappeared")
+            .port_lease = Some(lease);
+    }
+    for entry in &mut state.handles {
         if entry.passive.is_none() {
-            network
-                .sockets
-                .get_mut::<tcp::Socket<'static>>(entry.handle)
-                .set_bound_interface(index);
+            entry.transport.set_bound_interface(index);
         }
     }
     Ok(())
@@ -299,15 +468,11 @@ pub(super) fn max_segment_size(network: &NetworkStack, id: usize) -> Result<i32,
     if let TcpMode::Listening { send_mss, .. } = state.mode {
         return Ok(state.options.user_mss.map_or(send_mss as i32, i32::from));
     }
-    let handle = state
+    state
         .handles
         .first()
-        .ok_or(SocketError::NotConnected)?
-        .handle;
-    Ok(network
-        .sockets
-        .get::<tcp::Socket<'static>>(handle)
-        .max_segment_size() as i32)
+        .map(|entry| entry.transport.max_segment_size() as i32)
+        .ok_or(SocketError::NotConnected)
 }
 
 fn update_transport_options(
@@ -316,20 +481,14 @@ fn update_transport_options(
 ) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = socket.stack()?.lock()?;
-    let NetworkStack {
-        tcp_endpoints,
-        sockets,
-        ..
-    } = &mut *network;
-    let state = tcp_endpoints
+    let state = network
+        .tcp_endpoints
         .get_mut(&id)
         .ok_or(SocketError::NotConnected)?;
     update(&mut state.options);
-    for entry in &state.handles {
+    for entry in &mut state.handles {
         if entry.passive.is_none() {
-            state
-                .options
-                .apply_tcp(sockets.get_mut::<tcp::Socket<'static>>(entry.handle));
+            state.options.apply_tcp(&mut entry.transport);
         }
     }
     Ok(())
@@ -350,8 +509,8 @@ pub(super) fn transport_options_match(
             .iter()
             .filter(|entry| entry.passive.is_none())
             .all(|entry| {
-                let actual = network.sockets.get::<tcp::Socket<'static>>(entry.handle);
-                actual.nagle_enabled() != no_delay && actual.hop_limit() == hop_limit
+                entry.transport.nagle_enabled() != no_delay
+                    && entry.transport.hop_limit() == hop_limit
             })
 }
 
@@ -366,8 +525,8 @@ fn endpoint_id(socket: &InetSocket) -> usize {
 
 fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
     IpListenEndpoint {
-        addr: (!address.address.is_unspecified()).then(|| ipv4(address.address)),
-        port: address.port,
+        addr: (!address.ip().to_canonical().is_unspecified()).then(|| address.ip().to_canonical()),
+        port: address.port(),
     }
 }
 
@@ -376,7 +535,7 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
 /// # Parameters
 ///
 /// - `socket`: TCP facade identity。
-/// - `address`: 请求的 IPv4 address 与 port。
+/// - `address`: 请求的双族 address 与 port。
 ///
 /// # Returns
 ///
@@ -385,13 +544,9 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
 /// # Errors
 ///
 /// 返回地址、状态、冲突或分配错误。
-pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), SocketError> {
+pub(super) fn bind(socket: &InetSocket, mut address: InetAddress) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = socket.stack()?.lock()?;
-    let address_filter = (!address.address.is_unspecified()).then_some(address.address);
-    if address_filter.is_some_and(|candidate| !network.has_local_address(candidate)) {
-        return Err(SocketError::AddressNotAvailable);
-    }
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -399,32 +554,52 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
     if !matches!(state.mode, TcpMode::Closed { bound: None, .. }) {
         return Err(SocketError::Invalid);
     }
-    let reuse_address = state.options.reuse_address;
-    let lease = if address.port == 0 {
+    if (state.family == InetFamily::Ipv4) != address.is_ipv4() {
+        return Err(SocketError::AddressFamilyNotSupported);
+    }
+    if state.options.ipv6_only && address.ip().to_canonical().is_ipv4() {
+        return Err(SocketError::Invalid);
+    }
+    let mut device = state.options.bound_to_device;
+    if let InetAddress::V6(v6) = address
+        && v6.ip().is_unicast_link_local()
+    {
+        let index = (v6.scope_id() != 0)
+            .then_some(v6.scope_id())
+            .or(device)
+            .ok_or(SocketError::Invalid)?;
         network
-            .tcp_ports
-            .acquire_ephemeral(address_filter, reuse_address)
-            .map_err(port_error)?
+            .interface(index)
+            .map_err(|_| SocketError::NoDevice)?;
+        device = Some(index);
+    }
+    let ip = address.ip().to_canonical();
+    if !ip.is_unspecified() && !network.has_local_ip(ip, device) {
+        return Err(SocketError::AddressNotAvailable);
+    }
+    let binding = PortBinding::new(address.ip(), state.options.ipv6_only)
+        .map_err(port_error)?
+        .with_interface(device);
+    let reuse = state.options.reuse_address;
+    let lease = if address.port() == 0 {
+        network.tcp_ports.acquire_ephemeral(binding, reuse)
     } else {
-        network
-            .tcp_ports
-            .acquire(address.port, address_filter, reuse_address)
-            .map_err(port_error)?
-    };
+        network.tcp_ports.acquire(address.port(), binding, reuse)
+    }
+    .map_err(port_error)?;
+    address.set_port(lease.port());
     let state = network
         .tcp_endpoints
         .get_mut(&id)
-        .expect("TCP endpoint disappeared while stack lock is held");
+        .expect("bound TCP disappeared");
     let TcpMode::Closed { shutdown_read, .. } = state.mode else {
         unreachable!()
     };
     state.mode = TcpMode::Closed {
-        bound: Some(listen_endpoint(InetAddress {
-            port: lease.port(),
-            ..address
-        })),
+        bound: Some(present(state.family, address, device)),
         shutdown_read,
     };
+    state.options.bound_to_device = device;
     state.port_lease = Some(lease);
     Ok(())
 }
@@ -446,98 +621,78 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
 pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = socket.stack()?.lock()?;
-    let state = network
+    let (bound, reuse_address) = match network
         .tcp_endpoints
         .get(&id)
-        .ok_or(SocketError::NotConnected)?;
-    let (bound, reuse_address) = match state.mode {
-        TcpMode::Closed { bound, .. } => (bound, state.options.reuse_address),
+        .ok_or(SocketError::NotConnected)?
+        .mode
+    {
+        TcpMode::Closed { bound, .. } => (bound, network.tcp_endpoints[&id].options.reuse_address),
         TcpMode::Listening { .. } => return Ok(()),
         _ => return Err(SocketError::Invalid),
     };
     let backlog = backlog.clamp(1, TCP_BACKLOG_MAX);
     lifecycle::prepare_closed_transport(&mut network, id)?;
+    if network.socket_count() + network.udp_endpoints.len() + backlog - 1
+        > super::SOCKET_STORAGE_CAPACITY
+    {
+        return Err(SocketError::NoMemory);
+    }
     network
         .tcp_endpoints
         .get_mut(&id)
-        .expect("TCP endpoint disappeared while stack lock is held")
+        .unwrap()
         .handles
-        .try_reserve_exact(backlog.saturating_sub(1))
+        .try_reserve_exact(backlog - 1)
         .map_err(|_| SocketError::NoMemory)?;
     let mut extra = Vec::new();
     extra
-        .try_reserve_exact(backlog.saturating_sub(1))
+        .try_reserve_exact(backlog - 1)
         .map_err(|_| SocketError::NoMemory)?;
     for _ in 1..backlog {
-        match add_socket(&mut network) {
-            Ok(handle) => extra.push(handle),
-            Err(error) => {
-                for handle in extra {
-                    network.sockets.remove(handle);
-                }
-                return Err(error);
-            }
-        }
+        extra.push(TcpHandle::new(allocate_socket()?));
     }
+    let binding = PortBinding::new(
+        unspecified(network.tcp_endpoints[&id].family, 0).ip(),
+        network.tcp_endpoints[&id].options.ipv6_only,
+    )
+    .map_err(port_error)?
+    .with_interface(network.tcp_endpoints[&id].options.bound_to_device);
     let new_lease = if bound.is_none() {
-        match network.tcp_ports.acquire_ephemeral(None, reuse_address) {
-            Ok(lease) => Some(lease),
-            Err(error) => {
-                for handle in extra {
-                    network.sockets.remove(handle);
-                }
-                return Err(port_error(error));
-            }
-        }
+        Some(
+            network
+                .tcp_ports
+                .acquire_ephemeral(binding, reuse_address)
+                .map_err(port_error)?,
+        )
     } else {
         None
     };
     let endpoint = match (bound, new_lease) {
         (Some(endpoint), _) => endpoint,
-        (None, Some(lease)) => IpListenEndpoint {
-            addr: None,
-            port: lease.port(),
-        },
-        (None, None) => return Err(SocketError::AddressNotAvailable),
+        (None, Some(lease)) => unspecified(network.tcp_endpoints[&id].family, lease.port()),
+        _ => unreachable!("TCP listener needs its bound or allocated port"),
     };
     let base_lease = new_lease.unwrap_or_else(|| {
         network.tcp_endpoints[&id]
             .port_lease
-            .expect("bound TCP endpoint lost local port lease")
+            .expect("bound TCP lost port lease")
     });
     let listener_lease = match network.tcp_ports.claim_listener(base_lease) {
         Ok(lease) => lease,
         Err(error) => {
-            for handle in extra {
-                network.sockets.remove(handle);
-            }
             if let Some(lease) = new_lease {
                 network.tcp_ports.release(lease);
             }
             return Err(port_error(error));
         }
     };
-    let first = network.tcp_endpoints[&id].handles[0].handle;
-    let send_mss = network
-        .sockets
-        .get::<tcp::Socket<'static>>(first)
-        .send_mss();
-    let options = network.tcp_endpoints[&id].options;
-    for handle in core::iter::once(first).chain(extra.iter().copied()) {
-        options.apply_tcp(network.sockets.get_mut::<tcp::Socket<'static>>(handle));
-        if network
-            .sockets
-            .get_mut::<tcp::Socket<'static>>(handle)
-            .listen(endpoint)
-            .is_err()
-        {
-            network
-                .sockets
-                .get_mut::<tcp::Socket<'static>>(first)
-                .abort();
-            for handle in extra {
-                network.sockets.remove(handle);
-            }
+    let state = network.tcp_endpoints.get_mut(&id).unwrap();
+    let send_mss = state.handles[0].transport.send_mss();
+    for entry in state.handles.iter_mut().chain(extra.iter_mut()) {
+        state.options.apply_tcp(&mut entry.transport);
+        if entry.transport.listen(listen_endpoint(endpoint)).is_err() {
+            state.handles[0].transport.abort();
             network.tcp_ports.release_listener_claim(listener_lease);
             if let Some(lease) = new_lease {
                 network.tcp_ports.release(lease);
@@ -545,11 +700,7 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
             return Err(SocketError::AddressNotAvailable);
         }
     }
-    let state = network
-        .tcp_endpoints
-        .get_mut(&id)
-        .expect("TCP listener endpoint disappeared during atomic publication");
-    state.handles.extend(extra.into_iter().map(TcpHandle::new));
+    state.handles.extend(extra);
     state.mode = TcpMode::Listening {
         endpoint,
         backlog,
@@ -557,145 +708,6 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
     };
     state.port_lease = Some(listener_lease);
     Ok(())
-}
-
-/// 通过唯一 interface context 启动 active TCP handshake。
-///
-/// # Parameters
-///
-/// - `socket`: TCP facade identity。
-/// - `peer`: 远端 IPv4 endpoint。
-///
-/// # Returns
-///
-/// SYN 提交后返回 `InProgress`；完成状态通过 readiness 观察。
-///
-/// # Errors
-///
-/// 返回标准地址、route、状态或 in-progress 错误。
-pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), SocketError> {
-    if peer.port == 0 || peer.address.is_unspecified() {
-        return Err(SocketError::AddressNotAvailable);
-    }
-    let id = endpoint_id(socket);
-    let mut network = socket.stack()?.lock()?;
-    let (bound, reuse_address, existing_lease) = match network.tcp_endpoints.get(&id) {
-        Some(state) => match state.mode {
-            TcpMode::Closed { bound, .. } => (bound, state.options.reuse_address, state.port_lease),
-            TcpMode::Connecting { terminal: true, .. } => {
-                return Err(finish_failed_connect(&mut network, id));
-            }
-            TcpMode::Connecting { .. } => return Err(SocketError::AlreadyInProgress),
-            TcpMode::Connected(_) => return Err(SocketError::AlreadyConnected),
-            TcpMode::Listening { .. } => return Err(SocketError::Invalid),
-        },
-        None => return Err(SocketError::NotConnected),
-    };
-    let source = bound
-        .and_then(|local| local.addr)
-        .map(from_ip)
-        .unwrap_or(Ipv4Addr::UNSPECIFIED);
-    let route = network.route(
-        source,
-        peer.address,
-        network.tcp_endpoints[&id].options.bound_to_device,
-    )?;
-    let interface_index = route.interface_index;
-    let route_address = network.source_address(route);
-    let local_address = bound
-        .and_then(|endpoint| endpoint.addr)
-        .map(from_ip)
-        .or(route_address)
-        .ok_or(SocketError::NetworkUnreachable)?;
-    lifecycle::prepare_closed_transport(&mut network, id)?;
-    let new_lease = if bound.is_none() {
-        Some(
-            network
-                .tcp_ports
-                .acquire_ephemeral(Some(local_address), reuse_address)
-                .map_err(port_error)?,
-        )
-    } else {
-        None
-    };
-    let prepared_readdress = existing_lease
-        .map(|lease| network.tcp_ports.prepare_readdress(lease, local_address))
-        .transpose()
-        .map_err(port_error)?;
-    let local = match (bound, new_lease) {
-        (Some(endpoint), _) => endpoint,
-        (None, Some(lease)) => IpListenEndpoint {
-            addr: None,
-            port: lease.port(),
-        },
-        (None, None) => return Err(SocketError::AddressNotAvailable),
-    };
-    let handle = network.tcp_endpoints[&id].handles[0].handle;
-    let NetworkStack {
-        interfaces,
-        sockets,
-        ..
-    } = &mut *network;
-    let interface = &mut interfaces
-        .iter_mut()
-        .find(|interface| interface.index == interface_index)
-        .expect("selected actual TCP device disappeared")
-        .interface;
-    interface.context().set_egress_route(
-        ipv4(route.next_hop),
-        route.logical_interface_index,
-        false,
-        Some(route.transport),
-    );
-    let connect = sockets.get_mut::<tcp::Socket<'static>>(handle).connect(
-        interface.context(),
-        IpEndpoint::new(ipv4(peer.address), peer.port),
-        IpListenEndpoint {
-            addr: Some(ipv4(local_address)),
-            ..local
-        },
-    );
-    interface.context().clear_egress_route();
-    if connect.is_err() {
-        if let Some(lease) = new_lease {
-            network.tcp_ports.release(lease);
-        }
-        return Err(SocketError::AddressNotAvailable);
-    }
-    debug_assert_eq!(
-        network
-            .sockets
-            .get::<tcp::Socket<'static>>(handle)
-            .local_endpoint()
-            .map(|endpoint| from_ip(endpoint.addr)),
-        Some(local_address)
-    );
-    let connected_lease = if let Some(lease) = new_lease {
-        lease
-    } else {
-        network.tcp_ports.commit_readdress(
-            prepared_readdress.expect("bound TCP connect lost prepared port readdress"),
-        )
-    };
-    let state = network
-        .tcp_endpoints
-        .get_mut(&id)
-        .expect("TCP endpoint disappeared during connect publication");
-    state.mode = TcpMode::Connecting {
-        bound: local,
-        terminal: false,
-        shutdown_read: false,
-        shutdown_write: false,
-        local: InetAddress {
-            address: local_address,
-            port: local.port,
-        },
-    };
-    state.pending_error = None;
-    state.port_lease = Some(connected_lease);
-    drop(network);
-    crate::worker::request_poll();
-    Err(SocketError::InProgress)
 }
 
 /// 读取权威 local TCP endpoint。
@@ -721,20 +733,8 @@ pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     match state.mode {
         TcpMode::Connecting { local, .. } => Ok(local),
         TcpMode::Connected(connection) => Ok(connection.local),
-        TcpMode::Closed { bound, .. } => Ok(bound.map_or(
-            InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            },
-            |endpoint| InetAddress {
-                address: endpoint.addr.map_or(Ipv4Addr::UNSPECIFIED, from_ip),
-                port: endpoint.port,
-            },
-        )),
-        TcpMode::Listening { endpoint, .. } => Ok(InetAddress {
-            address: endpoint.addr.map_or(Ipv4Addr::UNSPECIFIED, from_ip),
-            port: endpoint.port,
-        }),
+        TcpMode::Closed { bound, .. } => Ok(bound.unwrap_or_else(|| unspecified(state.family, 0))),
+        TcpMode::Listening { endpoint, .. } => Ok(endpoint),
     }
 }
 
@@ -746,7 +746,7 @@ pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
 ///
 /// # Returns
 ///
-/// 远端 IPv4 endpoint。
+/// 远端双族 endpoint。
 ///
 /// # Errors
 ///
@@ -761,79 +761,38 @@ pub(super) fn peer_address(socket: &InetSocket) -> Result<InetAddress, SocketErr
     let TcpMode::Connected(connection) = state.mode else {
         return Err(SocketError::NotConnected);
     };
-    let phase = network
-        .sockets
-        .get::<tcp::Socket<'static>>(state.handles[0].handle)
-        .state();
+    let phase = state.handles[0].transport.state();
     if matches!(phase, State::Closed | State::SynSent) {
         return Err(SocketError::NotConnected);
     }
     Ok(connection.peer)
 }
 
-/// 在 OFD writable/error wakeup 后解析 active-connect 完成状态。
-///
-/// # Parameters
-///
-/// - `socket`: TCP facade identity。
-///
-/// # Returns
-///
-/// 仅在 established 后返回 unit。
-///
-/// # Errors
-///
-/// 返回 in-progress、refusal 或无效状态错误。
-pub(super) fn connection_result(socket: &InetSocket) -> Result<(), SocketError> {
-    let id = endpoint_id(socket);
-    let mut network = socket.stack()?.lock()?;
-    let state = network
-        .tcp_endpoints
-        .get(&id)
-        .ok_or(SocketError::NotConnected)?;
-    match state.mode {
-        TcpMode::Connecting { terminal: true, .. } => Err(finish_failed_connect(&mut network, id)),
-        TcpMode::Connecting { .. } => Err(SocketError::InProgress),
-        TcpMode::Connected(_) => {
-            let phase = network
-                .sockets
-                .get::<tcp::Socket<'static>>(state.handles[0].handle)
-                .state();
-            if phase == State::Closed {
-                Err(finish_failed_connect(&mut network, id))
-            } else {
-                Ok(())
-            }
-        }
-        _ => Err(SocketError::NotConnected),
+fn present(family: InetFamily, address: InetAddress, interface: Option<u32>) -> InetAddress {
+    if family == InetFamily::Ipv4 {
+        return InetAddress::new(address.ip().to_canonical(), address.port());
     }
+    let ip = match address.ip() {
+        IpAddr::V4(ip) => ip.to_ipv6_mapped(),
+        IpAddr::V6(ip) => ip,
+    };
+    InetAddress::V6(SocketAddrV6::new(
+        ip,
+        address.port(),
+        0,
+        if ip.is_unicast_link_local() {
+            interface.unwrap_or(0)
+        } else {
+            0
+        },
+    ))
 }
-
-/// __inet_stream_connect 的失败完成：消费 error、恢复 user bind 与未连接 read policy。
-fn finish_failed_connect(network: &mut NetworkStack, id: usize) -> SocketError {
-    let state = network
-        .tcp_endpoints
-        .get_mut(&id)
-        .expect("failed connect lost its actual endpoint while stack is held");
-    let bound = match state.mode {
-        TcpMode::Connecting { bound, .. } => bound,
-        TcpMode::Connected(connection) => connection.bound,
-        _ => unreachable!("failed connect requires an actual connection attempt"),
-    };
-    let error = state
-        .pending_error
-        .take()
-        .unwrap_or(SocketError::ConnectionAborted);
-    state.mode = TcpMode::Closed {
-        bound: Some(bound),
-        shutdown_read: false,
-    };
-    if let Some(lease) = state.port_lease {
-        state.port_lease = Some(
-            network
-                .tcp_ports
-                .restore_bound_address(lease, bound.addr.map(from_ip)),
-        );
-    }
-    error
+fn unspecified(family: InetFamily, port: u16) -> InetAddress {
+    InetAddress::new(
+        match family {
+            InetFamily::Ipv4 => Ipv4Addr::UNSPECIFIED.into(),
+            InetFamily::Ipv6 => Ipv6Addr::UNSPECIFIED.into(),
+        },
+        port,
+    )
 }

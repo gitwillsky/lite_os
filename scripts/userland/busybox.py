@@ -69,10 +69,11 @@ FORBIDDEN_BOOT_MARKERS = (
     "\ufffd",
 )
 
-ACCOUNT_APPLETS = ("passwd", "adduser", "addgroup")
+# 既有开发镜像也需要获得这些 applet，不要求重建其 init 或账户数据。
+DEVELOPMENT_APPLETS = ("passwd", "adduser", "addgroup", "ip")
 
 BUSYBOX_LINKS = (
-    *ACCOUNT_APPLETS,
+    *DEVELOPMENT_APPLETS,
     "[",
     "[[",
     "arch",

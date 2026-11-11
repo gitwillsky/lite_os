@@ -45,21 +45,64 @@ pub(crate) use unix::{
 };
 
 pub(crate) use inet::{
-    configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
-    configure_up, interface_index, interface_snapshot, interface_snapshots, network_snapshot,
-    route_snapshot,
+    address_snapshot, configure_address, configure_broadcast, configure_mtu, configure_netmask,
+    configure_route, configure_up, interface_index, interface_snapshot, interface_snapshots,
+    neighbor_snapshot, network_snapshot, route_lookup, route_snapshot, route_snapshots,
 };
 pub(crate) use netstack::init;
 pub(crate) use network_protocol::{
     InetAddress, InterfaceSnapshot, InternetOption, InternetPacketInfo, InternetSendPacketInfo,
-    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress,
-    PacketChecksum, PacketInformation, RouteChange, RoutingSnapshot, SocketError, SocketPollState,
+    Ipv4RouteError, Ipv4RouteRequest, PacketAddress, PacketChecksum, PacketInformation,
+    RouteChange, RouteKind, RouteMetrics, RoutingSnapshot, SocketError, SocketPollState,
 };
+
+/// 返回正 errno。syscall 返回负值，netlink 把负值写入 NLMSG_ERROR。
+pub(crate) fn socket_errno(error: SocketError) -> i32 {
+    use linux_abi::errno;
+    (match error {
+        SocketError::Invalid | SocketError::WrongType => errno::EINVAL,
+        SocketError::NoMemory => errno::ENOMEM,
+        SocketError::NoBuffer => errno::ENOBUFS,
+        SocketError::NoSpace => errno::ENOSPC,
+        SocketError::AddressInUse => errno::EADDRINUSE,
+        SocketError::AddressNotAvailable => errno::EADDRNOTAVAIL,
+        SocketError::ConnectionRefused => errno::ECONNREFUSED,
+        SocketError::ConnectionReset => errno::ECONNRESET,
+        SocketError::ConnectionAborted => errno::ECONNABORTED,
+        SocketError::TimedOut => errno::ETIMEDOUT,
+        SocketError::Device => errno::EIO,
+        SocketError::NetworkUnreachable => errno::ENETUNREACH,
+        SocketError::HostUnreachable => errno::EHOSTUNREACH,
+        SocketError::DestinationRequired => errno::EDESTADDRREQ,
+        SocketError::MessageTooLarge => errno::EMSGSIZE,
+        SocketError::ProtocolNotSupported => errno::EPROTONOSUPPORT,
+        SocketError::OperationNotSupported => errno::EOPNOTSUPP,
+        SocketError::NotConnected => errno::ENOTCONN,
+        SocketError::AlreadyConnected => errno::EISCONN,
+        SocketError::InProgress => errno::EINPROGRESS,
+        SocketError::AlreadyInProgress => errno::EALREADY,
+        SocketError::Again => errno::EAGAIN,
+        SocketError::BrokenPipe => errno::EPIPE,
+        SocketError::PermissionDenied => errno::EACCES,
+        SocketError::OperationNotPermitted => errno::EPERM,
+        SocketError::NoDevice => errno::ENODEV,
+        SocketError::DeviceNotAvailable => errno::ENXIO,
+        SocketError::NetworkDown => errno::ENETDOWN,
+        SocketError::TooManyReferences => errno::ETOOMANYREFS,
+        SocketError::AddressFamilyNotSupported => errno::EAFNOSUPPORT,
+        SocketError::NoEntry => errno::ENOENT,
+        SocketError::ProtocolError => errno::EPROTO,
+        SocketError::ProtocolOptionUnavailable => errno::ENOPROTOOPT,
+        SocketError::HostDown => errno::EHOSTDOWN,
+        SocketError::NetworkIsolated => errno::ENONET,
+    }) as i32
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SocketDomain {
     Unix,
     Inet,
+    Inet6,
     Packet,
     Netlink,
 }
@@ -83,6 +126,7 @@ pub(crate) struct ReceivedMessage {
     pub(crate) count: usize,
     pub(crate) full_length: usize,
     pub(crate) source: Option<SocketAddress>,
+    pub(crate) internet_error: Option<network_protocol::InternetError>,
     pub(crate) internet_packet_info: Option<InternetPacketInfo>,
     pub(crate) packet_information: Option<PacketInformation>,
     pub(crate) rights: Option<UnixReceivedRights>,
@@ -366,6 +410,24 @@ impl Socket {
         )
     }
 
+    /// Consume one error queue record without waiting.
+    pub(crate) fn receive_error_message(
+        &self,
+        output: &mut ReceiveBuffer<'_>,
+    ) -> Result<ReceivedMessage, SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.receive_error(output),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    pub(crate) fn set_receive_error(&self, ipv6: bool, enabled: bool) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_receive_error(ipv6, enabled),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
     fn receive_request(
         &self,
         output: &mut ReceiveBuffer<'_>,
@@ -378,6 +440,7 @@ impl Socket {
                     count,
                     full_length,
                     source: source.map(SocketAddress::Unix),
+                    internet_error: None,
                     internet_packet_info: None,
                     packet_information: None,
                     rights,
@@ -389,6 +452,7 @@ impl Socket {
                     count,
                     full_length,
                     source: source.map(SocketAddress::Inet),
+                    internet_error: None,
                     internet_packet_info,
                     packet_information: None,
                     rights: None,
@@ -403,6 +467,7 @@ impl Socket {
                             count,
                             full_length,
                             source: Some(SocketAddress::Packet(source)),
+                            internet_error: None,
                             internet_packet_info: None,
                             packet_information: Some(information),
                             rights: None,
@@ -500,7 +565,7 @@ impl Socket {
         target: Option<SocketSendDestination>,
         rights: &mut Option<UnixRights>,
         credentials: &UnixSendCredentials,
-        packet_info: Option<InternetSendPacketInfo>,
+        packet_info: impl ExactSizeIterator<Item = InternetSendPacketInfo>,
         net_admin: bool,
     ) -> Result<usize, SocketSendError> {
         self.validate_send_length(input.len())

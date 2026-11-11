@@ -1,9 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::{
-    MSG_DONTWAIT, MSG_NOSIGNAL, MSG_PEEK, MSG_TRUNC, O_NONBLOCK, SocketAddress, SocketError,
-    TaskControlBlock, WaitResult, errno, read_address, socket_error, socket_ofd, wait_for_ofd,
-    write_address,
+    MSG_DONTWAIT, MSG_ERRQUEUE, MSG_NOSIGNAL, MSG_PEEK, MSG_TRUNC, O_NONBLOCK, SocketAddress,
+    SocketError, TaskControlBlock, WaitResult, errno, read_address, socket_error, socket_ofd,
+    wait_for_ofd, write_address,
 };
 use crate::{
     file::OpenFileDescription,
@@ -128,7 +128,7 @@ struct SendContext<'a> {
     nonblocking: bool,
     deadline: Option<u64>,
     credentials: crate::net::UnixSendCredentials,
-    packet_info: Option<crate::net::InternetSendPacketInfo>,
+    packet_info: super::control::PacketInfos<'a>,
 }
 
 /// Native move_addr_to_kernel 先校验/copy 通用 sockaddr；SeqPacket/TCP 随后忽略目的地址。
@@ -146,8 +146,10 @@ fn read_target(
             socket.socket_type(),
             crate::net::SocketType::Stream | crate::net::SocketType::SeqPacket
         ))
-        || (socket.domain() == crate::net::SocketDomain::Inet
-            && socket.socket_type() == crate::net::SocketType::Stream)
+        || (matches!(
+            socket.domain(),
+            crate::net::SocketDomain::Inet | crate::net::SocketDomain::Inet6
+        ) && socket.socket_type() == crate::net::SocketType::Stream)
     {
         if length > 128 {
             return Err(-errno::EINVAL);
@@ -223,7 +225,7 @@ fn send_one_message(
             target,
             rights,
             &context.credentials,
-            context.packet_info,
+            context.packet_info.clone(),
             context.net_admin(),
         ) {
             Ok(count) => return count as isize,
@@ -328,7 +330,7 @@ fn send_stream_message(
                 target,
                 &mut rights,
                 &context.credentials,
-                context.packet_info,
+                context.packet_info.clone(),
                 context.net_admin(),
             ) {
                 Ok(sent) => {
@@ -445,7 +447,7 @@ pub(in crate::syscall) fn write_vectors(
                 .timeout(SocketIoDirection::Send)
                 .deadline(crate::time::get_time_ns()),
             credentials: super::credentials::sender(task),
-            packet_info: None,
+            packet_info: super::control::PacketInfos::empty(),
         },
         vectors,
         total_length,
@@ -550,7 +552,7 @@ pub(crate) fn sys_sendto(
         SendContext {
             task: &task,
             credentials: super::credentials::sender(&task),
-            packet_info: None,
+            packet_info: super::control::PacketInfos::empty(),
             ofd: &ofd,
             socket: &socket,
             target,
@@ -574,7 +576,7 @@ pub(crate) fn sys_recvfrom(
     address: usize,
     address_length: usize,
 ) -> isize {
-    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT) != 0 {
+    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | MSG_ERRQUEUE) != 0 {
         return -errno::EOPNOTSUPP;
     }
     let (ofd, socket) = match socket_ofd(fd) {
@@ -597,9 +599,16 @@ pub(crate) fn sys_recvfrom(
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
         .deadline(crate::time::get_time_ns());
-    let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
+    let error_queue = flags & MSG_ERRQUEUE != 0;
+    let nonblocking =
+        error_queue || flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false, nonblocking) {
+        let received = if error_queue {
+            socket.receive_error_message(&mut output)
+        } else {
+            socket.receive_message(&mut output, flags & MSG_PEEK != 0, false, nonblocking)
+        };
+        match received {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&vectors);
                 if cursor.copy_to_user(&task, output.initialized()).is_err() {
@@ -608,7 +617,7 @@ pub(crate) fn sys_recvfrom(
                 if let Err(error) = write_address(&task, received.source, address, address_length) {
                     return error;
                 }
-                return if flags & MSG_TRUNC != 0 {
+                return if !error_queue && flags & MSG_TRUNC != 0 {
                     received.full_length as isize
                 } else {
                     received.count as isize
@@ -630,7 +639,10 @@ pub(crate) fn sys_recvfrom(
 
 /// Linux recvmsg scatter/gather、MSG_PEEK 与 IPv4 PKTINFO ancillary ABI。
 pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
-    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | super::control::MSG_CMSG_CLOEXEC) != 0 {
+    if flags
+        & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | MSG_ERRQUEUE | super::control::MSG_CMSG_CLOEXEC)
+        != 0
+    {
         return -errno::EOPNOTSUPP;
     }
     let (ofd, socket) = match socket_ofd(fd) {
@@ -650,12 +662,19 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
         Ok(output) => output,
         Err(error) => return socket_error(error),
     };
-    let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
+    let error_queue = flags & MSG_ERRQUEUE != 0;
+    let nonblocking =
+        error_queue || flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
         .deadline(crate::time::get_time_ns());
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true, nonblocking) {
+        let received = if error_queue {
+            socket.receive_error_message(&mut output)
+        } else {
+            socket.receive_message(&mut output, flags & MSG_PEEK != 0, true, nonblocking)
+        };
+        match received {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&iovecs);
                 if cursor.copy_to_user(&task, output.initialized()).is_err()
@@ -671,8 +690,8 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 };
                 let content = super::control::ReceiveContent {
                     source: received.source,
+                    internet_error: received.internet_error,
                     internet_packet_info: received.internet_packet_info,
-                    packet_info: socket.ipv4_packet_info(),
                     packet_auxiliary: received
                         .packet_information
                         .filter(|_| socket.packet_auxiliary())
@@ -686,7 +705,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 if let Err(error) = super::control::write_receive(target, content) {
                     return error;
                 }
-                return if flags & MSG_TRUNC != 0 {
+                return if !error_queue && flags & MSG_TRUNC != 0 {
                     received.full_length as isize
                 } else {
                     received.count as isize

@@ -1,16 +1,7 @@
+//! TCP 流存储由调用者完整准备；未打开/临时借出时只留同一 endpoint 内的空机制。
+use super::{SocketError, transport};
 use alloc::vec::Vec;
-
-use smoltcp::{
-    iface::SocketHandle,
-    socket::tcp::{self, CongestionControl},
-};
-
-use network_protocol::SocketError;
-
-use super::NetworkStack;
-
 const TCP_BUFFER_BYTES: usize = 32 * 1024;
-
 fn allocate_buffer() -> Result<Vec<u8>, SocketError> {
     let mut bytes = Vec::new();
     bytes
@@ -19,24 +10,15 @@ fn allocate_buffer() -> Result<Vec<u8>, SocketError> {
     bytes.resize(TCP_BUFFER_BYTES, 0);
     Ok(bytes)
 }
-
-pub(super) fn placeholder_socket() -> tcp::Socket<'static> {
-    tcp::Socket::new(
-        tcp::SocketBuffer::new(Vec::new()),
-        tcp::SocketBuffer::new(Vec::new()),
+pub(super) fn placeholder_socket() -> transport::Socket<'static> {
+    transport::Socket::new(
+        transport::SocketBuffer::new(Vec::new()),
+        transport::SocketBuffer::new(Vec::new()),
     )
 }
-
-pub(super) fn allocate_socket() -> Result<tcp::Socket<'static>, SocketError> {
-    let mut socket = tcp::Socket::new(
-        tcp::SocketBuffer::new(allocate_buffer()?),
-        tcp::SocketBuffer::new(allocate_buffer()?),
-    );
-    // Reno 不使用 kernel FPU context，且比关闭 congestion control 更符合共享网络语义。
-    socket.set_congestion_control(CongestionControl::Reno);
-    Ok(socket)
-}
-
-pub(super) fn add_socket(network: &mut NetworkStack) -> Result<SocketHandle, SocketError> {
-    network.add_socket(allocate_socket()?)
+pub(super) fn allocate_socket() -> Result<transport::Socket<'static>, SocketError> {
+    Ok(transport::Socket::new(
+        transport::SocketBuffer::new(allocate_buffer()?),
+        transport::SocketBuffer::new(allocate_buffer()?),
+    ))
 }

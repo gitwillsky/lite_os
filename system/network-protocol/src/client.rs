@@ -78,14 +78,31 @@ impl RemoteNamespace {
         &self.channel
     }
 
-    pub fn socket(&self, protocol: InetProtocol) -> Result<SocketEndpoint, SocketError> {
+    /// 创建本域的 `family`/`protocol` 端点，返回 channel 和就绪通知；不默认截断到 IPv4。
+    /// # Errors
+    /// 返回服务的协议/资源错误，或控制连接的传输错误。
+    pub fn socket(
+        &self,
+        family: InetFamily,
+        protocol: InetProtocol,
+    ) -> Result<SocketEndpoint, SocketError> {
+        if protocol == InetProtocol::Raw(0) {
+            return Err(SocketError::ProtocolNotSupported);
+        }
         let mut writer = Writer::request(ordinal::SOCKET);
+        writer.u32(namespace::SOCKET_REQUEST_VERSION);
+        writer.u8(match family {
+            InetFamily::Ipv4 => 4,
+            InetFamily::Ipv6 => 6,
+        });
         writer.u8(match protocol {
             InetProtocol::Udp => 0,
             InetProtocol::Tcp => 1,
-            InetProtocol::Icmp => 2,
-            InetProtocol::Raw => 3,
+            InetProtocol::Raw(_) => 2,
         });
+        if let InetProtocol::Raw(protocol) = protocol {
+            writer.u8(protocol);
+        }
         take_endpoint(request(&self.channel, &writer, Vec::new())?)
     }
 
@@ -143,25 +160,168 @@ impl RemoteNamespace {
         })
     }
 
-    /// 读取完整冻结的 FIB；VMO 正文不受 channel 上限约束，成员按字典借用，不按行复制。
+    /// 读取本域冻结的 IPv4 和 IPv6 邻居；使用 VMO，数量不受 channel 消息长度限制。
+    /// # Parameters
+    /// `index` 是原生逻辑接口，0 表示全部；未知非零接口由域 owner 返回 NoDevice。
     /// # Errors
-    /// 服务不可用、资源不足、句柄/长度/正文格式无效或服务拒绝。
-    pub fn route_snapshot(&self) -> Result<RoutingSnapshot, SocketError> {
-        let mut reply = request(
-            &self.channel,
-            &Writer::request(ordinal::ROUTE_SNAPSHOT),
-            Vec::new(),
-        )?;
+    /// 服务/资源失败，或句柄、长度、版本与条目内容非法。
+    pub fn neighbor_snapshot(&self, index: u32) -> Result<NeighborSnapshot, SocketError> {
+        let mut writer = Writer::request(namespace::neighbors::ORDINAL);
+        writer.u32(index);
+        NeighborSnapshot::parse(self.snapshot_bytes(&writer)?).map_err(transport)
+    }
+
+    /// 读取本域冻结的接口地址；使用 VMO，数量不受 channel 消息长度限制。
+    /// # Parameters
+    /// `index` 是原生逻辑接口，0 表示全部；未知非零接口由域 owner 返回 NoDevice。
+    /// # Errors
+    /// 服务/资源失败，或句柄、长度、版本与条目内容非法。
+    pub fn address_snapshot(&self, index: u32) -> Result<AddressSnapshot, SocketError> {
+        let mut writer = Writer::request(namespace::addresses::ORDINAL);
+        writer.u32(index);
+        AddressSnapshot::parse(self.snapshot_bytes(&writer)?).map_err(transport)
+    }
+
+    /// 读取当前生效规则；`family` 为 None 时两族在同一次捕获中读取。
+    /// # Errors
+    /// 传输、资源、句柄或快照格式错误。
+    pub fn rule_snapshot(
+        &self,
+        family: Option<InetFamily>,
+    ) -> Result<routes::RuleSnapshot, SocketError> {
+        let mut writer = Writer::request(namespace::RULE_SNAPSHOT);
+        writer
+            .u32(namespace::RULE_SNAPSHOT_VERSION)
+            .u8(match family {
+                None => 0,
+                Some(InetFamily::Ipv4) => 4,
+                Some(InetFamily::Ipv6) => 6,
+            });
+        routes::RuleSnapshot::parse(self.snapshot_bytes(&writer)?).map_err(transport)
+    }
+
+    fn snapshot_bytes(&self, writer: &Writer) -> Result<Vec<u8>, SocketError> {
+        let mut reply = request(&self.channel, writer, Vec::new())?;
         let mut reader = body(&reply);
         let length = reader.u64().map_err(transport)?;
         reader.finish().map_err(transport)?;
         if reply.handles.len() != 1 {
             return Err(SocketError::Invalid);
         }
-        let content = Vmo::from_handle(take_handle(&mut reply.handles, 0).map_err(transport)?)
+        Vmo::from_handle(take_handle(&mut reply.handles, 0).map_err(transport)?)
+            .read_bytes(length)
+            .map_err(transport)
+    }
+
+    /// 查询当前有效通告 DNS，拒绝无效正文或句柄。
+    pub fn learned_dns(&self) -> Result<router_protocol::dns::LearnedDns, SocketError> {
+        let writer = Writer::request(namespace::LEARNED_DNS);
+        let mut reply = request(&self.channel, &writer, Vec::new())?;
+        let mut reader = body(&reply);
+        let length = reader.u64().map_err(transport)?;
+        reader.finish().map_err(transport)?;
+        if reply.handles.len() != 1 || length > router_protocol::dns::MAX_ENCODED_BYTES as u64 {
+            return Err(SocketError::Invalid);
+        }
+        let bytes = Vmo::from_handle(take_handle(&mut reply.handles, 0).map_err(transport)?)
             .read_bytes(length)
             .map_err(transport)?;
-        RoutingSnapshot::parse(content).map_err(transport)
+        let mut decoder = router_protocol::Decoder::new(&bytes);
+        let dns = decoder.learned_dns().map_err(|_| SocketError::Invalid)?;
+        decoder.finish().map_err(|_| SocketError::Invalid)?;
+        Ok(dns)
+    }
+
+    /// 登记 DNS 观察事件。观察者清除 USER_0 后重新装订，再查询当前快照。
+    pub fn watch_dns(&self) -> Result<Event, SocketError> {
+        let writer = Writer::request(namespace::WATCH_DNS);
+        let mut reply = request(&self.channel, &writer, Vec::new())?;
+        body(&reply).finish().map_err(transport)?;
+        if reply.handles.len() != 1 {
+            return Err(SocketError::Invalid);
+        }
+        Ok(Event::from_handle(
+            take_handle(&mut reply.handles, 0).map_err(transport)?,
+        ))
+    }
+
+    /// 读取完整冻结的 FIB；VMO 正文不受 channel 上限约束，成员按字典借用，不按行复制。
+    /// # Errors
+    /// 服务不可用、资源不足、句柄/长度/正文格式无效或服务拒绝。
+    pub fn route_snapshot<A: routes::RouteAddress>(
+        &self,
+    ) -> Result<RoutingSnapshot<A>, SocketError> {
+        let mut bodies = self.route_snapshot_contents(A::FAMILY as u8)?;
+        RoutingSnapshot::parse(bodies.pop().expect("one family capture")).map_err(transport)
+    }
+    /// 在同一发布代际捕获两族，按 IPv4/IPv6 返回；不合并来自两次 RPC 的状态。
+    /// # Errors
+    /// 任一捕获失败、服务/传输/资源失败或正文非法，不返回部分集合。
+    pub fn route_snapshots(
+        &self,
+    ) -> Result<
+        (
+            RoutingSnapshot<core::net::Ipv4Addr>,
+            RoutingSnapshot<core::net::Ipv6Addr>,
+        ),
+        SocketError,
+    > {
+        let mut bodies = self.route_snapshot_contents(0)?;
+        let six = bodies.pop().expect("IPv6 family capture");
+        let four = bodies.pop().expect("IPv4 family capture");
+        Ok((
+            RoutingSnapshot::parse(four).map_err(transport)?,
+            RoutingSnapshot::parse(six).map_err(transport)?,
+        ))
+    }
+    /// 读取本域一次真实的输出或输入选路结果。
+    /// # Errors
+    /// 查询非法、源或设备不可用、无匹配路由、服务退出或回复非法。
+    pub fn route_lookup(
+        &self,
+        query: routes::RouteLookup,
+    ) -> Result<routes::RoutePath, SocketError> {
+        let mut writer = Writer::request(namespace::ROUTE_LOOKUP);
+        writer
+            .try_reserve(routes::RouteLookup::MAX_BYTES)
+            .map_err(transport)?;
+        query.write(&mut writer).map_err(|_| SocketError::Invalid)?;
+        let reply = request(&self.channel, &writer, Vec::new())?;
+        if !reply.handles.is_empty() {
+            return Err(SocketError::Invalid);
+        }
+        let mut reader = body(&reply);
+        let path = routes::RoutePath::read(&mut reader, query).map_err(|_| SocketError::Invalid)?;
+        reader.finish().map_err(|_| SocketError::Invalid)?;
+        Ok(path)
+    }
+
+    fn route_snapshot_contents(&self, family: u8) -> Result<Vec<Vec<u8>>, SocketError> {
+        let mut writer = Writer::request(ordinal::ROUTE_SNAPSHOT);
+        writer.u32(namespace::ROUTE_SNAPSHOT_VERSION).u8(family);
+        let mut reply = request(&self.channel, &writer, Vec::new())?;
+        let mut reader = body(&reply);
+        let count = if family == 0 { 2 } else { 1 };
+        if reader.u32().map_err(transport)? != count || reply.handles.len() != count as usize {
+            return Err(SocketError::Invalid);
+        }
+        let mut lengths = [0; 2];
+        for length in lengths.iter_mut().take(count as usize) {
+            *length = reader.u64().map_err(transport)?;
+        }
+        reader.finish().map_err(transport)?;
+        let mut bodies = Vec::new();
+        bodies
+            .try_reserve_exact(count as usize)
+            .map_err(|_| SocketError::NoMemory)?;
+        for length in lengths.into_iter().take(count as usize) {
+            bodies.push(
+                Vmo::from_handle(take_handle(&mut reply.handles, 0).map_err(transport)?)
+                    .read_bytes(length)
+                    .map_err(transport)?,
+            );
+        }
+        Ok(bodies)
     }
 
     fn configure(
@@ -296,32 +456,69 @@ impl RemoteInetSocket {
         get_inet(&mut body(&reply)).map_err(transport)
     }
 
+    /// 发送应用数据和按原顺序保留的单次控制项，不修改 socket 绑定。
+    ///
+    /// # Parameters
+    /// - `input`：正文；控制前缀与正文共用一个有界载荷槽。
+    /// - `target`：显式目的；None 使用已关联 peer。
+    /// - `packet_info`：精确计数的有序控制项，按实际目的族验证。
+    ///
+    /// # Returns
+    /// 实际发送字节数；datagram 保持报文原子性。
+    ///
+    /// # Errors
+    /// 正文过大返回 MessageTooLarge，前缀合计超限返回 NoBuffer；其余由实际传输与服务状态决定。
     pub fn send_to(
         &self,
         input: &[u8],
         target: Option<InetAddress>,
-        packet_info: Option<InternetSendPacketInfo>,
+        packet_info: impl ExactSizeIterator<Item = InternetSendPacketInfo>,
     ) -> Result<usize, SocketError> {
         if input.len() > TRANSFER_LIMIT {
             return Err(SocketError::MessageTooLarge);
         }
+        socket_io::payload_length(input.len(), packet_info.len())
+            .map_err(|_| SocketError::NoBuffer)?;
         let mut record = socket_io::request(socket_io::SEND, input.len(), false);
         socket_io::inet(&mut record, target);
-        socket_io::send_info(&mut record, packet_info);
-        let (response, _) = self.data.transfer(record, input).map_err(transport)?;
+        record[8] = packet_info.len() as u64;
+        let (response, _) = self
+            .data
+            .transfer(record, input, packet_info)
+            .map_err(transport)?;
         socket_io::result(&response)?;
         Ok(response[2] as usize)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<InetReceived, SocketError> {
         let record = socket_io::request(socket_io::RECEIVE, limit, peek);
-        let (response, data) = self.data.transfer(record, &[]).map_err(transport)?;
+        let (response, data) = self
+            .data
+            .transfer(record, &[], core::iter::empty())
+            .map_err(transport)?;
         socket_io::result(&response)?;
         Ok(InetReceived {
             data,
             full_length: response[3] as usize,
             source: socket_io::get_inet(&response).map_err(transport)?,
             packet_info: socket_io::get_receive_info(&response).map_err(transport)?,
+        })
+    }
+
+    /// 非阻塞消费原生错误队列中的一条记录。
+    /// # Errors
+    /// 空队列为 Again。传输、分配失败和不支持的 socket 返回对应错误。
+    pub fn receive_error(&self, limit: usize) -> Result<InetErrorReceived, SocketError> {
+        let record = socket_io::request(socket_io::RECEIVE_ERROR, limit, false);
+        let (response, data) = self
+            .data
+            .transfer(record, &[], core::iter::empty())
+            .map_err(transport)?;
+        socket_io::result(&response)?;
+        Ok(InetErrorReceived {
+            data,
+            full_length: response[3] as usize,
+            error: socket_io::get_error(&response).map_err(transport)?,
         })
     }
 
@@ -372,7 +569,11 @@ impl RemoteInetSocket {
     /// 服务不可用时报告错误状态。
     pub fn poll_state(&self) -> SocketPollState {
         self.data
-            .transfer(socket_io::request(socket_io::POLL, 0, false), &[])
+            .transfer(
+                socket_io::request(socket_io::POLL, 0, false),
+                &[],
+                core::iter::empty(),
+            )
             .map_err(transport)
             .and_then(|(response, _)| {
                 socket_io::result(&response)?;
@@ -383,8 +584,53 @@ impl RemoteInetSocket {
 
     pub fn set_option(&self, change: InetOptionChange) -> Result<(), SocketError> {
         let mut writer = Writer::request(ordinal::SET_OPTION);
+        writer.try_reserve(40).map_err(transport)?;
         put_option_change(&mut writer, change);
         self.unit(&writer)
+    }
+
+    /// Add/replace a TCP peer signature key, or delete it with an empty byte slice.
+    /// # Errors
+    /// Invalid selector/length, missing deletion target, allocation or service failure.
+    pub fn set_md5_key(&self, selector: TcpMd5Selector, key: &[u8]) -> Result<(), SocketError> {
+        if !selector.valid() || key.len() > TCP_MD5_MAX_KEY_BYTES {
+            return Err(SocketError::Invalid);
+        }
+        let mut writer = Writer::request(ordinal::MD5_KEY);
+        writer.try_reserve(128).map_err(transport)?;
+        writer.u32(1);
+        put_inet(&mut writer, InetAddress::new(selector.address, 0));
+        writer
+            .u8(selector.prefix_length)
+            .u32(selector.interface_index.unwrap_or(0))
+            .bytes(key);
+        self.unit(&writer)
+    }
+
+    /// Read the ICMP message-type filter, or atomically change its masked bits.
+    /// # Parameters
+    /// `update`: None reads; Some merges only the selected bits without a read/modify/write race.
+    /// # Returns
+    /// The complete eight-word filter after this operation; a set bit blocks that message type.
+    /// # Errors
+    /// Unsupported socket, malformed response, allocation or service failure.
+    pub fn icmp_filter(&self, update: Option<IcmpFilterUpdate>) -> Result<[u32; 8], SocketError> {
+        let mut writer = Writer::request(ordinal::ICMP_FILTER);
+        writer.try_reserve(69).map_err(transport)?;
+        writer.u32(1).bool(update.is_some());
+        if let Some(update) = update {
+            for (mask, blocked) in update.mask.into_iter().zip(update.blocked) {
+                writer.u32(mask).u32(blocked);
+            }
+        }
+        let reply = request(&self.channel, &writer, Vec::new())?;
+        let mut reader = body(&reply);
+        let mut values = [0; 8];
+        for value in &mut values {
+            *value = reader.u32().map_err(transport)?;
+        }
+        reader.finish().map_err(transport)?;
+        Ok(values)
     }
 
     pub fn bind_to_device(&self, name: &[u8], privileged: bool) -> Result<(), SocketError> {
@@ -448,14 +694,20 @@ impl RemotePacketSocket {
         }
         let mut record = socket_io::request(socket_io::SEND, input.len(), false);
         socket_io::packet(&mut record, target);
-        let (response, _) = self.data.transfer(record, input).map_err(transport)?;
+        let (response, _) = self
+            .data
+            .transfer(record, input, core::iter::empty())
+            .map_err(transport)?;
         socket_io::result(&response)?;
         Ok(response[2] as usize)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<PacketReceived, SocketError> {
         let record = socket_io::request(socket_io::RECEIVE, limit, peek);
-        let (response, data) = self.data.transfer(record, &[]).map_err(transport)?;
+        let (response, data) = self
+            .data
+            .transfer(record, &[], core::iter::empty())
+            .map_err(transport)?;
         socket_io::result(&response)?;
         Ok(PacketReceived {
             data,
@@ -480,7 +732,11 @@ impl RemotePacketSocket {
 
     pub fn poll_state(&self) -> SocketPollState {
         self.data
-            .transfer(socket_io::request(socket_io::POLL, 0, false), &[])
+            .transfer(
+                socket_io::request(socket_io::POLL, 0, false),
+                &[],
+                core::iter::empty(),
+            )
             .map_err(transport)
             .and_then(|(response, _)| {
                 socket_io::result(&response)?;

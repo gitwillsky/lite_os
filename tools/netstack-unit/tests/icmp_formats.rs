@@ -194,8 +194,16 @@ fn multipart_errors_use_the_family_length_unit_and_preserve_type_parameters() {
     }
     let (source, destination) = addresses();
     for kind in [1, 3] {
-        let length =
-            icmpv6::emit_error(&mut bytes, kind, 0, source, destination, &quote, &objects).unwrap();
+        let length = icmpv6::emit_error(
+            &mut bytes,
+            kind,
+            0,
+            0,
+            (source, destination),
+            &quote,
+            &objects,
+        )
+        .unwrap();
         assert_eq!(length, 156);
         assert_eq!(&bytes[4..8], &[17, 0, 0, 0]);
         let icmpv6::Message::Error { body, .. } =
@@ -336,15 +344,31 @@ fn extension_emitters_reject_invalid_fields_before_touching_output() {
         Err(PacketError::Malformed)
     );
     assert_eq!(
-        icmpv6::emit_error(&mut bytes, 2, 0, source, destination, &[], &[object]),
+        icmpv6::emit_error(&mut bytes, 2, 0, 0, (source, destination), &[], &[object]),
         Err(PacketError::Unsupported)
     );
     assert_eq!(
-        icmpv6::emit_error(&mut bytes, 3, 0, source, destination, &[0; 2041], &[object]),
+        icmpv6::emit_error(
+            &mut bytes,
+            3,
+            0,
+            0,
+            (source, destination),
+            &[0; 2041],
+            &[object]
+        ),
         Err(PacketError::Malformed)
     );
     assert_eq!(
-        icmpv6::emit_error(&mut bytes[..139], 3, 0, source, destination, &[], &[object]),
+        icmpv6::emit_error(
+            &mut bytes[..139],
+            3,
+            0,
+            0,
+            (source, destination),
+            &[],
+            &[object]
+        ),
         Err(PacketError::Capacity)
     );
     assert_eq!(bytes, [0xa5; 160]);

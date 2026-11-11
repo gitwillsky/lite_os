@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(allocator_ext)]
 //! router-config 原生配置模型/元数据、设置投影（`liteos.network.Settings`）、DHCPv4 租约与路由来源编码。
 //!
 //! 1. 只定义数据与字节编码，不依赖原生运行时：原生服务以 `service_rpc` 传输，Linux 程序经 linuxd 的
@@ -11,17 +12,25 @@ extern crate alloc;
 
 pub mod administration;
 pub mod backup;
+pub mod bgp;
 pub mod configuration;
+pub mod connections;
+pub mod delegation;
+pub mod dhcp_server;
+pub mod dns_cache;
+pub mod dns;
+pub mod firewall;
 pub mod interface;
 pub mod policy;
+pub mod policy_routing;
 pub mod routing;
 pub mod tracking;
 
 /// 设置/租约消息的固定线版本；解码不接受旧布局或未知版本。
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use alloc::{collections::BTreeSet, string::String, vec::Vec};
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, SocketAddr};
 
 /// 接口名上限（含结尾 NUL 的 `IFNAMSIZ`）。
 pub const NAME_MAX: usize = 16;
@@ -59,6 +68,14 @@ pub mod ordinal {
                 | BACKUP_CREATE
                 | BACKUP_EXPORT
                 | BACKUP_DELETE
+                | BGP_STATUS
+                | BGP_ROUTES
+                | BGP_REFRESH
+                | DHCP_SERVER_BINDINGS
+                | CONNECTIONS
+                | CLEAR_CONNECTION
+                | CONNECTION_CHANGES
+                | FIREWALL_COUNTERS
         )
     }
     /// 取当前快照（[`super::Snapshot`]）。
@@ -89,6 +106,24 @@ pub mod ordinal {
     pub const BACKUP_EXPORT: u32 = 13;
     /// 显式删除一个备份并同步目录。
     pub const BACKUP_DELETE: u32 = 14;
+    /// 当前 BGP 邻居会话状态；只读观察，不把接收路由数当作 FIB 安装数量。
+    pub const BGP_STATUS: u32 = 15;
+    /// 按规范前缀查询 BGP 原始候选、确认选择及未采用原因，输入/输出经文档能力传递。
+    pub const BGP_ROUTES: u32 = 16;
+    /// Query one page of active downstream DHCPv4 leases on a selected interface.
+    pub const DHCP_SERVER_BINDINGS: u32 = 17;
+    /// 为已建立的 BGP 邻居排队单族刷新，不持久化、不重连。
+    pub const BGP_REFRESH: u32 = 18;
+    /// 读取当前网络域的连接页。
+    pub const CONNECTIONS: u32 = 19;
+    /// 清除指定的活动转发连接。
+    pub const CLEAR_CONNECTION: u32 = 20;
+    /// 读取下一批连接增量，或取得重新同步起点。
+    pub const CONNECTION_CHANGES: u32 = 21;
+    /// 等待指定连接增量游标变为可读。
+    pub const WAIT_CONNECTION_CHANGES: u32 = 22;
+    /// 读取当前预路由规则的命中计数。
+    pub const FIREWALL_COUNTERS: u32 = 23;
 }
 
 /// 有权限的用户请求 DHCP 会话立即续租或释放。
@@ -315,6 +350,8 @@ pub struct Snapshot {
     pub primary_dns_suffix: String,
     /// 自动搜索时是否尝试主 DNS 后缀的父级。
     pub append_parent_suffixes: bool,
+    /// 当前有效的路由通告 DNS，属于运行时设置，不写入配置树。
+    pub learned_dns: dns::LearnedDns,
 }
 
 /// 已提交意图和执行/持久化协调的状态，由 owner 的实际待处理工作投影。
@@ -354,6 +391,7 @@ impl Snapshot {
                     .iter()
                     .map(|entry| entry.dns_suffix.as_str()),
             )
+            .chain(self.learned_dns.domains.iter().map(String::as_str))
             .chain(parents)
         {
             if !suffix.is_empty()
@@ -368,11 +406,17 @@ impl Snapshot {
     }
 
     /// 全部接口正在生效的原生 DNS（按接口顺序去重），容量投影由具体解析器负责。
-    pub fn nameservers(&self) -> Vec<Ipv4Addr> {
+    pub fn nameservers(&self) -> Vec<SocketAddr> {
         let mut servers = Vec::new();
-        for server in self.interfaces.iter().flat_map(|interface| &interface.dns) {
-            if !servers.contains(server) {
-                servers.push(*server);
+        for server in self
+            .interfaces
+            .iter()
+            .flat_map(|interface| &interface.dns)
+            .map(|address| SocketAddr::new((*address).into(), 53))
+            .chain(self.learned_dns.servers.iter().copied().map(SocketAddr::V6))
+        {
+            if !servers.contains(&server) {
+                servers.push(server);
             }
         }
         servers
@@ -498,6 +542,7 @@ impl Encoder {
         self.search_list(&snapshot.search_list)
             .bytes(snapshot.primary_dns_suffix.as_bytes())
             .u8(u8::from(snapshot.append_parent_suffixes))
+            .learned_dns(&snapshot.learned_dns)
     }
     pub fn lease(&mut self, event: &LeaseEvent) -> &mut Self {
         self.u32(VERSION);
@@ -740,6 +785,7 @@ impl<'a> Decoder<'a> {
                 1 => true,
                 _ => return Err(Invalid),
             },
+            learned_dns: self.learned_dns()?,
         })
     }
     pub fn lease(&mut self) -> Result<LeaseEvent, Invalid> {
@@ -795,6 +841,10 @@ mod tests {
                 .collect(),
             primary_dns_suffix: "sub.office.test".into(),
             append_parent_suffixes: true,
+            learned_dns: dns::LearnedDns {
+                servers: vec!["[fe80::2%7]:53".parse().unwrap()],
+                domains: vec!["learned.test".into()],
+            },
             interfaces: vec![InterfaceState {
                 name: b"eth0".to_vec(),
                 connection_name: "办公网".as_bytes().to_vec(),
@@ -813,7 +863,7 @@ mod tests {
                 }),
             }],
         };
-        assert_eq!(snapshot.nameservers().len(), 8);
+        assert_eq!(snapshot.nameservers().len(), 9);
         assert_eq!(snapshot.search_domains().len(), 8);
         let mut encoder = Encoder::default();
         encoder.snapshot(&snapshot);

@@ -10,6 +10,9 @@
 
 extern crate alloc;
 
+/// BGP 域配置工厂；只路由到原生配置 owner，不直接授予 Linux 程序。
+pub const BGP_CONFIGURATOR: &[u8] = b"liteos.bgp.Configuration";
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -29,6 +32,10 @@ pub const NETWORK_SETTINGS: &[u8] = b"liteos.network.Settings";
 pub const DRIVER_UPDATE: &[u8] = b"liteos.driver.Update";
 /// dhcp-client 的 DHCPv4 租约协议（`router_protocol::dhcp`），只路由给 router_config。
 pub const DHCP: &[u8] = b"liteos.network.Dhcp";
+/// DHCPv4 下游地址分发执行能力，只授予 router-config。
+pub const DHCP_SERVER: &[u8] = b"liteos.network.DhcpServer";
+/// DNS 转发执行工厂，仅授权给路由配置 owner。
+pub const DNS_CACHE: &[u8] = b"liteos.network.DnsCache";
 /// fshost 的存储管理协议（`filesystem_protocol::StorageAdmin`）：只供根服务为各服务派生私有数据目录。
 pub const STORAGE_ADMIN: &[u8] = b"liteos.storage.Admin";
 /// fshost 的块设备清单协议（`filesystem_protocol::BlocksClient`）。

@@ -130,3 +130,7 @@ pub const EREMOTE: isize = 66;
 pub const ENOBUFS: isize = 105;
 /// 路由明确拒绝或相邻主机不可达。
 pub const EHOSTUNREACH: isize = 113;
+/// ICMP 报告目的主机失效。
+pub const EHOSTDOWN: isize = 112;
+/// ICMP 报告目的主机与网络隔离。
+pub const ENONET: isize = 64;

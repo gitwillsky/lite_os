@@ -42,7 +42,7 @@ fn dual_stack_sources_borrow_shared_objects_and_preserve_recursive_targets() {
             metric: 20,
         }];
         let rows = [route(network, length, 0), route(family.zero(), 0, 1)];
-        let bytes = Batch::encode(family, &attributes, &hops, &rows).unwrap();
+        let bytes = Batch::encode(family, &attributes, hops, rows).unwrap();
         let batch = Batch::parse(&bytes).unwrap();
         assert_eq!(batch.family(), family);
         assert!(batch.attributes().eq(attributes));
@@ -55,7 +55,38 @@ fn dual_stack_sources_borrow_shared_objects_and_preserve_recursive_targets() {
             assert!(read.members().eq(original.members()));
         }
         assert!(decoded.next().is_none());
-        let empty = Batch::encode(family, &[], &[], &[]).unwrap();
+        let direct = [Member {
+            target: Target::Direct {
+                interface_index: 7,
+                gateway: Some(gateway),
+                on_link: false,
+            },
+            weight: 1,
+        }];
+        let direct = Batch::encode(
+            family,
+            &attributes,
+            [NextHop::new(Action::Forward, &direct)],
+            core::iter::empty::<Route>(),
+        )
+        .unwrap();
+        let borrowed = Batch::parse(&direct).unwrap().next_hops().next().unwrap();
+        let other = match family {
+            Family::Ipv4 => Family::Ipv6,
+            Family::Ipv6 => Family::Ipv4,
+        };
+        assert_eq!(
+            borrowed.validate(other),
+            Err(Invalid),
+            "encoded member width cannot change during preflight"
+        );
+        let empty = Batch::encode(
+            family,
+            &[],
+            core::iter::empty::<NextHop<'_>>(),
+            core::iter::empty::<Route>(),
+        )
+        .unwrap();
         let empty = Batch::parse(&empty).unwrap();
         assert_eq!(empty.routes().len(), 0);
         assert_eq!(empty.next_hops().len(), 0);
@@ -78,14 +109,14 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
     }];
     let hops = [NextHop::new(Action::Forward, &members)];
     let rows = [route("192.0.2.0".parse().unwrap(), 24, 0)];
-    let bytes = Batch::encode(family, &attributes, &hops, &rows).unwrap();
+    let bytes = Batch::encode(family, &attributes, hops, rows).unwrap();
     for end in 0..bytes.len() {
         assert!(Batch::parse(&bytes[..end]).is_err());
     }
     let mut tail = bytes.clone();
     tail.push(0);
     assert!(Batch::parse(&tail).is_err());
-    // 20-byte header, 8-byte attribute, 5-byte group header, 14-byte IPv4 member.
+    // 20-byte header, 8-byte attribute, 5-byte group header, 26-byte member.
     for (offset, value) in [
         (0, 99),
         (4, 5),
@@ -95,9 +126,10 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
         (38, 0),
         (42, 4),
         (43, 1),
-        (51, 33),
-        (52, 1),
-        (56, 1),
+        (51, 1),
+        (63, 33),
+        (64, 1),
+        (68, 1),
     ] {
         let mut corrupt = bytes.clone();
         corrupt[offset] = value;
@@ -120,7 +152,7 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
             ..rows[0]
         },
     ] {
-        assert!(Batch::encode(family, &attributes, &hops, &[bad]).is_err());
+        assert!(Batch::encode(family, &attributes, hops, [bad]).is_err());
     }
     for member in [
         Member {
@@ -160,8 +192,8 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
             Batch::encode(
                 family,
                 &attributes,
-                &[NextHop::new(Action::Forward, &[member])],
-                &rows
+                [NextHop::new(Action::Forward, &[member])],
+                rows
             )
             .is_err()
         );
@@ -170,14 +202,14 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
         Batch::encode(
             Family::Ipv6,
             &attributes,
-            &[NextHop::new(
+            [NextHop::new(
                 Action::Forward,
                 &[Member {
                     target: Target::Recursive("fe80::1".parse().unwrap()),
                     weight: 1
                 }]
             )],
-            &[]
+            core::iter::empty::<Route>()
         )
         .is_err()
     );
@@ -185,8 +217,29 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
         NextHop::new(Action::Forward, &[]),
         NextHop::new(Action::Discard, &members),
     ] {
-        assert!(Batch::encode(family, &attributes, &[hop], &rows).is_err());
+        assert!(Batch::encode(family, &attributes, [hop], rows).is_err());
     }
     let terminal = vec![NextHop::new(Action::Discard, &[])];
-    assert!(Batch::encode(family, &attributes, &terminal, &rows).is_ok());
+    assert!(Batch::encode(family, &attributes, &terminal, rows).is_ok());
+    // Clone 可共享外部状态；错误的重放必须返回 Invalid，不能写出数量不符的正文或隐式扩容。
+    let cursor = core::cell::Cell::new(0);
+    let disappearing = core::iter::from_fn(|| {
+        let current = cursor.get();
+        cursor.set(current + 1);
+        (current == 0).then_some(rows[0])
+    });
+    assert_eq!(
+        Batch::encode(family, &attributes, hops, disappearing),
+        Err(EncodeError::Invalid)
+    );
+    let cursor = core::cell::Cell::new(0);
+    let appearing = core::iter::from_fn(|| {
+        let current = cursor.get();
+        cursor.set(current + 1);
+        (current == 1).then_some(hops[0])
+    });
+    assert_eq!(
+        Batch::encode(family, &attributes, appearing, core::iter::empty::<Route>()),
+        Err(EncodeError::Invalid)
+    );
 }

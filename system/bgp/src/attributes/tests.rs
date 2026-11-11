@@ -59,6 +59,7 @@ fn receive<'a>(
     };
     let config = Config {
         local_as: 65001,
+        confederation_peer: None,
         peer_as: 65001,
         identifier: Ipv4Addr::new(192, 0, 2, 1),
         hold_seconds: 90,
@@ -75,11 +76,14 @@ fn receive<'a>(
         hold_seconds: 90,
         ipv4_unicast: true,
         ipv6_unicast: true,
+        send_ipv4_via_ipv6: false,
+        receive_ipv4_via_ipv6: true,
         four_octet_asn: four,
         send_extended: false,
         receive_extended: false,
         send_refresh: true,
         receive_refresh: true,
+        enhanced_refresh: false,
     };
     crate::received::capture(config, peer, update, raw).unwrap()
 }
@@ -191,6 +195,33 @@ fn reordered_attributes_and_community_sets_share_content_but_next_hop_and_nlri_d
         &[24, 203, 0, 113],
     );
     let different_med = pool.intern(&received).unwrap().unwrap();
+    // 投影命中同一规范池，标量改写不复制列表或未知 payload；归还后不保留缓存历史。
+    let projected = pool
+        .project(
+            &a,
+            AttributeChanges::scalars(Some(Origin::Egp), Some(MedAction::Set { value: 42 })),
+        )
+        .unwrap();
+    let repeated = pool
+        .project(
+            &a,
+            AttributeChanges::scalars(Some(Origin::Egp), Some(MedAction::Set { value: 42 })),
+        )
+        .unwrap();
+    assert!(core::ptr::eq(projected.0.get(), repeated.0.get()));
+    assert!(core::ptr::eq(
+        projected.cluster_list().as_ptr(),
+        a.cluster_list().as_ptr()
+    ));
+    assert!(core::ptr::eq(
+        projected.unknown_transitive().next().unwrap().data,
+        a.unknown_transitive().next().unwrap().data
+    ));
+    assert_eq!(a.origin(), 0);
+    assert_eq!(pool.len(), 3);
+    drop(projected);
+    drop(repeated);
+
     assert_ne!(a, different_med);
     assert_eq!(pool.len(), 2);
     assert!(core::ptr::eq(a.communities(), different_med.communities()));
@@ -213,6 +244,8 @@ fn reordered_attributes_and_community_sets_share_content_but_next_hop_and_nlri_d
     assert_eq!(pool.communities.len(), 0);
     assert_eq!(pool.extended_communities.len(), 0);
     assert_eq!(pool.large_communities.len(), 0);
+    assert_eq!(pool.cluster_lists.len(), 0);
+    assert_eq!(pool.opaque.len(), 0);
 }
 
 #[test]

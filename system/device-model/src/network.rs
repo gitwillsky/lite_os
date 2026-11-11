@@ -40,6 +40,8 @@ pub enum NetworkError {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NetworkLink {
     pub carrier: bool,
+    /// 传输会话观察到的载波代际。直连硬件提供者没有传输代际时置零。
+    pub carrier_epoch: u32,
     /// 设备报告的兆比特每秒；未报告时为 None。
     pub speed_mbps: Option<u32>,
 }
@@ -115,6 +117,7 @@ pub trait NetworkDevice: Send + Sync {
     fn bind_activity(&self, queue: u16, activity: crate::Activity);
     /// 登记独立链路变化通知并补发一次；不得用普通收发活动冒充链路变化。
     /// 静态链路实现无需后续通知；可变链路在状态已可读后通知，不传递第二份状态。
+    /// 回调允许重入只读 link；不得持有会被 link 重取的设备/租约锁。
     fn bind_link_activity(&self, activity: crate::Activity);
 
     /// 返回设备出厂 MAC 地址。
@@ -127,7 +130,8 @@ pub trait NetworkDevice: Send + Sync {
     /// 驱动名：Linux sysfs `/sys/class/net/<if>/device/uevent` 的 `DRIVER=` 值（如 `virtio_net`）。
     fn driver(&self) -> &str;
 
-    /// 读取驱动拥有的链路状态，不访问数据队列。设备无法读取时返回错误。
+    /// 读取驱动已发表的链路事实，不等待驱动控制 RPC，不领取或改写数据队列。
+    /// 物理设备无法读取或会话已退出时返回错误；变化由独立链路通知发布。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
 
     /// 非阻塞批量领取 RX，只填写 output 的前缀；每个元素开始必须为 None，零表示当前无包。
@@ -298,7 +302,7 @@ pub trait NetworkProvider: Send + Sync {
     fn queue_count(&self) -> u16;
     /// 为 queue 登记活动通知，补偿登记前可能到达的完成。
     fn bind_activity(&self, queue: u16, activity: crate::Activity);
-    /// 独立链路通知，约束同 NetworkDevice::bind_link_activity；实现必须覆盖绑定前变化。
+    /// 独立链路通知，约束同 NetworkDevice::bind_link_activity；实现必须覆盖绑定前变化，并在本地锁外回调。
     fn bind_link_activity(&self, activity: crate::Activity);
     /// 六字节出厂 MAC。
     fn mac_address(&self) -> [u8; 6];

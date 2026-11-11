@@ -1,14 +1,9 @@
-use core::net::Ipv4Addr;
-
-use smoltcp::{
-    iface::SocketSet,
-    socket::tcp::{self, State},
-};
+use super::{State, transport};
 
 use super::{TcpConnection, TcpEndpointState, TcpMode, endpoint_id};
 use crate::inet::{InetSocket, NetworkStack};
 use crate::receive::ReceiveBuffer;
-use network_protocol::{InetAddress, SocketError, SocketPollState};
+use network_protocol::{SocketError, SocketPollState};
 
 /// 向 TCP send buffer 排队 partial stream bytes，并有界推进 egress。
 ///
@@ -38,22 +33,21 @@ pub(in crate::inet) fn send(socket: &InetSocket, input: &[u8]) -> Result<usize, 
             }
             if !matches!(state.mode, TcpMode::Connected(_)) {
                 return Err(match state.mode {
-                    TcpMode::Connecting { terminal: true, .. } => SocketError::BrokenPipe,
-                    TcpMode::Connecting { .. } => SocketError::Again,
+                    TcpMode::Connecting {
+                        terminal: false, ..
+                    } => SocketError::Again,
                     _ => SocketError::BrokenPipe,
                 });
             }
-            if matches!(state.mode, TcpMode::Connected(connection) if connection.shutdown_write) {
+            if matches!(state.mode,TcpMode::Connected(connection) if connection.shutdown_write) {
                 return Err(SocketError::BrokenPipe);
             }
-            let handle = state.handles[0].handle;
-            let tcp = core::mem::replace(
-                network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+            Ok(core::mem::replace(
+                &mut state.handles[0].transport,
                 super::placeholder_socket(),
-            );
-            Ok((handle, tcp))
+            ))
         },
-        |(_, tcp)| {
+        |tcp| {
             if !tcp.may_send() {
                 return Err(SocketError::BrokenPipe);
             }
@@ -67,10 +61,14 @@ pub(in crate::inet) fn send(socket: &InetSocket, input: &[u8]) -> Result<usize, 
                     }
                 })
         },
-        |network, (handle, tcp)| {
-            let placeholder =
-                core::mem::replace(network.sockets.get_mut::<tcp::Socket<'static>>(handle), tcp);
+        |network, tcp| {
+            let state = network
+                .tcp_endpoints
+                .get_mut(&id)
+                .expect("loan lost its TCP endpoint");
+            let placeholder = core::mem::replace(&mut state.handles[0].transport, tcp);
             debug_assert_eq!(placeholder.state(), State::Closed);
+            state.handles[0].transmit_at = super::super::Instant::from_millis(0);
         },
     )?;
     crate::worker::request_poll();
@@ -87,7 +85,7 @@ pub(in crate::inet) fn send(socket: &InetSocket, input: &[u8]) -> Result<usize, 
 ///
 /// # Returns
 ///
-/// copied length、同值 stream full length、peer 与无 ancillary local address。
+/// 本次复制的 stream 字节数；流式接收没有逐报文来源或 ancillary 地址。
 ///
 /// # Errors
 ///
@@ -96,11 +94,10 @@ pub(in crate::inet) fn receive(
     socket: &InetSocket,
     output: &mut ReceiveBuffer,
     peek: bool,
-) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
+) -> Result<usize, SocketError> {
     let id = endpoint_id(socket);
     let stack = socket.stack()?;
-    let receive_limit = output.remaining();
-    if receive_limit == 0 {
+    if output.remaining() == 0 {
         let network = stack.lock()?;
         let state = network
             .tcp_endpoints
@@ -109,17 +106,8 @@ pub(in crate::inet) fn receive(
         if matches!(state.mode, TcpMode::Listening { .. }) {
             return Err(SocketError::NotConnected);
         }
-        return Ok((
-            0,
-            0,
-            InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            },
-            None,
-        ));
+        return Ok(0);
     }
-    // 真实 protocol buffer 的临时 loan；EOF 分支不取出 handle、不另保存生命周期。
     stack.with_payload_loan(
         |network| {
             let state = network
@@ -156,38 +144,26 @@ pub(in crate::inet) fn receive(
                         .unwrap_or(SocketError::NotConnected));
                 }
             };
-            let handle = state.handles[0].handle;
-            let tcp = network.sockets.get::<tcp::Socket<'static>>(handle);
-            // 空 recv 不等待、消耗 error 或触碰 RX。实际 queued bytes 优先于 SHUT_RD/RESET。
-            let pending_error = if !tcp.can_recv() && !connection.peer_closed {
+            let pending_error = if !state.handles[0].transport.can_recv() && !connection.peer_closed
+            {
                 state.pending_error.take()
             } else {
                 None
             };
-            let tcp = core::mem::replace(
-                network.sockets.get_mut::<tcp::Socket<'static>>(handle),
-                super::placeholder_socket(),
-            );
-            Ok(Some((handle, tcp, connection, pending_error)))
+            let tcp =
+                core::mem::replace(&mut state.handles[0].transport, super::placeholder_socket());
+            Ok(Some((tcp, connection, pending_error)))
         },
         |loan| {
-            let Some((_, tcp, connection, pending_error)) = loan else {
-                return Ok((
-                    0,
-                    0,
-                    InetAddress {
-                        address: Ipv4Addr::UNSPECIFIED,
-                        port: 0,
-                    },
-                    None,
-                ));
+            let Some((tcp, connection, pending_error)) = loan else {
+                return Ok(0);
             };
             let count = if tcp.can_recv() {
                 if peek {
-                    let bytes = tcp
-                        .peek(output.remaining())
-                        .map_err(|_| SocketError::ConnectionReset)?;
-                    output.append(bytes)
+                    output.append(
+                        tcp.peek(output.remaining())
+                            .map_err(|_| SocketError::ConnectionReset)?,
+                    )
                 } else {
                     tcp.recv(|bytes| {
                         let count = output.append(bytes);
@@ -204,15 +180,18 @@ pub(in crate::inet) fn receive(
             } else {
                 return Err(SocketError::Again);
             };
-            Ok((count, count, connection.peer, None))
+            Ok(count)
         },
         |network, loan| {
-            let Some((handle, tcp, _, _)) = loan else {
-                return;
-            };
-            let placeholder =
-                core::mem::replace(network.sockets.get_mut::<tcp::Socket<'static>>(handle), tcp);
-            debug_assert_eq!(placeholder.state(), State::Closed);
+            if let Some((tcp, _, _)) = loan {
+                let state = network
+                    .tcp_endpoints
+                    .get_mut(&id)
+                    .expect("receive loan lost TCP endpoint");
+                let placeholder = core::mem::replace(&mut state.handles[0].transport, tcp);
+                debug_assert_eq!(placeholder.state(), State::Closed);
+                state.handles[0].transmit_at = super::super::Instant::from_millis(0);
+            }
         },
     )
 }
@@ -240,9 +219,7 @@ pub(in crate::inet) fn poll_state(socket: &InetSocket) -> SocketPollState {
     network
         .tcp_endpoints
         .get(&endpoint_id(socket))
-        .map_or_else(SocketPollState::error, |state| {
-            state.poll_state(&network.sockets)
-        })
+        .map_or_else(SocketPollState::error, |state| state.poll_state())
 }
 
 impl TcpEndpointState {
@@ -250,12 +227,12 @@ impl TcpEndpointState {
     ///
     /// # Parameters
     ///
-    /// - `sockets`: 已锁定协议栈的 native SocketSet，只读借用不包含 endpoint 树。
+    /// 只读借用同一 endpoint 的实际机制，不查询另一份 socket 表。
     ///
     /// # Returns
     ///
     /// 不注册 waiter 的状态快照。
-    pub(in crate::inet) fn poll_state(&self, sockets: &SocketSet<'static>) -> SocketPollState {
+    pub(in crate::inet) fn poll_state(&self) -> SocketPollState {
         match self.mode {
             TcpMode::Closed { shutdown_read, .. } => SocketPollState {
                 readable: shutdown_read,
@@ -276,9 +253,7 @@ impl TcpEndpointState {
                 shutdown_write,
                 ..
             } => {
-                let state = sockets
-                    .get::<tcp::Socket<'static>>(self.handles[0].handle)
-                    .state();
+                let state = self.handles[0].transport.state();
                 SocketPollState {
                     readable: shutdown_read || state == State::Closed,
                     writable: matches!(state, State::Established | State::Closed),
@@ -288,7 +263,7 @@ impl TcpEndpointState {
                 }
             }
             TcpMode::Connected(connection) => {
-                let socket = sockets.get::<tcp::Socket<'static>>(self.handles[0].handle);
+                let socket = &self.handles[0].transport;
                 let closed = socket.state() == State::Closed;
                 SocketPollState {
                     readable: connection.shutdown_read || socket.can_recv() || !socket.may_recv(),
@@ -321,120 +296,127 @@ impl TcpEndpointState {
 /// # Errors
 ///
 /// 状态不变量破坏时 fail-stop。
-/// 实际SocketSet的纯时间phase，先于任何FIB/NIC filter；无新锁/分配/Context。
+/// 实际原生TCP连接的纯时间phase，先于任何FIB/NIC filter；无新锁/分配/Context。
 pub(in crate::inet) fn maintain_clocks(
     network: &mut NetworkStack,
     timestamp: smoltcp::time::Instant,
 ) {
-    for (_, socket) in network.sockets.iter_mut() {
-        if let smoltcp::socket::Socket::Tcp(socket) = socket {
-            socket.maintain(timestamp);
+    network.tcp_endpoints.for_each_mut(|_, state| {
+        for entry in &mut state.handles {
+            entry.transport.maintain(super::at(timestamp));
         }
-    }
-    maintain(&mut network.tcp_endpoints, &mut network.sockets, None);
+        maintain_state(state);
+    });
 }
 
 pub(in crate::inet) fn maintain(
     tcp_endpoints: &mut fallible_tree::FallibleMap<usize, TcpEndpointState>,
-    sockets: &mut SocketSet<'static>,
-    reset: Option<super::super::device::TcpReset>,
 ) {
-    tcp_endpoints.for_each_mut(|_, state| {
-        if state.orphaned {
-            return;
-        }
-        match &mut state.mode {
-            TcpMode::Connecting {
-                bound,
-                terminal,
-                shutdown_read,
-                shutdown_write,
-                ..
-            } => {
-                let tcp = sockets.get_mut::<tcp::Socket<'static>>(state.handles[0].handle);
-                match tcp.state() {
-                    State::Established | State::CloseWait => {
-                        let mut connection = TcpConnection::established(tcp, *bound);
-                        connection.shutdown_read = *shutdown_read;
-                        connection.shutdown_write = *shutdown_write;
-                        // ACK 完成后才提交 deferred FIN；之前不可发布 connected 或 POLLOUT。
-                        if let Some(error) = connection.observe(tcp, reset) {
-                            state.pending_error = Some(error);
-                        }
-                        state.mode = TcpMode::Connected(connection);
+    tcp_endpoints.for_each_mut(|_, state| maintain_state(state));
+}
+pub(super) fn maintain_state(state: &mut TcpEndpointState) {
+    if state.orphaned {
+        return;
+    }
+    match &mut state.mode {
+        TcpMode::Connecting {
+            bound,
+            terminal,
+            shutdown_read,
+            shutdown_write,
+            ..
+        } => {
+            let tcp = &mut state.handles[0].transport;
+            match tcp.state() {
+                State::Established | State::CloseWait => {
+                    let mut connection = TcpConnection::established(tcp, *bound, state.family);
+                    connection.shutdown_read = *shutdown_read;
+                    connection.shutdown_write = *shutdown_write;
+                    // ACK 完成后才提交 deferred FIN；之前不可发布 connected 或 POLLOUT。
+                    if let Some(error) = connection.observe(tcp) {
+                        state.pending_error = Some(error);
                     }
-                    State::Closed if !*terminal => {
-                        *terminal = true;
-                        state.pending_error = Some(
-                            if tcp.failure_reason() == Some(tcp::FailureReason::TimedOut) {
-                                SocketError::TimedOut
-                            } else {
-                                SocketError::ConnectionRefused
+                    state.mode = TcpMode::Connected(connection);
+                }
+                State::Closed if !*terminal => {
+                    *terminal = true;
+                    state.pending_error = Some(
+                        if tcp.failure_reason() == Some(transport::FailureReason::TimedOut) {
+                            SocketError::TimedOut
+                        } else {
+                            SocketError::ConnectionRefused
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        TcpMode::Connected(connection) => {
+            let tcp = &mut state.handles[0].transport;
+            if let Some(error) = connection.observe(tcp) {
+                state.pending_error = Some(error);
+            }
+        }
+        TcpMode::Listening { endpoint, .. } => {
+            for entry in &mut state.handles {
+                let tcp = &mut entry.transport;
+                if let Some(policy) = &mut entry.passive {
+                    // 已建立 child 留在实际 accept queue；RST 不得把它改回监听槽。
+                    if let Some(error) = policy.connection.observe(tcp) {
+                        policy.pending_error = Some(error);
+                    }
+                    continue;
+                }
+                match tcp.state() {
+                    State::Established | State::CloseWait if entry.passive.is_none() => {
+                        entry.passive = Some(super::PassivePolicy {
+                            md5_keys: state.md5_keys.clone(),
+                            options: {
+                                let mut options = state.options;
+                                if tcp.bound_interface().is_some() {
+                                    options.bound_to_device = tcp.bound_interface();
+                                }
+                                options
                             },
-                        );
+                            connection: TcpConnection::established(tcp, *endpoint, state.family),
+                            pending_error: None,
+                            port_lease: None,
+                        });
+                        entry
+                            .passive
+                            .as_ref()
+                            .expect("published child policy")
+                            .options
+                            .apply_tcp(tcp);
+                    }
+                    State::Closed => {
+                        state.options.apply_tcp(tcp);
+                        tcp.listen(super::listen_endpoint(*endpoint))
+                            .expect("existing passive endpoint must remain valid");
                     }
                     _ => {}
                 }
             }
-            TcpMode::Connected(connection) => {
-                let tcp = sockets.get_mut::<tcp::Socket<'static>>(state.handles[0].handle);
-                if let Some(error) = connection.observe(tcp, reset) {
-                    state.pending_error = Some(error);
-                }
-            }
-            TcpMode::Listening { endpoint, .. } => {
-                for entry in &mut state.handles {
-                    let tcp = sockets.get_mut::<tcp::Socket<'static>>(entry.handle);
-                    if let Some(policy) = &mut entry.passive {
-                        // 已建立 child 留在实际 accept queue；RST 不得把它改回监听槽。
-                        if let Some(error) = policy.connection.observe(tcp, reset) {
-                            policy.pending_error = Some(error);
-                        }
-                        continue;
-                    }
-                    match tcp.state() {
-                        State::Established | State::CloseWait if entry.passive.is_none() => {
-                            entry.passive = Some(super::PassivePolicy {
-                                options: state.options,
-                                connection: TcpConnection::established(tcp, *endpoint),
-                                pending_error: None,
-                            });
-                            state.options.apply_tcp(tcp);
-                        }
-                        State::Closed => {
-                            state.options.apply_tcp(tcp);
-                            tcp.listen(*endpoint)
-                                .expect("existing passive endpoint must remain valid");
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            TcpMode::Closed { .. } => {}
         }
-    });
+        TcpMode::Closed { .. } => {}
+    }
 }
 
 /// 报文owner已消费reset或协议自然结束后回收Closed orphan，不等待网卡交付。
 pub(in crate::inet) fn reap_orphans(network: &mut NetworkStack) {
     let NetworkStack {
         tcp_endpoints,
-        sockets,
         tcp_ports,
         ..
     } = network;
     tcp_endpoints.retain(|_, state| {
         if !state.orphaned
-            || state.handles.iter().any(|handle| {
-                let tcp = sockets.get::<tcp::Socket<'static>>(handle.handle);
-                tcp.state() != State::Closed || tcp.remote_endpoint().is_some()
+            || state.handles.iter().any(|entry| {
+                entry.transport.state() != State::Closed
+                    || entry.transport.remote_endpoint().is_some()
             })
         {
             return true;
-        }
-        for entry in &state.handles {
-            let handle = entry.handle;
-            sockets.remove(handle);
         }
         if let Some(lease) = state.port_lease {
             tcp_ports.release(lease);
@@ -493,12 +475,7 @@ pub(in crate::inet) fn shutdown(socket: &InetSocket, how: usize) -> Result<(), S
     let phase = state
         .handles
         .first()
-        .map(|entry| {
-            network
-                .sockets
-                .get::<tcp::Socket<'static>>(entry.handle)
-                .state()
-        })
+        .map(|entry| entry.transport.state())
         .unwrap_or(State::Closed);
     let result = match mode {
         TcpMode::Listening { .. } => {
@@ -534,11 +511,7 @@ pub(in crate::inet) fn shutdown(socket: &InetSocket, how: usize) -> Result<(), S
                     _ => {}
                 }
                 if matches!(phase, State::Established | State::CloseWait) {
-                    let handle = state.handles[0].handle;
-                    network
-                        .sockets
-                        .get_mut::<tcp::Socket<'static>>(handle)
-                        .close();
+                    state.handles[0].transport.close();
                 }
             }
             if closed {

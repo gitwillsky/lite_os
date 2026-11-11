@@ -17,6 +17,7 @@ fn closed<'a>(session: &mut Session, bytes: &'a [u8]) -> Notice<'a> {
         .next()
         .unwrap();
     let Effect::Close {
+        received: None,
         notice: Some(notice),
         withdraw_routes: true,
         send_extended: false,
@@ -391,6 +392,20 @@ fn mp_reachability_preserves_both_next_hops_and_eor_without_forging_missing_attr
         next_hop.link_local,
         Some("fe80::1".parse::<core::net::Ipv6Addr>().unwrap())
     );
+    let mut invalid = reach.clone();
+    invalid[4..20].copy_from_slice(&"fe80::1".parse::<core::net::Ipv6Addr>().unwrap().octets());
+    let mut list = base(false, true);
+    list.retain(|attribute| attribute.code != 3);
+    list.push(Attribute {
+        flags: 0x80,
+        code: 14,
+        data: &invalid,
+    });
+    let rejected = update(&[], &attributes(&list), &[]);
+    assert_eq!(
+        receive(&mut established(false, true), &rejected).handling(),
+        Handling::TreatAsWithdraw
+    );
     let bytes = update(
         &[],
         &attributes(&[Attribute {
@@ -645,7 +660,11 @@ fn reconstructed_as4_path_preserves_selection_length_sets_and_only_adjacent_conf
             data: &as4_path,
         });
         let bytes = update(&[], &attributes(&list), &[24, 203, 0, 113]);
-        let received = receive(&mut established(true, false), &bytes);
+        let config = ::bgp::Config {
+            confederation_peer: Some(::bgp::PeerKind::Internal),
+            ..bgp_peer::config(true)
+        };
+        let received = receive(&mut bgp_peer::established_with(config, false), &bytes);
         let path = received.path().unwrap();
         let actual = path
             .segments()
@@ -747,7 +766,16 @@ fn exported_paths_use_negotiated_width_and_only_required_as4_attributes_without_
         let mut list = base(true, true);
         list[1].data = &encoded[..length];
         let bytes = update(&[], &attributes(&list), &[24, 203, 0, 113]);
-        let received = receive(&mut established(true, true), &bytes);
+        let received = receive(
+            &mut bgp_peer::established_with(
+                ::bgp::Config {
+                    confederation_peer: Some(::bgp::PeerKind::Internal),
+                    ..bgp_peer::config(true)
+                },
+                true,
+            ),
+            &bytes,
+        );
         let path = received.path().unwrap();
         let aggregator = aggregator.map(|asn| Aggregator {
             asn,
@@ -796,7 +824,16 @@ fn exported_paths_use_negotiated_width_and_only_required_as4_attributes_without_
         roundtrip.retain(|attribute| attribute.code != 2);
         roundtrip.extend(emitted);
         let bytes = update(&[], &attributes(&roundtrip), &[24, 203, 0, 113]);
-        let received = receive(&mut established(true, width == AsnWidth::Four), &bytes);
+        let received = receive(
+            &mut bgp_peer::established_with(
+                ::bgp::Config {
+                    confederation_peer: Some(::bgp::PeerKind::Internal),
+                    ..bgp_peer::config(true)
+                },
+                width == AsnWidth::Four,
+            ),
+            &bytes,
+        );
         assert!(
             received
                 .path()
@@ -836,7 +873,16 @@ fn old_export_cannot_map_non_mappable_confederation_members_into_auxiliary_paths
     let mut list = base(true, true);
     list[1].data = &[3, 1, 0, 1, 0x11, 0x70, 2, 1, 0, 0, 0xfd, 0xe9];
     let bytes = update(&[], &attributes(&list), &[24, 203, 0, 113]);
-    let received = receive(&mut established(true, true), &bytes);
+    let received = receive(
+        &mut bgp_peer::established_with(
+            ::bgp::Config {
+                confederation_peer: Some(::bgp::PeerKind::Internal),
+                ..bgp_peer::config(true)
+            },
+            true,
+        ),
+        &bytes,
+    );
     let mut output = [0xa5; 64];
     assert_eq!(
         received

@@ -4,9 +4,10 @@ use native_runtime::{Event, Vmo};
 use router_protocol::tracking::{self, Query};
 const SNAPSHOT: u32 = 1;
 const UPDATE: u32 = 2;
+const ROUTES: u32 = 3;
 const VERSION: u32 = 1;
 
-fn status(error: tracking::Error) -> Status {
+pub(super) fn status(error: tracking::Error) -> Status {
     match error {
         tracking::Error::Invalid => native_abi::ERR_INVALID_ARGS,
         tracking::Error::NoMemory => native_abi::ERR_NO_MEMORY,
@@ -42,6 +43,15 @@ pub(super) fn request(ordinal: u32, queries: &[Query]) -> Result<(Writer, Vec<Ha
 }
 /// 跟踪会话的服务端；不持来源/FIB 写入接口，关闭 channel 退休订阅。
 pub trait TrackingService: Send + Sync {
+    /// 按不可变范围读取已确认路由增量；generation 是消费者已成功应用的代际，不是最近收到的响应。
+    /// # Errors
+    /// 观察未就绪、范围/代际不符或资源不足；错误不得丢失尚未确认的增量。
+    fn route_changes(
+        &self,
+        selector: tracking::routes::Selector,
+        generation: u64,
+    ) -> Result<Vec<u8>, Status>;
+
     /// 读取同一已确认代际的完整有序结果。
     /// # Errors
     /// 初始化未确认、会话终止、容量/资源不足或非法结果。
@@ -73,6 +83,24 @@ pub fn dispatch_tracking(
                 .try_reserve_exact(1)
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             let bytes = service.snapshot()?;
+            let content = Vmo::from_bytes(&bytes)?;
+            reply.u64(bytes.len() as u64);
+            returned.push(content.into_handle());
+            Ok(returned)
+        }
+        ROUTES => {
+            if request.u32()? != VERSION || !handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            let generation = request.u64()?;
+            let selector = tracking::routes::Selector::parse(request.bytes()?).map_err(status)?;
+            request.finish()?;
+            reply.try_reserve(8)?;
+            let mut returned = Vec::new();
+            returned
+                .try_reserve_exact(1)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            let bytes = service.route_changes(selector, generation)?;
             let content = Vmo::from_bytes(&bytes)?;
             reply.u64(bytes.len() as u64);
             returned.push(content.into_handle());
@@ -131,6 +159,33 @@ impl Tracking {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         Ok(())
+    }
+    /// 读取同一授权域内所选路由的筛选变化；首次以 0 请求完整快照，成功应用后才提交返回代际。
+    /// # Errors
+    /// 观察未就绪、范围/代际非法、资源不足、服务退出或回复无效。
+    pub fn route_changes(
+        &self,
+        selector: &tracking::routes::Selector,
+        generation: u64,
+    ) -> Result<tracking::routes::Changes, Status> {
+        let bytes = selector.encode().map_err(status)?;
+        let mut request = Writer::request(ROUTES);
+        request.try_reserve(16 + bytes.len())?;
+        request.u32(VERSION).u64(generation).bytes(&bytes);
+        let mut reply = service_rpc::call(&self.channel, &request, Vec::new())?;
+        let mut reader = reply.reader();
+        let length = reader.u64()?;
+        reader.finish()?;
+        if reply.handles.len() != 1 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let bytes = Vmo::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?)
+            .read_bytes(length)?;
+        let changes = tracking::routes::Changes::capture(bytes).map_err(status)?;
+        if changes.base() != generation {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        Ok(changes)
     }
     /// 捕获并一次完整校验快照；返回对象保活正文，通过 view 借用读取，不重复扫描。
     /// # Errors

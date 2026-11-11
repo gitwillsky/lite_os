@@ -34,6 +34,16 @@ mod time {
             .as_micros() as u64
     }
 }
+// 随机源只适配宿主 OS；协议计时与 nonce 仍执行同一生产路径。
+mod system {
+    pub(crate) fn cprng_draw(bytes: &mut [u8]) {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")
+            .unwrap()
+            .read_exact(bytes)
+            .unwrap();
+    }
+}
 mod worker {
     pub(crate) fn request_poll() {}
 }
@@ -77,10 +87,36 @@ mod inet {
         #[cfg(test)]
         mod tests {
             use super::*;
+            use network_protocol::SocketPollState;
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/udp_tests.rs"));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tcp_tests.rs"));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/tcp_authentication_tests.rs"
+            ));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/tcp_accept_tests.rs"
+            ));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/domain_tests.rs"));
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/routing_tests.rs"));
+            mod arp {
+                use super::*;
+                include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/arp_tests.rs"));
+            }
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ipv6_tests.rs"));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/multicast_tests.rs"
+            ));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/fragment_tests.rs"
+            ));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/forwarding_tests.rs"
+            ));
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/configuration_tests.rs"
@@ -121,15 +157,19 @@ pub fn benchmark_lifecycle(mut measure: impl FnMut(&str, u64, usize, bool, &mut 
 mod allocation_failure;
 
 #[cfg(test)]
-#[path = "../../../system/router-config/src/transaction/storage.rs"]
-mod configuration_storage;
+#[path = "../../../system/router-config/src/backup/archive.rs"]
+mod backup_archive;
+#[cfg(test)]
+mod backup_archive_tests;
 #[cfg(test)]
 #[path = "../../../system/router-config/src/policy.rs"]
 mod configuration_policy;
 #[cfg(test)]
-#[path = "../../../system/router-config/src/backup/archive.rs"]
-mod backup_archive;
+#[path = "../../../system/router-config/src/transaction/storage.rs"]
+mod configuration_storage;
 #[cfg(test)]
 mod configuration_storage_tests;
+
 #[cfg(test)]
-mod backup_archive_tests;
+#[path = "../tests/bgp_peer/mod.rs"]
+mod bgp_peer;

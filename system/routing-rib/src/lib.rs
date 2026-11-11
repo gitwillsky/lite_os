@@ -9,7 +9,7 @@ use prefix_index::{Address, Poptrie};
 
 mod declaration;
 mod policy;
-pub use declaration::NextHop;
+pub use declaration::{Action, NextHop};
 pub mod resolution;
 pub mod sources;
 
@@ -266,7 +266,14 @@ impl<A: Address, D, H, M> Catalogue<A, D, H, M> {
     /// 前缀有序、同前缀候选按偏好/比较范围/代价/稳定来源排序的只读目录。
     /// # Errors
     /// 重复来源、容量超界或分配失败；失败不改变原目录。
-    pub fn build(mut sources: Vec<Arc<Source<A, D, H, M>>>) -> Result<Arc<Self>, Error> {
+    pub fn build(sources: Vec<Arc<Source<A, D, H, M>>>) -> Result<Arc<Self>, Error> {
+        Self::build_ranked(sources, |_, _| 0)
+    }
+
+    fn build_ranked(
+        mut sources: Vec<Arc<Source<A, D, H, M>>>,
+        rank: impl Fn(&M, &H) -> u8,
+    ) -> Result<Arc<Self>, Error> {
         u32::try_from(sources.len()).map_err(|_| Error::Capacity)?;
         sources.sort_unstable_by_key(|source| source.definition.id);
         if sources.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
@@ -296,6 +303,10 @@ impl<A: Address, D, H, M> Catalogue<A, D, H, M> {
             (
                 route.network,
                 route.length,
+                rank(
+                    source.metadata(),
+                    &source.definition.next_hops[route.next_hop as usize],
+                ),
                 attributes.preference,
                 source.definition.domain,
                 attributes.metric,

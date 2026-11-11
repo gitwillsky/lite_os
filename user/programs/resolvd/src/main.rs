@@ -23,7 +23,12 @@ fn render(snapshot: &network_config::Snapshot) -> String {
     let mut text =
         String::from("# 由 resolvd 依据网络设置生成；修改请使用“Internet 协议 (TCP/IP) 属性”。\n");
     for server in snapshot.nameservers().into_iter().take(MUSL_MAXNS) {
-        text.push_str(&format!("nameserver {server}\n"));
+        match server {
+            std::net::SocketAddr::V6(server) if server.scope_id() != 0 => {
+                text.push_str(&format!("nameserver {}%{}\n", server.ip(), server.scope_id()));
+            }
+            _ => text.push_str(&format!("nameserver {}\n", server.ip())),
+        }
     }
     let mut length = 0;
     let search: Vec<_> = snapshot

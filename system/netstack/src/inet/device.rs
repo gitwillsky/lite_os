@@ -4,7 +4,6 @@ use core::cell::Cell;
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
-    wire::IpEndpoint,
 };
 
 use super::device_error;
@@ -19,15 +18,28 @@ mod batch;
 mod checksum;
 mod ingress;
 mod loopback;
+mod transmit;
 use batch::ProtocolReceiveBatch;
 use loopback::{LoopbackDevice, LoopbackRxToken, LoopbackTxToken};
 
-/// 一个实际接口的phy mechanism；IP loopback与Ethernet NIC共用同一SocketSet/owner路径。
+/// 一个实际接口的phy mechanism；IP loopback与Ethernet NIC共用同一传输owner路径。
 pub(super) enum ProtocolDevice {
     Ethernet(EthernetDevice),
     Loopback(LoopbackDevice),
 }
 impl ProtocolDevice {
+    /// 同一 NET guard 下允许 RX 借用存续时申请独立 TX ticket；不复制 reservation，也不引入第二个设备 owner。
+    /// `timestamp` 属于本轮 poll；返回独占 token，背压或设备错误返回 None，设备错误仍由原 latch 交给外层。
+    pub(super) fn transmit_shared(&self, timestamp: Instant) -> Option<ProtocolTxToken<'_>> {
+        match self {
+            Self::Ethernet(device) => device
+                .transmit_shared(timestamp)
+                .map(ProtocolTxToken::Ethernet),
+            Self::Loopback(device) => device
+                .transmit_shared(timestamp)
+                .map(ProtocolTxToken::Loopback),
+        }
+    }
     /// 领取一个有界 RX 批次；token 只借用设备，逐帧回调不会提前归还未消费槽。
     pub(super) fn receive_batch<'a, 'b>(
         &'a self,
@@ -98,16 +110,16 @@ impl ProtocolDevice {
     /// 实际routed reply预算/准入丢弃投影到同一device counter。
     pub(super) fn record_transmit_drop(&self) {
         match self {
-            Self::Ethernet(device) => device
-                .dropped_transmits
-                .set(device.dropped_transmits.get().saturating_add(1)),
+            Self::Ethernet(device) => device.record_transmit_drop(),
             Self::Loopback(device) => device.record_transmit_drop(),
         }
     }
-    pub(super) fn take_ingress_reset(&self) -> Option<TcpReset> {
-        match self {
-            Self::Ethernet(device) => device.take_ingress_reset(),
-            Self::Loopback(device) => device.take_ingress_reset(),
+    /// 实际物理接口的 IP 拒绝计入原入口 RX drop；本机重组和转发共用，不伪造 socket 错误。
+    pub(super) fn record_receive_drop(&self) {
+        if let Self::Ethernet(device) = self {
+            device
+                .received_dropped
+                .set(device.received_dropped.get().saturating_add(1));
         }
     }
     pub(super) fn take_error(&self) -> Option<NetworkError> {
@@ -135,17 +147,76 @@ impl ProtocolDevice {
 pub(super) enum ProtocolRxToken<'a> {
     Ethernet(EthernetRxToken<'a>),
     Loopback(LoopbackRxToken<'a>),
+    // 唯一重组 owner 的完整包移交；不再持 NIC loan，也不重复产生物理抓包记录。
+    Reassembled(super::reassembly::Frame),
 }
 pub(super) enum ProtocolTxToken<'a> {
     Ethernet(EthernetTxToken<'a>),
     Loopback(LoopbackTxToken<'a>),
 }
 impl ProtocolRxToken<'_> {
+    pub(super) fn with_frame<R>(&self, inspect: impl FnOnce(&[u8]) -> R) -> R {
+        match self {
+            Self::Ethernet(token) => inspect(&token.frame),
+            Self::Loopback(token) => token.with_frame(inspect),
+            Self::Reassembled(frame) => inspect(&frame.bytes),
+        }
+    }
+    pub(super) fn reassembled(&self) -> bool {
+        matches!(self, Self::Reassembled(_))
+    }
+    /// 返回发往本机单播 MAC 的真实 IPv4 源/目的；其余返回 None，广播、ARP、VLAN 与回环仍交给各自入口。
+    pub(super) fn transit_addresses(&self) -> Option<(core::net::Ipv4Addr, core::net::Ipv4Addr)> {
+        let Self::Ethernet(token) = self else {
+            return None;
+        };
+        let facts = token
+            .facts
+            .filter(|facts| matches!(facts, ingress::IngressFacts::Ipv4 { .. }))?;
+        let frame = packet_wire::ethernet::EthernetFrame::parse(&token.frame).ok()?;
+        (frame.destination() == token.mac && frame.source()[0] & 1 == 0 && frame.source() != [0; 6])
+            .then(|| facts.addresses())
+            .flatten()
+    }
+    /// ARP 全部由原生入口处理，包括 framing 畸形的 ARP。
+    pub(super) fn arp(&self) -> bool {
+        matches!(self, Self::Ethernet(token) if token.frame.get(12..14) == Some(&[0x08, 0x06]))
+    }
+    pub(super) fn ethernet_source(&self) -> Option<[u8; 6]> {
+        let Self::Ethernet(token) = self else { return None };
+        token.frame.get(6..12)?.try_into().ok()
+    }
+    pub(super) fn ipv6(&self) -> bool {
+        match self {
+            Self::Ethernet(token) => matches!(token.facts, Some(ingress::IngressFacts::Ipv6)),
+            Self::Loopback(token) => token.ipv6(),
+            Self::Reassembled(frame) => frame.ip()[0] >> 4 == 6,
+        }
+    }
+    /// 借用已验证 IPv4 头的协议号，只为需要反向发送上下文的 TCP 查询路径。
+    pub(super) fn ipv4_protocol(&self) -> Option<u8> {
+        use ingress::IngressFacts;
+        match self {
+            Self::Ethernet(token) => match token.facts {
+                Some(IngressFacts::Ipv4 { protocol, .. }) => Some(protocol),
+                _ => None,
+            },
+            Self::Loopback(token) => match token.facts {
+                Some(IngressFacts::Ipv4 { protocol, .. }) => Some(protocol),
+                _ => None,
+            },
+            // 重组输出已有经校验的归一化 IPv4/IPv6 头。
+            Self::Reassembled(frame) => (frame.ip()[0] >> 4 == 4).then(|| frame.ip()[9]),
+        }
+    }
     /// 领取输入时取得的路由地址；无效/未知协议不产生事实，原帧仍交给抓包和协议引擎。
     pub(super) fn addresses(&self) -> Option<(core::net::Ipv4Addr, core::net::Ipv4Addr)> {
         match self {
-            Self::Ethernet(token) => token.facts.map(|facts| (facts.source, facts.destination)),
-            Self::Loopback(token) => token.facts.map(|facts| (facts.source, facts.destination)),
+            Self::Ethernet(token) => token.facts.and_then(ingress::IngressFacts::addresses),
+            Self::Loopback(token) => token.facts.and_then(ingress::IngressFacts::addresses),
+            Self::Reassembled(frame) => packet_wire::ipv4::Ipv4Packet::parse_header(frame.ip())
+                .ok()
+                .map(|ip| (ip.source(), ip.destination())),
         }
     }
 }
@@ -154,6 +225,13 @@ impl RxToken for ProtocolRxToken<'_> {
         match self {
             Self::Ethernet(token) => token.meta(),
             Self::Loopback(token) => token.meta(),
+            Self::Reassembled(frame) => {
+                let mut meta = smoltcp::phy::PacketMeta::default();
+                meta.interface_index = Some(frame.interface);
+                // 分片级硬件校验不能证明完整 transport 校验和。
+                meta.rx_checksum_valid = false;
+                meta
+            }
         }
     }
     fn consume<R, F>(self, operation: F) -> R
@@ -163,6 +241,27 @@ impl RxToken for ProtocolRxToken<'_> {
         match self {
             Self::Ethernet(token) => token.consume(operation),
             Self::Loopback(token) => token.consume(operation),
+            Self::Reassembled(frame) => operation(&frame.bytes),
+        }
+    }
+}
+impl ProtocolTxToken<'_> {
+    /// 原生 IP emitter 取得实际提交结果；失败的可重试报文由协议 owner 保留，不计作丢弃。
+    /// `protocol` 是回环 tap 的 Ethernet protocol，物理设备已由 emitter 填写完整链路头。
+    pub(super) fn consume_committed<R>(
+        self,
+        length: usize,
+        protocol: u16,
+        operation: impl FnOnce(&mut [u8]) -> R,
+    ) -> (R, Option<NetworkError>) {
+        match self {
+            Self::Ethernet(token) => {
+                token.consume_committed(length, |frame| (operation(frame), true))
+            }
+            Self::Loopback(token) => {
+                let (result, accepted) = token.consume_ip(length, protocol, operation);
+                (result, (!accepted).then_some(NetworkError::WouldBlock))
+            }
         }
     }
 }
@@ -223,9 +322,6 @@ pub(super) struct EthernetDevice {
     received_errors: Cell<u64>,
     received_dropped: Cell<u64>,
     transmitted_errors: Cell<u64>,
-    // OWNER: 仅保存当前一次 ingress callback 的 wire fact；不复制 socket 状态。
-    // Closed transition 由 smoltcp 验证，fact 只区分 FIN 后的 RST 与正常终止。
-    ingress_reset: Cell<Option<TcpReset>>,
     // OWNER: 主机栈持同一 NET guard，逐批轮转起点，防止繁忙 queue 0 饿死后续队列。
     // Cell 只让存续的批借用与独立 queue cursor 共存，不增加共享并发 owner 或第二把锁。
     receive_queue: Cell<u16>,
@@ -253,14 +349,9 @@ impl EthernetDevice {
             received_errors: Cell::new(0),
             received_dropped: Cell::new(0),
             transmitted_errors: Cell::new(0),
-            ingress_reset: Cell::new(None),
             receive_queue: Cell::new(0),
             completion_queue: Cell::new(0),
         }
-    }
-
-    pub(super) fn take_ingress_reset(&self) -> Option<TcpReset> {
-        self.ingress_reset.replace(None)
     }
 
     pub(super) fn network_device(&self) -> Arc<dyn NetworkDevice> {
@@ -377,37 +468,6 @@ impl EthernetDevice {
     }
 }
 
-/// 一个实际输入帧中的 RST 地址；只用于已经发生的真实 Closed transition。
-#[derive(Clone, Copy)]
-pub(super) struct TcpReset {
-    local: IpEndpoint,
-    peer: IpEndpoint,
-}
-
-impl TcpReset {
-    fn from_transport(
-        source: core::net::Ipv4Addr,
-        destination: core::net::Ipv4Addr,
-        bytes: &[u8],
-    ) -> Option<Self> {
-        // 此处只记录实际输入的 RST tuple；选项、checksum 与状态转换仍由唯一协议引擎裁决。
-        let tcp = packet_wire::tcp::TcpPrefix::parse(bytes).ok()?;
-        (tcp.flags() & packet_wire::tcp::RST != 0).then(|| Self {
-            local: IpEndpoint::new(destination.into(), tcp.destination_port()),
-            peer: IpEndpoint::new(source.into(), tcp.source_port()),
-        })
-    }
-
-    pub(super) fn matches(
-        self,
-        local: network_protocol::InetAddress,
-        peer: network_protocol::InetAddress,
-    ) -> bool {
-        self.local == IpEndpoint::new(local.address.into(), local.port)
-            && self.peer == IpEndpoint::new(peer.address.into(), peer.port)
-    }
-}
-
 /// 已完成接收并由一次 smoltcp ingress callback 消费的 frame token。
 pub(super) struct EthernetRxToken<'a> {
     net_id: u64,
@@ -417,7 +477,6 @@ pub(super) struct EthernetRxToken<'a> {
     facts: Option<ingress::IngressFacts>,
     received_errors: &'a Cell<u64>,
     pending_error: &'a Cell<Option<NetworkError>>,
-    ingress_reset: &'a Cell<Option<TcpReset>>,
 }
 
 impl RxToken for EthernetRxToken<'_> {
@@ -431,8 +490,6 @@ impl RxToken for EthernetRxToken<'_> {
         F: FnOnce(&[u8]) -> R,
     {
         let frame = &self.frame;
-        self.ingress_reset
-            .set(self.facts.and_then(|facts| facts.reset));
         packet::deliver(
             self.net_id,
             self.interface_index,
@@ -473,18 +530,37 @@ impl TxToken for EthernetTxToken<'_> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        let dropped = self.dropped_transmits;
+        let (result, error) = self.consume_committed(length, |frame| (operation(frame), true));
+        // 库的即时回复不保留失败帧；原生的可重试控制义务由其 owner 决定何时真正丢弃。
+        if error.is_some() {
+            dropped.set(dropped.get().saturating_add(1));
+        }
+        result
+    }
+}
+impl EthernetTxToken<'_> {
+    /// 原生控制面需要实际提交结果；库回调仍取得原 R，后端错误统一进入原设备诊断。
+    /// render 的 bool 只表示完整编码成功，失败不得提交或镜像部分帧；普通库回调恒为 true。
+    fn consume_committed<R>(
+        self,
+        length: usize,
+        operation: impl FnOnce(&mut [u8]) -> (R, bool),
+    ) -> (R, Option<NetworkError>) {
         assert!(
             length <= self.maximum_frame_length,
-            "smoltcp TX exceeds actual Ethernet MTU"
+            "protocol TX exceeds actual Ethernet MTU"
         );
         let render = |frame: &mut [u8]| {
-            let result = operation(frame);
-            let checksum = if self.checksum {
+            let (result, complete) = operation(frame);
+            let checksum = if !complete {
+                Err(NetworkError::InvalidConfiguration)
+            } else if self.checksum {
                 checksum::prepare(frame)
             } else {
                 Ok(None)
             };
-            if length >= 14 {
+            if complete && length >= 14 {
                 packet::deliver_outgoing(
                     self.net_id,
                     self.interface_index,
@@ -500,8 +576,8 @@ impl TxToken for EthernetTxToken<'_> {
         let (result, error) = match self.reservation {
             Some(mut reservation) if length <= reservation.capacity() => {
                 let frame = &mut reservation.buffer_mut()[..length];
-                // 保留 codec 的 reserved/padding 零初始化前提，只清实际范围；直接写预留槽，不另复制帧。
-                frame.fill(0);
+                // 与 IP-medium 相同，emitter 拥有完整 [0, length)；失败编码不提交。
+                // 不在 DMA adapter 预清零，否则每个 payload 都会多写一遍。
                 let (result, checksum) = render(frame);
                 (
                     result,
@@ -511,31 +587,61 @@ impl TxToken for EthernetTxToken<'_> {
                 )
             }
             reservation => {
-                let error = reservation.as_ref().map(|_| NetworkError::FrameTooLarge);
+                let error = reservation
+                    .as_ref()
+                    .map_or(NetworkError::WouldBlock, |_| NetworkError::FrameTooLarge);
                 drop(reservation);
-                // 无发送槽也要执行同一协议推进（不能因 TX 拥塞停止 RX/ACK）；此帧只丢弃，不发布 DMA。
+                // RX 仍要推进库的 ACK/状态；无 reservation 时此帧明确未提交，原生 DAD 不能据此完成探测。
                 let mut discarded = [0u8; ETHERNET_MTU];
                 let (result, _) = render(&mut discarded[..length]);
-                if error.is_none() {
-                    self.dropped_transmits
-                        .set(self.dropped_transmits.get().saturating_add(1));
-                }
-                (result, error)
+                (result, Some(error))
             }
         };
-        if let Some(error) = error {
+        if let Some(error) = error
+            && error != NetworkError::WouldBlock
+        {
             self.transmitted_errors
                 .set(self.transmitted_errors.get().saturating_add(1));
-            self.dropped_transmits
-                .set(self.dropped_transmits.get().saturating_add(1));
             if self.pending_error.get().is_none() {
                 self.pending_error.set(Some(error));
             }
         }
-        result
+        (result, error)
     }
 }
 
+impl EthernetDevice {
+    pub(in crate::inet) fn record_transmit_drop(&self) {
+        self.dropped_transmits
+            .set(self.dropped_transmits.get().saturating_add(1));
+    }
+    pub(in crate::inet) fn carrier(&self) -> bool {
+        self.device.link().is_ok_and(|link| link.carrier)
+    }
+    /// 报告真实提交结果并记录硬件错误；保留重试不等于丢包，drop 由协议退休/拒绝路径回报。
+    pub(in crate::inet) fn send_control(
+        &self,
+        packet: super::ipv6::Packet<'_>,
+        timestamp: Instant,
+    ) -> bool {
+        if packet.length() > self.mtu + 14 {
+            self.record_transmit_error(NetworkError::FrameTooLarge);
+            return false;
+        }
+        let Some(token) = self.transmit_shared(timestamp) else {
+            return false;
+        };
+        let (encoded, error) = token.consume_committed(packet.length(), |frame| {
+            let result = packet.emit(frame, self.device.mac_address());
+            let complete = result.is_ok();
+            (result, complete)
+        });
+        encoded.is_ok() && error.is_none()
+    }
+    fn transmit_shared(&self, _timestamp: Instant) -> Option<EthernetTxToken<'_>> {
+        self.reserve().ok()
+    }
+}
 impl Device for EthernetDevice {
     type RxToken<'a> = EthernetRxToken<'a>;
     type TxToken<'a> = EthernetTxToken<'a>;
@@ -546,25 +652,8 @@ impl Device for EthernetDevice {
         self.receive_batch(&mut frames, &mut facts)?.next()?.ok()
     }
 
-    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        match device_error::classify_optional(self.device.reserve_transmit(0), |error| {
-            *error == NetworkError::WouldBlock
-        }) {
-            Ok(reservation) => reservation.map(|reservation| EthernetTxToken {
-                net_id: self.net_id,
-                interface_index: self.interface_index,
-                reservation: Some(reservation),
-                checksum: false,
-                maximum_frame_length: self.mtu + 14,
-                dropped_transmits: &self.dropped_transmits,
-                transmitted_errors: &self.transmitted_errors,
-                pending_error: &self.pending_error,
-            }),
-            Err(error) => {
-                self.record_transmit_error(error);
-                None
-            }
-        }
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        self.transmit_shared(timestamp)
     }
 
     fn capabilities(&self) -> DeviceCapabilities {

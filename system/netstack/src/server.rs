@@ -11,10 +11,10 @@ use native_runtime::native_abi::{self, Status, rights, signals};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Handle};
 use network_protocol::{
-    InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService, InstallerService,
-    InterfaceSnapshot, InternetOption, InternetSendPacketInfo, Ipv4RouteError, Ipv4RouteRequest,
-    NamespaceService, NetworkService, NetworkSnapshot, PacketAddress, PacketKind, PacketReceived,
-    PacketSocketService, RouteChange, RoutingSnapshot, ServedSocket, SocketEndpoint, SocketError,
+    InetAddress, InetFamily, InetOptionChange, InetProtocol, InetReceived, InetSocketService,
+    InstallerService, InterfaceSnapshot, InternetOption, InternetSendPacketInfo, Ipv4RouteError,
+    Ipv4RouteRequest, NamespaceService, NetworkService, NetworkSnapshot, PacketAddress, PacketKind,
+    PacketReceived, PacketSocketService, RouteChange, ServedSocket, SocketEndpoint, SocketError,
     SocketPollState,
 };
 
@@ -40,6 +40,7 @@ struct InstalledInterface {
     entry: device_protocol::directory::Entry,
     index: u32,
     lifetime: Channel,
+    link_changed: Event,
 }
 
 /// 创建控制面与默认网络（回环启用，尚无网卡）；网卡由 router_config 经安装协议加入。
@@ -101,12 +102,37 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
 }
 
 impl InstallerService for Network {
-    fn watch_interfaces(&self) -> Result<Event, Status> {
+    fn firewall_counters(&self, cursor: router_protocol::firewall::counters::Cursor) -> Result<Vec<u8>, Status> {
+        inet::firewall_counters(&self.default, cursor)?.encode().map_err(|_| native_abi::ERR_BAD_STATE)
+    }
+
+    fn connection_changes(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Vec<u8>, Status> {
+        inet::connection_changes(&self.default, cursor)?.encode().map_err(|_| native_abi::ERR_BAD_STATE)
+    }
+
+    fn arm_connection_watch(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Option<Event>, Status> {
+        let event = inet::arm_connection_watch(&self.default, cursor, || {
+            Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)
+        })?;
+        event.map(|event| event.duplicate(rights::WAIT | rights::TRANSFER)).transpose()
+    }
+
+    fn clear_connection(&self, identity: router_protocol::connections::Identity) -> Result<(), Status> {
+        inet::clear_connection(&self.default, identity)
+    }
+
+    fn connections(&self, cursor: router_protocol::connections::Cursor) -> Result<Vec<u8>, Status> {
+        inet::connection_page(&self.default, cursor)?
+            .encode()
+            .map_err(|_| native_abi::ERR_BAD_STATE)
+    }
+
+    fn watch_routing_inputs(&self) -> Result<Event, Status> {
         self.interface_events.duplicate(rights::SAME)
     }
     fn prepare_next_hop(
         &self,
-        definition: network_protocol::routes::NextHopConfiguration<'_>,
+        definition: network_protocol::routes::NextHopConfiguration<'_, core::net::Ipv4Addr>,
     ) -> Result<Channel, Status> {
         let (client, server) = Channel::create()?;
         let configuration =
@@ -122,26 +148,20 @@ impl InstallerService for Network {
     }
     fn prepare_configuration(
         &self,
-        batch: network_protocol::ConfigurationBatch<'_>,
+        batch: Option<network_protocol::ConfigurationBatch<'_>>,
+        forwarding: Option<network_protocol::Forwarding>,
     ) -> Result<Channel, Status> {
         let (client, server) = Channel::create()?;
-        let configuration = if let Some(routes) = batch.forwarding() {
-            inet::prepare_routes(
-                &self.default,
-                batch.interfaces().iter(),
-                routes.next_hops(),
-                routes.iter(),
-            )
-        } else {
-            inet::prepare_configuration(&self.default, batch.interfaces().iter())
-        }
-        .map_err(|error| match error {
-            SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-            SocketError::Again => native_abi::ERR_SHOULD_WAIT,
-            SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
-            SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
-            _ => native_abi::ERR_BAD_STATE,
-        })?;
+        let configuration =
+            inet::prepare_configuration(&self.default, batch, forwarding).map_err(|error| {
+                match error {
+                    SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+                    SocketError::Again => native_abi::ERR_SHOULD_WAIT,
+                    SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
+                    SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
+                    _ => native_abi::ERR_BAD_STATE,
+                }
+            })?;
         dispatcher::serve(server, Served::Configuration(configuration))?;
         Ok(client)
     }
@@ -151,7 +171,7 @@ impl InstallerService for Network {
         device_id: u64,
         description: Vec<u8>,
         mut handles: Vec<Handle>,
-    ) -> Result<(u32, Channel), Status> {
+    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
         if device_id == 0 || handles.len() != 1 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
@@ -171,7 +191,11 @@ impl InstallerService for Network {
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
             // Installer 已授予默认网络管理权；重连只重交原接口的只观测寿命，不再次打开物理目录/队列。
-            return Ok((interface.index, interface.lifetime.duplicate(rights::SAME)?));
+            return Ok((
+                interface.index,
+                interface.lifetime.duplicate(rights::SAME)?,
+                interface.link_changed.duplicate(rights::SAME)?,
+            ));
         }
         installed
             .try_reserve(1)
@@ -236,18 +260,24 @@ impl InstallerService for Network {
         }
         let (lifetime, held) = Channel::create()?;
         let retained = lifetime.duplicate(rights::SAME)?;
+        let link_changed = Event::create()?;
+        let publisher = link_changed.duplicate(rights::SAME)?;
+        let observer = link_changed.duplicate(rights::SAME)?;
         let index =
-            inet::install_interface(&self.default, device, held).map_err(|error| match error {
-                SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-                _ => native_abi::ERR_NO_RESOURCES,
+            inet::install_interface(&self.default, device, held, publisher).map_err(|error| {
+                match error {
+                    SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+                    _ => native_abi::ERR_NO_RESOURCES,
+                }
             })?;
         // 容量与能力均已在接口安装前准备；发表后登记不再分配，回复丢失也可安全重试。
         installed.push(InstalledInterface {
             entry,
             index,
             lifetime: retained,
+            link_changed: observer,
         });
-        Ok((index, lifetime))
+        Ok((index, lifetime, link_changed))
     }
 }
 
@@ -307,9 +337,13 @@ pub(crate) fn readiness() -> Result<Arc<Event>, SocketError> {
 pub(crate) struct NamespaceServer(pub(crate) Arc<Namespace>);
 
 impl NamespaceService for NamespaceServer {
-    fn socket(&self, protocol: InetProtocol) -> Result<SocketEndpoint, SocketError> {
+    fn socket(
+        &self,
+        family: network_protocol::InetFamily,
+        protocol: InetProtocol,
+    ) -> Result<SocketEndpoint, SocketError> {
         let readiness = readiness()?;
-        let socket = InetSocket::new(protocol, readiness.clone(), self.0.clone())?;
+        let socket = InetSocket::new(family, protocol, readiness.clone(), self.0.clone())?;
         publish(ServedSocket::Inet(socket), &readiness)
     }
 
@@ -339,8 +373,66 @@ impl NamespaceService for NamespaceServer {
         inet::network_snapshot(&self.0)
     }
 
-    fn route_snapshot(&self) -> Result<RoutingSnapshot, SocketError> {
-        inet::route_snapshot(&self.0)
+    fn neighbor_snapshot(
+        &self,
+        index: u32,
+    ) -> Result<network_protocol::NeighborSnapshot, SocketError> {
+        inet::neighbor_snapshot(&self.0, index)
+    }
+
+    fn address_snapshot(
+        &self,
+        index: u32,
+    ) -> Result<network_protocol::AddressSnapshot, SocketError> {
+        inet::address_snapshot(&self.0, index)
+    }
+
+    fn learned_dns(&self) -> Result<router_protocol::dns::LearnedDns, SocketError> {
+        inet::learned_dns(&self.0)
+    }
+
+    fn watch_dns(&self) -> Result<Event, SocketError> {
+        let event = Event::create().map_err(|_| SocketError::NoMemory)?;
+        let receiver = event
+            .duplicate(rights::SAME)
+            .map_err(|_| SocketError::NoMemory)?;
+        inet::observe_dns(&self.0, event)?;
+        Ok(receiver)
+    }
+
+    fn route_snapshot(&self, family: Option<InetFamily>) -> Result<Vec<Vec<u8>>, SocketError> {
+        let mut bodies = Vec::new();
+        bodies
+            .try_reserve_exact(if family.is_none() { 2 } else { 1 })
+            .map_err(|_| SocketError::NoMemory)?;
+        match family {
+            Some(InetFamily::Ipv4) => {
+                bodies.push(inet::route_snapshot::<core::net::Ipv4Addr>(&self.0)?.into_bytes())
+            }
+            Some(InetFamily::Ipv6) => {
+                bodies.push(inet::route_snapshot::<core::net::Ipv6Addr>(&self.0)?.into_bytes())
+            }
+            None => {
+                let (four, six) = inet::route_snapshots(&self.0)?;
+                bodies.push(four.into_bytes());
+                bodies.push(six.into_bytes());
+            }
+        }
+        Ok(bodies)
+    }
+
+    fn route_lookup(
+        &self,
+        query: network_protocol::routes::RouteLookup,
+    ) -> Result<network_protocol::routes::RoutePath, SocketError> {
+        inet::route_lookup(&self.0, query)
+    }
+
+    fn rule_snapshot(
+        &self,
+        family: Option<InetFamily>,
+    ) -> Result<network_protocol::routes::RuleSnapshot, SocketError> {
+        inet::rule_snapshot(&self.0, family)
     }
 
     fn configure_mtu(&self, index: u32, mtu: i32) -> Result<(), SocketError> {
@@ -401,7 +493,7 @@ impl InetSocketService for InetSocket {
         &self,
         input: &[u8],
         target: Option<InetAddress>,
-        packet_info: Option<InternetSendPacketInfo>,
+        packet_info: &[InternetSendPacketInfo],
     ) -> Result<usize, SocketError> {
         InetSocket::send_to(self, input, target, packet_info)
     }
@@ -414,6 +506,19 @@ impl InetSocketService for InetSocket {
             full_length,
             source,
             packet_info,
+        })
+    }
+
+    fn receive_error(
+        &self,
+        limit: usize,
+    ) -> Result<network_protocol::InetErrorReceived, SocketError> {
+        let mut output = receive_buffer(limit)?;
+        let (full_length, error) = InetSocket::receive_error(self, &mut output)?;
+        Ok(network_protocol::InetErrorReceived {
+            data: output.into_bytes(),
+            full_length,
+            error,
         })
     }
 
@@ -452,12 +557,84 @@ impl InetSocketService for InetSocket {
             InetOptionChange::HeaderIncluded(enabled) => self.set_header_included(enabled),
             InetOptionChange::PacketInfo(enabled) => self.set_packet_info(enabled),
             InetOptionChange::ReuseAddress(enabled) => self.set_reuse_address(enabled),
+            InetOptionChange::Mark(mark) => self.set_mark(mark),
             InetOptionChange::Broadcast(enabled) => self.set_broadcast(enabled),
             InetOptionChange::HopLimit(value) => self.set_hop_limit(value),
             InetOptionChange::NoDelay(enabled) => self.set_no_delay(enabled),
             InetOptionChange::Timer(option, value) => self.set_timer_option(option, value),
             InetOptionChange::MaxSegment(value) => self.set_max_segment(value),
+            InetOptionChange::Ipv6PacketInfo(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6PacketInfo, i32::from(value))
+            }
+            InetOptionChange::Ipv6Only(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6Only, i32::from(value))
+            }
+            InetOptionChange::Ipv6HopLimit(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6HopLimit, value.map_or(-1, i32::from))
+            }
+            InetOptionChange::Ipv6Checksum(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6Checksum, value)
+            }
+            InetOptionChange::Ipv6Mtu(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6Mtu, value)
+            }
+            InetOptionChange::Ipv6MulticastAll(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6MulticastAll, i32::from(value))
+            }
+            InetOptionChange::ReceiveError { ipv6, enabled } => {
+                self.set_receive_error(ipv6, enabled)
+            }
+            InetOptionChange::Ipv4MtuDiscovery(value) => self.set_ipv4_mtu_discovery(value),
+            InetOptionChange::Ipv6DontFragment(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6DontFragment, i32::from(value))
+            }
+            InetOptionChange::Ipv4MulticastAll(value) => self.set_ipv4_multicast_all(value),
+            InetOptionChange::Ipv4MulticastInterface { interface, address } => {
+                self.set_ipv4_multicast_interface(interface, address)
+            }
+            InetOptionChange::Ipv4MulticastHopLimit(value) => self.set_ipv4_multicast_option(
+                InternetOption::Ipv4MulticastHopLimit,
+                value.map_or(-1, i32::from),
+            ),
+            InetOptionChange::Ipv4MulticastLoop(value) => {
+                self.set_ipv4_multicast_option(InternetOption::Ipv4MulticastLoop, i32::from(value))
+            }
+            InetOptionChange::Ipv4Membership {
+                group,
+                interface,
+                address,
+                join,
+            } => self.ipv4_membership(group, interface, address, join),
+            InetOptionChange::Ipv6MulticastInterface(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6MulticastInterface, value as i32)
+            }
+            InetOptionChange::Ipv6MulticastHopLimit(value) => self.set_ipv6_option(
+                InternetOption::Ipv6MulticastHopLimit,
+                value.map_or(-1, i32::from),
+            ),
+            InetOptionChange::Ipv6MulticastLoop(value) => {
+                self.set_ipv6_option(InternetOption::Ipv6MulticastLoop, i32::from(value))
+            }
+            InetOptionChange::Ipv6Membership {
+                group,
+                interface,
+                join,
+            } => self.ipv6_membership(group, interface, join),
         }
+    }
+
+    fn icmp_filter(
+        &self,
+        update: Option<network_protocol::IcmpFilterUpdate>,
+    ) -> Result<[u32; 8], SocketError> {
+        InetSocket::icmp_filter(self, update)
+    }
+    fn set_md5_key(
+        &self,
+        selector: network_protocol::TcpMd5Selector,
+        key: &[u8],
+    ) -> Result<(), SocketError> {
+        InetSocket::set_md5_key(self, selector, key)
     }
 
     fn bind_to_device(&self, name: &[u8], privileged: bool) -> Result<(), SocketError> {

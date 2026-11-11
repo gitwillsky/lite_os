@@ -15,11 +15,13 @@ fn context() -> SelectionContext {
         65000,
         Ipv4Addr::new(192, 0, 2, 254),
         Some(Ipv4Addr::new(10, 0, 0, 99)),
+        None,
     )
     .unwrap()
 }
 fn peer(id: u8, kind: PeerKind) -> Peer {
     Peer {
+        route_reflector_client: false,
         id: u64::from(id),
         address: Ipv4Addr::new(192, 0, 2, id).into(),
         identifier: Ipv4Addr::new(10, 0, 0, id),
@@ -117,6 +119,15 @@ fn attributes(
     };
     let config = Config {
         local_as: 65000,
+        confederation_peer: path
+            .iter()
+            .any(|(kind, _)| {
+                matches!(
+                    kind,
+                    SegmentKind::ConfederationSequence | SegmentKind::ConfederationSet
+                )
+            })
+            .then_some(peer.kind),
         peer_as: peer.asn,
         identifier: context().identifier,
         hold_seconds: 90,
@@ -133,11 +144,14 @@ fn attributes(
         hold_seconds: 90,
         ipv4_unicast: true,
         ipv6_unicast: true,
+        send_ipv4_via_ipv6: false,
+        receive_ipv4_via_ipv6: true,
         four_octet_asn: true,
         send_extended: false,
         receive_extended: false,
         send_refresh: false,
         receive_refresh: false,
+        enhanced_refresh: false,
     };
     let received = crate::received::capture(config, negotiated, update, raw).unwrap();
     pool.intern(&received).unwrap().unwrap()
@@ -150,6 +164,7 @@ fn candidate<'a>(
     Candidate {
         peer,
         attributes,
+        received_path: attributes.path(),
         next_hop: NextHop {
             address: peer.address,
             link_local: None,
@@ -499,6 +514,48 @@ fn loops_and_ineligible_routes_are_excluded_before_any_preference_comparison() {
         None,
         (None, &[]),
     );
+    // 删除策略可以缩短路径，但不能将原始 AS 环路变成可用路径；提案与确认走同一检查。
+    let exclusions = [core::num::NonZeroU32::new(65000).unwrap()];
+    let cleaned = pool
+        .project(
+            &as_loop,
+            crate::AttributeChanges {
+                as_path_exclude: &exclusions,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!cleaned.path().contains(65000));
+    let removed_loop = Candidate {
+        received_path: as_loop.path(),
+        ..candidate(&peer, &cleaned, Some(0))
+    };
+    assert_eq!(context().rejection(&removed_loop), Some(Rejection::AsLoop));
+    assert!(
+        Selector::new()
+            .propose(context(), &[removed_loop])
+            .unwrap()
+            .is_none()
+    );
+    let replacement = router_protocol::bgp::AsPathReplacement {
+        from: None,
+        to: core::num::NonZeroU32::new(70000).unwrap(),
+    };
+    let replaced = pool
+        .project(
+            &as_loop,
+            crate::AttributeChanges {
+                as_path_replace: Some(&replacement),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!replaced.path().contains(65000));
+    let replaced_loop = Candidate {
+        received_path: as_loop.path(),
+        ..candidate(&peer, &replaced, Some(0))
+    };
+    assert_eq!(context().rejection(&replaced_loop), Some(Rejection::AsLoop));
     let originator_loop = attributes(
         &mut pool,
         &peer,
@@ -521,6 +578,12 @@ fn loops_and_ineligible_routes_are_excluded_before_any_preference_comparison() {
         ..candidate(&healthy_peer, &good, Some(0))
     };
     let mut selector = Selector::new();
+    let unverified = Candidate {
+        reachability: Reachability::Unresolved,
+        ..eligible
+    };
+    assert_eq!(selector.propose(context(), &[unverified]).unwrap(), Some(0));
+    assert_eq!(selector.select(context(), &[unverified]).unwrap(), None);
     for (mut rejected, reason) in [
         (
             Candidate {
@@ -562,6 +625,9 @@ fn loops_and_ineligible_routes_are_excluded_before_any_preference_comparison() {
             Some(1)
         );
         assert_eq!(selector.select(context(), &[rejected]).unwrap(), None);
+        if reason != Rejection::Unresolved {
+            assert_eq!(selector.propose(context(), &[rejected]).unwrap(), None);
+        }
     }
     let four_octet_loop = attributes(
         &mut pool,
@@ -571,7 +637,8 @@ fn loops_and_ineligible_routes_are_excluded_before_any_preference_comparison() {
         None,
         (None, &[]),
     );
-    let four_octet_context = SelectionContext::new(70000, context().identifier, None).unwrap();
+    let four_octet_context =
+        SelectionContext::new(70000, context().identifier, None, None).unwrap();
     assert_eq!(
         four_octet_context.rejection(&candidate(&four_octet_peer, &four_octet_loop, Some(0))),
         Some(Rejection::AsLoop)

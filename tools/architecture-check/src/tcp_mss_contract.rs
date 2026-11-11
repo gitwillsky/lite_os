@@ -2,7 +2,20 @@
 use super::SourceFile;
 use std::path::Path;
 
-const VENDOR: &str = "vendor/smoltcp/src/socket/tcp.rs";
+const TRANSPORT: &[&str] = &[
+    "libraries/tcp/src/socket/options.rs",
+    "libraries/tcp/src/socket/connection.rs",
+    "libraries/tcp/src/socket/receive.rs",
+    "libraries/tcp/src/socket/output.rs",
+];
+fn transport_source(root: &Path) -> std::io::Result<String> {
+    let mut source = String::new();
+    for path in TRANSPORT {
+        source.push_str(&std::fs::read_to_string(root.join(path))?);
+        source.push('\n');
+    }
+    Ok(source)
+}
 fn normalized(source: &str) -> String {
     source.split_whitespace().collect()
 }
@@ -28,11 +41,13 @@ fn check_transport(source: &str, errors: &mut Vec<String>) {
     if source.matches("self.capture_mss(").count() != 2
         || !source.contains("self.capture_mss(cx,local_endpoint.addr)")
         || !source.contains("self.capture_mss(cx,ip_repr.dst_addr())")
+        || !source.contains("letmss=self.data_mss(cx);self.congestion_controller.set_mss(mss)")
+        || !source.contains("local_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.md5,)).min(self.effective_mss())")
+        || !source.contains("self.send_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.md5,))")
         || !source.contains(
-            "letmss=self.effective_mss();self.congestion_controller.inner_mut().set_mss(mss)",
+            "letpath_payload=cx.ip_mtu().saturating_sub(ip_repr.header_len()+repr.header_len());",
         )
-        || !source.contains("leteffective_mss=local_mss.min(self.effective_mss())")
-        || !source.contains(".min(self.effective_mss()).min(cx.ip_mtu()")
+        || !source.contains(".min(self.data_mss(cx)).min(path_payload)")
         || !source.contains("letmutmax_segment_size=self.advertised_mss.expect(")
         || !source.contains("route.advertised_mss")
         || !source.contains(".min(self.sender_mss_limit)")
@@ -74,9 +89,9 @@ fn check_kernel(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
 }
 pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String>) {
-    match std::fs::read_to_string(root.join(VENDOR)) {
+    match transport_source(root) {
         Ok(source) => check_transport(&source, errors),
-        Err(error) => errors.push(format!("{VENDOR}: {error}")),
+        Err(error) => errors.push(format!("tcp-mss: native transport source: {error}")),
     }
     check_kernel(sources, errors);
 }
@@ -94,7 +109,7 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
     fn reject_transport(old: &str, new: &str) {
-        let source = std::fs::read_to_string(super::super::repository_root().join(VENDOR)).unwrap();
+        let source = transport_source(&super::super::repository_root()).unwrap();
         assert!(source.contains(old));
         let source = source.replace(old, new);
         syn::parse_file(&source).unwrap();

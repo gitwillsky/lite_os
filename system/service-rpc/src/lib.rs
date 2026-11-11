@@ -557,6 +557,7 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
 }
 
 /// 处理一条已读出的请求；非零事务号写回回复，零事务号不回复。格式错误的请求被丢弃。
+/// 处理器只在当前调用内借用，可直接访问单 actor 的局部状态；线程池入口仍要求 Handler 的 Send/Sync。
 ///
 /// # Errors
 ///
@@ -564,7 +565,7 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
 pub fn respond(
     channel: &Channel,
     message: native_runtime::Message,
-    handler: &Handler<'_>,
+    mut handler: impl FnMut(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Result<Vec<Handle>, Status>,
 ) -> Result<(), Status> {
     let mut reader = Reader::new(&message.bytes);
     let (Ok(transaction), Ok(ordinal)) = (reader.u32(), reader.u32()) else {

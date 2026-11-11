@@ -9,10 +9,14 @@
   因而只有一个 pointer（RV64 ≤ 16 bytes）且不清零 path stack；遗漏任一 mutation 的 link 更新
   会造成漏项或悬垂指针，必须由 topology/link invariant test fail-stop。production 单邻居查询使用
   floor/ceiling/predecessor/successor，禁止用 `iter_from/iter_after(...).next()` 重建 iterator。
+  Iter::clone 只复制 cursor 位置，继续借用同一不可变树，不要求 K/V: Clone，也不分配或克隆节点；供冻结来源的尺寸预检与正文重放。
   map 的 unsafe Send/Sync 只恢复 `K/V: Send/Sync` 的结构 auto-trait：跨线程移动不会移动 Box
   pointee，共享访问不能改变 links；`VacantEntry` 发布前/摘除后恒为 `next=None`，`NodeSlot`
   尚未初始化，二者只按 K/V 恢复 Send/Sync。缺失这些证明会把内部 NonNull 错误泄漏为非
   Send owner，放宽到不满足 K/V bound 则会跨线程移动领域数据。
+- get_by 以“查询相对存储 key”的纯比较器做同一 AVL 精确查找；调用者必须保持 K 的顺序，未命中返回 None，不创建拥有的查询值。
+  原 get 也委托该循环，仍为 O(log n)、不分配、不修改 links；BGP 用唯一规范 key 比较借用政策投影，避免先复制完整属性才能查询。
+  比较器为编译期单态调用；此改动没有新分配/锁或转发热路径，沿既有 AVL 结构指标与完整控制面规模评估，不另建墙钟门限。
 - `split_off` 只沿 AVL root-to-leaf path 比较并重组现有节点，再对移出的 subtree 做一次无 key comparison 的精确 cardinality 遍历；不为所有节点增加永久 subtree-size 字段，复杂度为 `O(log n + k)`。
 - bulk join 只接受 `left.max < right.min` 的 ordered-disjoint 输入，边界检查必须在 mutation 前完成；重复或逆序表示 caller contract 损坏并 fail-stop，两表保持不变。join 只改动 AVL spine，复杂度为 `O(log n)`。
 - `retain` 使用一次 node ownership filter 与一次 sorted-list balanced rebuild；每个节点访问常数次、无分配、保留节点 identity，禁止逐节点 `join_*` 双轨。

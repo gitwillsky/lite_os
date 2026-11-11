@@ -334,6 +334,7 @@ impl KobjectSocket {
                 port_id: 0,
                 groups: KOBJECT_UEVENT_GROUP,
             })),
+            internet_error: None,
             internet_packet_info: None,
             packet_information: None,
             rights: None,

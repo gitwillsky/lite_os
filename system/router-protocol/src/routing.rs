@@ -2,19 +2,23 @@
 //! 来源身份、路由实例和协议权限来自持有连接的授权，不允许正文自行指定。
 use crate::{Decoder, Encoder, Invalid};
 use alloc::vec::Vec;
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::{
+    borrow::Borrow,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
 
 mod nexthop;
 pub use nexthop::{Action, Member, Members, NextHop, Target};
 use nexthop::{get_hop, put_hop};
 
 /// 唯一支持的来源布局；不接受旧版本或未知扩展字段。
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 const HEADER: usize = 20;
 const ATTRIBUTE_BYTES: usize = 8;
 
-/// 一个来源批次只声明一个地址族；不借此表达跨地址族下一跳。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 一个来源批次的目的前缀地址族，与立即网关的地址族独立。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Family {
     /// IPv4。
     Ipv4,
@@ -133,37 +137,48 @@ impl<'a> Batch<'a> {
     /// 编码一个来源的完整替换；空路由集合撤销该来源的所有候选。
     /// # Parameters
     /// `family` 限定本批地址宽度，所有引用只指向本批 `attributes`/`hops`。
+    /// `hops`/`routes` 的克隆迭代须重放同一冻结内容；可直接借用字典和路由视图，不收集中间数组。
     /// # Returns
     /// 一份可由只读 VMO 传输的独占正文，不含权限或来源身份。
     /// # Errors
     /// 非规范前缀、引用/成员/地址族非法、容量越界或内存不足。
-    pub fn encode(
+    pub fn encode<'h>(
         family: Family,
         attributes: &[Attributes],
-        hops: &[NextHop<'_>],
-        routes: &[Route],
+        hops: impl IntoIterator<Item: Borrow<NextHop<'h>>, IntoIter: Clone>,
+        routes: impl IntoIterator<Item: Borrow<Route>, IntoIter: Clone>,
     ) -> Result<Vec<u8>, EncodeError> {
-        for count in [attributes.len(), hops.len(), routes.len()] {
+        let hops = hops.into_iter();
+        let routes = routes.into_iter();
+        let (mut hop_count, mut hop_size) = (0usize, 0usize);
+        for hop in hops.clone() {
+            let hop = *hop.borrow();
+            hop.validate(family)?;
+            hop_size = hop_size
+                .checked_add(hop.encoded_size()?)
+                .ok_or(Invalid)?;
+            hop_count = hop_count.checked_add(1).ok_or(Invalid)?;
+        }
+        let route_count = routes.clone().try_fold(0usize, |count, route| {
+            route
+                .borrow()
+                .validate(family, attributes.len(), hop_count)?;
+            count.checked_add(1).ok_or(Invalid)
+        })?;
+        for count in [attributes.len(), hop_count, route_count] {
             u32::try_from(count).map_err(|_| Invalid)?;
         }
-        let mut size = attributes
+        let size = attributes
             .len()
             .checked_mul(ATTRIBUTE_BYTES)
             .and_then(|size| {
-                routes
-                    .len()
+                route_count
                     .checked_mul(family.width() + 9)
                     .and_then(|rows| size.checked_add(rows))
             })
             .and_then(|size| size.checked_add(HEADER))
+            .and_then(|size| size.checked_add(hop_size))
             .ok_or(Invalid)?;
-        for hop in hops {
-            hop.validate(family)?;
-            size = size.checked_add(hop.encoded_size(family)?).ok_or(Invalid)?;
-        }
-        for route in routes {
-            route.validate(family, attributes.len(), hops.len())?;
-        }
         let mut writer = Encoder::default();
         writer
             .0
@@ -176,20 +191,45 @@ impl<'a> Batch<'a> {
                 Family::Ipv6 => 6,
             })
             .u32(attributes.len() as u32)
-            .u32(hops.len() as u32)
-            .u32(routes.len() as u32);
+            .u32(hop_count as u32)
+            .u32(route_count as u32);
         for entry in attributes {
             writer.u32(entry.preference).u32(entry.metric);
         }
+        let start = writer.0.len();
+        let mut emitted = 0;
         for hop in hops {
-            put_hop(&mut writer, *hop, family);
+            let hop = *hop.borrow();
+            hop.validate(family)?;
+            // Clone 是重放契约，不是内存安全保证；失配时拒绝，不能触发未预留的隐式分配。
+            let remaining = hop_size
+                .checked_sub(writer.0.len() - start)
+                .ok_or(Invalid)?;
+            if emitted == hop_count || hop.encoded_size()? > remaining {
+                return Err(EncodeError::Invalid);
+            }
+            put_hop(&mut writer, hop, family);
+            emitted += 1;
         }
+        if emitted != hop_count || writer.0.len() - start != hop_size {
+            return Err(EncodeError::Invalid);
+        }
+        let mut emitted = 0;
         for route in routes {
+            let route = *route.borrow();
+            route.validate(family, attributes.len(), hop_count)?;
+            if emitted == route_count {
+                return Err(EncodeError::Invalid);
+            }
             put_address(&mut writer, route.network);
             writer
                 .u8(route.length)
                 .u32(route.attributes)
                 .u32(route.next_hop);
+            emitted += 1;
+        }
+        if emitted != route_count {
+            return Err(EncodeError::Invalid);
         }
         Ok(writer.0)
     }

@@ -1,6 +1,8 @@
 //! 候选下一跳可以引用递归地址，执行侧 FIB 不得接收未经解析的声明。
 use super::*;
 
+const MEMBER_BYTES: usize = 26;
+
 /// 已选路前缀的动作；丢弃/错误动作不是可供其他路由递归解析的出口。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
@@ -25,7 +27,7 @@ pub enum Target {
         /// 显式声明网关在链路上，不跳过设备身份/状态准入。
         on_link: bool,
     },
-    /// 在同一路由实例/地址族内递归解析；不是已经确认可达的立即下一跳。
+    /// 在同一路由实例按下一跳地址族递归解析；IPv4 可依赖 IPv6，反向依赖不允许。
     /// 本变体没有 zone 身份，IPv6 link-local 必须用带接口的 Direct 表达，否则可能解析到错误链路。
     Recursive(IpAddr),
 }
@@ -64,7 +66,7 @@ impl<'a> NextHop<'a> {
     pub fn len(self) -> usize {
         match self.storage {
             Storage::Typed(members) => members.len(),
-            Storage::Encoded(bytes, family) => bytes.len() / (family.width() + 10),
+            Storage::Encoded(bytes, _) => bytes.len() / MEMBER_BYTES,
         }
     }
     /// 是否没有成员。
@@ -78,10 +80,10 @@ impl<'a> NextHop<'a> {
             index: 0,
         }
     }
-    pub(super) fn encoded_size(self, family: Family) -> Result<usize, Invalid> {
+    pub(super) fn encoded_size(self) -> Result<usize, Invalid> {
         u32::try_from(self.len()).map_err(|_| Invalid)?;
         self.len()
-            .checked_mul(family.width() + 10)
+            .checked_mul(MEMBER_BYTES)
             .and_then(|bytes| bytes.checked_add(5))
             .ok_or(Invalid)
     }
@@ -95,8 +97,12 @@ impl<'a> NextHop<'a> {
                     validate_member(*member, family)?;
                 }
             }
-            Storage::Encoded(bytes, _) => {
-                for entry in bytes.chunks_exact(family.width() + 10) {
+            Storage::Encoded(bytes, encoded_family) => {
+                // 借用正文的成员宽度由捕获时地址族决定；误按另一族分块可能漏验尾部，并在输出时超出预留容量。
+                if encoded_family != family && !bytes.is_empty() {
+                    return Err(Invalid);
+                }
+                for entry in bytes.as_chunks::<MEMBER_BYTES>().0 {
                     validate_member(get_member(entry, family)?, family)?;
                 }
             }
@@ -115,7 +121,7 @@ impl Iterator for Members<'_> {
         let member = match self.storage {
             Storage::Typed(members) => *members.get(self.index)?,
             Storage::Encoded(bytes, family) => {
-                let size = family.width() + 10;
+                let size = MEMBER_BYTES;
                 let start = self.index.checked_mul(size)?;
                 get_member(bytes.get(start..start.checked_add(size)?)?, family)
                     .expect("fully validated member")
@@ -127,17 +133,17 @@ impl Iterator for Members<'_> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let length = match self.storage {
             Storage::Typed(members) => members.len(),
-            Storage::Encoded(bytes, family) => bytes.len() / (family.width() + 10),
+            Storage::Encoded(bytes, _) => bytes.len() / MEMBER_BYTES,
         } - self.index;
         (length, Some(length))
     }
 }
 impl ExactSizeIterator for Members<'_> {}
-fn valid_gateway(address: IpAddr, family: Family) -> bool {
-    family.contains(address)
-        && !address.is_unspecified()
+fn valid_gateway(address: IpAddr) -> bool {
+    !address.is_unspecified()
         && !address.is_multicast()
         && !matches!(address, IpAddr::V4(address) if address.is_broadcast())
+        && !matches!(address, IpAddr::V6(address) if address.to_ipv4_mapped().is_some() || address.is_loopback())
 }
 fn validate_member(member: Member, family: Family) -> Result<(), Invalid> {
     let valid = match member.target {
@@ -148,10 +154,13 @@ fn validate_member(member: Member, family: Family) -> Result<(), Invalid> {
         } => {
             interface_index != 0
                 && !(on_link && gateway.is_none())
-                && gateway.is_none_or(|address| valid_gateway(address, family))
+                && gateway.is_none_or(|address| {
+                    (family == Family::Ipv4 || address.is_ipv6()) && valid_gateway(address)
+                })
         }
         Target::Recursive(address) => {
-            valid_gateway(address, family)
+            (family == Family::Ipv4 || address.is_ipv6())
+                && valid_gateway(address)
                 && !matches!(address, IpAddr::V6(address) if address.is_unicast_link_local())
         }
     };
@@ -177,19 +186,31 @@ pub(super) fn put_hop(writer: &mut Encoder, hop: NextHop<'_>, family: Family) {
                 gateway,
                 on_link,
             } => {
+                let cross_family =
+                    family == Family::Ipv4 && gateway.is_some_and(|address| address.is_ipv6());
                 writer
                     .u8(0)
                     .u32(interface_index)
-                    .u8(u8::from(gateway.is_some()) | (u8::from(on_link) << 1));
-                put_address(writer, gateway.unwrap_or_else(|| family.zero()));
+                    .u8(u8::from(gateway.is_some())
+                        | (u8::from(on_link) << 1)
+                        | (u8::from(cross_family) << 2));
+                put_target_address(writer, gateway.unwrap_or_else(|| family.zero()));
             }
             Target::Recursive(address) => {
-                writer.u8(1).u32(0).u8(0);
-                put_address(writer, address);
+                let cross_family = family == Family::Ipv4 && address.is_ipv6();
+                writer.u8(1).u32(0).u8(u8::from(cross_family) << 2);
+                put_target_address(writer, address);
             }
         }
     }
 }
+fn put_target_address(writer: &mut Encoder, address: IpAddr) {
+    put_address(writer, address);
+    if address.is_ipv4() {
+        writer.u32(0).u32(0).u32(0);
+    }
+}
+
 pub(super) fn get_hop<'a>(
     reader: &mut Decoder<'a>,
     family: Family,
@@ -202,7 +223,7 @@ pub(super) fn get_hop<'a>(
         _ => return Err(Invalid),
     };
     let count = reader.u32()? as usize;
-    let bytes = reader.take(count.checked_mul(family.width() + 10).ok_or(Invalid)?)?;
+    let bytes = reader.take(count.checked_mul(MEMBER_BYTES).ok_or(Invalid)?)?;
     Ok(NextHop {
         action,
         storage: Storage::Encoded(bytes, family),
@@ -214,15 +235,26 @@ fn get_member(bytes: &[u8], family: Family) -> Result<Member, Invalid> {
     let kind = reader.u8()?;
     let interface_index = reader.u32()?;
     let flags = reader.u8()?;
-    let address = get_address(&mut reader, family)?;
+    let address_family = if flags & 4 != 0 {
+        if family != Family::Ipv4 || kind == 0 && flags & 1 == 0 {
+            return Err(Invalid);
+        }
+        Family::Ipv6
+    } else {
+        family
+    };
+    let address = get_address(&mut reader, address_family)?;
+    if address_family == Family::Ipv4 && reader.take(12)? != [0; 12] {
+        return Err(Invalid);
+    }
     reader.finish()?;
     let target = match kind {
-        0 if flags & !3 == 0 && (flags & 1 != 0 || address == family.zero()) => Target::Direct {
+        0 if flags & !7 == 0 && (flags & 1 != 0 || address == family.zero()) => Target::Direct {
             interface_index,
             gateway: (flags & 1 != 0).then_some(address),
             on_link: flags & 2 != 0,
         },
-        1 if interface_index == 0 && flags == 0 => Target::Recursive(address),
+        1 if interface_index == 0 && flags & !4 == 0 => Target::Recursive(address),
         _ => return Err(Invalid),
     };
     Ok(Member { target, weight })

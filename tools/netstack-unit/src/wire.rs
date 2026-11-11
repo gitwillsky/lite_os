@@ -2,6 +2,11 @@ use std::sync::{Mutex as HostMutex, OnceLock};
 static SERIAL: HostMutex<()> = HostMutex::new(());
 static NAMESPACE: OnceLock<Arc<crate::namespace::Namespace>> = OnceLock::new();
 fn namespace() -> &'static Arc<crate::namespace::Namespace> { NAMESPACE.get().unwrap() }
+// 这个边界 peer 只发 IPv4；测试若错误传入 IPv6 必须显式失败，不能把地址截断后继续验收。
+fn ipv4_address(endpoint: InetAddress) -> Ipv4Addr {
+    let InetAddress::V4(endpoint) = endpoint else { panic!("IPv4 wire peer received an IPv6 endpoint"); };
+    *endpoint.ip()
+}
 fn initialize() {
     let scope = NAMESPACE.get_or_init(|| {
         crate::packet::init();
@@ -29,9 +34,11 @@ fn initialize() {
         reserved: bool,
         // 边界故障输入：模拟在合法前缀之后拒绝 RX 记录，检查生产批 owner 的错误归还路径。
         receive_error_after: Option<usize>,
+        // 一次实际 submit 故障，在同一个 wire owner 消费；不能用 reserve 失败替代。
+        submit_error: Option<device_model::network::NetworkError>,
     }
     impl FrameLoans {
-        const fn new() -> Self { Self { received: [const { None }; device_model::network::RECEIVE_BATCH_CAPACITY], transmit: alloc::vec::Vec::new(), reserved: false, receive_error_after: None } }
+        const fn new() -> Self { Self { received: [const { None }; device_model::network::RECEIVE_BATCH_CAPACITY], transmit: alloc::vec::Vec::new(), reserved: false, receive_error_after: None, submit_error: None } }
         fn receive_batch<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16, input: &mut std::collections::VecDeque<alloc::vec::Vec<u8>>, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>], checksum_valid: bool) -> Result<usize, device_model::network::NetworkError> {
             if output.iter().any(Option::is_some) { return Err(device_model::network::NetworkError::InvalidConfiguration); }
             let mut count = 0;
@@ -50,6 +57,8 @@ fn initialize() {
         fn reserve<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16) -> Result<device_model::network::NetworkTransmit<'a>, device_model::network::NetworkError> {
             if self.reserved { return Err(device_model::network::NetworkError::WouldBlock); }
             if self.transmit.is_empty() { self.transmit.resize(1514, 0); }
+            // 重用 DMA 不承诺零值；整个实际 producer 必须定义提交窗口，不能依赖 adapter 清零。
+            self.transmit.fill(0xa5);
             self.reserved = true;
             // SAFETY: 唯一 reservation，Vec 存储由 owner 保活；提交/取消前不 resize 或访问字节。
             Ok(unsafe { device_model::network::NetworkTransmit::new(owner, queue, 0, 1, self.transmit.as_mut_ptr() as usize, self.transmit.len()) })
@@ -241,20 +250,14 @@ pub(super) fn syn_ack(port: u16) -> smoltcp::wire::TcpSeqNumber {
     panic!("actual protocol must emit SYN/ACK");
 }
 pub(super) fn address(port: u16) -> InetAddress {
-    InetAddress {
-        address: Ipv4Addr::UNSPECIFIED,
-        port,
-    }
+    InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))
 }
 
 /// 唯一边界 peer 的标准 UDP frame 编码；过滤/排队/半关闭仍执行真实 producer。
 pub(super) fn peer_udp_frame(source: InetAddress, local_port: u16, payload: &[u8]) -> Vec<u8> {
     peer_udp_frame_for(
         source,
-        InetAddress {
-            address: Ipv4Addr::new(10, 0, 2, 15),
-            port: local_port,
-        },
+        InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 15), local_port)),
         payload,
     )
 }
@@ -264,14 +267,14 @@ pub(super) fn peer_udp_frame_for(
     payload: &[u8],
 ) -> Vec<u8> {
     use smoltcp::{phy::ChecksumCapabilities, wire::*};
-    let destination = local.address;
-    let local_port = local.port;
+    let destination = ipv4_address(local);
+    let local_port = local.port();
     let udp = UdpRepr {
-        src_port: source.port,
+        src_port: source.port(),
         dst_port: local_port,
     };
     let ip = Ipv4Repr {
-        src_addr: source.address,
+        src_addr: ipv4_address(source),
         dst_addr: destination,
         next_header: IpProtocol::Udp,
         payload_len: udp.header_len() + payload.len(),
@@ -289,7 +292,7 @@ pub(super) fn peer_udp_frame_for(
     ip.emit(&mut packet, &ChecksumCapabilities::default());
     udp.emit(
         &mut UdpPacket::new_unchecked(packet.payload_mut()),
-        &IpAddress::Ipv4(source.address),
+        &IpAddress::Ipv4(ipv4_address(source)),
         &IpAddress::Ipv4(destination),
         payload.len(),
         |output| output.copy_from_slice(payload),
@@ -333,11 +336,11 @@ pub(super) fn peer_icmp_frame_for(source: Ipv4Addr, destination: Ipv4Addr) -> Ve
 fn initial_stack() -> Option<&'static NetworkStackOwner> { namespace().protocol() }
 fn counts() -> (usize, usize, usize) {
     let network = initial_stack().unwrap().lock().unwrap();
-    (network.sockets.iter().count(), network.endpoints.len(), network.tcp_endpoints.len())
+    (network.socket_count() + network.udp_endpoints.len(), network.udp_endpoints.len(), network.tcp_endpoints.len())
 }
 
 fn scoped_endpoint(scope: &Arc<crate::namespace::Namespace>, protocol: InetProtocol) -> Arc<InetSocket> {
-    InetSocket::new(protocol, Arc::new(crate::Event::default()), scope.clone()).unwrap()
+    InetSocket::new(network_protocol::InetFamily::Ipv4, protocol, Arc::new(crate::Event::default()), scope.clone()).unwrap()
 }
 trait ReceiveEndpoint {
     type Receipt;
@@ -419,7 +422,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         fn link(
             &self,
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
-            Ok(device_model::network::NetworkLink { carrier: self.link.lock().unwrap().0, speed_mbps: None })
+            Ok(device_model::network::NetworkLink { carrier: self.link.lock().unwrap().0, carrier_epoch: 0, speed_mbps: None })
         }
         fn receive_batch<'a>(&'a self, queue: u16, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>]) -> Result<usize, device_model::network::NetworkError> {
             if queue != self.receive_on.load(core::sync::atomic::Ordering::Relaxed) { return Ok(0); }
@@ -441,6 +444,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>, segmentation: Option<device_model::network::NetworkTcpSegmentation>) -> Result<(), device_model::network::NetworkError> {
             assert!(segmentation.is_none());
             let mut wire = self.wire.lock().unwrap();
+            if let Some(error) = wire.2.submit_error.take() { return Err(error); }
             let mut frame = wire.2.complete(length);
             if let Some(checksum) = checksum {
                 checksum.validate(frame.len())?;
@@ -482,3 +486,34 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             device_model::network::NetworkStatistics::default()
         }
     }
+
+// 配置边界夹具只编码实际协议，再调用唯一生产预备入口，不复制事务或路由准入算法。
+fn prepare_configuration<'a>(scope: &Arc<crate::namespace::Namespace>, plans: impl ExactSizeIterator<Item = router_protocol::interface::InterfaceConfiguration<'a>>, forwarding: Option<network_protocol::Forwarding>) -> Result<super::configuration::ConfigurationSession, SocketError> {
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(plans.len()).map_err(|_| SocketError::NoMemory)?;
+    rows.extend(plans);
+    if rows.is_empty() { return super::prepare_configuration(scope, None, forwarding); }
+    let bytes = network_protocol::ConfigurationBatch::encode(&rows).map_err(configuration_input_error)?;
+    let batch = network_protocol::ConfigurationBatch::parse(&bytes).map_err(configuration_input_error)?;
+    super::prepare_configuration(scope, Some(batch), forwarding)
+}
+fn configuration_input_error(status: native_abi::Status) -> SocketError {
+    if status == native_abi::ERR_NO_MEMORY { SocketError::NoMemory } else { SocketError::Invalid }
+}
+fn prepare_routes<'a, 'h>(scope: &Arc<crate::namespace::Namespace>, plans: impl ExactSizeIterator<Item = router_protocol::interface::InterfaceConfiguration<'a>>, hops: impl Clone + ExactSizeIterator<Item = network_protocol::routes::NextHopConfiguration<'h, Ipv4Addr>>, routes: impl Clone + ExactSizeIterator<Item = network_protocol::routes::RouteConfiguration<Ipv4Addr>>, forwarding: Option<network_protocol::Forwarding>) -> Result<super::configuration::ConfigurationSession, SocketError> {
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(plans.len()).map_err(|_| SocketError::NoMemory)?;
+    rows.extend(plans);
+    let bytes = network_protocol::ConfigurationBatch::encode_forwarding(&rows, hops, routes, core::iter::empty(), core::iter::empty(), &[], None).map_err(configuration_input_error)?;
+    let batch = network_protocol::ConfigurationBatch::parse(&bytes).map_err(configuration_input_error)?;
+    super::prepare_configuration(scope, Some(batch), forwarding)
+}
+
+// RIB 输入来自同一实际 NET owner，不能用旧 FIB 或空地址集合替代 IPv6 配置事实。
+fn routing_facts(scope: &crate::namespace::Namespace) -> routing_rib::sources::Facts {
+    routing_rib::sources::Facts {
+        interfaces: interface_snapshots(scope).unwrap(),
+        addresses: address_snapshot(scope, 0).unwrap(),
+        neighbors: crate::inet::configuration::neighbor_snapshot(scope, 0).unwrap(),
+    }
+}

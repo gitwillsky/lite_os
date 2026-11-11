@@ -7,9 +7,10 @@ use packet_wire::bgp::{
     open::{Open, Parameter},
 };
 
-pub(super) fn established(internal: bool, four: bool) -> Session {
-    let config = Config {
+pub(super) fn config(internal: bool) -> Config {
+    Config {
         local_as: if internal { 65001 } else { 65000 },
+        confederation_peer: None,
         peer_as: 65001,
         identifier: Ipv4Addr::new(192, 0, 2, 1),
         hold_seconds: 90,
@@ -19,19 +20,24 @@ pub(super) fn established(internal: bool, four: bool) -> Session {
         ipv6_unicast: true,
         route_refresh: true,
         extended_messages: false,
-    };
+    }
+}
+pub(super) fn established(internal: bool, four: bool) -> Session {
+    established_with(config(internal), four)
+}
+pub(super) fn established_with(config: Config, four: bool) -> Session {
     let mut session = Session::new(config).unwrap();
     session.on(0, Input::Start);
-    session.on(1, Input::Connected);
+    session.on(1, Input::Connected(::bgp::OpenOffer::Capabilities));
     let mut bytes = [0; 128];
-    let capabilities = if four {
-        &[1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1, 65, 4, 0, 0, 0xfd, 0xe9][..]
-    } else {
-        &[1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1][..]
-    };
+    let mut capabilities = [
+        1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1, 5, 6, 0, 1, 0, 1, 0, 2, 65, 4, 0, 0, 0, 0,
+    ];
+    capabilities[22..].copy_from_slice(&config.peer_as.to_be_bytes());
+    let capabilities = &capabilities[..if four { 26 } else { 20 }];
     let length = Open::emit(
         &mut bytes,
-        65001,
+        u16::try_from(config.peer_as).unwrap_or(23456),
         90,
         Ipv4Addr::new(192, 0, 2, 2),
         &[Parameter {

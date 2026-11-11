@@ -56,7 +56,8 @@ fn valid_length(kind: Kind, length: usize, extended: bool) -> bool {
             Kind::Update => length >= 23,
             Kind::Notification => length >= 21,
             Kind::Keepalive => length == HEADER_BYTES,
-            Kind::RouteRefresh => length == 23,
+            // RFC 7313 通知包含完整畸形帧。只要求能识别 AFI 与 subtype，长度规则归会话。
+            Kind::RouteRefresh => length >= 22,
         }
 }
 
@@ -159,7 +160,7 @@ impl<'a> Frame<'a> {
             Kind::RouteRefresh => Message::RouteRefresh {
                 afi: u16::from_be_bytes([body[0], body[1]]),
                 subtype: body[2],
-                safi: body[3],
+                safi: body.get(3).copied(),
             },
         })
     }
@@ -179,8 +180,21 @@ pub enum Message<'a> {
     RouteRefresh {
         afi: u16,
         subtype: u8,
-        safi: u8,
+        /// None 表示可识别 subtype，但帧在 SAFI 之前结束。
+        safi: Option<u8>,
     },
+}
+
+/// 构造单播刷新请求或 RFC 7313 起止标记，无 ORF 正文。
+pub fn route_refresh(family: nlri::Family, subtype: u8) -> [u8; HEADER_BYTES + 4] {
+    let mut bytes = [0; HEADER_BYTES + 4];
+    let afi = match family {
+        nlri::Family::Ipv4 => 1,
+        nlri::Family::Ipv6 => 2,
+    };
+    bytes[HEADER_BYTES..].copy_from_slice(&[0, afi, subtype, 1]);
+    emit(&mut bytes, Kind::RouteRefresh, false).expect("fixed route refresh length");
+    bytes
 }
 
 /// 在正文已就位的完整输出范围内写共同头，不移动正文或修改额外容量。

@@ -1,7 +1,10 @@
 //! RFC 8200 IPv6 与扩展头链；RFC 2675 Jumbo Payload。只解释格式，不执行路由、重组或认证。
+pub mod fragment;
 pub mod options;
+mod quote;
 use crate::PacketError;
 use core::net::Ipv6Addr;
+pub use quote::Ipv6Quote;
 
 /// 格式错误及其在 IPv6 包中的字段位置；协议 owner 决定对应的 ICMP 响应和限速。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +25,20 @@ fn error(kind: PacketError, offset: usize) -> Ipv6Error {
 /// 固定头与可见扩展头链均已验证的 IPv6 借用；分片仍交给唯一重组 owner。
 #[derive(Clone, Copy)]
 pub struct Ipv6Packet<'a> {
-    bytes: &'a [u8],
+    datagram: Ipv6Datagram<'a>,
     chain: Chain,
+}
+/// 只确认固定头、完整数据报长度及必要的 Jumbo 长度发现；终点扩展头仍是不透明 payload。
+/// 路由器不能因 Destination/Routing/认证头不受本机支持而拒绝转发。
+#[derive(Clone, Copy)]
+pub struct Ipv6Datagram<'a> {
+    bytes: &'a [u8],
+}
+impl<'a> core::ops::Deref for Ipv6Packet<'a> {
+    type Target = Ipv6Datagram<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.datagram
+    }
 }
 #[derive(Clone, Copy)]
 struct Chain {
@@ -32,74 +47,33 @@ struct Chain {
     next_field: usize,
     // 非原子分片不能直接作为 transport；缺少此事实会把中间分片当作新 UDP/TCP 头。
     fragmented: bool,
+    non_initial_fragment: bool,
+}
+impl Chain {
+    fn upper_layer(self, bytes: &[u8]) -> Option<&[u8]> {
+        (!self.fragmented && self.protocol != 59).then_some(&bytes[self.end..])
+    }
+}
+fn header_address(bytes: &[u8], offset: usize) -> Ipv6Addr {
+    Ipv6Addr::from(
+        <[u8; 16]>::try_from(&bytes[offset..offset + 16]).expect("validated fixed header"),
+    )
 }
 impl<'a> Ipv6Packet<'a> {
     /// 解析完整 IP 包并排除链路 padding；非首分片只解析到 Fragment header，不解读其数据。
     /// # Errors
     /// 截断、版本/长度/扩展头格式错误；保留错误字段位置及不完整首分片信息。
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Ipv6Error> {
-        if bytes.len() < 40 {
-            return Err(error(PacketError::Truncated, bytes.len()));
+        let (datagram, mut hop) = bounded(bytes)?;
+        if datagram.bytes[6] == 0 && hop.is_none() {
+            let facts = hop_facts(datagram.bytes, 40, 0)?;
+            if let Some((_, offset)) = facts.jumbo {
+                return Err(error(PacketError::Malformed, offset));
+            }
+            hop = Some(facts);
         }
-        if bytes[0] >> 4 != 6 {
-            return Err(error(PacketError::Unsupported, 0));
-        }
-        let declared = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
-        // 首个 HBH 的解析事实在同一不可变字节上重用，Jumbo 长度发现不重复扫描该 TLV 区。
-        let hop = if bytes[6] == 0 {
-            let bounded = if declared == 0 {
-                bytes
-            } else {
-                bytes
-                    .get(..40 + declared)
-                    .ok_or_else(|| error(PacketError::Truncated, 4))?
-            };
-            Some(hop_facts(bounded, 40, 0)?)
-        } else {
-            None
-        };
-        let length = match (declared, hop.as_ref().and_then(|facts| facts.jumbo)) {
-            (0, Some((length, _))) => length as usize,
-            (0, None) if bytes[6] == 0 => return Err(error(PacketError::Malformed, 4)),
-            (_, Some((_, offset))) => return Err(error(PacketError::Malformed, offset)),
-            (length, None) => length,
-        };
-        let end = 40usize
-            .checked_add(length)
-            .ok_or_else(|| error(PacketError::Malformed, 4))?;
-        let bytes = bytes
-            .get(..end)
-            .ok_or_else(|| error(PacketError::Truncated, 4))?;
-        let chain = scan(bytes, bytes[6], length > 65535, hop)?;
-        Ok(Self { bytes, chain })
-    }
-    /// 排除链路 padding 的完整 IP 字节。
-    pub fn bytes(self) -> &'a [u8] {
-        self.bytes
-    }
-    /// 包含扩展头的原始 IPv6 payload。
-    pub fn payload(self) -> &'a [u8] {
-        &self.bytes[40..]
-    }
-    /// 固定头源地址。
-    pub fn source(self) -> Ipv6Addr {
-        Ipv6Addr::from(<[u8; 16]>::try_from(&self.bytes[8..24]).expect("validated header"))
-    }
-    /// 固定头当前目的地址；Routing header 的最终目的地址须由路由类型 owner 决定，再构造传输伪头。
-    pub fn destination(self) -> Ipv6Addr {
-        Ipv6Addr::from(<[u8; 16]>::try_from(&self.bytes[24..40]).expect("validated header"))
-    }
-    /// Traffic Class 的完整 8 位。
-    pub fn traffic_class(self) -> u8 {
-        self.bytes[0] << 4 | self.bytes[1] >> 4
-    }
-    /// 20-bit flow label。
-    pub fn flow_label(self) -> u32 {
-        u32::from_be_bytes(self.bytes[..4].try_into().expect("validated header")) & 0x000f_ffff
-    }
-    /// Hop Limit 原值，转发/本机语义由引擎决定。
-    pub fn hop_limit(self) -> u8 {
-        self.bytes[7]
+        let chain = scan(datagram.bytes, datagram.bytes[6], datagram.bytes.len(), hop)?;
+        Ok(Self { datagram, chain })
     }
     /// 扩展链终止时的协议；ESP/未知协议是 opaque terminal，不猜测加密后的 Next Header。
     pub fn upper_protocol(self) -> u8 {
@@ -119,19 +93,143 @@ impl<'a> Ipv6Packet<'a> {
     }
     /// 完整 transport/opaque protocol 数据；未重组或 No Next Header 返回 None。
     pub fn upper_layer(self) -> Option<&'a [u8]> {
-        (!self.chain.fragmented && self.chain.protocol != 59)
-            .then_some(&self.bytes[self.chain.end..])
+        self.chain.upper_layer(self.datagram.bytes)
     }
     /// 只遍历构造时已验证的扩展头，不对非首分片数据继续解码。
     pub fn extensions(self) -> Extensions<'a> {
         Extensions {
-            bytes: &self.bytes[40..self.chain.end],
-            kind: self.bytes[6],
+            bytes: &self.datagram.bytes[40..self.chain.end],
+            kind: self.datagram.bytes[6],
             offset: 40,
         }
     }
 }
 
+impl<'a> Ipv6Datagram<'a> {
+    /// 确认固定头与完整长度，不解释终点扩展头；Jumbo 长度发现是唯一必要的逐跳扫描。
+    /// # Errors
+    /// 版本、长度、Jumbo 发现失败；普通逐跳选项由使用者调用 hop_by_hop 检查后决定协议动作。
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Ipv6Error> {
+        bounded(bytes).map(|(datagram, _)| datagram)
+    }
+    /// 只按结构定位可见上层前缀，供路由器判断能否返回 ICMP 错误；不执行终点选项或认证语义。
+    /// # Returns
+    /// 非首分片返回 None；其他返回外层协议及可见字节，不能当作已验证的 transport。
+    /// # Errors
+    /// 扩展头 framing 截断或非法；协议层无法确认时应抑制错误，不能猜 ICMP 类型。
+    pub fn upper_prefix(self) -> Result<Option<(u8, &'a [u8])>, Ipv6Error> {
+        quoted_upper_prefix(self.bytes)
+    }
+
+    /// 排除链路 padding 的完整 IP 字节。
+    pub fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+    /// 包含扩展头的原始 IPv6 payload。
+    pub fn payload(self) -> &'a [u8] {
+        &self.bytes[40..]
+    }
+    /// 固定头源地址。
+    pub fn source(self) -> Ipv6Addr {
+        header_address(self.bytes, 8)
+    }
+    /// 固定头当前目的地址；Routing header 的最终目的地址须由路由类型 owner 决定，再构造传输伪头。
+    pub fn destination(self) -> Ipv6Addr {
+        header_address(self.bytes, 24)
+    }
+    /// Traffic Class 的完整 8 位。
+    pub fn traffic_class(self) -> u8 {
+        self.bytes[0] << 4 | self.bytes[1] >> 4
+    }
+    /// 20-bit flow label。
+    pub fn flow_label(self) -> u32 {
+        u32::from_be_bytes(self.bytes[..4].try_into().expect("validated header")) & 0x000f_ffff
+    }
+    /// Hop Limit 原值，转发/本机语义由引擎决定。
+    pub fn hop_limit(self) -> u8 {
+        self.bytes[7]
+    }
+    /// 校验首个逐跳头及选项 framing；不能借此解释后续 Destination/Routing/认证/分片头。
+    /// # Errors
+    /// 逐跳长度、选项或 Jumbo 放置非法，错误位置相对原始 IPv6 包。
+    pub fn hop_by_hop(self) -> Result<Option<ExtensionHeader<'a>>, Ipv6Error> {
+        if self.bytes[6] != 0 {
+            return Ok(None);
+        }
+        let facts = hop_facts(self.bytes, 40, 0)?;
+        if self.bytes[4..6] != [0; 2]
+            && let Some((_, offset)) = facts.jumbo
+        {
+            return Err(error(PacketError::Malformed, offset));
+        }
+        Ok(Some(ExtensionHeader {
+            kind: 0,
+            offset: 40,
+            bytes: &self.bytes[40..40 + facts.length],
+        }))
+    }
+}
+/// 从原 IPv6 包或 ICMP 引用定位可见上层前缀，不要求不可见的完整载荷。
+/// # Parameters
+/// `bytes` 为至少包含固定头的 IPv6 原包前缀；不借此代替完整接收校验。
+/// # Returns
+/// 首片/完整包返回协议与可见数据，非首片返回 None。
+/// # Errors
+/// 固定头或可见扩展链截断、非 IPv6、非法扩展头长度。
+pub fn quoted_upper_prefix(bytes: &[u8]) -> Result<Option<(u8, &[u8])>, Ipv6Error> {
+    if bytes.len() < 40 {
+        return Err(error(PacketError::Truncated, bytes.len()));
+    }
+    if bytes[0] >> 4 != 6 {
+        return Err(error(PacketError::Unsupported, 0));
+    }
+    let mut kind = bytes[6];
+    let mut at = 40;
+    while matches!(kind, 0 | 43 | 44 | 51 | 60) {
+        let length = extension_length(bytes, at, kind)?;
+        if kind == 44
+            && (FragmentHeader {
+                bytes: &bytes[at..at + length],
+                offset: at,
+            })
+            .fragment_offset()
+                != 0
+        {
+            return Ok(None);
+        }
+        kind = bytes[at];
+        at += length;
+    }
+    Ok(Some((kind, &bytes[at..])))
+}
+fn bounded(bytes: &[u8]) -> Result<(Ipv6Datagram<'_>, Option<HopFacts>), Ipv6Error> {
+    if bytes.len() < 40 {
+        return Err(error(PacketError::Truncated, bytes.len()));
+    }
+    if bytes[0] >> 4 != 6 {
+        return Err(error(PacketError::Unsupported, 0));
+    }
+    let declared = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
+    // 首个 HBH 的解析事实在同一不可变字节上重用，Jumbo 长度发现不重复扫描该 TLV 区。
+    let hop = if bytes[6] == 0 && declared == 0 {
+        Some(hop_facts(bytes, 40, 0)?)
+    } else {
+        None
+    };
+    let length = match (declared, hop.as_ref().and_then(|facts| facts.jumbo)) {
+        (0, Some((length, _))) => length as usize,
+        (0, None) if bytes[6] == 0 => return Err(error(PacketError::Malformed, 4)),
+        (_, Some((_, offset))) => return Err(error(PacketError::Malformed, offset)),
+        (length, None) => length,
+    };
+    let end = 40usize
+        .checked_add(length)
+        .ok_or_else(|| error(PacketError::Malformed, 4))?;
+    let bytes = bytes
+        .get(..end)
+        .ok_or_else(|| error(PacketError::Truncated, 4))?;
+    Ok((Ipv6Datagram { bytes }, hop))
+}
 struct HopFacts {
     length: usize,
     jumbo: Option<(u32, usize)>,
@@ -174,7 +272,7 @@ fn extension_length(bytes: &[u8], offset: usize, kind: u8) -> Result<usize, Ipv6
 fn scan(
     bytes: &[u8],
     first: u8,
-    jumbo: bool,
+    packet_length: usize,
     mut hop: Option<HopFacts>,
 ) -> Result<Chain, Ipv6Error> {
     let mut chain = Chain {
@@ -182,6 +280,7 @@ fn scan(
         protocol: first,
         next_field: 6,
         fragmented: false,
+        non_initial_fragment: false,
     };
     loop {
         let kind = chain.protocol;
@@ -207,14 +306,14 @@ fn scan(
             problem
         })?;
         if kind == 44 {
-            if jumbo {
+            if packet_length > 65575 {
                 return Err(error(PacketError::Malformed, offset));
             }
             let fragment = FragmentHeader {
                 bytes: &bytes[offset..offset + 8],
                 offset,
             };
-            let payload = bytes.len() - offset - 8;
+            let payload = packet_length - offset - 8;
             if fragment.more() && !payload.is_multiple_of(8) {
                 return Err(error(PacketError::Malformed, 4));
             }
@@ -226,6 +325,7 @@ fn scan(
             chain.next_field = offset;
             chain.end += 8;
             if fragment.fragment_offset() != 0 {
+                chain.non_initial_fragment = true;
                 break;
             }
         } else {
@@ -358,7 +458,28 @@ impl Ipv6Header {
             (false, None) => (),
             _ => return Err(PacketError::Malformed),
         }
-        scan(output, self.next_header, length > 65535, hop).map_err(|problem| problem.kind)?;
+        scan(output, self.next_header, output.len(), hop).map_err(|problem| problem.kind)?;
+        self.write_fields(output, length);
+        Ok(())
+    }
+    /// 仅填写 IPv6 固定头，供分散载荷直接编码到最终设备窗口；扩展头/载荷由调用者负责。
+    /// # Parameters
+    /// `output` 至少 40 字节；`length` 为固定头之后的实际字节数，不包含固定头。
+    /// # Returns
+    /// 只覆盖前 40 字节，不读取尚未就位的载荷或扩展头。
+    /// # Errors
+    /// 固定头空间不足、非普通 16-bit payload 或非法 flow label；错误不改变 output。
+    pub fn emit_prefix(&self, output: &mut [u8], length: usize) -> Result<(), PacketError> {
+        if output.len() < 40 || length > 65535 {
+            return Err(PacketError::Capacity);
+        }
+        if self.flow_label > 0x000f_ffff {
+            return Err(PacketError::Malformed);
+        }
+        self.write_fields(output, length);
+        Ok(())
+    }
+    fn write_fields(&self, output: &mut [u8], length: usize) {
         let first = (6u32 << 28) | u32::from(self.traffic_class) << 20 | self.flow_label;
         output[..4].copy_from_slice(&first.to_be_bytes());
         output[4..6]
@@ -367,7 +488,6 @@ impl Ipv6Header {
         output[7] = self.hop_limit;
         output[8..24].copy_from_slice(&self.source.octets());
         output[24..40].copy_from_slice(&self.destination.octets());
-        Ok(())
     }
 }
 

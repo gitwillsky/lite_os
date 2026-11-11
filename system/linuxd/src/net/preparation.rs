@@ -5,12 +5,13 @@ use core::mem::MaybeUninit;
 use super::{InetProtocol, InetSocket, KobjectSocket, PacketSocket, RouteSocket, UnixSocket};
 use super::{Socket, SocketBackend, SocketDomain, SocketError, SocketTimeouts, SocketType};
 use crate::ipc::PipeEnd;
+use network_protocol::InetFamily;
 
 /// 唯一已验证 endpoint 请求；decode 在 backend allocation 前完成，backend 不再重复 domain/type/protocol policy。
 #[derive(Clone, Copy)]
 enum BackendRequest {
     Unix(SocketType),
-    Ipv4(InetProtocol),
+    Inet(InetFamily, InetProtocol),
     Packet(SocketType, usize),
     Uevent(SocketType),
     Route(SocketType),
@@ -25,6 +26,10 @@ impl SocketRequest {
         kind: SocketType,
         protocol: usize,
     ) -> Result<Self, SocketError> {
+        if matches!(domain, SocketDomain::Inet | SocketDomain::Inet6) && protocol > u8::MAX as usize
+        {
+            return Err(SocketError::Invalid);
+        }
         match (domain, kind, protocol) {
             (
                 SocketDomain::Unix,
@@ -32,16 +37,26 @@ impl SocketRequest {
                 0,
             ) => Ok(BackendRequest::Unix(kind)),
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
-                Ok(BackendRequest::Ipv4(InetProtocol::Udp))
+                Ok(BackendRequest::Inet(InetFamily::Ipv4, InetProtocol::Udp))
+            }
+            (SocketDomain::Inet6, SocketType::Datagram, 0 | 17) => {
+                Ok(BackendRequest::Inet(InetFamily::Ipv6, InetProtocol::Udp))
+            }
+            (SocketDomain::Inet6, SocketType::Stream, 0 | 6) => {
+                Ok(BackendRequest::Inet(InetFamily::Ipv6, InetProtocol::Tcp))
             }
             (SocketDomain::Inet, SocketType::Stream, 0 | 6) => {
-                Ok(BackendRequest::Ipv4(InetProtocol::Tcp))
+                Ok(BackendRequest::Inet(InetFamily::Ipv4, InetProtocol::Tcp))
             }
-            (SocketDomain::Inet, SocketType::Raw, 255) => {
-                Ok(BackendRequest::Ipv4(InetProtocol::Raw))
-            }
-            (SocketDomain::Inet, SocketType::Raw, 1) => {
-                Ok(BackendRequest::Ipv4(InetProtocol::Icmp))
+            (SocketDomain::Inet | SocketDomain::Inet6, SocketType::Raw, 1..=255) => {
+                Ok(BackendRequest::Inet(
+                    if domain == SocketDomain::Inet6 {
+                        InetFamily::Ipv6
+                    } else {
+                        InetFamily::Ipv4
+                    },
+                    InetProtocol::Raw(protocol as u8),
+                ))
             }
             (SocketDomain::Packet, SocketType::Datagram | SocketType::Raw, _) => {
                 Ok(BackendRequest::Packet(kind, protocol))
@@ -61,7 +76,8 @@ impl SocketRequest {
             BackendRequest::Unix(_) => SocketDomain::Unix,
             BackendRequest::Packet(_, _) => SocketDomain::Packet,
             BackendRequest::Uevent(_) | BackendRequest::Route(_) => SocketDomain::Netlink,
-            _ => SocketDomain::Inet,
+            BackendRequest::Inet(InetFamily::Ipv4, _) => SocketDomain::Inet,
+            BackendRequest::Inet(InetFamily::Ipv6, _) => SocketDomain::Inet6,
         }
     }
     fn kind(self) -> SocketType {
@@ -70,8 +86,8 @@ impl SocketRequest {
             | BackendRequest::Packet(kind, _)
             | BackendRequest::Uevent(kind)
             | BackendRequest::Route(kind) => kind,
-            BackendRequest::Ipv4(InetProtocol::Tcp) => SocketType::Stream,
-            BackendRequest::Ipv4(InetProtocol::Icmp | InetProtocol::Raw) => SocketType::Raw,
+            BackendRequest::Inet(_, InetProtocol::Tcp) => SocketType::Stream,
+            BackendRequest::Inet(_, InetProtocol::Raw(_)) => SocketType::Raw,
             _ => SocketType::Datagram,
         }
     }
@@ -117,9 +133,12 @@ impl PreparedSocket {
                 self.object_id,
                 self.memory.namespace(),
             )?),
-            BackendRequest::Ipv4(protocol) => {
-                SocketBackend::Inet(InetSocket::new(protocol, notify, self.memory.namespace())?)
-            }
+            BackendRequest::Inet(family, protocol) => SocketBackend::Inet(InetSocket::new(
+                family,
+                protocol,
+                notify,
+                self.memory.namespace(),
+            )?),
             BackendRequest::Packet(kind, protocol) => SocketBackend::Packet(PacketSocket::new(
                 kind,
                 protocol,

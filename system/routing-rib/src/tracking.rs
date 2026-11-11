@@ -1,12 +1,26 @@
 //! 原生依赖观察的寿命与发表通知；只保留观察定义，不镜像解析结果或转发状态。
 use super::*;
+use alloc::boxed::Box;
 use network_protocol::routing::TrackingService;
 use router_protocol::tracking::Query;
+use router_protocol::tracking::routes::Selector;
+use routing_rib::sources::Snapshot;
 
 pub(super) struct Registration {
     id: u64,
     queries: Arc<Vec<Query>>,
     changed: Event,
+    // OWNER: 此能力的不可变观察范围；完整递归依赖变化可能不改变立即出口，必须通知每次已确认图发表。
+    whole_graph: bool,
+    // 由来源能力装配，消费者不能自选身份；普通 NHT 不改变解析，只在路由分发观察中排除此来源。
+    excluded_source: Option<u64>,
+    // OWNER: 每个串行观察 handler 只保留已确认和最近交付的冻结根，不复制路由或积累代际历史。
+    cursor: Option<Box<Cursor>>,
+}
+struct Cursor {
+    selector: Arc<Selector>,
+    acknowledged: Option<Arc<Snapshot>>,
+    offered: Option<Arc<Snapshot>>,
 }
 struct Session {
     owner: Arc<Rib>,
@@ -17,11 +31,12 @@ impl State {
     pub(super) fn publish(&mut self, next: Routes) -> Routes {
         let old = core::mem::replace(&mut self.routes, next);
         for watcher in &self.watchers {
-            let changed = match (old.snapshot(), self.routes.snapshot()) {
-                (Some(old), Some(next)) => next.changes_from(old, &watcher.queries),
-                (None, None) => false,
-                _ => true,
-            };
+            let changed = watcher.whole_graph
+                || match (old.snapshot(), self.routes.snapshot()) {
+                    (Some(old), Some(next)) => next.changes_from(old, &watcher.queries),
+                    (None, None) => false,
+                    _ => true,
+                };
             if changed {
                 watcher
                     .changed
@@ -33,7 +48,22 @@ impl State {
     }
 }
 impl Rib {
-    pub(super) fn track(self: &Arc<Self>, queries: Vec<Query>) -> Result<(Channel, Event), Status> {
+    pub(super) fn track(
+        self: &Arc<Self>,
+        queries: Vec<Query>,
+        excluded_source: Option<u64>,
+    ) -> Result<(Channel, Event), Status> {
+        self.register(queries, false, excluded_source)
+    }
+    pub(super) fn watch_routes(self: &Arc<Self>, source: u64) -> Result<(Channel, Event), Status> {
+        self.register(Vec::new(), true, Some(source))
+    }
+    fn register(
+        self: &Arc<Self>,
+        queries: Vec<Query>,
+        whole_graph: bool,
+        excluded_source: Option<u64>,
+    ) -> Result<(Channel, Event), Status> {
         if queries.iter().any(|query| !query.valid()) {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
@@ -58,6 +88,9 @@ impl Rib {
                 id,
                 queries,
                 changed,
+                whole_graph,
+                excluded_source,
+                cursor: None,
             });
             id
         };
@@ -87,6 +120,92 @@ impl Rib {
     }
 }
 impl TrackingService for Session {
+    fn route_changes(&self, selector: Selector, generation: u64) -> Result<Vec<u8>, Status> {
+        // 同一 channel 只有一个 serve worker；cursor 不能并发交付，State 只保护根/登记捕获，不持锁编码。
+        let (previous, current, selector, excluded, retired) = {
+            let mut state = self.owner.state.lock();
+            let current = state
+                .routes
+                .snapshot()
+                .cloned()
+                .ok_or(native_abi::ERR_SHOULD_WAIT)?;
+            let watcher = state
+                .watchers
+                .iter_mut()
+                .find(|watcher| watcher.id == self.id)
+                .ok_or(native_abi::ERR_PEER_CLOSED)?;
+            if !watcher.whole_graph {
+                return Err(native_abi::ERR_NOT_SUPPORTED);
+            }
+            if let Some(cursor) = &watcher.cursor {
+                if *cursor.selector != selector {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+            } else {
+                if generation != 0 {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                watcher.cursor = Some(
+                    Box::try_new(Cursor {
+                        selector: Arc::try_new(selector).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                        acknowledged: None,
+                        offered: None,
+                    })
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                );
+            }
+            let cursor = watcher.cursor.as_mut().expect("initialized cursor");
+            let mut retired = None;
+            if generation != 0
+                && cursor
+                    .acknowledged
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.generation() != generation)
+            {
+                if cursor
+                    .offered
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.generation() != generation)
+                {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                retired = core::mem::replace(&mut cursor.acknowledged, cursor.offered.take());
+            }
+            let previous = (generation != 0).then(|| {
+                cursor
+                    .acknowledged
+                    .as_ref()
+                    .expect("acknowledged generation")
+                    .clone()
+            });
+            (
+                previous,
+                current,
+                cursor.selector.clone(),
+                watcher.excluded_source,
+                retired,
+            )
+        };
+        drop(retired);
+        let bytes = current.route_changes(previous.as_deref(), &selector, excluded)?;
+        let retired = {
+            let mut state = self.owner.state.lock();
+            let watcher = state
+                .watchers
+                .iter_mut()
+                .find(|watcher| watcher.id == self.id)
+                .ok_or(native_abi::ERR_PEER_CLOSED)?;
+            watcher
+                .cursor
+                .as_mut()
+                .expect("same serial handler owns cursor")
+                .offered
+                .replace(current)
+        };
+        // 回复或 VMO 创建失败仍未被消费者确认；旧 acknowledged 根保留，下次以相同代际安全重取。
+        drop(retired);
+        Ok(bytes)
+    }
     fn snapshot(&self) -> Result<Vec<u8>, Status> {
         let (queries, snapshot) = {
             let state = self.owner.state.lock();

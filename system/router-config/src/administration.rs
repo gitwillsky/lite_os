@@ -2,6 +2,28 @@
 
 use super::*;
 use router_protocol::ordinal;
+use router_protocol::connections::changes;
+
+fn execution_control(owner: &RouterConfig) -> Result<(u64, RoutingConfigurator), Status> {
+    let inner = owner.inner.lock();
+    let link = inner.link.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
+    let control = link.installer.channel().duplicate(native_abi::rights::SAME)?;
+    Ok((inner.generation, RoutingConfigurator::new(control)))
+}
+
+pub(super) fn wait_connection_changes(owner: &RouterConfig, bytes: &[u8]) -> Result<(), Status> {
+    let cursor = changes::Cursor::parse(bytes).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    let (_, control) = execution_control(owner)?;
+    if let Some(event) = control.arm_connection_watch(cursor)? {
+        // 有界等待使放弃请求的 datagram 客户端不会长期占用等待名额。
+        let deadline = native_runtime::system::monotonic().saturating_add(15_000_000_000);
+        match event.wait_one(native_abi::signals::USER_0, deadline) {
+            Ok(_) | Err(native_abi::ERR_TIMED_OUT) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn handle(
     owner: &RouterConfig,
@@ -16,19 +38,96 @@ pub(super) fn handle(
     if handles.len() != usize::from(metadata.length != 0) {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
-    let candidate = if metadata.length != 0 {
-        let content = Vmo::from_handle(service_rpc::take_handle(&mut handles, 0)?)
-            .read_bytes(metadata.length)?;
-        Some(Configuration::decode(&content).map_err(|error| {
-            warn!("router-config: candidate rejected: {error}");
-            native_abi::ERR_INVALID_ARGS
-        })?)
+    let content = if metadata.length != 0 {
+        Some(
+            Vmo::from_handle(service_rpc::take_handle(&mut handles, 0)?)
+                .read_bytes(metadata.length)?,
+        )
+    } else {
+        None
+    };
+    let candidate = if matches!(operation, ordinal::VALIDATE | ordinal::IMPORT | ordinal::DIFF) {
+        content
+            .as_deref()
+            .map(Configuration::decode)
+            .transpose()
+            .map_err(|error| {
+                warn!("router-config: candidate rejected: {error}");
+                native_abi::ERR_INVALID_ARGS
+            })?
     } else {
         None
     };
     // 确认固定字段先预留；IMPORT 持久决定后不再创建 VMO、容器或增长回复。
     reply.try_reserve(24)?;
     let (generation, json) = match operation {
+        ordinal::CONNECTIONS | ordinal::CLEAR_CONNECTION => {
+            let selector = content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?;
+            let (generation, control) = execution_control(owner)?;
+            if operation == ordinal::CLEAR_CONNECTION {
+                let identity = router_protocol::connections::Identity::parse(selector)
+                    .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                control.clear_connection(identity)?;
+                let response = router_protocol::administration::Reply { generation, length: 0 };
+                reply.bytes(&response.encode());
+                return Ok(Vec::new());
+            }
+            let cursor = router_protocol::connections::Cursor::parse(selector)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            (generation, control.connections(cursor)?)
+        }
+        ordinal::CONNECTION_CHANGES => {
+            let cursor = changes::Cursor::parse(content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            let (generation, control) = execution_control(owner)?;
+            (generation, control.connection_changes(cursor)?)
+        }
+        ordinal::FIREWALL_COUNTERS => {
+            let cursor = router_protocol::firewall::counters::Cursor::parse(
+                content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
+            )
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            let (generation, control) = execution_control(owner)?;
+            (generation, control.firewall_counters(cursor)?)
+        }
+        ordinal::DHCP_SERVER_BINDINGS => {
+            let (name, after) = router_protocol::dhcp_server::decode_settings_query(
+                content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
+            )
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            owner.pool_bindings(name, after)?
+        }
+        ordinal::BGP_ROUTES => {
+            let query = router_protocol::tracking::IpPrefix::parse(
+                content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
+            )
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            let (generation, routes) = owner.bgp_routes(query)?;
+            (
+                generation,
+                routes.encode().map_err(|_| native_abi::ERR_BAD_STATE)?,
+            )
+        }
+        ordinal::BGP_STATUS => {
+            let (generation, snapshot) = owner.bgp_status()?;
+            let json = snapshot.encode().map_err(|_| native_abi::ERR_BAD_STATE)?;
+            (generation, json)
+        }
+        ordinal::BGP_REFRESH => {
+            let request = router_protocol::bgp::RefreshRequest::parse(
+                content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
+            )
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            let generation = owner.bgp_refresh(&request)?;
+            reply.bytes(
+                &router_protocol::administration::Reply {
+                    generation,
+                    length: 0,
+                }
+                .encode(),
+            );
+            return Ok(Vec::new());
+        }
         ordinal::BACKUPS => {
             let json = owner.backup_list()?;
             let generation = owner.inner.lock().generation;

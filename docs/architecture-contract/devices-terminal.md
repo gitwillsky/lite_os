@@ -31,7 +31,7 @@ DRM/KMS、framebuffer、VirGL/PRIME 与图形资源退休的唯一细节 owner �
 1. 每个驱动宿主在自己的设备目录登记设备（类、静态描述与开会话函数）；driver-manager 向 component-manager 持有的汇聚目录登记条目（对应 Fuchsia devfs）：转发条目的 `OPEN` 原样交给所在宿主，独占与会话回收由宿主判定；宿主终止时撤下
    它的全部条目（`remove`），宿主重启后设备以新 ID 重新登记。目录 ID 单调不复用；使用者 `LIST` 枚举、`WATCH`
    取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN(id, options)` 建立新会话、`SCOPE` 派生只含指定类的目录。
-   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v11 使用 pair 数(u16) 与 TX payload 容量(u32)，均小端，其他现有类只接受空 options。
+   options 为带长度的设备类私有版本化参数，汇聚目录原样转发，不解释硬件策略；网络类 v13 使用 pair 数(u16) 与 TX payload 容量(u32)，均小端，其他现有类只接受空 options。
    初始枚举按节点顺序并入（首个 GPU、PCI console/block/net、按 DTB 顺序的 VirtIO-MMIO、xHCI），使用者据登记顺序命名
    设备。component-manager 按类派生给各服务，宿主的监督查询和会话打开使用独立连接。
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
@@ -400,12 +400,19 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
 - RSS 按固定 [VirtIO 1.4 CS01 网络规范](https://github.com/oasis-tcs/virtio-spec/blob/917e900e0246b7fe21cdde795b0e566dd4f57d8d/device-types/net/description.tex)实现可配置 Toeplitz 分流。
   只协商 RSS，不协商 HASH_REPORT，收发 header 保持 12 字节。能力来自同代配置的 key/table/hash-types；key 上限至少 40、table 上限至少 128，
   领域 hash bits 只涵盖 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6 与 IPv6 EX 三类；不公布未实现的隧道散列。
-  v11 静态描述在 maximum-pairs 后编码 TX flags(u8，checksum/TCPv4/TCPv6/ECN 为 bits 0..3)、普通帧上限(u32)、TX 容量上限(u32)，
+  v13 静态描述在 maximum-pairs 后编码 TX flags(u8，checksum/TCPv4/TCPv6/ECN 为 bits 0..3)、普通帧上限(u32)、TX 容量上限(u32)，
   随后为独立队列 IRQ 亲和能力(bool)，再沿原 RSS 描述编码；QUEUE_AFFINITY(15) 使用 queue(u16)/逻辑 CPU(u32)，拒绝尾部和句柄。
   原生会话 capability 约束同一设备/队列；设置错误及停止顺序见[硬件资源契约](hardware-resources.md)。
-  WATCH_LINK(16) 拒绝参数/句柄并交付独立 USER_0 Event；bind_link_activity 在绑定后补发，消费者重读 LINK，不把普通 RX/TX 当作链路变化。
+  WATCH_LINK(16) 拒绝参数/句柄并交付独立 USER_0 Event；绑定后补发，消费者读取队列零首部的已发表链路事实，不把普通 RX/TX 当作链路变化。
   VirtIO MSI-X config 向量及 INTx CONFIG 位通知链路，队列向量/VRING 位仅推进数据；回调属于活动租约，在锁外调用/退休，不跨代际保留旧通知。
-  Event 只承载可合并的变化，不携带载波缓存；会话/观察登记共同退休。v11 与生命周期 ABI 5 配套，拒绝旧描述，不保留轮询或队列通知代用路径。
+  Event 只承载可合并的变化，不携带载波缓存；会话/观察登记共同退休。v13 与生命周期 ABI 5 配套，拒绝旧描述，不保留轮询或队列通知代用路径。
+  链路字段复用 576-byte 环首部的偏移 528，不增加映射/页或改变数据环起点；只允许同宽 AtomicU64 访问，Release/Acquire 一次交接完整状态。
+  低三位编码尚未发表、下线、在线或读取失败；接下来的 29 位为同一会话载波代际，状态变化递增，单独改速率保持代际。
+  高 32 位为速率（u32::MAX 未知）或原生错误。坏值拒绝，closed/abort 优先于旧快照。
+  NetworkSession 的唯一低频 publication 锁串行化 provider 读取和写入，防止并发旧回调覆盖新状态；不取得数据队列 consumer 锁，释放后再 signal Event。
+  provider 回调只持会话 Weak，退出不形成 device/callback/session 环；初始发布在会话能力交付前完成，provider 须在自身锁外通知，迟到回调不能复活已关闭会话。
+  RemoteNetwork::link 先检查既有 ActivityBinding 的永久退出事实，再读共享字段；不发送控制 RPC、不复制载波缓存。LINK(9) 已删除，旧描述按版本拒绝。
+  成本为每会话一个冷发布锁、原首部一个字，无逐查询分配/驱动 RPC；读取仍复用活动 owner 的短 metadata 检查。现有环用例覆盖偏移/错误/退出，不代替真实 IRQ/故障验收，沿完整收发基准评估。
   之后为 rss-present(bool)、可选 key-max(u8)/table-max(u16)/hash-types(u32)、MAC/name。未知位、依赖和容量矛盾均拒绝。
   RSS_CONFIG 冷请求携带 length(u64) 和只读 VMO，VMO 格式是 hash-types(u32)、unclassified(u16)、key-length(u16)、table-count(u32)、
   table-count 个 u16 pair 下标、原始 key 字节。所有整数小端；服务先有界复制快照，再按同一领域校验检查权能/长度/队列，避免 TOCTOU 及 64 KiB channel 限制。
@@ -437,7 +444,7 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   DATA_VALID 直接标记 transport 已验证，NEEDS_CSUM 先校验 start/offset 边界、按已有 seed 原地补全，再发表 checksum-valid；
   两标志都无则必须软件验证。未知 flags 按规范忽略，未协商的 GSO 或非法范围终止设备，不把畸形 DMA 数据交给客户端。
   不依赖 RX hdr_len，不在 NEEDS_CSUM 缺失时读取无意义的 checksum offsets。只访问 used_length，交付前不创建客户端内容引用。
-  checksum-valid 随 v11 RX 第四字和 NetworkReceiveFrame 寿命传递；token 的 unsafe 构造者必须证明 true 的事实。
+  checksum-valid 随 v12 RX 第四字和 NetworkReceiveFrame 寿命传递；token 的 unsafe 构造者必须证明 true 的事实。
   主机引擎只在该次 ingress 的作用域跳过 TCP/UDP RX 校验，保留 TX 设置及 IP/ICMP 校验，结束时恢复；不能由全局设备能力跳过所有包。
   AF_PACKET 入队冻结 Verified，Linuxd AUXDATA 投影 CSUM_VALID；软件补全发生在 tap 之前，不会把未完成 checksum 当作已验证内容。
   Benchmark 决策：DATA_VALID 不扫描 payload，NEEDS_CSUM 仅在 driver 计算一次，四环记录不再扩容；本次未测量真实设备卸载吞吐。

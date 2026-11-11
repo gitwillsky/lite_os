@@ -6,6 +6,8 @@ use queue::{CAPACITY, Queue};
 struct State {
     last: [u64; CAPACITY],
     scratch: Vec<u8>,
+    // OWNER: 仅解码当前请求的有序控制项；首次实际使用准备并复用，控制与数据操作仍由同一 socket 锁串行。
+    controls: Vec<InternetSendPacketInfo>,
     // FLAG: 只交出一次 producer capability；重复协商会产生两个不协调的客户端。
     negotiated: bool,
 }
@@ -29,6 +31,7 @@ impl SocketQueue {
             state: Mutex::new(State {
                 last: [0; CAPACITY],
                 scratch: Vec::new(),
+                controls: Vec::new(),
                 negotiated: false,
             }),
         })
@@ -103,7 +106,10 @@ impl SocketQueue {
                 return Err(native_abi::ERR_BAD_STATE);
             }
             state.last[index] = ticket;
-            let response = socket_io::execute(socket, &self.ring, request, &mut state.scratch)?;
+            let State {
+                scratch, controls, ..
+            } = &mut *state;
+            let response = socket_io::execute(socket, &self.ring, request, scratch, controls)?;
             self.ring.complete(response)?;
             completed = true;
         }

@@ -259,6 +259,11 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         .find(|source| source.relative == "system/linuxd/src/syscall/socket.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
+    let socket_errno = sources
+        .iter()
+        .find(|source| source.relative == "system/linuxd/src/net/mod.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
     let inet = sources
         .iter()
         .find(|source| source.relative == "system/linuxd/src/net/inet.rs")
@@ -278,7 +283,8 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         || !protocol_poll.contains("device_failures")
         || inet.contains("take_device_error()")
         || inet.contains("if let Ok(poll) = poll")
-        || !socket_syscall.contains("SocketError::Device => errno::EIO")
+        || !socket_errno.contains("SocketError::Device => errno::EIO")
+        || !socket_syscall.contains("crate::net::socket_errno(error)")
     {
         errors.push(
             "VirtIO translation errors remain typed; Ethernet failures belong to actual device diagnostics without poisoning unrelated socket errors or losing successful poll edges"

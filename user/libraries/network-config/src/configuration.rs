@@ -5,6 +5,125 @@ use std::{io, time::Duration};
 
 pub use router_protocol::configuration::Configuration;
 
+/// 经既有授权配置端点查询 BGP 邻居状态；不直接持有原生工厂或网络执行能力。
+/// # Errors
+/// 尚未应用、权限不足、实例退出或状态正文损坏。
+pub fn bgp_status() -> io::Result<router_protocol::bgp::Snapshot> {
+    let (_, json) = request(ordinal::BGP_STATUS, None, None, None)?;
+    router_protocol::bgp::Snapshot::parse(&json)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "BGP 状态无效"))
+}
+
+/// 经授权配置端点向当前邻居连接排队单族 BGP 刷新。成功只表示请求已排队。
+/// # Errors
+/// 邻居名非法、权限不足、会话不可用或未协商所需能力。
+pub fn bgp_refresh(neighbor: &str, family: router_protocol::routing::Family) -> io::Result<()> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "BGP 邻居名称无效");
+    let request_body = router_protocol::bgp::RefreshRequest {
+        neighbor: neighbor.to_owned().try_into().map_err(|_| invalid())?,
+        family,
+    }
+    .encode()
+    .map_err(|_| invalid())?;
+    request(ordinal::BGP_REFRESH, None, Some(&request_body), None).map(|_| ())
+}
+
+/// 查询一个规范 IPv4 前缀的原始接收、已确认协议选择及未采用原因。
+/// # Errors
+/// 非法前缀、权限不足、服务尚待应用/退出或回复损坏。
+pub fn bgp_routes(
+    query: router_protocol::tracking::IpPrefix,
+) -> io::Result<router_protocol::bgp::Routes> {
+    let json = query
+        .encode()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "BGP 前缀无效"))?;
+    let (_, json) = request(ordinal::BGP_ROUTES, None, Some(&json), None)?;
+    let routes = router_protocol::bgp::Routes::parse(&json)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "BGP 路由回复无效"))?;
+    if routes.query != query {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "BGP 前缀回复不匹配",
+        ));
+    }
+    Ok(routes)
+}
+
+/// 查询当前默认网络域的一页有效转发连接。
+/// # Errors
+/// 权限不足、游标失效、服务不可用或分页正文非法。
+pub fn connections(
+    cursor: router_protocol::connections::Cursor,
+) -> io::Result<router_protocol::connections::Page> {
+    let (_, page) = request(ordinal::CONNECTIONS, None, Some(&cursor.encode()), None)?;
+    router_protocol::connections::Page::parse(&page, cursor)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "转发连接列表回复无效"))
+}
+
+/// 清除一条已确认的转发连接。
+/// # Errors
+/// 身份已失效、无网络管理权限或服务不可用。
+pub fn clear_connection(identity: router_protocol::connections::Identity) -> io::Result<()> {
+    request(ordinal::CLEAR_CONNECTION, None, Some(&identity.encode()), None).map(drop)
+}
+
+/// 查询当前执行链的一页防火墙命中计数。
+/// # Errors
+/// 权限不足、规则链换版、游标失效或回复无效。
+pub fn firewall_counters(
+    cursor: router_protocol::firewall::counters::Cursor,
+) -> io::Result<router_protocol::firewall::counters::Page> {
+    let (_, bytes) = request(ordinal::FIREWALL_COUNTERS, None, Some(&cursor.encode()), None)?;
+    router_protocol::firewall::counters::Page::parse(&bytes, cursor)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "防火墙计数回复无效"))
+}
+
+/// 读取指定位置后的有界增量。首次查询或历史不足时返回重新同步起点。
+/// # Errors
+/// 权限不足、服务不可用或回复无效。
+pub fn connection_changes(
+    cursor: router_protocol::connections::changes::Cursor,
+) -> io::Result<router_protocol::connections::changes::Batch> {
+    let (_, bytes) = request(ordinal::CONNECTION_CHANGES, None, Some(&cursor.encode()), None)?;
+    router_protocol::connections::changes::Batch::parse(&bytes, cursor)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "转发连接增量回复无效"))
+}
+
+/// 等待新的连接变化。成功后重新查询游标，也可能是服务端的等待时限已到。
+/// # Errors
+/// 权限不足、等待名额已满或传输失败。
+pub fn wait_connection_changes(cursor: router_protocol::connections::changes::Cursor) -> io::Result<()> {
+    let bytes = super::settings::request(
+        ordinal::WAIT_CONNECTION_CHANGES,
+        &cursor.encode(),
+        Some(Duration::from_secs(20)),
+    )?;
+    if !bytes.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "转发连接等待回复无效"));
+    }
+    Ok(())
+}
+
+/// Read a page of leases for the given system interface.
+pub fn dhcp_server_bindings(
+    interface: &[u8],
+    after: std::net::Ipv4Addr,
+) -> io::Result<(u64, u64, Vec<router_protocol::dhcp_server::Binding>, bool)> {
+    use router_protocol::dhcp_server;
+    let query = dhcp_server::settings_query(interface, after)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "接口名称无效"))?;
+    let (generation, page) = request(ordinal::DHCP_SERVER_BINDINGS, None, Some(&query), None)?;
+    let (observed_ms, leases, more) = dhcp_server::decode_page(&page)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DHCP 租约回复无效"))?;
+    if leases.first().is_some_and(|lease| lease.address <= after) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "DHCP 租约游标未推进",
+        ));
+    }
+    Ok((generation, observed_ms, leases, more))
+}
+
 /// 单次审阅或提交的控制面等待上限；超时/断线不能证明修改未发生，调用方应重新查询。
 const TIMEOUT: Duration = Duration::from_secs(30);
 

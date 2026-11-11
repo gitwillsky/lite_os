@@ -4,9 +4,7 @@
 extern crate alloc;
 extern crate network_protocol as network_wire;
 extern crate self as network_protocol;
-pub use network_wire::MAX_IPV4_UDP_BYTES;
-/// Opaque remote endpoint input: this fixture never performs network IPC.
-pub struct RemoteNamespace;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 #[path = "../src/pipe_fixture.rs"]

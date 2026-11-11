@@ -1,4 +1,5 @@
 //! RFC 791 IPv4 header 与 RFC 1071 transport pseudo-header；不执行路由或重组。
+pub mod fragment;
 use crate::{PacketError, checksum};
 use core::net::Ipv4Addr;
 
@@ -25,30 +26,8 @@ impl<'a> Ipv4Packet<'a> {
     /// # Errors
     /// 截断、版本/IHL/选项/分片格式非法。
     pub fn parse_header(bytes: &'a [u8]) -> Result<Self, PacketError> {
-        if bytes.len() < 20 {
-            return Err(PacketError::Truncated);
-        }
-        if bytes[0] >> 4 != 4 {
-            return Err(PacketError::Unsupported);
-        }
-        let header = usize::from(bytes[0] & 15) * 4;
-        let total = usize::from(u16::from_be_bytes([bytes[2], bytes[3]]));
-        if header < 20 || total < header {
-            return Err(PacketError::Malformed);
-        }
+        let (header, total) = checked_header(bytes)?;
         let bytes = bytes.get(..total).ok_or(PacketError::Truncated)?;
-        validate_options(&bytes[20..header])?;
-        let flags = u16::from_be_bytes([bytes[6], bytes[7]]);
-        let fragmented = flags & 0x3fff != 0;
-        let payload = total - header;
-        if flags & 0x8000 != 0
-            || fragmented && flags & 0x4000 != 0
-            || fragmented && payload == 0
-            || flags & 0x2000 != 0 && !payload.is_multiple_of(8)
-            || usize::from(flags & 0x1fff) * 8 + payload > 65515
-        {
-            return Err(PacketError::Malformed);
-        }
         Ok(Self { bytes, header })
     }
     /// 已排除链路 padding 的完整 IP 数据。
@@ -97,6 +76,95 @@ impl<'a> Ipv4Packet<'a> {
     }
 }
 
+// 同一校验适用于完整包与 ICMP 截断引用。仅完整接收要求全部载荷就位。
+fn checked_header(bytes: &[u8]) -> Result<(usize, usize), PacketError> {
+    if bytes.len() < 20 {
+        return Err(PacketError::Truncated);
+    }
+    if bytes[0] >> 4 != 4 {
+        return Err(PacketError::Unsupported);
+    }
+    let header = usize::from(bytes[0] & 15) * 4;
+    let total = usize::from(u16::from_be_bytes([bytes[2], bytes[3]]));
+    if header < 20 || total < header {
+        return Err(PacketError::Malformed);
+    }
+    validate_options(bytes.get(20..header).ok_or(PacketError::Truncated)?)?;
+    let flags = u16::from_be_bytes([bytes[6], bytes[7]]);
+    let fragmented = flags & 0x3fff != 0;
+    let payload = total - header;
+    if flags & 0x8000 != 0
+        || fragmented && flags & 0x4000 != 0
+        || fragmented && payload == 0
+        || flags & 0x2000 != 0 && !payload.is_multiple_of(8)
+        || usize::from(flags & 0x1fff) * 8 + payload > 65515
+    {
+        return Err(PacketError::Malformed);
+    }
+    Ok((header, total))
+}
+
+/// ICMP 引用的 IPv4 头和可见载荷。原始长度允许大于引用的字节数。
+#[derive(Clone, Copy)]
+pub struct Ipv4Quote<'a> {
+    packet: Ipv4Packet<'a>,
+    original_length: usize,
+}
+impl<'a> Ipv4Quote<'a> {
+    /// 验证完整原 IP 头及 checksum，按原长度裁剪引用中的 padding。
+    /// # Errors
+    /// 头部截断、长度、分片字段、选项或校验和非法。
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, PacketError> {
+        let (header, original_length) = checked_header(bytes)?;
+        if checksum::checksum(&bytes[..header]) != 0 {
+            return Err(PacketError::Checksum);
+        }
+        Ok(Self {
+            packet: Ipv4Packet {
+                bytes: &bytes[..bytes.len().min(original_length)],
+                header,
+            },
+            original_length,
+        })
+    }
+    /// 原包的可见前缀，排除引用 padding。
+    pub fn bytes(self) -> &'a [u8] {
+        self.packet.bytes()
+    }
+    /// 原包源地址。
+    pub fn source(self) -> Ipv4Addr {
+        self.packet.source()
+    }
+    /// 原包目的地址。
+    pub fn destination(self) -> Ipv4Addr {
+        self.packet.destination()
+    }
+    /// 原包上层协议。
+    pub fn protocol(self) -> u8 {
+        self.packet.protocol()
+    }
+    /// 原报文的声明总长度，包括 IPv4 头。
+    pub fn original_length(self) -> usize {
+        self.original_length
+    }
+    /// 原上层报文的声明长度。与引用实际可见字节数无关。
+    pub fn upper_length(self) -> usize {
+        self.original_length - self.packet.header
+    }
+    /// RFC 1191 反馈必须引用禁止分片的原包。
+    pub fn dont_fragment(self) -> bool {
+        self.packet.bytes[6] & 0x40 != 0
+    }
+    /// 首片还包含后续分片时，原 IPv4 长度只描述该片。
+    pub fn more_fragments(self) -> bool {
+        self.packet.more_fragments()
+    }
+    /// 引用所含的原传输头前缀。非首片没有传输头。
+    pub fn upper_layer(self) -> Option<&'a [u8]> {
+        (self.packet.fragment_offset() == 0).then(|| self.packet.payload())
+    }
+}
+
 /// 输出 IPv4 header 的字段；payload 已位于 `20 + options.len()` 之后。
 pub struct Ipv4Header<'a> {
     pub source: Ipv4Addr,
@@ -115,16 +183,36 @@ impl Ipv4Header<'_> {
     /// # Errors
     /// 空间/16-bit total length 不足，或选项、分片字段非法；错误发生在写 header 前。
     pub fn emit(&self, packet: &mut [u8]) -> Result<(), PacketError> {
+        if self.options.len() > 40 || !self.options.len().is_multiple_of(4) {
+            return Err(PacketError::Malformed);
+        }
+        let header = 20 + self.options.len();
+        let payload = packet
+            .len()
+            .checked_sub(header)
+            .ok_or(PacketError::Capacity)?;
+        self.emit_prefix(packet, payload)
+    }
+
+    /// 仅填写最终报文的 header；payload 可独立借用，避免为加头复制整份载荷。
+    /// # Parameters
+    /// - `packet`: 至少容纳完整 header 的可写窗口；只写前 20 + options.len() 字节。
+    /// - `payload`: 后续载荷的真实长度，用于 total length 和分片边界。
+    /// # Errors
+    /// 空间、长度、选项或分片字段错误；所有检查均发生在首次写入前。
+    pub fn emit_prefix(&self, packet: &mut [u8], payload: usize) -> Result<(), PacketError> {
         let header = 20 + self.options.len();
         if self.options.len() > 40 || !self.options.len().is_multiple_of(4) {
             return Err(PacketError::Malformed);
         }
-        let total = u16::try_from(packet.len()).map_err(|_| PacketError::Capacity)?;
+        let total = header
+            .checked_add(payload)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or(PacketError::Capacity)?;
         if packet.len() < header {
             return Err(PacketError::Capacity);
         }
         validate_options(self.options)?;
-        let payload = packet.len() - header;
         let fragmented = self.fragment & 0x3fff != 0;
         if self.fragment & 0x8000 != 0
             || fragmented && self.fragment & 0x4000 != 0

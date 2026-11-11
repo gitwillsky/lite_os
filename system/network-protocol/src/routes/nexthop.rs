@@ -1,22 +1,22 @@
 //! 下一跳组的类型化成员与借用 framing；同一路径编解码用于完整集合和独立更新。
 use super::*;
 
-/// 一个带正整数权重的 IPv4 路径；权重只比较组内比例。
+/// 一个带正整数权重的同族路径；权重只比较组内比例。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NextHopMember {
+pub struct NextHopMember<A: RouteAddress> {
     pub interface_index: u32,
-    pub gateway: Option<core::net::Ipv4Addr>,
+    pub gateway: Option<A::Gateway>,
     pub on_link: bool,
     pub weight: u32,
 }
-impl NextHopMember {
+impl<A: RouteAddress> NextHopMember<A> {
     /// 用路径和前缀属性组成执行准入输入；不表示实际设备/网关已通过校验。
     /// # Parameters
     /// `attributes` 是与路径独立的路由属性。
     /// # Returns
     /// 完整的单路径准入请求；字段错误由执行 owner 返回。
-    pub fn request(self, attributes: RouteAttributes) -> Ipv4RouteRequest {
-        Ipv4RouteRequest {
+    pub fn request(self, attributes: RouteAttributes<A>) -> crate::RouteRequest<A> {
+        crate::RouteRequest {
             destination: attributes.destination,
             prefix_length: attributes.prefix_length,
             table: attributes.table,
@@ -33,31 +33,31 @@ impl NextHopMember {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Members<'a> {
-    Typed(&'a [NextHopMember]),
+enum Members<'a, A: RouteAddress> {
+    Typed(&'a [NextHopMember<A>]),
     Encoded(&'a [u8]),
 }
-/// 具名 IPv4 下一跳组。描述只借用成员，不分配或复制整组；单路径也是一成员组。
+/// 具名同族下一跳组。描述只借用成员，不分配或复制整组；单路径也是一成员组。
 #[derive(Clone, Copy, Debug)]
-pub struct NextHopConfiguration<'a> {
+pub struct NextHopConfiguration<'a, A: RouteAddress> {
     pub id: u64,
-    members: Members<'a>,
+    members: Members<'a, A>,
 }
-impl PartialEq for NextHopConfiguration<'_> {
+impl<A: RouteAddress> PartialEq for NextHopConfiguration<'_, A> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.members().eq(other.members())
     }
 }
-impl Eq for NextHopConfiguration<'_> {}
-impl<'a> NextHopConfiguration<'a> {
+impl<A: RouteAddress> Eq for NextHopConfiguration<'_, A> {}
+impl<'a, A: RouteAddress> NextHopConfiguration<'a, A> {
     /// 从类型化成员借用配置；语义校验由编码器及执行 owner 完成。
-    pub fn new(id: u64, members: &'a [NextHopMember]) -> Self {
+    pub fn new(id: u64, members: &'a [NextHopMember<A>]) -> Self {
         Self {
             id,
             members: Members::Typed(members),
         }
     }
-    /// 只供冻结快照的已验证正文借用；parse 已检查每个成员和 14 字节边界，重复查询不再扫描全组。
+    /// 只供冻结快照的已验证正文借用；parse 已检查每个成员和该族 W+10 字节边界，重复查询不再扫描全组。
     pub(super) fn from_validated_bytes(id: u64, bytes: &'a [u8]) -> Self {
         Self {
             id,
@@ -76,7 +76,7 @@ impl<'a> NextHopConfiguration<'a> {
         self.len() == 0
     }
     /// 借用成员的精确有界迭代器；不分配解析数组。
-    pub fn members(self) -> NextHopMembers<'a> {
+    pub fn members(self) -> NextHopMembers<'a, A> {
         NextHopMembers {
             members: self.members,
             index: 0,
@@ -104,10 +104,10 @@ impl<'a> NextHopConfiguration<'a> {
         let mut writer = Writer::payload();
         writer.try_reserve(
             self.encoded_size()?
-                .checked_add(4)
+                .checked_add(8)
                 .ok_or(native_abi::ERR_OUT_OF_RANGE)?,
         )?;
-        writer.u32(VERSION);
+        writer.u32(VERSION).u32(A::FAMILY);
         put_next_hop(&mut writer, self);
         Ok(writer)
     }
@@ -116,7 +116,7 @@ impl<'a> NextHopConfiguration<'a> {
     /// 版本、身份、长度、成员字段或包尾不合法。
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Status> {
         let mut reader = Reader::new(bytes);
-        if reader.u32()? != VERSION {
+        if reader.u32()? != VERSION || reader.u32()? != A::FAMILY {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let result = get_next_hop(&mut reader)?;
@@ -125,17 +125,17 @@ impl<'a> NextHopConfiguration<'a> {
     }
 }
 /// 不分配的类型化/字节成员投影；构造只能经配置或完整 framing 验证。
-pub struct NextHopMembers<'a> {
-    members: Members<'a>,
+pub struct NextHopMembers<'a, A: RouteAddress> {
+    members: Members<'a, A>,
     index: usize,
 }
-impl Iterator for NextHopMembers<'_> {
-    type Item = NextHopMember;
+impl<A: RouteAddress> Iterator for NextHopMembers<'_, A> {
+    type Item = NextHopMember<A>;
     fn next(&mut self) -> Option<Self::Item> {
         let member = match self.members {
             Members::Typed(m) => *m.get(self.index)?,
             Members::Encoded(m) => {
-                let bytes = m.as_chunks::<MEMBER_BYTES>().0.get(self.index)?;
+                let bytes = m.get(self.index * MEMBER_BYTES..(self.index + 1) * MEMBER_BYTES)?;
                 get_member(&mut Reader::new(bytes)).expect("next-hop member framing was checked")
             }
         };
@@ -151,20 +151,20 @@ impl Iterator for NextHopMembers<'_> {
         (remaining, Some(remaining))
     }
 }
-impl ExactSizeIterator for NextHopMembers<'_> {}
-const MEMBER_BYTES: usize = 14;
-pub(crate) fn put_next_hop(writer: &mut Writer, hop: NextHopConfiguration<'_>) {
+impl<A: RouteAddress> ExactSizeIterator for NextHopMembers<'_, A> {}
+pub(super) const MEMBER_BYTES: usize = 26;
+pub(crate) fn put_next_hop<A: RouteAddress>(writer: &mut Writer, hop: NextHopConfiguration<'_, A>) {
     writer.u64(hop.id).u32((hop.len() * MEMBER_BYTES) as u32);
     for member in hop.members() {
         writer.u32(member.interface_index);
-        put_option_ipv4(writer, member.gateway);
+        A::write_gateway(writer, member.gateway);
         writer.bool(member.on_link).u32(member.weight);
     }
 }
-fn get_member(reader: &mut Reader<'_>) -> Result<NextHopMember, Status> {
+fn get_member<A: RouteAddress>(reader: &mut Reader<'_>) -> Result<NextHopMember<A>, Status> {
     let result = NextHopMember {
         interface_index: reader.u32()?,
-        gateway: get_option_ipv4(reader)?,
+        gateway: A::read_gateway(reader)?,
         on_link: match reader.u8()? {
             0 => false,
             1 => true,
@@ -177,16 +177,16 @@ fn get_member(reader: &mut Reader<'_>) -> Result<NextHopMember, Status> {
     }
     Ok(result)
 }
-pub(crate) fn get_next_hop<'a>(
+pub(crate) fn get_next_hop<'a, A: RouteAddress>(
     reader: &mut Reader<'a>,
-) -> Result<NextHopConfiguration<'a>, Status> {
+) -> Result<NextHopConfiguration<'a, A>, Status> {
     let id = reader.u64()?;
     let bytes = reader.bytes()?;
     if id == 0 || bytes.is_empty() || bytes.len() % MEMBER_BYTES != 0 {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     for member in bytes.as_chunks::<MEMBER_BYTES>().0 {
-        get_member(&mut Reader::new(member))?;
+        get_member::<A>(&mut Reader::new(member))?;
     }
     Ok(NextHopConfiguration {
         id,

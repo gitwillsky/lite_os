@@ -25,7 +25,7 @@ fn configure_route(
     operation: usize,
     argument: usize,
 ) -> isize {
-    use crate::net::{Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest};
+    use crate::net::{RouteKind, RouteMetrics, Ipv4RouteRequest};
     if argument == 0 {
         return -errno::EFAULT;
     }
@@ -81,15 +81,15 @@ fn configure_route(
         scope: if rejecting { 254 } else { 253 },
         protocol: 3,
         kind: if rejecting {
-            Ipv4RouteKind::Unreachable
+            RouteKind::Unreachable
         } else {
-            Ipv4RouteKind::Unicast
+            RouteKind::Unicast
         },
         interface_index: None,
         gateway: None,
         preferred_source: None,
         on_link: false,
-        metrics: Ipv4RouteMetrics::default(),
+        metrics: RouteMetrics::default(),
     };
     // native RTF_REJECT在读取rt_dev/gateway之前完成配置，不能额外解引用无关用户指针。
     if !rejecting {
@@ -112,7 +112,7 @@ fn configure_route(
             };
         }
         if gateway_family == super::AF_INET && !gateway.is_unspecified() {
-            request.gateway = Some(gateway);
+            request.gateway = Some(gateway.into());
             if flags & RTF_GATEWAY != 0 {
                 request.scope = 0;
             }

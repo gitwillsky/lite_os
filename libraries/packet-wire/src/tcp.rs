@@ -159,6 +159,30 @@ impl TcpHeader {
         source: IpAddr,
         destination: IpAddr,
     ) -> Result<(), PacketError> {
+        self.emit_checksum(packet, header_length, source, destination, false)
+    }
+    /// Emit a validated header without scanning payload for the checksum.
+    /// The caller must mark actual hardware checksum offload and supply the required pseudo-header seed;
+    /// otherwise the emitted zero checksum is not a valid wire segment.
+    /// # Errors
+    /// The same family, length, option and capacity errors as emit.
+    pub fn emit_offloaded(
+        &self,
+        packet: &mut [u8],
+        header_length: usize,
+        source: IpAddr,
+        destination: IpAddr,
+    ) -> Result<(), PacketError> {
+        self.emit_checksum(packet, header_length, source, destination, true)
+    }
+    fn emit_checksum(
+        &self,
+        packet: &mut [u8],
+        header_length: usize,
+        source: IpAddr,
+        destination: IpAddr,
+        offloaded: bool,
+    ) -> Result<(), PacketError> {
         // 1. 字段、选项与伪头长度全部在修改 output 前校验；失败保留尚未发表的段。
         if !(20..=60).contains(&header_length) || !header_length.is_multiple_of(4) {
             return Err(PacketError::Malformed);
@@ -188,9 +212,11 @@ impl TcpHeader {
         packet[16..18].fill(0);
         packet[18..20].copy_from_slice(&self.urgent_pointer.to_be_bytes());
         // 3. 用实际整个段计算校验和，TCP 的零结果是有效值，不像 UDP 那样改为 0xffff。
-        let value = transport_checksum(source, destination, 6, packet)
-            .expect("prevalidated pseudo-header shape");
-        packet[16..18].copy_from_slice(&value.to_be_bytes());
+        if !offloaded {
+            let value = transport_checksum(source, destination, 6, packet)
+                .expect("prevalidated pseudo-header shape");
+            packet[16..18].copy_from_slice(&value.to_be_bytes());
+        }
         Ok(())
     }
 }

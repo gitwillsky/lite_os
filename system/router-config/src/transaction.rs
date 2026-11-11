@@ -9,7 +9,6 @@ use router_protocol::configuration::Ipv4Configuration;
 
 mod staging;
 mod storage;
-use staging::StagedConfiguration;
 
 /// 失败提交的有限重试间隔，避免磁盘/执行服务持续失败时事件循环忙转。
 const RETRY_NS: i64 = 500_000_000;
@@ -47,7 +46,7 @@ fn abort_execution(transaction: PreparedConfiguration, cause: Status) -> StageEr
     }
 }
 
-fn retry_at() -> i64 {
+pub(super) fn retry_at() -> i64 {
     native_runtime::system::monotonic().saturating_add(RETRY_NS)
 }
 
@@ -60,7 +59,7 @@ impl RouterConfig {
         }
     }
 
-    fn wake_configuration(&self) {
+    pub(super) fn wake_configuration(&self) {
         // 启动前已武装，signal 为持久 level；事件循环先清除再重武装，不依赖瞬时 edge。
         let _ = self.control.signal(0, signals::USER_0);
     }
@@ -96,6 +95,9 @@ impl RouterConfig {
         }
         if inner.device_retry_at.is_some() {
             inner.device_retry_at = Some(deadline);
+        }
+        if inner.dns.retry_at.is_some() {
+            inner.dns.retry_at = Some(deadline);
         }
         if let Some(rollback) = &mut inner.rollback {
             rollback.retry_at = deadline;
@@ -259,6 +261,12 @@ impl RouterConfig {
             return Err(native_abi::ERR_BAD_STATE);
         }
         let compiled = self.compile_configuration(inner, &candidate)?;
+        let previous = inner.saved.as_deref();
+        let delegation_changed = previous.and_then(|config| config.prefix_delegation.as_ref())
+            != candidate.prefix_delegation.as_ref()
+            || inner.delegation.has_session()
+                && !self.retains_delegation(inner, Some(&candidate))?;
+
         let mut changes = Vec::new();
         changes
             .try_reserve_exact(compiled.len())
@@ -277,12 +285,43 @@ impl RouterConfig {
                 });
             let route_changed = routing::attributes(inner.saved.as_deref(), interface)
                 != routing::attributes(Some(&candidate), interface);
-            if !interface.preserves_network(config) || previous_mtu != Ok(*mtu) || route_changed {
+            let previous = inner
+                .saved
+                .as_deref()
+                .map(|saved| saved.matching(&interface.name, interface.mac))
+                .transpose()
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?
+                .flatten();
+            let next = candidate
+                .matching(&interface.name, interface.mac)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            let pool_changed = previous.and_then(|profile| profile.dhcp_v4_server.as_ref())
+                != next.and_then(|profile| profile.dhcp_v4_server.as_ref());
+            let ipv6_changed = previous.and_then(|profile| profile.ipv6.as_ref())
+                != next.and_then(|profile| profile.ipv6.as_ref());
+            let previous_lan = delegation::downstream(inner.saved.as_deref(), interface);
+            let next_lan = delegation::downstream(Some(&candidate), interface);
+            if !interface.preserves_network(config)
+                || previous_mtu != Ok(*mtu)
+                || route_changed
+                || ipv6_changed
+                || pool_changed
+                || previous_lan != next_lan
+                || delegation_changed && (previous_lan.is_some() || next_lan.is_some())
+            {
                 changes.push((position, config, *mtu));
             }
         }
         let same_decision = inner.saved.as_deref() == Some(&candidate);
-        if same_decision && changes.is_empty() && inner.source_retry_at.is_none() {
+        let bgp_changed =
+            inner.saved.as_ref().and_then(|saved| saved.bgp.as_ref()) != candidate.bgp.as_ref();
+        if same_decision
+            && changes.is_empty()
+            && inner.source_retry_at.is_none()
+            && inner.bgp_retry_at.is_none()
+            && inner.dns.retry_at.is_none()
+            && inner.delegation.retry_at.is_none()
+        {
             return Ok(());
         }
         // 相同的持久决定只重试执行，不重新序列化/读写配置文件；避免恢复工作放大存储 I/O。
@@ -321,10 +360,15 @@ impl RouterConfig {
                 }
             }
         };
+        let mut dns_pause = if staged.is_none() {
+            self.pause_dns(inner, Some(&candidate), core::iter::empty())?
+        } else {
+            None
+        };
         if let Some(before) = before
             && let Err(status) = self.persist(inner, before, &bytes)
         {
-            let rollback = staged.map(StagedConfiguration::abort).transpose();
+            let rollback = staged.map(|staged| staged.abort(inner)).transpose();
             if let Err(rollback) = rollback {
                 self.queue_applications(inner, changes.iter().map(|(position, _, _)| *position));
                 self.queue_sources(inner);
@@ -341,13 +385,41 @@ impl RouterConfig {
             });
         }
         // 持久决定后只向前确认/重试，不把确认丢失误作回滚。编译投影不另行保存为配置 owner。
+        Self::retain_dns_pause(inner, dns_pause.take());
         inner.saved = Some(candidate);
         for (interface, (config, _)) in inner.interfaces.iter_mut().zip(compiled) {
             interface.config = config;
         }
-        let result = staged.map_or(Ok(()), |staged| staged.confirm(self, inner));
+        let result = match staged {
+            Some(staged) => staged.confirm(self, inner),
+            None => {
+                self.queue_dns(inner);
+                if inner.dns.retry_at.is_some() {
+                    self.apply_dns(inner).map_err(|_| native_abi::ERR_BAD_STATE)
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        if bgp_changed {
+            inner.bgp = None;
+            self.queue_bgp(inner);
+        }
+        let bgp_result = if inner.bgp_retry_at.is_some() {
+            self.apply_bgp(inner)
+        } else {
+            Ok(())
+        };
+        self.queue_delegation(inner);
+        let delegation_result = if result.is_ok() && inner.delegation.retry_at.is_some() {
+            self.apply_delegation(inner)
+        } else {
+            Ok(())
+        };
         Self::publish_notification(inner, notification);
         result
+            .and_then(|_| bgp_result.map_err(|_| native_abi::ERR_BAD_STATE))
+            .and_then(|_| delegation_result.map_err(|_| native_abi::ERR_BAD_STATE))
     }
 
     /// 检查完整配置及当前设备别名，再生成执行投影；不修改接口或发送 DHCP。
@@ -388,6 +460,9 @@ impl RouterConfig {
             )
             .chain(inner.device_retry_at)
             .chain(inner.source_retry_at)
+            .chain(inner.bgp_retry_at)
+            .chain(inner.dns.retry_at)
+            .chain(inner.delegation.retry_at)
             .min()
             .unwrap_or(DEADLINE_INFINITE)
     }
@@ -410,11 +485,28 @@ impl RouterConfig {
         }
         let mut inner = self.inner.lock();
         let now = native_runtime::system::monotonic();
+        if inner.bgp_retry_at.is_some_and(|deadline| deadline <= now) {
+            match Self::prepare_notification(&inner) {
+                Ok(notification) => {
+                    if self.apply_bgp(&mut inner).is_ok() {
+                        Self::publish_notification(&mut inner, notification);
+                    }
+                }
+                Err(_) => inner.bgp_retry_at = Some(retry_at()),
+            }
+        }
         let storage_due = inner
             .rollback
             .as_ref()
             .is_some_and(|rollback| rollback.retry_at <= now);
+        let dns_due = inner.dns.retry_at.is_some_and(|deadline| deadline <= now);
+        let delegation_due = inner
+            .delegation
+            .retry_at
+            .is_some_and(|deadline| deadline <= now);
         if !storage_due
+            && !dns_due
+            && !delegation_due
             && !inner
                 .source_retry_at
                 .is_some_and(|deadline| deadline <= now)
@@ -430,6 +522,9 @@ impl RouterConfig {
             Err(_) => {
                 // 通知 OOM 仍保留待处理工作，但不能用已过期的 Port 截止忙循环。
                 Self::postpone_pending(&mut inner);
+                if delegation_due {
+                    inner.delegation.retry_at = Some(retry_at());
+                }
                 return;
             }
         };
@@ -442,6 +537,22 @@ impl RouterConfig {
             changed |= self.finish_storage_rollback(&mut inner).is_ok();
         }
         changed |= self.apply_pending(&mut inner, now);
+        if delegation_due {
+            changed |= self.apply_delegation(&mut inner).is_ok();
+        }
+        if dns_due {
+            if inner.rollback.is_none()
+                && inner.source_retry_at.is_none()
+                && !inner
+                    .interfaces
+                    .iter()
+                    .any(|interface| interface.retry_at.is_some())
+            {
+                changed |= self.apply_dns(&mut inner).is_ok();
+            } else {
+                inner.dns.retry_at = Some(retry_at());
+            }
+        }
         if changed {
             Self::publish_notification(&mut inner, notification);
         }

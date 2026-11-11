@@ -195,11 +195,18 @@ pub struct Capability<'a> {
     pub code: u8,
     pub data: &'a [u8],
 }
+/// RFC 8950 的 IPv4 单播 NLRI 与 IPv6 下一跳能力。是否允许此地址族由 MP capability 决定。
+pub const IPV4_VIA_IPV6: Capability<'static> = Capability {
+    code: 5,
+    data: &[0, 1, 0, 1, 0, 2],
+};
 /// 当前用于基本协商的 capability 值；其他扩展保持原值，不暗自接纳它的功能。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityValue<'a> {
     Multiprotocol { afi: u16, safi: u8 },
+    ExtendedNextHop { ipv4_via_ipv6: bool },
     RouteRefresh,
+    EnhancedRouteRefresh,
     ExtendedMessage,
     FourOctetAsn(u32),
     Unknown(&'a [u8]),
@@ -215,11 +222,21 @@ impl<'a> Capability<'a> {
                 safi: *safi,
             },
             (2, []) => CapabilityValue::RouteRefresh,
+            (5, bytes) if !bytes.is_empty() && bytes.len().is_multiple_of(6) => {
+                CapabilityValue::ExtendedNextHop {
+                    ipv4_via_ipv6: bytes
+                        .as_chunks::<6>()
+                        .0
+                        .iter()
+                        .any(|tuple| tuple == IPV4_VIA_IPV6.data),
+                }
+            }
+            (70, []) => CapabilityValue::EnhancedRouteRefresh,
             (6, []) => CapabilityValue::ExtendedMessage,
             (65, [a, b, c, d]) => {
                 CapabilityValue::FourOctetAsn(u32::from_be_bytes([*a, *b, *c, *d]))
             }
-            (1 | 2 | 6 | 65, _) => return Err(PacketError::Malformed),
+            (1 | 2 | 5 | 6 | 65 | 70, _) => return Err(PacketError::Malformed),
             _ => CapabilityValue::Unknown(self.data),
         })
     }
@@ -229,7 +246,26 @@ impl<'a> Capability<'a> {
 pub struct Capabilities<'a> {
     bytes: &'a [u8],
 }
+impl Capabilities<'static> {
+    /// 构造已知有效的单播地址族能力列表；用于 OPEN 及缺少必需能力的 NOTIFICATION。
+    /// # Returns
+    /// 零分配的不可变 TLV 视图；地址族与 capability 布局由同一格式 owner 提供。
+    pub const fn unicast(ipv4: bool, ipv6: bool) -> Self {
+        Self {
+            bytes: match (ipv4, ipv6) {
+                (true, false) => &[1, 4, 0, 1, 0, 1],
+                (false, true) => &[1, 4, 0, 2, 0, 1],
+                (true, true) => &[1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1],
+                (false, false) => &[],
+            },
+        }
+    }
+}
 impl<'a> Capabilities<'a> {
+    /// 借用本视图尚未迭代的完整 TLV；保留错误报告所需的标准原始字段，不重建头部。
+    pub fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
     /// 只验证本层 TLV，不按已知 code 的内容错误拒绝整个参数。
     /// # Errors
     /// capability 头或值截断。

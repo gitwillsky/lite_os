@@ -1,8 +1,20 @@
 use super::{
-    Socket, SocketBackend, SocketError, SocketIoDirection, SocketTimeout, UnixCredentials,
+    InternetOption, Socket, SocketBackend, SocketError, SocketIoDirection, SocketTimeout,
+    UnixCredentials,
 };
 
 impl Socket {
+    /// 标准 TCP_MD5SIG 的已捕获 selector 与密钥；实际匹配/验签只属于原生 TCP owner。
+    pub(crate) fn set_tcp_md5(
+        &self,
+        selector: network_protocol::TcpMd5Selector,
+        key: &[u8],
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_md5_key(selector, key),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
     /// 配置 AF_PACKET OFD 的标准 AUXDATA 输出，不改变远端捕获队列。
     pub(crate) fn set_packet_auxiliary(&self, enabled: bool) -> Result<(), SocketError> {
         let SocketBackend::Packet(socket) = &self.backend else {
@@ -105,7 +117,7 @@ impl Socket {
     /// # Errors
     ///
     /// 非 RAW endpoint 返回 OperationNotSupported。
-    pub(crate) fn set_ipv4_header_included(&self, enabled: bool) -> Result<(), SocketError> {
+    pub(crate) fn set_header_included(&self, enabled: bool) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.set_header_included(enabled),
             _ => Err(SocketError::OperationNotSupported),
@@ -128,6 +140,18 @@ impl Socket {
         }
     }
 
+    /// 把标准 IPv6 单播 policy 交给同一 Internet endpoint；错误不修改本地影子状态。
+    pub(crate) fn set_ipv6_option(
+        &self,
+        option: InternetOption,
+        value: i32,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ipv6_option(option, value),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
     /// 将 SO_REUSEADDR policy 提交给具体 endpoint owner。
     ///
     /// # Parameters
@@ -144,6 +168,18 @@ impl Socket {
     pub(crate) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.set_reuse_address(enabled),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// 设置本机 IP 输出的路由标记。其他 socket 域返回不支持。
+    pub(crate) fn set_mark(
+        &self,
+        mark: u32,
+        authority: &crate::namespace::NamespaceAuthority,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_mark(mark, authority),
             _ => Err(SocketError::OperationNotSupported),
         }
     }
@@ -252,6 +288,93 @@ impl Socket {
         }
     }
 
+    /// 读取或按位修改唯一 ICMP 接收过滤器；不是 façade 的另一个策略副本。
+    /// # Errors
+    /// 非 ICMP RAW 或服务不可用时返回其实际领域错误。
+    pub(crate) fn icmp_filter(
+        &self,
+        update: Option<network_protocol::IcmpFilterUpdate>,
+    ) -> Result<[u32; 8], SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.icmp_filter(update),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// 将 IPv6 ASM 加入/退出委托唯一 NET owner；不在 Linux facade 镜像成员表。
+    /// # Errors
+    /// 非 INET、非法组、重复/不存在的成员、设备退出、服务或分配失败。
+    pub(crate) fn ipv6_membership(
+        &self,
+        group: core::net::Ipv6Addr,
+        interface: u32,
+        join: bool,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.ipv6_membership(group, interface, join),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+    /// 委托原生 NET 修改 IPv4 ASM 引用；Linux 只解析标准结构，不镜像成员表。
+    /// # Errors
+    /// 非 INET、组/接口非法、成员冲突/不存在、服务或分配失败。
+    pub(crate) fn ipv4_membership(
+        &self,
+        group: core::net::Ipv4Addr,
+        interface: u32,
+        address: core::net::Ipv4Addr,
+        join: bool,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.ipv4_membership(group, interface, address, join),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+    /// 提交 IPv4 组播发送接口/地址选择意图，不建立 façade 镜像。
+    /// # Errors
+    /// 非 INET、非法选择或原生 owner 失败。
+    pub(crate) fn set_ipv4_multicast_interface(
+        &self,
+        interface: u32,
+        address: core::net::Ipv4Addr,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ipv4_multicast_interface(interface, address),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+    /// 提交 IPv4 组播 TTL/回送策略；Linux 标量布尔在边界归一化。
+    /// # Errors
+    /// 非 INET、非法选项/值或原生 owner 失败。
+    pub(crate) fn set_ipv4_multicast_option(
+        &self,
+        option: InternetOption,
+        value: i32,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ipv4_multicast_option(option, value),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+    /// 修改 IPv4 PMTU 发现策略，不保存第二份 mode。
+    /// # Errors
+    /// 非 INET、值/类型不支持或服务失败。
+    pub(crate) fn set_ipv4_mtu_discovery(&self, mode: u8) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ipv4_mtu_discovery(mode),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+    /// 修改实际 IPv4 全组接收策略；不产生隐式接口组成员。
+    /// # Errors
+    /// 非 INET 或原生服务失败。
+    pub(crate) fn set_ipv4_multicast_all(&self, enabled: bool) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ipv4_multicast_all(enabled),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
     /// 查询实际 INET owner 的已实现选项；不创建只改变 getter 的 façade 状态。
     /// # Errors
     /// 非 INET 或不适用于该 protocol 的选项返回标准 domain 错误。
@@ -263,14 +386,5 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.option(option),
             _ => Err(SocketError::OperationNotSupported),
         }
-    }
-
-    /// 查询 recvmsg 是否应生成 IP_PKTINFO。
-    ///
-    /// # Returns
-    ///
-    /// AF_INET endpoint 的当前 policy；其他 domain 为 false。
-    pub(crate) fn ipv4_packet_info(&self) -> bool {
-        matches!(&self.backend, SocketBackend::Inet(socket) if socket.packet_info())
     }
 }

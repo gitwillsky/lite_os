@@ -6,15 +6,15 @@ use crate::{
     arp::ArpPacket,
     ethernet::EthernetFrame,
     ipv4::Ipv4Packet,
-    ipv6::{Ipv6Error, Ipv6Packet},
+    ipv6::{Ipv6Datagram, Ipv6Error},
 };
 
-/// 一帧的格式错误；IPv6 保留生成 ICMP 参数问题所需的精确位置和首分片事实。
+/// 一帧的格式错误；IPv6 保留固定头和长度发现错误的精确位置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameError {
     /// Ethernet、ARP 或 IPv4 格式错误。
     Packet(PacketError),
-    /// IPv6 固定头或扩展头链错误。
+    /// IPv6 固定头、数据报长度或必要 Jumbo 长度发现错误。
     Ipv6(Ipv6Error),
 }
 
@@ -23,8 +23,8 @@ pub enum FrameError {
 pub enum NetworkPacket<'a> {
     /// 头部、总长度、选项与分片结构已检查，头 checksum 仍须由协议引擎验证。
     Ipv4(Ipv4Packet<'a>),
-    /// 固定头/扩展头链已检查；不代表认证、重组、地址或选项动作已经完成。
-    Ipv6(Ipv6Packet<'a>),
+    /// 固定头/数据报长度已检查；逐跳选项与终点扩展链由各自协议入口处理。
+    Ipv6(Ipv6Datagram<'a>),
     /// 通用 ARP 结构；地址类型和操作码由邻居 owner 判断。
     Arp(ArpPacket<'a>),
     /// 未知 EtherType 或 802.3 LLC，保留精确内层协议与裁过 padding 的原字节。
@@ -80,7 +80,7 @@ pub fn parse_ethernet<'a>(
             0x0800 => Ipv4Packet::parse_header(bytes)
                 .map(NetworkPacket::Ipv4)
                 .map_err(FrameError::Packet),
-            0x86dd => Ipv6Packet::parse(bytes)
+            0x86dd => Ipv6Datagram::parse(bytes)
                 .map(NetworkPacket::Ipv6)
                 .map_err(FrameError::Ipv6),
             0x0806 => ArpPacket::parse(bytes)

@@ -22,18 +22,17 @@ impl Marks {
             sensitive: Self::words(catalogue.index.prefixes().len())?,
         })
     }
-    fn capture_dependencies<A: Address, D, M>(
-        &mut self,
-        stable: &Resolved<A, D, M>,
-        convert: fn(IpAddr) -> Option<A>,
-    ) -> Result<(), Error> {
+    fn capture_dependencies<A: RibAddress, D, M>(&mut self, stable: &Resolved<A, D, M>) {
         let catalogue = &stable.catalogue;
         // 任何候选所引用的递归地址都参与依赖判定；不能只看当前已选来源，否则晋升会漏掉新依赖。
         for source in &catalogue.sources {
             for hop in source.definition.next_hops.iter() {
                 for member in hop.members() {
                     if let Target::Recursive(address) = member.target {
-                        let address = convert(address).ok_or(Error::InvalidSource)?;
+                        // 跨族依赖已由同一 IPv6 图冻结，本族前缀晋升无法改变它。
+                        let Some(address) = A::from_ip(address) else {
+                            continue;
+                        };
                         for index in catalogue.index.matching_indices(address) {
                             self.sensitive[index / 64] |= 1 << (index % 64);
                             // 恢复阶段只增加覆盖或升级候选，不撤回已有有效前缀；被它遮住的祖先不能改变此地址的 LPM。
@@ -45,7 +44,6 @@ impl Marks {
                 }
             }
         }
-        Ok(())
     }
     fn excluded(&self, row: usize) -> bool {
         self.excluded[row / 64] & (1 << (row % 64)) != 0
@@ -93,12 +91,12 @@ impl Availability {
             + catalogue.sources[reference.source as usize].routes[reference.route as usize].next_hop
                 as usize
     }
-    fn capture<A: Address, D, M>(
+    fn capture<A: RibAddress, D, M>(
         catalogue: &Catalogue<A, D, super::super::NextHop, M>,
         marks: &Marks,
         eligible: &impl Fn(&Candidate<'_, A, D, super::super::NextHop, M>) -> bool,
         usable: &impl Fn(&Adjacency) -> bool,
-        convert: fn(IpAddr) -> Option<A>,
+        underlay: Option<&Resolved<u128, D, M>>,
     ) -> Result<Self, Error> {
         let mut compiler = prepare(catalogue, |row| {
             !marks.excluded(row) && eligible(&catalogue.project(catalogue.references[row]))
@@ -112,7 +110,7 @@ impl Availability {
         for node in 0..compiler.nodes.len() {
             ready.push(
                 compiler
-                    .walk(node, &mut usable, convert, &mut work)?
+                    .walk(node, &mut usable, underlay, &mut work)?
                     .hop
                     .is_some(),
             );
@@ -124,17 +122,23 @@ impl Availability {
     }
 }
 
-pub(super) fn select<A: Address, D, M>(
+pub(super) fn select<A: RibAddress, D, M>(
     catalogue: &Arc<Catalogue<A, D, super::super::NextHop, M>>,
     eligible: impl Fn(&Candidate<'_, A, D, super::super::NextHop, M>) -> bool,
     usable: impl Fn(&Adjacency) -> bool,
-    convert: fn(IpAddr) -> Option<A>,
+    retain: impl Fn(&Candidate<'_, A, D, super::super::NextHop, M>) -> bool,
+    underlay: Option<&Resolved<u128, D, M>>,
 ) -> Result<Resolved<A, D, M>, Error> {
+    let retain_row = |row| {
+        let candidate = catalogue.project(catalogue.references[row]);
+        retain(&candidate) && eligible(&candidate)
+    };
     let mut result = compile(
         catalogue,
         |row| eligible(&catalogue.project(catalogue.references[row])),
         &usable,
-        convert,
+        underlay,
+        retain_row,
     )?;
     if !unresolved(&result) {
         return Ok(result);
@@ -147,10 +151,38 @@ pub(super) fn select<A: Address, D, M>(
             catalogue,
             |row| !marks.excluded(row) && eligible(&catalogue.project(catalogue.references[row])),
             &usable,
-            convert,
+            underlay,
+            |_| false,
         )?;
     }
-    marks.capture_dependencies(&result, convert)?;
+    let finish = |result: Resolved<A, D, M>| {
+        let has_backups =
+            result
+                .selected
+                .iter()
+                .zip(catalogue.index.prefixes())
+                .any(|(&row, prefix)| {
+                    row != u32::MAX && ((row as usize + 1)..prefix.range().end).any(retain_row)
+                });
+        if !has_backups {
+            return Ok(result);
+        }
+        // 恢复阶段已确定唯一主选图。用同一编译器保留可用备用，不能重新启用被淘汰的主选。
+        let mut selected = result
+            .selected
+            .iter()
+            .copied()
+            .filter(|row| *row != u32::MAX)
+            .peekable();
+        compile(
+            catalogue,
+            |row| selected.next_if_eq(&(row as u32)).is_some(),
+            &usable,
+            underlay,
+            retain_row,
+        )
+    };
+    marks.capture_dependencies(&result);
     let sensitive = marks.sensitive.iter().any(|word| *word != 0);
     let mut tried = Vec::new();
     if sensitive {
@@ -161,7 +193,7 @@ pub(super) fn select<A: Address, D, M>(
     }
     loop {
         // 2. 不改变任何递归目标 LPM 的前缀不会改变依赖图：按字典解析一次，批量恢复各前缀最优的可用声明。
-        let available = Availability::capture(catalogue, &marks, &eligible, &usable, convert)?;
+        let available = Availability::capture(catalogue, &marks, &eligible, &usable, underlay)?;
         let mut changed = false;
         for (index, prefix) in catalogue.index.prefixes().iter().enumerate() {
             if marks.sensitive(index) {
@@ -186,7 +218,8 @@ pub(super) fn select<A: Address, D, M>(
                     !marks.excluded(row) && eligible(&catalogue.project(catalogue.references[row]))
                 },
                 &usable,
-                convert,
+                underlay,
+                |_| false,
             )?;
             // 只可能由非冻结事实/错误的依赖分类触发；拒绝整次编译，不发布不完整结果。
             if unresolved(&result) {
@@ -194,7 +227,7 @@ pub(super) fn select<A: Address, D, M>(
             }
         }
         if !sensitive {
-            return Ok(result);
+            return finish(result);
         }
         // 3. 会改变依赖图的晋升每次只改一个前缀，完整复核全部已有选择；同前缀/同对象的失败试探只做一次。
         // tried 每轮清空、每前缀换身份，不跨事实或其他前缀晋升保留失败结论。
@@ -228,7 +261,8 @@ pub(super) fn select<A: Address, D, M>(
                             && eligible(&catalogue.project(catalogue.references[row]))
                     },
                     &usable,
-                    convert,
+                    underlay,
+                    |_| false,
                 )?;
                 if unresolved(&trial) {
                     marks.exclude(row);
@@ -241,7 +275,7 @@ pub(super) fn select<A: Address, D, M>(
         }
         // 成功晋升严格提高某个前缀的既定优先级，其余前缀选择不变；掩码恢复至多声明数次，不会振荡。
         if !graph_changed {
-            return Ok(result);
+            return finish(result);
         }
     }
 }

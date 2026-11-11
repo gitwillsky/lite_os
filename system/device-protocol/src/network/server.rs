@@ -1,6 +1,6 @@
 use super::queue::{MAX_BATCH, Queue, Record, Ring};
 use super::{
-    LINK, MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS, decode_checksum,
+    MEMORY, NETWORK_VERSION, QUEUE, QUEUE_AFFINITY, RSS_CONFIG, STATISTICS, decode_checksum,
     decode_segmentation, encode_capabilities, encode_error,
 };
 use crate::directory::{self, Class, Directory, Session, SessionState};
@@ -39,6 +39,8 @@ struct SessionQueue {
 }
 struct NetworkSession {
     link: Event,
+    // OWNER: 只串行化低频链路读取与发布，防止并发回调把旧状态写回；不持队列 consumer 锁或参与收发。
+    link_publish: Mutex<()>,
     device: Arc<dyn NetworkProvider>,
     queues: Vec<SessionQueue>,
     rss: Option<NetworkRssCapabilities>,
@@ -48,11 +50,15 @@ impl NetworkSession {
         device: Arc<dyn NetworkProvider>,
         rss: Option<NetworkRssCapabilities>,
     ) -> Result<Self, Status> {
+        let count = device.queue_count();
+        if count == 0 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
         let mut queues = Vec::new();
         queues
-            .try_reserve_exact(device.queue_count() as usize)
+            .try_reserve_exact(count as usize)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for queue in 0..device.queue_count() {
+        for queue in 0..count {
             let memory = device.memory(queue).map_err(encode_error)?;
             let ring = Queue::create(Queue::capacity_for(usize::from(
                 memory.receive_slots.max(memory.transmit_slots),
@@ -86,19 +92,21 @@ impl NetworkSession {
             });
         }
         let link = Event::create()?;
-        let notify = link.duplicate(rights::SAME)?;
-        device.bind_link_activity(
-            Arc::try_new(move || {
-                let _ = notify.signal(0, signals::USER_0);
-            })
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-        );
         Ok(Self {
             link,
+            link_publish: Mutex::new(()),
             device,
             queues,
             rss,
         })
+    }
+    fn publish_link(&self) {
+        {
+            let _publication = self.link_publish.lock();
+            self.queues[0].ring.publish_link(self.device.link());
+        }
+        // 同宽 Release 发布在通知前完成；通知合并不丢当前事实，回调不能在 publication 锁内重入。
+        let _ = self.link.signal(0, signals::USER_0);
     }
     fn close_after_stop(&self) {
         // 不能持 consumer 锁等 reset；另一工作者可能正带着该锁完成设备调用。
@@ -165,12 +173,6 @@ impl NetworkSession {
                 self.device
                     .set_receive_scaling(&config)
                     .map_err(encode_error)?;
-            }
-            LINK => {
-                let link = self.device.link().map_err(encode_error)?;
-                reply
-                    .bool(link.carrier)
-                    .u32(link.speed_mbps.unwrap_or(u32::MAX));
             }
             STATISTICS => {
                 let stats = self.device.statistics();
@@ -531,6 +533,17 @@ pub fn publish(
                     end,
                 ))
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                // provider 只弱引用会话；否则 device -> callback -> session -> device 会形成关闭泄漏。
+                let observer = Arc::downgrade(&session);
+                device.bind_link_activity(
+                    Arc::try_new(move || {
+                        if let Some(session) = observer.upgrade() {
+                            session.get().publish_link();
+                        }
+                    })
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                );
+                session.get().publish_link();
                 let (client, server) = Channel::create()?;
                 let watch = server.duplicate(rights::SAME)?;
                 let mut events = Vec::new();

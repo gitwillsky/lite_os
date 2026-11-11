@@ -1,11 +1,11 @@
-//! 查询/快照版本 1：固定字段、两遍流式快照编码；所有捕获在发表前完整校验。
+//! 双栈查询和只读快照。只有含跨族网关的 IPv4 行需要十六字节网关槽。
 use super::*;
-const VERSION: u32 = 1;
-const QUERY: usize = 8;
+const QUERY_VERSION: u32 = 4;
+const SNAPSHOT_VERSION: u32 = 5;
 const HEADER: usize = 16;
-const ROW: usize = 32;
-const MEMBER: usize = 16;
-fn buffer(length: usize) -> Result<Vec<u8>, Error> {
+const ROW_HEADER: usize = 28;
+
+pub(super) fn buffer(length: usize) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
@@ -19,56 +19,100 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().expect("checked field"))
 }
-fn address(bytes: &[u8], at: usize) -> Ipv4Addr {
-    Ipv4Addr::from(u32_at(bytes, at).to_le_bytes())
+pub(super) fn width(family: u8) -> Result<usize, Error> {
+    match family {
+        4 => Ok(4),
+        6 => Ok(16),
+        _ => Err(Error::Invalid),
+    }
 }
-pub(super) fn encode_queries(queries: &[Query]) -> Result<Vec<u8>, Error> {
-    u32::try_from(queries.len()).map_err(|_| Error::Invalid)?;
-    if queries.iter().any(|query| !query.valid()) {
+pub(super) fn family(address: IpAddr) -> u8 {
+    if address.is_ipv4() { 4 } else { 6 }
+}
+pub(super) fn address(bytes: &[u8], family: u8) -> Result<IpAddr, Error> {
+    match family {
+        4 => Ok(Ipv4Addr::from(<[u8; 4]>::try_from(bytes).map_err(|_| Error::Invalid)?).into()),
+        6 => Ok(core::net::Ipv6Addr::from(
+            <[u8; 16]>::try_from(bytes).map_err(|_| Error::Invalid)?,
+        )
+        .into()),
+        _ => Err(Error::Invalid),
+    }
+}
+pub(super) fn put_address(bytes: &mut [u8], address: IpAddr) {
+    match address {
+        IpAddr::V4(address) => bytes.copy_from_slice(&address.octets()),
+        IpAddr::V6(address) => bytes.copy_from_slice(&address.octets()),
+    }
+}
+pub(super) fn put_query(row: &mut [u8], query: Query) {
+    row[0] = family(query.address);
+    row[1] =
+        u8::from(query.resolve_via_default) | if query.prefix_length.is_some() { 2 } else { 0 };
+    row[2] = query.prefix_length.unwrap_or(0);
+    put_address(&mut row[4..], query.address);
+}
+pub(super) fn get_query(row: &[u8]) -> Result<Query, Error> {
+    let header = row.get(..4).ok_or(Error::Invalid)?;
+    if row.len() != 4 + width(header[0])?
+        || header[1] & !3 != 0
+        || header[3] != 0
+        || header[1] & 2 == 0 && header[2] != 0
+    {
         return Err(Error::Invalid);
     }
-    let mut bytes = buffer(
-        queries
-            .len()
-            .checked_mul(QUERY)
-            .and_then(|size| size.checked_add(8))
-            .ok_or(Error::Invalid)?,
-    )?;
-    bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
-    bytes[4..8].copy_from_slice(&(queries.len() as u32).to_le_bytes());
-    for (query, row) in queries.iter().zip(bytes[8..].as_chunks_mut::<QUERY>().0) {
-        row[..4].copy_from_slice(&query.address.octets());
-        row[4] = u8::from(query.resolve_via_default);
+    let query = Query {
+        address: address(&row[4..], header[0])?,
+        resolve_via_default: header[1] & 1 != 0,
+        prefix_length: (header[1] & 2 != 0).then_some(header[2]),
+    };
+    query.valid().then_some(query).ok_or(Error::Invalid)
+}
+pub(super) fn encode_queries(queries: &[Query]) -> Result<Vec<u8>, Error> {
+    let count = u32::try_from(queries.len()).map_err(|_| Error::Invalid)?;
+    let length = queries.iter().try_fold(8usize, |size, query| {
+        if !query.valid() {
+            return Err(Error::Invalid);
+        }
+        size.checked_add(4 + width(family(query.address))?)
+            .ok_or(Error::Invalid)
+    })?;
+    let mut bytes = buffer(length)?;
+    bytes[..4].copy_from_slice(&QUERY_VERSION.to_le_bytes());
+    bytes[4..8].copy_from_slice(&count.to_le_bytes());
+    let mut at = 8;
+    for query in queries {
+        let size = 4 + width(family(query.address))?;
+        put_query(&mut bytes[at..at + size], *query);
+        at += size;
     }
     Ok(bytes)
 }
 pub(super) fn decode_queries(bytes: &[u8]) -> Result<Vec<Query>, Error> {
     let header = bytes.get(..8).ok_or(Error::Invalid)?;
     let count = u32_at(header, 4) as usize;
-    if u32_at(header, 0) != VERSION
-        || count
-            .checked_mul(QUERY)
-            .and_then(|size| size.checked_add(8))
-            != Some(bytes.len())
-    {
+    if u32_at(header, 0) != QUERY_VERSION || count > (bytes.len() - 8) / 8 {
+        return Err(Error::Invalid);
+    }
+    // 先验证整批 framing，再按已证明的数量分配，拒绝伪造 count 放大分配。
+    let mut rest = &bytes[8..];
+    for _ in 0..count {
+        let size = 4 + width(*rest.first().ok_or(Error::Invalid)?)?;
+        get_query(rest.get(..size).ok_or(Error::Invalid)?)?;
+        rest = &rest[size..];
+    }
+    if !rest.is_empty() {
         return Err(Error::Invalid);
     }
     let mut queries = Vec::new();
     queries
         .try_reserve_exact(count)
         .map_err(|_| Error::NoMemory)?;
-    for row in bytes[8..].as_chunks::<QUERY>().0 {
-        if row[4] > 1 || row[5..] != [0; 3] {
-            return Err(Error::Invalid);
-        }
-        let query = Query {
-            address: address(row, 0),
-            resolve_via_default: row[4] != 0,
-        };
-        if !query.valid() {
-            return Err(Error::Invalid);
-        }
-        queries.push(query);
+    let mut rest = &bytes[8..];
+    for _ in 0..count {
+        let size = 4 + width(rest[0])?;
+        queries.push(get_query(&rest[..size])?);
+        rest = &rest[size..];
     }
     Ok(queries)
 }
@@ -81,6 +125,7 @@ fn state(value: u8) -> Result<State, Error> {
         4 => State::Discard,
         5 => State::Unreachable,
         6 => State::Prohibit,
+        7 => State::Local,
         _ => return Err(Error::Invalid),
     })
 }
@@ -93,6 +138,7 @@ fn code(state: State) -> u8 {
         State::Discard => 4,
         State::Unreachable => 5,
         State::Prohibit => 6,
+        State::Local => 7,
     }
 }
 fn valid(query: Query, state: State, route: Option<RouteInfo>, count: usize) -> bool {
@@ -102,43 +148,70 @@ fn valid(query: Query, state: State, route: Option<RouteInfo>, count: usize) -> 
     match route {
         None => state == State::NoRoute,
         Some(route) => {
-            route.source != 0 && state != State::NoRoute && route.length <= 32 && {
-                let mask = u32::MAX
-                    .checked_shl(32 - u32::from(route.length))
-                    .unwrap_or(0);
-                u32::from(route.network) & mask == u32::from(route.network)
-                    && u32::from(query.address) & mask == u32::from(route.network)
-                    && (state != State::DefaultExcluded
-                        || route.length == 0 && !query.resolve_via_default)
-                    && (route.length != 0
-                        || query.resolve_via_default
-                        || state == State::DefaultExcluded)
-            }
+            route.source != 0
+                && state != State::NoRoute
+                && (state != State::Local
+                    || route.length == if query.address.is_ipv4() { 32 } else { 128 })
+                && crate::policy::Prefix {
+                    network: route.network,
+                    length: route.length,
+                    minimum: None,
+                    maximum: None,
+                }
+                .matches(query.address, query.prefix_length.unwrap_or(route.length))
+                && query
+                    .prefix_length
+                    .is_none_or(|length| route.length == length && route.network == query.address)
+                && (state != State::DefaultExcluded
+                    || query.prefix_length.is_none()
+                        && route.length == 0
+                        && !query.resolve_via_default)
+                && (route.length != 0
+                    || query.prefix_length.is_some()
+                    || query.resolve_via_default
+                    || state == State::DefaultExcluded)
         }
     }
 }
-fn valid_member(member: &Member) -> bool {
-    member.target.interface_index != 0 && member.weight != 0 && (!member.target.on_link || member.target.gateway.is_some())
-        && member.target.gateway.is_none_or(|gateway| matches!(gateway, IpAddr::V4(address) if !address.is_unspecified() && !address.is_multicast() && !address.is_broadcast()))
+fn valid_member(member: &Member, family: u8) -> bool {
+    member.target.interface_index != 0
+        && member.weight != 0
+        && (!member.target.on_link || member.target.gateway.is_some())
+        && member.target.gateway.is_none_or(|gateway| {
+            (family == 4 || gateway.is_ipv6())
+                && !gateway.is_unspecified()
+                && !gateway.is_multicast()
+                && !matches!(gateway, IpAddr::V4(address) if address.is_broadcast())
+                && !matches!(gateway, IpAddr::V6(address) if address.to_ipv4_mapped().is_some())
+        })
 }
-/// 同一 generation 的完整只读快照；所有 record/member 都借用完整校验的同一正文。
+fn wide_members(record: &Record<'_>) -> bool {
+    record.query.address.is_ipv4()
+        && record.members.iter().any(|member| {
+            member
+                .target
+                .gateway
+                .is_some_and(|gateway| gateway.is_ipv6())
+        })
+}
+/// 同一 generation 的完整只读快照；所有 record/member 借用完整校验的正文。
 #[derive(Clone, Copy)]
 pub struct Snapshot<'a> {
     generation: u64,
     count: u32,
     bytes: &'a [u8],
 }
-/// 已捕获并验证的独占快照正文；不可变字节由本对象保活，借用读取不再重新校验成员。
+/// 已验证且独占的不可变快照，不建立第二份解析数组。
 pub struct OwnedSnapshot(Vec<u8>);
 impl OwnedSnapshot {
-    /// 接管一次完整快照并验证所有行/成员，不建立第二份解析数组。
+    /// 接管完整快照并验证全部字段。
     /// # Errors
-    /// 头部/字段/长度/保留位或包尾非法；失败不产生可借用视图。
+    /// 头部、数量、地址族、字段或包尾非法。
     pub fn capture(bytes: Vec<u8>) -> Result<Self, Error> {
         Snapshot::parse(&bytes)?;
         Ok(Self(bytes))
     }
-    /// 借用构造时验证的同一不可变正文，不分配或重新扫描全部结果。
+    /// 无分配借用已经验证的正文。
     pub fn view(&self) -> Snapshot<'_> {
         Snapshot {
             generation: u64_at(&self.0, 8),
@@ -148,11 +221,9 @@ impl OwnedSnapshot {
     }
 }
 impl<'a> Snapshot<'a> {
-    /// 两遍编码冻结的有序查询结果，不收集第二份行/成员数组。
-    /// # Parameters
-    /// records 的克隆遍历必须保持数量/值；generation 非零且属于同一 RIB 实例。
+    /// 两遍编码有序双栈结果；调用者保证克隆遍历来自同一冻结图。
     /// # Errors
-    /// 字段/数量/长度非法或内存不足，不返回部分快照。
+    /// 零代际、非法字段、容量溢出或内存不足，不返回部分结果。
     pub fn encode<'b>(
         generation: u64,
         records: impl Clone + ExactSizeIterator<Item = Record<'b>>,
@@ -163,63 +234,85 @@ impl<'a> Snapshot<'a> {
         let count = u32::try_from(records.len()).map_err(|_| Error::Invalid)?;
         let mut length = HEADER;
         for record in records.clone() {
+            let family = family(record.query.address);
             if !valid(
                 record.query,
                 record.state,
                 record.route,
                 record.members.len(),
-            ) || record.members.iter().any(|member| !valid_member(member))
+            ) || record
+                .members
+                .iter()
+                .any(|member| !valid_member(member, family))
             {
                 return Err(Error::Invalid);
             }
             u32::try_from(record.members.len()).map_err(|_| Error::Invalid)?;
+            let width = width(family)?;
+            let member_width = if wide_members(&record) { 16 } else { width };
             length = record
                 .members
                 .len()
-                .checked_mul(MEMBER)
-                .and_then(|size| size.checked_add(ROW))
+                .checked_mul(12 + member_width)
+                .and_then(|size| size.checked_add(ROW_HEADER + 2 * width))
                 .and_then(|size| length.checked_add(size))
                 .ok_or(Error::Invalid)?;
         }
         let mut bytes = buffer(length)?;
-        bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
+        bytes[..4].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
         bytes[4..8].copy_from_slice(&count.to_le_bytes());
         bytes[8..16].copy_from_slice(&generation.to_le_bytes());
         let mut at = HEADER;
         for record in records {
-            let row = &mut bytes[at..at + ROW];
-            row[..4].copy_from_slice(&record.query.address.octets());
-            row[4] = u8::from(record.query.resolve_via_default);
-            row[5] = code(record.state);
+            let prefix_width = width(family(record.query.address))?;
+            let wide = wide_members(&record);
+            let member_width = if wide { 16 } else { prefix_width };
+            let size = ROW_HEADER + 2 * prefix_width;
+            let row = &mut bytes[at..at + size];
+            row[0] = family(record.query.address);
+            row[1] = u8::from(record.query.resolve_via_default)
+                | if record.query.prefix_length.is_some() {
+                    2
+                } else {
+                    0
+                };
+            row[2] = record.query.prefix_length.unwrap_or(0);
+            row[3] = code(record.state);
+            row[5] = u8::from(wide);
+            put_address(
+                &mut row[ROW_HEADER..ROW_HEADER + prefix_width],
+                record.query.address,
+            );
             if let Some(route) = record.route {
-                row[6] = route.length;
-                row[8..12].copy_from_slice(&route.network.octets());
-                row[12..16].copy_from_slice(&route.preference.to_le_bytes());
-                row[16..20].copy_from_slice(&route.metric.to_le_bytes());
-                row[24..32].copy_from_slice(&route.source.to_le_bytes());
+                row[4] = route.length;
+                row[8..12].copy_from_slice(&route.preference.to_le_bytes());
+                row[12..16].copy_from_slice(&route.metric.to_le_bytes());
+                row[20..28].copy_from_slice(&route.source.to_le_bytes());
+                put_address(&mut row[ROW_HEADER + prefix_width..], route.network);
             }
-            row[20..24].copy_from_slice(&(record.members.len() as u32).to_le_bytes());
-            at += ROW;
+            row[16..20].copy_from_slice(&(record.members.len() as u32).to_le_bytes());
+            at += size;
             for member in record.members {
-                let row = &mut bytes[at..at + MEMBER];
+                let row = &mut bytes[at..at + 12 + member_width];
                 row[..4].copy_from_slice(&member.target.interface_index.to_le_bytes());
                 row[4..8].copy_from_slice(&member.weight.to_le_bytes());
                 row[8] = u8::from(member.target.gateway.is_some())
                     | u8::from(member.target.on_link) << 1;
-                if let Some(IpAddr::V4(gateway)) = member.target.gateway {
-                    row[12..16].copy_from_slice(&gateway.octets());
+                if let Some(gateway) = member.target.gateway {
+                    row[8] |= u8::from(record.query.address.is_ipv4() && gateway.is_ipv6()) << 2;
+                    put_address(&mut row[12..12 + width(family(gateway))?], gateway);
                 }
-                at += MEMBER;
+                at += row.len();
             }
         }
         Ok(bytes)
     }
-    /// 完整验证头部、所有结果/成员和包尾；不分配解析数组。
+    /// 验证全部行、成员及包尾，不分配解析数组。
     /// # Errors
-    /// 未知版本、零代际、字段/长度矛盾、保留位或包尾错误。
+    /// 未知版本、零代际、地址/数量/字段矛盾或保留字段错误。
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
         let header = bytes.get(..HEADER).ok_or(Error::Invalid)?;
-        if u32_at(header, 0) != VERSION || u64_at(header, 8) == 0 {
+        if u32_at(header, 0) != SNAPSHOT_VERSION || u64_at(header, 8) == 0 {
             return Err(Error::Invalid);
         }
         let count = u32_at(header, 4);
@@ -237,11 +330,11 @@ impl<'a> Snapshot<'a> {
             bytes: &bytes[HEADER..],
         })
     }
-    /// 当前服务实例的已确认选路代际，不可跨实例比较。
+    /// 当前实例冻结图的代际，不能跨事务混用。
     pub fn generation(self) -> u64 {
         self.generation
     }
-    /// 按查询原顺序无分配读取完整结果。
+    /// 无分配按查询顺序投影已验证结果。
     pub fn records(self) -> impl ExactSizeIterator<Item = RecordView<'a>> {
         let mut rest = self.bytes;
         (0..self.count).map(move |_| {
@@ -251,97 +344,118 @@ impl<'a> Snapshot<'a> {
         })
     }
 }
-/// 一个已校验的结果及借用的出口正文。
+/// 一个已验证的双栈结果及其借用的成员区。
 pub struct RecordView<'a> {
     pub query: Query,
     pub state: State,
     pub route: Option<RouteInfo>,
     members: &'a [u8],
+    member_width: usize,
 }
 impl RecordView<'_> {
-    /// 无分配按原组顺序读取立即出口。
+    /// 无分配读取完整立即出口及其实际网关族。
     pub fn members(&self) -> impl ExactSizeIterator<Item = Member> + '_ {
-        self.members.as_chunks::<MEMBER>().0.iter().map(member)
+        let family = family(self.query.address);
+        let size = 12 + self.member_width;
+        self.members
+            .chunks_exact(size)
+            .map(move |row| member(row, family))
     }
 }
-fn member(row: &[u8; MEMBER]) -> Member {
+fn member(row: &[u8], family: u8) -> Member {
+    let gateway_family = if row[8] & 4 == 0 { family } else { 6 };
     Member {
         target: Adjacency {
             interface_index: u32_at(row, 0),
-            gateway: (row[8] & 1 != 0).then(|| IpAddr::V4(address(row, 12))),
+            gateway: (row[8] & 1 != 0).then(|| {
+                let size = width(gateway_family).expect("validated gateway family");
+                address(&row[12..12 + size], gateway_family).expect("validated gateway")
+            }),
             on_link: row[8] & 2 != 0,
         },
         weight: u32_at(row, 4),
     }
 }
+fn fields(row: &[u8]) -> RecordView<'_> {
+    let width = width(row[0]).expect("validated family");
+    RecordView {
+        query: Query {
+            address: address(&row[ROW_HEADER..ROW_HEADER + width], row[0])
+                .expect("validated query"),
+            resolve_via_default: row[1] & 1 != 0,
+            prefix_length: (row[1] & 2 != 0).then_some(row[2]),
+        },
+        state: state(row[3]).expect("validated state"),
+        route: (u64_at(row, 20) != 0).then(|| RouteInfo {
+            network: address(&row[ROW_HEADER + width..], row[0]).expect("validated network"),
+            length: row[4],
+            source: u64_at(row, 20),
+            preference: u32_at(row, 8),
+            metric: u32_at(row, 12),
+        }),
+        members: &[],
+        member_width: if row[5] == 0 { width } else { 16 },
+    }
+}
 fn record(bytes: &[u8]) -> Result<(RecordView<'_>, &[u8]), Error> {
-    let row = bytes.get(..ROW).ok_or(Error::Invalid)?;
-    if row[4] > 1 || row[7] != 0 {
+    let header = bytes.get(..ROW_HEADER).ok_or(Error::Invalid)?;
+    let width = width(header[0])?;
+    let size = ROW_HEADER + 2 * width;
+    let row = bytes.get(..size).ok_or(Error::Invalid)?;
+    if row[1] & !3 != 0
+        || row[1] & 2 == 0 && row[2] != 0
+        || row[5] > u8::from(row[0] == 4)
+        || row[6..8] != [0; 2]
+    {
         return Err(Error::Invalid);
     }
-    let query = Query {
-        address: address(row, 0),
-        resolve_via_default: row[4] != 0,
-    };
-    let state = state(row[5])?;
-    let source = u64_at(row, 24);
-    let route = (source != 0).then(|| RouteInfo {
-        network: address(row, 8),
-        length: row[6],
-        source,
-        preference: u32_at(row, 12),
-        metric: u32_at(row, 16),
-    });
-    let count = u32_at(row, 20) as usize;
-    if !valid(query, state, route, count) || source == 0 && (row[6] != 0 || row[8..20] != [0; 12]) {
+    state(row[3])?;
+    let mut view = fields(row);
+    let count = u32_at(row, 16) as usize;
+    if !valid(view.query, view.state, view.route, count)
+        || view.route.is_none()
+            && (row[4] != 0
+                || row[8..16] != [0; 8]
+                || row[ROW_HEADER + width..].iter().any(|byte| *byte != 0))
+    {
         return Err(Error::Invalid);
     }
+    let member_size = 12 + view.member_width;
     let end = count
-        .checked_mul(MEMBER)
-        .and_then(|size| size.checked_add(ROW))
+        .checked_mul(member_size)
+        .and_then(|size| size.checked_add(row.len()))
         .ok_or(Error::Invalid)?;
-    let members = bytes.get(ROW..end).ok_or(Error::Invalid)?;
-    for row in members.as_chunks::<MEMBER>().0 {
-        if row[8] & !3 != 0
+    view.members = bytes.get(size..end).ok_or(Error::Invalid)?;
+    let mut cross_gateway = false;
+    for row in view.members.chunks_exact(member_size) {
+        let cross = row[8] & 4 != 0;
+        let present = row[8] & 1 != 0;
+        let used = if !present {
+            0
+        } else if cross {
+            16
+        } else {
+            width
+        };
+        if row[8] & !7 != 0
             || row[9..12] != [0; 3]
-            || row[8] & 1 == 0 && row[12..16] != [0; 4]
-            || !valid_member(&member(row))
+            || cross && (header[5] == 0 || !present)
+            || row[12 + used..].iter().any(|byte| *byte != 0)
+            || !valid_member(&member(row, header[0]), header[0])
         {
             return Err(Error::Invalid);
         }
+        cross_gateway |= cross;
     }
-    Ok((
-        RecordView {
-            query,
-            state,
-            route,
-            members,
-        },
-        &bytes[end..],
-    ))
+    if cross_gateway != (header[5] != 0) {
+        return Err(Error::Invalid);
+    }
+    Ok((view, &bytes[end..]))
 }
-
-// Snapshot 的不可变借用保活已验证正文；迭代只投影固定字段，不再次遍历/校验全部成员。
 fn frozen_record(bytes: &[u8]) -> (RecordView<'_>, &[u8]) {
-    let row = &bytes[..ROW];
-    let source = u64_at(row, 24);
-    let end = ROW + u32_at(row, 20) as usize * MEMBER;
-    (
-        RecordView {
-            query: Query {
-                address: address(row, 0),
-                resolve_via_default: row[4] != 0,
-            },
-            state: state(row[5]).expect("validated state"),
-            route: (source != 0).then(|| RouteInfo {
-                network: address(row, 8),
-                length: row[6],
-                source,
-                preference: u32_at(row, 12),
-                metric: u32_at(row, 16),
-            }),
-            members: &bytes[ROW..end],
-        },
-        &bytes[end..],
-    )
+    let size = ROW_HEADER + 2 * width(bytes[0]).expect("validated family");
+    let mut view = fields(&bytes[..size]);
+    let end = size + u32_at(bytes, 16) as usize * (12 + view.member_width);
+    view.members = &bytes[size..end];
+    (view, &bytes[end..])
 }

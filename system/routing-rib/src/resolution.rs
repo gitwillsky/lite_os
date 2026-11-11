@@ -3,9 +3,12 @@
 use super::*;
 use core::{net::IpAddr, num::NonZeroU32};
 use fallible_tree::FallibleMap;
-use router_protocol::routing::{Action, Target};
+use router_protocol::routing::Target;
 mod forwarding;
-pub use forwarding::SourceExport;
+pub use forwarding::{Forwarding, SourceExport};
+mod address;
+pub use address::RibAddress;
+mod installation;
 mod selection;
 mod tracking;
 mod weights;
@@ -19,7 +22,7 @@ pub struct NextHop {
     members: Vec<Member>,
 }
 impl NextHop {
-    /// 转发或终止动作。
+    /// 本机交付、转发或策略终止动作；只有 Forward 有递归出口。
     pub fn action(&self) -> Action {
         self.action
     }
@@ -83,6 +86,8 @@ pub struct Selected<'a, A, D, M = ()> {
 pub struct Resolved<A, D, M = ()> {
     catalogue: Arc<Catalogue<A, D, super::NextHop, M>>,
     selected: Vec<u32>,
+    // 同前缀备用按目录顺序下发。它们不参与本代的递归目标、协议宣告或主选诊断。
+    backups: Vec<u32>,
     offsets: Vec<usize>,
     results: Vec<Option<Resolution>>,
     groups: Vec<Arc<NextHop>>,
@@ -102,7 +107,7 @@ impl<A: Address, D, M> Resolved<A, D, M> {
         }
     }
     /// 按前缀顺序借用选定候选，包括不可解析项，供重选/诊断使用；不分配或克隆 Arc。
-    pub fn selected(&self) -> impl Iterator<Item = Selected<'_, A, D, M>> {
+    pub fn selected(&self) -> impl Iterator<Item = Selected<'_, A, D, M>> + Clone {
         self.selected
             .iter()
             .filter(|row| **row != u32::MAX)
@@ -127,56 +132,56 @@ impl<A: Address, D, M> Resolved<A, D, M> {
         self.groups.len()
     }
 }
-macro_rules! resolver {
-    ($address:ty, $variant:ident) => {
-        impl<D, M> Catalogue<$address, D, super::NextHop, M> {
-            /// 冻结每个前缀的首个 eligible 候选，并在同一集合中递归展开全部已选择下一跳。
-            /// # Parameters
-            /// `eligible` 根据冻结策略/来源事实筛选候选；`usable` 基于同一冻结接口事实验证立即出口。
-            /// 两个闭包不得在求解期间改变其事实或执行设备 I/O。
-            /// # Returns
-            /// 保活原目录的控制面快照；不可解析项保留用于后续重选，不直接下发。
-            /// # Errors
-            /// 分配失败、成员/地址族错误，或精确权重超出可表达范围；不发表部分结果。
-            pub fn resolve(
-                self: &Arc<Self>,
-                mut eligible: impl FnMut(&Candidate<'_, $address, D, super::NextHop, M>) -> bool,
-                usable: impl FnMut(&Adjacency) -> bool,
-            ) -> Result<Resolved<$address, D, M>, Error> {
-                compile(
-                    self,
-                    |row| eligible(&self.project(self.references[row])),
-                    usable,
-                    |address| match address {
-                        IpAddr::$variant(address) => Some(<$address>::from(address)),
-                        _ => None,
-                    },
-                )
-            }
-            /// 按既定优先级重选可解析候选，撤回失效项并恢复可以安全晋升的备用声明。
-            /// # Parameters
-            /// `eligible`/`usable` 必须读取同一冻结策略与接口事实，整个求解期间不得改变事实或执行 I/O。
-            /// `usable` 仅判断立即接口/邻接事实，不得依赖本次求解中变化的候选选择。
-            /// # Returns
-            /// 只含可解析选择的不可变快照；未选中的声明仍保留在原 Catalogue，新事实到来时重新求解。
-            /// # Errors
-            /// 内存/表示范围不足或声明/冻结事实不一致；不发表部分选择，不改变原目录。
-            pub fn select_resolved(
-                self: &Arc<Self>,
-                eligible: impl Fn(&Candidate<'_, $address, D, super::NextHop, M>) -> bool,
-                usable: impl Fn(&Adjacency) -> bool,
-            ) -> Result<Resolved<$address, D, M>, Error> {
-                selection::select(self, eligible, usable, |address| match address {
-                    IpAddr::$variant(address) => Some(<$address>::from(address)),
-                    _ => None,
-                })
-            }
-        }
-    };
-}
-resolver!(u32, V4);
-resolver!(u128, V6);
+impl<A: RibAddress, D, M> Catalogue<A, D, super::NextHop, M> {
+    /// 冻结每个前缀的首个 eligible 候选，并在同一集合中递归展开全部已选择下一跳。
+    /// # Parameters
+    /// `eligible` 根据冻结策略/来源事实筛选候选；`usable` 基于同一冻结接口事实验证立即出口。
+    /// 两个闭包不得在求解期间改变其事实或执行设备 I/O。
+    /// # Returns
+    /// 保活原目录的控制面快照；不可解析项保留用于后续重选，不直接下发。
+    /// # Errors
+    /// 分配失败、成员/地址族错误，或精确权重超出可表达范围；不发表部分结果。
+    pub fn resolve(
+        self: &Arc<Self>,
+        mut eligible: impl FnMut(&Candidate<'_, A, D, super::NextHop, M>) -> bool,
+        usable: impl FnMut(&Adjacency) -> bool,
+    ) -> Result<Resolved<A, D, M>, Error> {
+        compile(
+            self,
+            |row| eligible(&self.project(self.references[row])),
+            usable,
+            None,
+            |_| false,
+        )
+    }
+    /// 按既定优先级重选可解析候选，撤回失效项并恢复可以安全晋升的备用声明。
+    /// # Parameters
+    /// `eligible`/`usable` 必须读取同一冻结策略与接口事实，整个求解期间不得改变事实或执行 I/O。
+    /// `usable` 仅判断立即接口/邻接事实，不得依赖本次求解中变化的候选选择。
+    /// # Returns
+    /// 只含可解析选择的不可变快照；未选中的声明仍保留在原 Catalogue，新事实到来时重新求解。
+    /// # Errors
+    /// 内存/表示范围不足或声明/冻结事实不一致；不发表部分选择，不改变原目录。
+    pub fn select_resolved(
+        self: &Arc<Self>,
+        eligible: impl Fn(&Candidate<'_, A, D, super::NextHop, M>) -> bool,
+        usable: impl Fn(&Adjacency) -> bool,
+    ) -> Result<Resolved<A, D, M>, Error> {
+        self.select_with_backups(eligible, usable, |_| false, None)
+    }
 
+    /// 同时保留指定来源的可解析备用候选，执行端可根据即时邻接状态切换。
+    /// `retain` 只在冷编译中选择可下发的备用声明，不改变首选、递归图或来源资格。
+    pub(crate) fn select_with_backups(
+        self: &Arc<Self>,
+        eligible: impl Fn(&Candidate<'_, A, D, super::NextHop, M>) -> bool,
+        usable: impl Fn(&Adjacency) -> bool,
+        retain: impl Fn(&Candidate<'_, A, D, super::NextHop, M>) -> bool,
+        underlay: Option<&Resolved<u128, D, M>>,
+    ) -> Result<Resolved<A, D, M>, Error> {
+        selection::select(self, eligible, usable, retain, underlay)
+    }
+}
 struct Compiler<'a, A, D, M> {
     catalogue: &'a Catalogue<A, D, super::NextHop, M>,
     selected: Vec<u32>,
@@ -239,11 +244,12 @@ fn prepare<A: Address, D, M>(
         by_group: FallibleMap::new(),
     })
 }
-fn compile<A: Address, D, M>(
+fn compile<A: RibAddress, D, M>(
     catalogue: &Arc<Catalogue<A, D, super::NextHop, M>>,
     eligible: impl FnMut(usize) -> bool,
     mut usable: impl FnMut(&Adjacency) -> bool,
-    convert: fn(IpAddr) -> Option<A>,
+    underlay: Option<&Resolved<u128, D, M>>,
+    retain: impl Fn(usize) -> bool,
 ) -> Result<Resolved<A, D, M>, Error> {
     let mut compiler = prepare(catalogue, eligible)?;
     let mut results = Vec::new();
@@ -259,7 +265,50 @@ fn compile<A: Address, D, M>(
         }
         let node = compiler.node(row);
         if results[node].is_none() {
-            results[node] = Some(compiler.walk(node, &mut usable, convert, &mut work)?);
+            results[node] = Some(compiler.walk(node, &mut usable, underlay, &mut work)?);
+        }
+    }
+    let mut backups = Vec::new();
+    // 仅在主选图稳定时解析较低优先级声明。不能让备用的不可解析结果参加主选重算。
+    if results.iter().flatten().all(|result| result.hop.is_some()) {
+        for (index, prefix) in catalogue.index.prefixes().iter().enumerate() {
+            let row = compiler.selected[index];
+            if row == u32::MAX {
+                continue;
+            }
+            let mut candidates = ((row as usize + 1)..prefix.range().end)
+                .filter(|row| retain(*row))
+                .peekable();
+            if candidates.peek().is_none() {
+                continue;
+            }
+            let primary = results[compiler.node(row)].expect("resolved primary");
+            let primary = primary.hop.expect("stable primary graph");
+            if matches!(
+                compiler.groups[primary.get() as usize - 1].action,
+                Action::Discard | Action::Unreachable | Action::Prohibit
+            ) {
+                continue;
+            }
+            for candidate in candidates {
+                let node = compiler.node(candidate as u32);
+                let result = match results[node] {
+                    Some(result) => result,
+                    None => compiler.walk(node, &mut usable, underlay, &mut work)?,
+                };
+                let Some(hop) = result.hop else {
+                    continue;
+                };
+                if hop == primary {
+                    continue;
+                }
+                backups.try_reserve(1).map_err(|_| Error::NoMemory)?;
+                backups.push(candidate as u32);
+                results[node] = Some(result);
+                if compiler.groups[hop.get() as usize - 1].action != Action::Forward {
+                    break;
+                }
+            }
         }
     }
     // 只有最终根结果可以进入快照；上下文剪枝产生的中间组在编译结束时退休。
@@ -290,12 +339,13 @@ fn compile<A: Address, D, M>(
     Ok(Resolved {
         catalogue: catalogue.clone(),
         selected: compiler.selected,
+        backups,
         offsets: compiler.offsets,
         results,
         groups,
     })
 }
-impl<A: Address, D, M> Compiler<'_, A, D, M> {
+impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
     fn node(&self, row: u32) -> usize {
         let reference = self.catalogue.references[row as usize];
         self.offsets[reference.source as usize]
@@ -329,19 +379,16 @@ impl<A: Address, D, M> Compiler<'_, A, D, M> {
         self.groups.push(hop);
         Ok(id)
     }
-    fn append(
-        &self,
+    fn append_recursive(
         frame: &mut Frame,
-        child: Resolution,
+        member: router_protocol::routing::Member,
+        child: Option<&NextHop>,
         usable: &mut impl FnMut(&Adjacency) -> bool,
     ) -> Result<(), Error> {
-        let member = self.nodes[frame.node].members()[frame.cursor];
         let Target::Recursive(address) = member.target else {
             unreachable!("only recursive members await a child");
         };
-        frame.issues.include(child.issues);
-        let hop = child.hop.map(|id| &self.groups[id.get() as usize - 1]);
-        if let Some(hop) = hop.filter(|hop| hop.action == Action::Forward) {
+        if let Some(hop) = child.filter(|hop| hop.action == Action::Forward) {
             let start = frame.parts.len();
             let mut total = 0u64;
             frame
@@ -377,7 +424,7 @@ impl<A: Address, D, M> Compiler<'_, A, D, M> {
         &mut self,
         root: usize,
         usable: &mut impl FnMut(&Adjacency) -> bool,
-        convert: fn(IpAddr) -> Option<A>,
+        underlay: Option<&Resolved<u128, D, M>>,
         stack: &mut Vec<Frame>,
     ) -> Result<Resolution, Error> {
         if let State::Cached(result) = self.states[root] {
@@ -393,7 +440,12 @@ impl<A: Address, D, M> Compiler<'_, A, D, M> {
                 let Some(frame) = stack.last_mut() else {
                     return Ok(result);
                 };
-                self.append(frame, result, usable)?;
+                let member = self.nodes[frame.node].members()[frame.cursor];
+                let child = result
+                    .hop
+                    .map(|id| self.groups[id.get() as usize - 1].as_ref());
+                frame.issues.include(result.issues);
+                Self::append_recursive(frame, member, child, usable)?;
                 continue;
             }
             let frame = stack.last_mut().expect("root frame exists until returned");
@@ -448,8 +500,22 @@ impl<A: Address, D, M> Compiler<'_, A, D, M> {
                     frame.cursor += 1;
                 }
                 Target::Recursive(address) => {
-                    let address = convert(address).ok_or(Error::InvalidSource)?;
-                    match self.target(address).map(|node| (node, self.states[node])) {
+                    let Some(index) = A::from_ip(address) else {
+                        // 只有 IPv4 依赖已冻结的 IPv6 图；跨族边不会进入本族 DFS 栈或回到 IPv4。
+                        let child =
+                            underlay.and_then(|underlay| lookup_underlay(underlay, address));
+                        if let Some(child) = &child {
+                            frame.issues.include(child.issues);
+                        }
+                        Self::append_recursive(
+                            frame,
+                            member,
+                            child.and_then(|child| child.next_hop),
+                            usable,
+                        )?;
+                        continue;
+                    };
+                    match self.target(index).map(|node| (node, self.states[node])) {
                         None => {
                             frame.issues.unreachable = true;
                             frame.cursor += 1;
@@ -469,6 +535,16 @@ impl<A: Address, D, M> Compiler<'_, A, D, M> {
             }
         }
     }
+}
+
+fn lookup_underlay<D, M>(
+    underlay: &Resolved<u128, D, M>,
+    address: IpAddr,
+) -> Option<Selected<'_, u128, D, M>> {
+    let IpAddr::V6(address) = address else {
+        return None;
+    };
+    underlay.lookup(u128::from(address))
 }
 
 #[cfg(test)]

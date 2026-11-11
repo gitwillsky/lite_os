@@ -1,6 +1,6 @@
 //! 原生配置树的唯一数据模型。设备匹配与具名配置对象分离，不用 Linux IFNAMSIZ 作为配置身份。
 //!
-//! 当前已接入接口/IPv4 与解析策略；其他路由领域随各执行服务接入此树，不以未执行字段冒充能力。
+//! 策略由各执行领域消费；字段可编码或具有 Schema 不代表已经完成执行和系统验收。
 //! JSON、强类型检查与 JSON Schema 共用这些声明；Linux 桌面设置仅为此模型的兼容投影。
 
 use alloc::{
@@ -17,6 +17,23 @@ use serde::{
 };
 
 use crate::{InterfaceConfig, Invalid, Method};
+mod delegation;
+mod dhcp;
+mod dns;
+pub use dhcp::DhcpV4Pool;
+pub use dns::{DnsForwarding, DnsListener, DnsUpstream};
+mod ipv6;
+mod policy_routing;
+mod firewall;
+mod rdnss;
+pub use delegation::PrefixDelegation;
+pub use ipv6::{
+    ADVERTISEMENT_OPTION_SPACE, Ipv6Address, Ipv6Configuration, MAX_ADVERTISED_PREFIXES,
+    RouterAdvertisementPolicy, RouterAdvertisements, valid_advertised_prefixes,
+};
+pub use firewall::{ConnectionState, Firewall, PreroutingAction, PreroutingRule};
+pub use policy_routing::{PolicyRouteRule, PolicyRouting, RuleOrigin, StaticTable};
+pub use rdnss::{AdvertisedDns, MAX_ADVERTISED_DNS, rdnss_size};
 mod routes;
 pub use routes::{StaticAction, StaticMember, StaticRoute, StaticTarget};
 
@@ -145,8 +162,17 @@ pub struct Ipv4Configuration {
 
 // Schemars 的内置 IP 描述受 std feature 限制；Serde 的 core::net 编码仍为标准文本。
 // 只在元数据中描述这一相同格式，不添加另一种地址表示或解析器。
-fn ipv4_schema(_: &mut SchemaGenerator) -> Schema {
+pub(crate) fn address_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"anyOf":[{"type":"string","format":"ipv4"},{"type":"string","format":"ipv6"}]})
+}
+pub(crate) fn optional_address_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"anyOf":[{"type":"string","format":"ipv4"},{"type":"string","format":"ipv6"},{"type":"null"}]})
+}
+pub(crate) fn ipv4_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({"type":"string", "format":"ipv4"})
+}
+pub(crate) fn optional_ipv4_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"anyOf":[{"type":"string","format":"ipv4"},{"type":"null"}]})
 }
 fn ipv4_list_schema(generator: &mut SchemaGenerator) -> Schema {
     json_schema!({"type":"array", "items":ipv4_schema(generator)})
@@ -215,6 +241,12 @@ pub struct Interface {
     /// `None` 继承 bootfs 默认策略，而非保存一份默认值副本。
     #[serde(default)]
     pub ipv4: Option<Ipv4Configuration>,
+    /// 仅在此接口启用时分发 DHCPv4 地址。
+    #[serde(default)]
+    pub dhcp_v4_server: Option<DhcpV4Pool>,
+    /// 静态 IPv6 地址集合；缺省没有手动地址，自动链路地址仍由执行 owner 管理。
+    #[serde(default)]
+    pub ipv6: Option<Ipv6Configuration>,
 }
 
 impl Interface {
@@ -243,6 +275,9 @@ impl Interface {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DnsConfiguration {
+    /// 下游 DNS 转发与缓存；缺席时不监听。
+    #[serde(default)]
+    pub forwarding: Option<DnsForwarding>,
     /// 有序搜索域；空列表使用自动搜索策略。
     pub search_list: Vec<String>,
     /// 主 DNS 后缀；空值表示没有。
@@ -254,6 +289,7 @@ pub struct DnsConfiguration {
 impl Default for DnsConfiguration {
     fn default() -> Self {
         Self {
+            forwarding: None,
             search_list: Vec::new(),
             primary_suffix: String::new(),
             append_parent_suffixes: true,
@@ -269,14 +305,40 @@ pub struct Configuration {
     #[schemars(range(min = VERSION, max = VERSION))]
     pub version: u32,
     /// 按稳定配置名索引的接口策略。
-    #[serde(default, deserialize_with = "unique_interfaces")]
+    #[serde(default, deserialize_with = "unique_objects")]
     pub interfaces: BTreeMap<Name, Interface>,
-    /// 静态 IPv4 来源；接口使用配置对象名称，绝不持久化运行时 ifindex。
+    /// 是否转发目的不是本机的 IPv4 单播；路由器缺省开启，不影响本机 socket 或路由学习。
+    #[serde(default = "forwarding_default")]
+    #[schemars(
+        title = "IPv4 转发",
+        description = "允许在接口之间转发 IPv4 单播；关闭仍保留路由和本机通信。"
+    )]
+    pub ipv4_forwarding: bool,
+    /// 是否转发 IPv6 单播；独立于 IPv4 开关，关闭仍保留本机通信和路由学习。
+    #[serde(default = "forwarding_default")]
+    #[schemars(
+        title = "IPv6 转发",
+        description = "允许在接口之间转发 IPv6 单播；不转发链路范围地址。"
+    )]
+    pub ipv6_forwarding: bool,
+    /// 上联 IPv6 前缀委派及下游子网编号。缺席时停用。
+    #[serde(default)]
+    pub prefix_delegation: Option<PrefixDelegation>,
+    /// 双栈静态来源；接口使用配置对象名称，绝不持久化运行时 ifindex。
     #[serde(default)]
     pub routes: Vec<StaticRoute>,
+    /// 按流量来源、源网段和入接口选择双栈路由表。
+    #[serde(default)]
+    pub policy_routing: PolicyRouting,
+    /// 双栈防火墙规则；缺席使用空链。
+    #[serde(default, skip_serializing_if = "Firewall::is_empty")]
+    pub firewall: Firewall,
     /// 受管来源的有序准入策略；缺省保持全部路由，实际接口观测事实不受此策略修改。
     #[serde(default)]
     pub route_policy: crate::policy::Policy,
+    /// BGP 会话域；None 停止全部邻居。路由进出需要对应服务实际支持并显式配置的策略。
+    #[serde(default)]
+    pub bgp: Option<crate::bgp::Configuration>,
     /// 系统解析策略。
     #[serde(default)]
     pub dns: DnsConfiguration,
@@ -289,39 +351,51 @@ pub struct Configuration {
     pub backup: Option<crate::backup::Policy>,
 }
 
+/// 返回路由器的缺省单播转发策略；配置缺省与原生域初始值共用此定义，不分配。
+pub const fn forwarding_default() -> bool {
+    true
+}
+
 impl Default for Configuration {
     fn default() -> Self {
         Self {
             version: VERSION,
+            ipv4_forwarding: forwarding_default(),
+            ipv6_forwarding: forwarding_default(),
+            prefix_delegation: None,
             route_policy: crate::policy::Policy::default(),
             interfaces: BTreeMap::new(),
             routes: Vec::new(),
+            policy_routing: PolicyRouting::default(),
+            firewall: Firewall::default(),
+            bgp: None,
             dns: DnsConfiguration::default(),
             backup: None,
         }
     }
 }
 
-fn unique_interfaces<'de, D: serde::Deserializer<'de>>(
+/// 捕获按配置名索引的对象；重复 JSON 键必须拒绝，不能静默覆盖另一个接口或邻居。
+pub(crate) fn unique_objects<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     decoder: D,
-) -> Result<BTreeMap<Name, Interface>, D::Error> {
-    struct Interfaces;
-    impl<'de> Visitor<'de> for Interfaces {
-        type Value = BTreeMap<Name, Interface>;
+) -> Result<BTreeMap<Name, T>, D::Error> {
+    struct Objects<T>(core::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Objects<T> {
+        type Value = BTreeMap<Name, T>;
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("uniquely named interface objects")
+            f.write_str("uniquely named configuration objects")
         }
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            let mut interfaces = BTreeMap::new();
+            let mut objects = BTreeMap::new();
             while let Some((name, interface)) = map.next_entry()? {
-                if interfaces.insert(name, interface).is_some() {
-                    return Err(de::Error::custom("duplicate interface object name"));
+                if objects.insert(name, interface).is_some() {
+                    return Err(de::Error::custom("duplicate configuration object name"));
                 }
             }
-            Ok(interfaces)
+            Ok(objects)
         }
     }
-    decoder.deserialize_map(Interfaces)
+    decoder.deserialize_map(Objects(core::marker::PhantomData))
 }
 
 fn domain(value: &str) -> bool {
@@ -336,6 +410,15 @@ impl Configuration {
         if self.version != VERSION {
             return Err(invalid("/version", "unsupported configuration version"));
         }
+        if let Some(forwarding) = &self.dns.forwarding {
+            forwarding.validate(self)?;
+        }
+        if let Some(delegation) = &self.prefix_delegation {
+            delegation.validate(self)?;
+        }
+        if let Some(bgp) = &self.bgp {
+            bgp.validate()?;
+        }
         self.route_policy.validate().map_err(|error| {
             invalid(
                 format!("/route_policy/rules/{}", error.index),
@@ -343,13 +426,27 @@ impl Configuration {
             )
         })?;
         let mut devices = BTreeSet::new();
-        routes::validate(self)?;
+        routes::validate(self, &self.routes, "/routes")?;
+        self.policy_routing.validate(self)?;
+        self.validate_firewall()?;
         let mut labels = BTreeSet::new();
         for (name, interface) in &self.interfaces {
             let path = format!(
                 "/interfaces/{}",
                 name.as_str().replace('~', "~0").replace('/', "~1")
             );
+            if let Some(ipv6) = &interface.ipv6 {
+                ipv6.validate().map_err(|mut error| {
+                    error.path = format!("{path}{}", error.path);
+                    error
+                })?;
+            }
+            if interface.dhcp_settings().is_err() {
+                return Err(invalid(
+                    format!("{path}/dhcp_v4_server"),
+                    "requires static IPv4, IPv4 MTU of at least 576 and a valid on-link pool",
+                ));
+            }
             if !devices.insert(&interface.device) {
                 return Err(invalid(
                     format!("{path}/device"),
@@ -472,6 +569,8 @@ impl Configuration {
                     enabled: None,
                     display_name: None,
                     ipv4: None,
+                    dhcp_v4_server: None,
+                    ipv6: None,
                 },
             );
             key
@@ -489,16 +588,17 @@ impl Configuration {
 
     /// 把已验证配置投影为完整静态来源；设备身份只通过本次解析获得，缺席成员暂退而不删除持久意图。
     /// # Parameters
-    /// `resolve` 由设备 owner 依据稳定匹配返回当前 ifindex，匹配含糊返回 Invalid。
+    /// `family` 只投影该地址族，空集合明确撤回；`resolve` 依据稳定设备匹配返回当前 ifindex，含糊时返回 Invalid。
     /// # Returns
     /// 唯一 routing::Batch 格式的独占正文；无静态路由时为显式空来源。
     /// # Errors
     /// 名称/设备解析、正文/数量非法或内存不足。
     pub fn route_source(
         &self,
+        family: crate::routing::Family,
         resolve: impl FnMut(&DeviceMatch) -> Result<Option<u32>, Invalid>,
     ) -> Result<Vec<u8>, crate::routing::EncodeError> {
-        routes::compile(self, resolve)
+        routes::compile(self, &self.routes, family, resolve)
     }
 
     /// 从 JSON 导入并执行完整语义检查，拒绝未知字段、重复对象键及尾部内容。
@@ -585,253 +685,4 @@ fn difference<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    #[test]
-    fn configuration_difference_keeps_ordered_arrays_null_and_escaped_object_names() {
-        let mut before = Configuration::default();
-        before
-            .ensure_interface(b"eth0", Some([2, 0, 0, 0, 0, 1]))
-            .unwrap();
-        let profile = before.interfaces.pop_first().unwrap().1;
-        let name = Name::try_from("uplink~/wan".to_string()).unwrap();
-        before.interfaces.insert(name.clone(), profile);
-        before.dns.search_list = vec!["first.test".into(), "second.test".into()];
-        let mut after = before.clone();
-        after.interfaces.get_mut(&name).unwrap().display_name = Some("Office".into());
-        after.dns.search_list.reverse();
-        let changes: serde_json::Value =
-            serde_json::from_slice(&before.difference_json(&after).unwrap()).unwrap();
-        let changes = changes.as_array().unwrap();
-        assert_eq!(changes.len(), 2);
-        let display = changes
-            .iter()
-            .find(|change| change["path"] == "/interfaces/uplink~0~1wan/display_name")
-            .unwrap();
-        assert!(display.as_object().unwrap().contains_key("before"));
-        assert_eq!(display["before"], serde_json::Value::Null);
-        assert_eq!(display["after"], "Office");
-        let search = changes
-            .iter()
-            .find(|change| change["path"] == "/dns/search_list")
-            .unwrap();
-        assert_eq!(search["after"][0], "second.test");
-        after.interfaces.clear();
-        let removed: serde_json::Value =
-            serde_json::from_slice(&before.difference_json(&after).unwrap()).unwrap();
-        let removed = removed
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|change| change["path"] == "/interfaces/uplink~0~1wan")
-            .unwrap();
-        assert!(removed.as_object().unwrap().contains_key("before"));
-        assert!(!removed.as_object().unwrap().contains_key("after"));
-    }
-
-    #[test]
-    fn configuration_round_trip_keeps_native_identity_and_full_dns_policy() {
-        let mac = [2, 0, 0, 0, 0, 1];
-        let mut configuration = Configuration::default();
-        let profile = configuration.ensure_interface(b"eth0", Some(mac)).unwrap();
-        let mut projection = InterfaceConfig::dhcp();
-        projection.dns = (1..=8).map(|last| Ipv4Addr::new(10, 0, 0, last)).collect();
-        profile.ipv4 = Some(Ipv4Configuration::from_projection(&projection));
-        profile.mtu = 1280;
-        profile.default_route = Some(crate::routing::Attributes {
-            preference: 150,
-            metric: 42,
-        });
-        let profile = configuration.interfaces.pop_first().unwrap().1;
-        configuration.interfaces.insert(
-            Name::try_from("楼上办公网与服务器网络".to_string()).unwrap(),
-            profile,
-        );
-        configuration.dns.search_list = (0..8)
-            .map(|index| format!("{}.zone{index}.test", "a".repeat(40)))
-            .collect();
-        configuration.routes.push(StaticRoute {
-            destination: Ipv4Addr::new(10, 20, 0, 0),
-            prefix_length: 16,
-            preference: 1,
-            metric: 5,
-            action: StaticAction::Forward {
-                members: alloc::vec![
-                    StaticMember {
-                        weight: 2,
-                        target: StaticTarget::Direct {
-                            interface: configuration.interfaces.keys().next().unwrap().clone(),
-                            gateway: Some(Ipv4Addr::new(10, 0, 0, 1)),
-                            on_link: false
-                        }
-                    },
-                    StaticMember {
-                        weight: 1,
-                        target: StaticTarget::Recursive {
-                            address: Ipv4Addr::new(192, 0, 2, 1)
-                        }
-                    },
-                ],
-            },
-        });
-        let bytes = configuration.encode().unwrap();
-        let loaded = Configuration::decode(&bytes).unwrap();
-        assert_eq!(loaded, configuration);
-        // 配置身份跨启动保持不变，来源只绑定本次解析得到的实际接口；缺席成员暂退而不改写持久意图。
-        let source = loaded.route_source(|_| Ok(Some(9))).unwrap();
-        let source = crate::routing::Batch::parse(&source).unwrap();
-        assert!(
-            source
-                .next_hops()
-                .next()
-                .unwrap()
-                .members()
-                .any(|member| matches!(
-                    member.target,
-                    crate::routing::Target::Direct {
-                        interface_index: 9,
-                        ..
-                    }
-                ))
-        );
-        let absent = loaded.route_source(|_| Ok(None)).unwrap();
-        assert_eq!(
-            crate::routing::Batch::parse(&absent)
-                .unwrap()
-                .next_hops()
-                .next()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(loaded, configuration);
-        let mut invalid_source = loaded.clone();
-        invalid_source.routes[0].preference = 0;
-        assert_eq!(invalid_source.validate().unwrap_err().path, "/routes/0");
-        invalid_source.routes[0].preference = 1;
-        invalid_source.interfaces.clear();
-        assert!(
-            invalid_source
-                .validate()
-                .unwrap_err()
-                .path
-                .ends_with("/target/interface")
-        );
-        let profile = loaded.matching(b"eth9", mac).unwrap().unwrap();
-        assert_eq!(profile.project(InterfaceConfig::dhcp()), projection);
-        assert_eq!(profile.mtu, 1280);
-        assert_eq!(
-            profile.default_route,
-            Some(crate::routing::Attributes {
-                preference: 150,
-                metric: 42
-            })
-        );
-        let mut invalid = loaded.clone();
-        invalid
-            .interfaces
-            .values_mut()
-            .next()
-            .unwrap()
-            .default_route
-            .as_mut()
-            .unwrap()
-            .preference = 0;
-        assert!(
-            invalid
-                .validate()
-                .unwrap_err()
-                .path
-                .ends_with("/default_route/preference")
-        );
-        invalid = loaded.clone();
-        invalid.interfaces.values_mut().next().unwrap().mtu = 67;
-        assert_eq!(
-            invalid.validate().unwrap_err().message,
-            "invalid Ethernet MTU"
-        );
-        let mut without_mtu: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        without_mtu["interfaces"]
-            .as_object_mut()
-            .unwrap()
-            .values_mut()
-            .next()
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .remove("mtu");
-        let defaulted = Configuration::decode(&serde_json::to_vec(&without_mtu).unwrap()).unwrap();
-        assert_eq!(
-            defaulted.interfaces.values().next().unwrap().mtu,
-            DEFAULT_MTU
-        );
-        let mut historical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        historical.as_object_mut().unwrap().remove("routes");
-        historical.as_object_mut().unwrap().remove("route_policy");
-        for profile in historical["interfaces"]
-            .as_object_mut()
-            .unwrap()
-            .values_mut()
-        {
-            profile.as_object_mut().unwrap().remove("default_route");
-        }
-        assert!(
-            Configuration::decode(&serde_json::to_vec(&historical).unwrap())
-                .unwrap()
-                .routes
-                .is_empty()
-        );
-        // 只改名字不能冻结默认 IP；显式启用也必须能覆盖 disabled 默认值。
-        let mut rename_only = profile.clone();
-        rename_only.ipv4 = None;
-        rename_only.display_name = Some("办公网".into());
-        let mut inherited = InterfaceConfig::dhcp();
-        inherited.method = Method::Disabled;
-        rename_only.enabled = Some(true);
-        assert_eq!(rename_only.project(inherited).method, Method::Dhcp);
-    }
-
-    #[test]
-    fn configuration_rejects_ambiguous_or_unrecognized_input_and_exposes_field_metadata() {
-        for bytes in [
-            br#"{"version":2}"#.as_slice(),
-            br#"{"version":1,"typo":true}"#,
-            br#"{"version":1,"interfaces":{"lan":{"device":{"kind":"name","value":"eth0"}},"lan":{"device":{"kind":"name","value":"eth1"}}}}"#,
-        ] {
-            assert!(Configuration::decode(bytes).is_err());
-        }
-        let mut configuration = Configuration::default();
-        let profile = configuration.ensure_interface(b"eth0", None).unwrap();
-        profile.ipv4 = Some(Ipv4Configuration::from_projection(&InterfaceConfig::dhcp()));
-        profile.ipv4.as_mut().unwrap().prefix_length = 33;
-        assert_eq!(
-            configuration.validate().unwrap_err().path,
-            "/interfaces/eth0/ipv4"
-        );
-        configuration.interfaces.clear();
-        configuration.ensure_interface(b"eth0", None).unwrap();
-        configuration
-            .ensure_interface(b"eth1", Some([2, 0, 0, 0, 0, 1]))
-            .unwrap();
-        assert_eq!(
-            configuration.matching(b"eth0", [2, 0, 0, 0, 0, 1]),
-            Err(Invalid)
-        );
-        configuration.dns.search_list = vec!["office.test".into(), "OFFICE.test".into()];
-        assert!(configuration.validate().is_err());
-        let schema = Configuration::schema();
-        let schema = schema.as_value();
-        assert_eq!(
-            schema["$schema"],
-            "https://json-schema.org/draft/2020-12/schema"
-        );
-        assert_eq!(schema["properties"]["version"]["maximum"], VERSION);
-        assert_eq!(
-            schema["$defs"]["Ipv4Configuration"]["properties"]["prefix_length"]["maximum"],
-            32
-        );
-        assert_eq!(schema["additionalProperties"], false);
-    }
-}
+mod tests;

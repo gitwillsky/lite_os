@@ -1,17 +1,4 @@
 use core::cmp::min;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// OWNER: 实际 UDP bind/rehash publication 的全序；仅用于同分 SO_REUSEADDR demux，
-// 不复制 endpoint 或 namespace 内容。Relaxed 只签发序号，协议锁负责发表；不能按创建次序选收件人。
-static NEXT_BIND_ORDER: AtomicUsize = AtomicUsize::new(1);
-fn next_bind_order() -> usize {
-    NEXT_BIND_ORDER
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-            next.checked_add(1)
-        })
-        .expect("UDP binding identity exhausted")
-}
-
 #[cfg(feature = "async")]
 use core::task::Waker;
 
@@ -36,15 +23,6 @@ pub struct UdpMetadata {
     /// determined using the algorithms of RFC 6724 (candidate source address selection) or some
     /// heuristic (for IPv4).
     pub local_address: Option<IpAddress>,
-    /// 发送准入时冻结的实际 source port；接收 metadata 不使用该字段。
-    /// 不能在 dispatch 时借当前绑定，否则 AF_UNSPEC/rebind 会篡改已排队 datagram。
-    pub local_port: Option<u16>,
-    /// RX入队时冻结的specific destination；与广播/组播报文目的地址不同。
-    pub local_spec_address: Option<IpAddress>,
-    /// TX admission 冻结的实际 IP TTL；之后 setsockopt 不改写已入队的数据报。
-    pub hop_limit: Option<u8>,
-    /// 实际TX route在准入时选择的设备；之后绑定变更不能重写已排队包。
-    pub interface_index: Option<u32>,
     pub meta: PacketMeta,
 }
 
@@ -53,10 +31,6 @@ impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
         Self {
             endpoint: value.into(),
             local_address: None,
-            local_port: None,
-            local_spec_address: None,
-            hop_limit: None,
-            interface_index: None,
             meta: PacketMeta::default(),
         }
     }
@@ -145,10 +119,6 @@ impl std::error::Error for RecvError {}
 #[derive(Debug)]
 pub struct Socket<'a> {
     endpoint: IpListenEndpoint,
-    // OWNER: 实际 UDP demultiplexing peer；在接收准入前过滤，不能由外部 dequeue 后丢弃代替。
-    peer: Option<IpEndpoint>,
-    binding_order: usize,
-    bound_interface: Option<u32>,
     rx_buffer: PacketBuffer<'a>,
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
@@ -160,24 +130,10 @@ pub struct Socket<'a> {
 }
 
 impl<'a> Socket<'a> {
-    /// actual bound-device mechanism；receive在enqueue之前过滤。
-    pub fn set_bound_interface(&mut self, index: Option<u32>) {
-        self.bound_interface = index;
-        self.binding_order = next_bind_order();
-    }
-
-    /// 借出实际TX队首route metadata；只移除内部padding，不消费数据报。
-    pub fn transmit_metadata(&mut self) -> Option<UdpMetadata> {
-        self.tx_buffer.peek().ok().map(|(meta, _)| *meta)
-    }
-
     /// Create an UDP socket with the given buffers.
     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
         Socket {
             endpoint: IpListenEndpoint::default(),
-            peer: None,
-            binding_order: 0,
-            bound_interface: None,
             rx_buffer,
             tx_buffer,
             hop_limit: None,
@@ -229,29 +185,6 @@ impl<'a> Socket<'a> {
         self.endpoint
     }
 
-    /// 当前协议接收准入使用的实际 connected peer。
-    pub fn peer_endpoint(&self) -> Option<IpEndpoint> {
-        self.peer
-    }
-
-    /// 原子更换实际 connected peer，不清空既有 RX/TX 数据。
-    /// 调用者完成路由/权限校验；None 取消关联，后续 ingress 接受任意源。
-    pub fn set_peer_endpoint(&mut self, peer: Option<IpEndpoint>) {
-        if self.peer != peer {
-            self.peer = peer;
-            self.binding_order = next_bind_order();
-        }
-    }
-
-    /// 更换实际本地绑定且保留已排队 datagram；port=0 取消后续 ingress 准入。
-    /// 与 close 区分的是实际队列生命周期，用于 native UDP disconnect/rebind。
-    pub fn set_local_endpoint(&mut self, endpoint: IpListenEndpoint) {
-        if self.endpoint != endpoint {
-            self.endpoint = endpoint;
-            self.binding_order = next_bind_order();
-        }
-    }
-
     /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     ///
     /// See also the [set_hop_limit](#method.set_hop_limit) method
@@ -295,7 +228,6 @@ impl<'a> Socket<'a> {
         }
 
         self.endpoint = endpoint;
-        self.binding_order = next_bind_order();
 
         #[cfg(feature = "async")]
         {
@@ -310,7 +242,6 @@ impl<'a> Socket<'a> {
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
         self.endpoint = IpListenEndpoint::default();
-        self.peer = None;
 
         // Reset the RX and TX buffers of the socket.
         self.tx_buffer.reset();
@@ -377,7 +308,7 @@ impl<'a> Socket<'a> {
         size: usize,
         meta: impl Into<UdpMetadata>,
     ) -> Result<&mut [u8], SendError> {
-        let mut meta = meta.into();
+        let meta = meta.into();
         if self.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -386,13 +317,6 @@ impl<'a> Socket<'a> {
         }
         if meta.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
-        }
-
-        // 唯一 TX admission 冻结 source port/address；绑定修改只影响之后的新 packet。
-        meta.local_port = Some(self.endpoint.port);
-        meta.hop_limit = Some(self.hop_limit.unwrap_or(64));
-        if meta.local_address.is_none() {
-            meta.local_address = self.endpoint.addr;
         }
 
         let payload_buf = self
@@ -423,7 +347,7 @@ impl<'a> Socket<'a> {
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
-        let mut meta = meta.into();
+        let meta = meta.into();
         if self.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -432,13 +356,6 @@ impl<'a> Socket<'a> {
         }
         if meta.endpoint.port == 0 {
             return Err(SendError::Unaddressable);
-        }
-
-        // 唯一 TX admission 冻结 source port/address；绑定修改只影响之后的新 packet。
-        meta.local_port = Some(self.endpoint.port);
-        meta.hop_limit = Some(self.hop_limit.unwrap_or(64));
-        if meta.local_address.is_none() {
-            meta.local_address = self.endpoint.addr;
         }
 
         let size = self
@@ -561,19 +478,7 @@ impl<'a> Socket<'a> {
     }
 
     pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
-        if self
-            .bound_interface
-            .is_some_and(|index| index != cx.interface_index())
-        {
-            return false;
-        }
-        if self
-            .peer
-            .is_some_and(|peer| peer.addr != ip_repr.src_addr() || peer.port != repr.src_port)
-        {
-            return false;
-        }
-        if self.endpoint.port == 0 || self.endpoint.port != repr.dst_port {
+        if self.endpoint.port != repr.dst_port {
             return false;
         }
         if self.endpoint.addr.is_some()
@@ -585,14 +490,6 @@ impl<'a> Socket<'a> {
         }
 
         true
-    }
-
-    /// 单播准入优先实际 exact local tuple/connected peer，同分选最后实际 bind/rehash。
-    pub(crate) fn admission_priority(&self) -> (usize, usize) {
-        (
-            usize::from(self.endpoint.addr.is_some()) * 16 + usize::from(self.peer.is_some()) * 8,
-            self.binding_order,
-        )
     }
 
     pub(crate) fn process(
@@ -622,10 +519,6 @@ impl<'a> Socket<'a> {
         let metadata = UdpMetadata {
             endpoint: remote_endpoint,
             local_address: Some(ip_repr.dst_addr()),
-            local_spec_address: cx.ingress_spec_address(ip_repr),
-            local_port: None,
-            hop_limit: None,
-            interface_index: Some(cx.interface_index()),
             meta,
         };
 
@@ -647,6 +540,8 @@ impl<'a> Socket<'a> {
         F: FnOnce(&mut Context, PacketMeta, (IpRepr, UdpRepr, &[u8])) -> Result<(), E>,
     {
         let endpoint = self.endpoint;
+        let hop_limit = self.hop_limit.unwrap_or(64);
+
         let res = self.tx_buffer.dequeue_with(|packet_meta, payload_buf| {
             let src_addr = if let Some(s) = packet_meta.local_address {
                 s
@@ -675,9 +570,7 @@ impl<'a> Socket<'a> {
             );
 
             let repr = UdpRepr {
-                src_port: packet_meta
-                    .local_port
-                    .expect("TX admission freezes local port"),
+                src_port: endpoint.port,
                 dst_port: packet_meta.endpoint.port,
             };
             let ip_repr = IpRepr::new(
@@ -685,7 +578,7 @@ impl<'a> Socket<'a> {
                 packet_meta.endpoint.addr,
                 IpProtocol::Udp,
                 repr.header_len() + payload_buf.len(),
-                packet_meta.hop_limit.expect("queued UDP has frozen TTL"),
+                hop_limit,
             );
 
             emit(cx, packet_meta.meta, (ip_repr, repr, payload_buf))

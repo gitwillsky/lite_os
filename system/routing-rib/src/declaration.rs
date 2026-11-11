@@ -1,8 +1,22 @@
 //! 将完整验证的来源正文接管为候选 owner；按字典对象捕获成员，不按前缀展开。
 use super::*;
 use core::net::IpAddr;
-use router_protocol::routing::{self, Action, Batch, Family, Member};
+use router_protocol::routing::{self, Batch, Family, Member};
 
+/// RIB 的目的动作；本机交付与转发/策略拒绝分开，Local 只能由可信接口事实构造。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Action {
+    /// 通过已解析邻接转发。
+    Forward,
+    /// 交付本机，不能成为另一条路由的递归出口。
+    Local,
+    /// 静默丢弃。
+    Discard,
+    /// 目的不可达。
+    Unreachable,
+    /// 管理策略禁止。
+    Prohibit,
+}
 /// 已捕获的下一跳声明；成员按目标规范排序、比例约分，仍未证明可达。
 /// 字典身份属于 Source，实时设备/解析状态不得写回此声明。
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -11,13 +25,22 @@ pub struct NextHop {
     members: Vec<Member>,
 }
 impl NextHop {
-    /// 前缀动作；终止动作没有成员，不应被当作递归出口。
+    /// 本目的的 RIB 动作。
+    /// # Returns
+    /// Local 表示可信本机交付，其余值表示转发或策略终止；只有 Forward 可以提供递归出口。
     pub fn action(&self) -> Action {
         self.action
     }
     /// 规范化的直接/递归候选成员；组内相同目标禁止重复声明。
     pub fn members(&self) -> &[Member] {
         &self.members
+    }
+    /// 仅接口观测 owner 可构造的本机交付；没有下一跳或分配，不把权限加入来源 wire。
+    pub(crate) fn local() -> Self {
+        Self {
+            action: Action::Local,
+            members: Vec::new(),
+        }
     }
     pub(super) fn capture(hop: routing::NextHop<'_>) -> Result<Self, Error> {
         let mut members = Vec::new();
@@ -40,7 +63,12 @@ impl NextHop {
             member.weight /= divisor;
         }
         Ok(Self {
-            action: hop.action(),
+            action: match hop.action() {
+                routing::Action::Forward => Action::Forward,
+                routing::Action::Discard => Action::Discard,
+                routing::Action::Unreachable => Action::Unreachable,
+                routing::Action::Prohibit => Action::Prohibit,
+            },
             members,
         })
     }
@@ -150,6 +178,7 @@ fn capture<A: Address, M>(
 mod tests {
     use super::*;
     use alloc::vec;
+    use router_protocol::routing::Action;
     use routing::Target;
 
     #[test]
@@ -190,7 +219,7 @@ mod tests {
                 next_hop: 1,
             },
         ];
-        let bytes = Batch::encode(Family::Ipv4, &attributes, &hops, &routes).unwrap();
+        let bytes = Batch::encode(Family::Ipv4, &attributes, hops, routes).unwrap();
         let batch = Batch::parse(&bytes).unwrap();
         let captured = Source::<u32, (), NextHop>::capture_batch(7, 7, (), batch).unwrap();
         assert_eq!(captured.attributes().len(), 1);
@@ -216,7 +245,7 @@ mod tests {
         let bytes = Batch::encode(
             Family::Ipv4,
             &attributes,
-            &[routing::NextHop::new(Action::Forward, &duplicate)],
+            [routing::NextHop::new(Action::Forward, &duplicate)],
             &routes[..1],
         )
         .unwrap();
@@ -233,8 +262,8 @@ mod tests {
         let bytes = Batch::encode(
             Family::Ipv6,
             &attributes,
-            &[routing::NextHop::new(Action::Prohibit, &[])],
-            &v6_rows,
+            [routing::NextHop::new(Action::Prohibit, &[])],
+            v6_rows,
         )
         .unwrap();
         let v6 =
@@ -247,7 +276,7 @@ mod tests {
                 |_| true,
             )
             .unwrap();
-        assert_eq!(matched.next_hop().action(), Action::Prohibit);
+        assert_eq!(matched.next_hop().action(), crate::Action::Prohibit);
         assert!(matched.next_hop().members().is_empty());
     }
 }

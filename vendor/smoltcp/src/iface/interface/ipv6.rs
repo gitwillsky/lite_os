@@ -339,6 +339,7 @@ impl InterfaceInner {
                 handled_by_raw_socket,
                 ipv6_repr.into(),
                 ip_payload,
+                &mut |_| false,
             ),
 
             #[cfg(feature = "socket-tcp")]

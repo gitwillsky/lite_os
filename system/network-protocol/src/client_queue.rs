@@ -99,7 +99,10 @@ impl ClientQueue {
                                 .ok()
                                 .and_then(SocketError::from_code)
                                 .is_none())
-                        || response[12..].iter().any(|&value| value != 0)
+                        || response[13..].iter().any(|&value| value != 0)
+                        || (response[12] != 0
+                            && (response[4] != 6 || response[12] > u32::MAX as u64))
+                        || (response[1] != 0 && response[2..].iter().any(|&value| value != 0))
                     {
                         self.fail(state);
                         break;
@@ -121,6 +124,7 @@ impl ClientQueue {
         &self,
         mut record: Record,
         input: &[u8],
+        controls: impl ExactSizeIterator<Item = InternetSendPacketInfo>,
     ) -> Result<(Record, Vec<u8>), Status> {
         if input.len() > TRANSFER_LIMIT {
             return Err(native_abi::ERR_OUT_OF_RANGE);
@@ -141,7 +145,7 @@ impl ClientQueue {
                 let index = state.free.trailing_zeros() as usize;
                 let ticket = state.next * CAPACITY as u64 + index as u64;
                 record[0] = ticket;
-                self.ring.write_payload(ticket, input)?;
+                socket_io::write_send_payload(&self.ring, ticket, input, controls)?;
                 // 所有已占槽直到调用者复制结束才归还，故 SQ 不可能先于 credits 耗尽。
                 if let Err(status) = self.ring.submit(record) {
                     self.fail(&mut state);
@@ -169,7 +173,9 @@ impl ClientQueue {
             if let Some(response) = state.pending[index].response {
                 // CQ 消费只释放记录槽。这里复制完载荷才释放 credit，服务端不能提前覆盖。
                 let mut output = Vec::new();
-                let result = if record[1] == socket_io::RECEIVE && response[1] == 0 {
+                let result = if matches!(record[1], socket_io::RECEIVE | socket_io::RECEIVE_ERROR)
+                    && response[1] == 0
+                {
                     if response[2] > record[2] || response[3] < response[2] {
                         Err(native_abi::ERR_BAD_STATE)
                     } else {
@@ -178,7 +184,8 @@ impl ClientQueue {
                     }
                 } else if record[1] == socket_io::SEND
                     && response[1] == 0
-                    && response[2] > input.len() as u64
+                    && (response[2] > input.len() as u64
+                        || response[3..].iter().any(|&value| value != 0))
                 {
                     Err(native_abi::ERR_BAD_STATE)
                 } else {

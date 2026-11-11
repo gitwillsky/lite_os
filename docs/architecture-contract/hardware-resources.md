@@ -43,7 +43,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘/网卡和 MMIO RNG 验证混合 DMA 
    root 装配必须保证 MSI authority 与 BTI 对应同一设备，消息 DeviceID 不能从 IOMMU stream ID 猜测。
    driver-manager 按 `msi-map`/mask 解析 RID→DeviceID，核对唯一 ITS phandle、msi-controller 与一 cell 格式；
    与 IOMMU map 共用 RequesterMap 的区间/溢出/重叠/mask 校验，两个域各持独立数据，声明未覆盖 requester 时拒绝。
-   宿主启动与管理器 checkpoint 都按 IRQ、MSI、MMIO 的同一顺序携带 authority；Node 固定格式保持 124 bytes，生命周期 ABI 为 5（含网络 v11 与 native MSI-X 源控制），
+   宿主启动与管理器 checkpoint 都按 IRQ、MSI、MMIO 的同一顺序携带 authority；Node 固定格式保持 124 bytes，生命周期 ABI 为 5（含网络 v13 与 native MSI-X 源控制），
    旧映像不得与新启动/交接布局混用，须成套更新启动件。
 2. `ObjectType::Msi`、`info::MSI` 的 `MsiInfo` 只含 count u32（4 bytes）；地址/消息值由内核拥有，不向驱动复制路由状态。
    `MSI_CREATE_INTERRUPT(msi, index, table_vmo, table_offset, out)` 要求组 WRITE 与 VMO READ|WRITE|MAP。
@@ -144,7 +144,7 @@ IRQ 仅做有界查找、源寄存器操作和本地 CSR，不逐包分配。真
   `Lease.generation` 独占 port key 的会话代号，失败 OPEN 也消耗且不回绕；排队的旧代 packet 不 ack/唤醒新会话。
   当前会话在 lease 锁外短暂保活与确认，不能持 lease 锁释放最后一个引用；避免 Drop 重取锁死锁。
   `ActiveNetwork.interrupts` 的 Vec 保活内核组，reset 与各 DMA 区间退休后、允许重开前清空；没有每队列线程或通知转发线程。
-- 网络 v11 静态描述包含独立队列亲和能力，只有实际 MSI-X adapter 提供；持有会话控制端点可用 QUEUE_AFFINITY
+- 网络 v13 静态描述包含独立队列亲和能力，只有实际 MSI-X adapter 提供；持有会话控制端点可用 QUEUE_AFFINITY
   配置 pair 的 RX/TX 中断目标逻辑 CPU，配置向量不移动，不增加应用 syscall 或扩大原生 authority。
   会话的 interrupt_configuration 冷锁串行 IRQ 配置，不持 DMA/lease 锁跨可睡眠路由调用，不堵塞其他队列/IRQ。
   stop 可并发 reset：调用强引用保活当前 IRQ 句柄，结束复检 failed；不会操作下一会话的资源。

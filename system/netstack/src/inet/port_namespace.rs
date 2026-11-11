@@ -1,20 +1,21 @@
-use core::net::Ipv4Addr;
-
 use fallible_tree::FallibleMap;
 
+mod binding;
 mod bitmap;
+mod occupancy;
+pub(super) use binding::PortBinding;
 use bitmap::EphemeralPorts;
 #[cfg(test)]
 pub(super) use bitmap::{EPHEMERAL_END, EPHEMERAL_START};
+use occupancy::{BindingStorage, Occupancy};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// 一个 endpoint 在唯一 local-port namespace 中的精确 membership token。
+/// endpoint 在唯一 local-port namespace 中的精确 membership token。
 ///
-/// token 记录 port、wildcard/exact address、`SO_REUSEADDR` 分类与 TCP listener
-/// claim；缺少任一字段都会让 drop 从错误计数器释放，并破坏位图与 map 的单 owner 不变量。
+/// token 同时保留地址空间、SO_REUSEADDR 分类与 listener claim；不能把双栈绑定拆为两份租约。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PortLease {
     port: u16,
-    address: Option<Ipv4Addr>,
+    binding: PortBinding,
     reuse_address: bool,
     listener: bool,
 }
@@ -24,183 +25,47 @@ impl PortLease {
     pub(super) const fn port(self) -> u16 {
         self.port
     }
+    /// 当前 membership 的完整地址/接口身份，只供同一 owner 的 policy 迁移准备使用。
+    pub(super) const fn binding(self) -> PortBinding {
+        self.binding
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// local-port membership 取得失败原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PortError {
     /// local tuple 与现有 wildcard/exact/reuse/listener policy 冲突。
     AddressInUse,
+    /// V6ONLY 不允许绑定 IPv4-mapped 地址。
+    InvalidBinding,
     /// 在发布 membership 前无法预留 AVL node。
     NoMemory,
 }
 
-#[derive(Default)]
-struct AddressOccupancy {
-    exclusive: usize,
-    reusable: usize,
-    listeners: usize,
-}
-
-impl AddressOccupancy {
-    fn increment(&mut self, reuse_address: bool) {
-        let count = if reuse_address {
-            &mut self.reusable
-        } else {
-            &mut self.exclusive
-        };
-        *count = count.checked_add(1).expect("address occupancy overflow");
-    }
-
-    fn decrement(&mut self, reuse_address: bool) {
-        let count = if reuse_address {
-            &mut self.reusable
-        } else {
-            &mut self.exclusive
-        };
-        *count = count
-            .checked_sub(1)
-            .expect("released unowned address lease");
-    }
-
-    const fn total(&self) -> usize {
-        self.exclusive + self.reusable
-    }
-}
-
-#[derive(Default)]
-struct Occupancy {
-    wildcard_exclusive: usize,
-    wildcard_reusable: usize,
-    specific_exclusive: usize,
-    specific_reusable: usize,
-    wildcard_listeners: usize,
-    specific_listeners: usize,
-    specific: FallibleMap<Ipv4Addr, AddressOccupancy>,
-}
-
-impl Occupancy {
-    fn conflicts(&self, address: Option<Ipv4Addr>, reuse_address: bool) -> bool {
-        match address {
-            None if !reuse_address => self.total() != 0,
-            None => self.wildcard_exclusive + self.specific_exclusive != 0,
-            Some(address) => {
-                let exact = self.specific.get(&address);
-                if reuse_address {
-                    self.wildcard_exclusive + exact.map_or(0, |occupancy| occupancy.exclusive) != 0
-                } else {
-                    self.wildcard_exclusive
-                        + self.wildcard_reusable
-                        + exact.map_or(0, AddressOccupancy::total)
-                        != 0
-                }
-            }
-        }
-    }
-
-    fn increment(&mut self, lease: PortLease) {
-        match lease.address {
-            None => {
-                let count = if lease.reuse_address {
-                    &mut self.wildcard_reusable
-                } else {
-                    &mut self.wildcard_exclusive
-                };
-                *count = count.checked_add(1).expect("port occupancy overflow");
-            }
-            Some(address) => {
-                self.specific
-                    .get_mut(&address)
-                    .expect("specific port occupancy was not prepared")
-                    .increment(lease.reuse_address);
-                let count = if lease.reuse_address {
-                    &mut self.specific_reusable
-                } else {
-                    &mut self.specific_exclusive
-                };
-                *count = count.checked_add(1).expect("port occupancy overflow");
-            }
-        }
-    }
-
-    fn decrement(&mut self, lease: PortLease) {
-        match lease.address {
-            None => {
-                let count = if lease.reuse_address {
-                    &mut self.wildcard_reusable
-                } else {
-                    &mut self.wildcard_exclusive
-                };
-                *count = count.checked_sub(1).expect("released unowned port lease");
-            }
-            Some(address) => {
-                let exact = self
-                    .specific
-                    .get_mut(&address)
-                    .expect("released port lease lost specific address");
-                exact.decrement(lease.reuse_address);
-                let empty = exact.total() == 0;
-                let count = if lease.reuse_address {
-                    &mut self.specific_reusable
-                } else {
-                    &mut self.specific_exclusive
-                };
-                *count = count.checked_sub(1).expect("released unowned port lease");
-                if empty {
-                    self.specific.remove(&address);
-                }
-            }
-        }
-    }
-
-    const fn total(&self) -> usize {
-        self.wildcard_exclusive
-            + self.wildcard_reusable
-            + self.specific_exclusive
-            + self.specific_reusable
-    }
-
-    fn listener_conflicts(&self, address: Option<Ipv4Addr>) -> bool {
-        match address {
-            None => self.wildcard_listeners + self.specific_listeners != 0,
-            Some(address) => {
-                self.wildcard_listeners
-                    + self
-                        .specific
-                        .get(&address)
-                        .map_or(0, |occupancy| occupancy.listeners)
-                    != 0
-            }
-        }
-    }
-}
-
-/// accepted TCP membership 所需 AVL storage 与 exact tuple 的未发布 token。
-///
-/// token 析构不改变 namespace，因此 accept 可在 replacement socket 发布前安全返回 OOM。
+/// accepted TCP membership 的未发布 token；析构不改变 namespace。
 pub(super) struct PreparedPortLease {
     lease: PortLease,
-    address_slot: Option<fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
+    storage: BindingStorage,
 }
 
-/// active TCP connect 所需 exact-address storage 与尚未发布的 membership 迁移。
+/// 地址精确化或接口 policy 迁移所需存储；发布前可无副作用放弃。
 pub(super) struct PreparedPortReaddress {
     previous: PortLease,
     lease: PortLease,
-    address_slot: Option<fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
+    storage: BindingStorage,
 }
 
-/// UDP 或 TCP local-port namespace 的唯一占用 owner。
+/// UDP 或 TCP 双族 local-port namespace 的唯一占用 owner。
 ///
-/// `entries` 是 wildcard/exact/reuse/listener 语义 owner，`occupied` 仅是“该 port 是否
-/// 完全空闲”的 ephemeral lookup 投影。两者只能由 acquire/retain/release 同时更新。
+/// entries 拥有地址/reuse/listener membership；ephemeral 只是端口完全空闲的位图投影。
+/// IPv4、IPv6-only 和双栈绑定共用一次原子准入，不建立需要跨 owner 回滚的第二份租约。
 pub(super) struct PortNamespace {
     ephemeral: EphemeralPorts,
     entries: FallibleMap<u16, Occupancy>,
 }
 
 impl PortNamespace {
-    /// 构造空 namespace，ephemeral cursor 从 Linux dynamic/private 范围起点开始。
+    /// 构造空 namespace；ephemeral cursor 从 dynamic/private 范围起点开始。
     pub(super) const fn new() -> Self {
         Self {
             ephemeral: EphemeralPorts::new(),
@@ -208,31 +73,27 @@ impl PortNamespace {
         }
     }
 
-    /// 原子取得指定 local tuple membership。
+    /// 原子取得指定端口与地址空间的 membership。
     ///
     /// # Parameters
-    ///
-    /// - `port`: host-order local port。
-    /// - `address`: `None` 表示 wildcard，`Some` 表示 exact IPv4。
-    /// - `reuse_address`: endpoint 当前 `SO_REUSEADDR` 分类。
-    ///
+    /// - `port`: host-order 非零本地端口，由调用者处理 port 0。
+    /// - `binding`: 规范化的通配或精确地址空间。
+    /// - `reuse_address`: endpoint 当前 SO_REUSEADDR 分类。
     /// # Returns
-    ///
-    /// 成功返回必须由 endpoint 持有并精确释放的 token。
-    ///
+    /// 成功返回由 endpoint 持有并精确释放的唯一 token。
     /// # Errors
-    ///
-    /// tuple 冲突返回 `AddressInUse`；AVL 预留失败返回 `NoMemory`，两者均不发布状态。
+    /// 冲突返回 AddressInUse；节点 OOM 返回 NoMemory，均不发布状态。
     pub(super) fn acquire(
         &mut self,
         port: u16,
-        address: Option<Ipv4Addr>,
+        binding: PortBinding,
         reuse_address: bool,
     ) -> Result<PortLease, PortError> {
+        assert_ne!(port, 0, "port 0 must use ephemeral admission");
         if self
             .entries
             .get(&port)
-            .is_some_and(|occupancy| occupancy.conflicts(address, reuse_address))
+            .is_some_and(|occupancy| occupancy.conflicts(binding, reuse_address))
         {
             return Err(PortError::AddressInUse);
         }
@@ -244,19 +105,14 @@ impl PortNamespace {
         } else {
             None
         };
-        let needs_address = address.is_some_and(|address| {
-            self.entries
-                .get(&port)
-                .is_none_or(|occupancy| occupancy.specific.get(&address).is_none())
-        });
-        let address_slot = if needs_address {
-            Some(
-                FallibleMap::<Ipv4Addr, AddressOccupancy>::try_reserve_node()
-                    .map_err(|_| PortError::NoMemory)?,
-            )
-        } else {
-            None
-        };
+        let empty = Occupancy::default();
+        let storage = self
+            .entries
+            .get(&port)
+            .unwrap_or(&empty)
+            .prepare_address(binding)?;
+        // 1. 地址与设备索引节点先全部准备，避免 OOM 留下无 membership 的外层端口。
+        // 2. 以下仅无失败发布，位图最后更新；双栈通配不需要第二次 acquire。
         if let Some(slot) = outer_slot {
             self.entries
                 .commit_vacant(slot.fill(port, Occupancy::default()));
@@ -264,236 +120,196 @@ impl PortNamespace {
         let occupancy = self
             .entries
             .get_mut(&port)
-            .expect("prepared port occupancy disappeared");
-        if let (Some(address), Some(slot)) = (address, address_slot) {
-            occupancy
-                .specific
-                .commit_vacant(slot.fill(address, AddressOccupancy::default()));
-        }
+            .expect("prepared port disappeared");
+        occupancy.install_address(binding, storage);
         let lease = PortLease {
             port,
-            address,
+            binding,
             reuse_address,
             listener: false,
         };
-        occupancy.increment(lease);
-        self.ephemeral.mark_occupied(port);
+        occupancy.change_membership(lease, true);
+        self.publish_port(port);
         Ok(lease)
     }
 
-    /// 从 cursor 开始按 word 查找一个完全空闲的 ephemeral port。
+    /// 从 cursor 开始最多读 257 个 bitmap word，取得完全空闲的 ephemeral 端口。
     ///
     /// # Parameters
-    ///
-    /// - `address`: 最终 bind 的 wildcard/exact IPv4；不能将 specific port-0 降级为 wildcard。
-    /// - `reuse_address`: endpoint 当前 `SO_REUSEADDR` 分类。
-    ///
+    /// - `binding`: 最终本地地址空间，不将精确 port-0 绑定降级为通配。
+    /// - `reuse_address`: 当前 SO_REUSEADDR 分类。
     /// # Returns
-    ///
-    /// 最多读取 257 个 bitmap word 后返回已取得 token。
-    ///
+    /// 与显式端口相同的唯一 membership token。
     /// # Errors
-    ///
-    /// 范围耗尽返回 `AddressInUse`；membership AVL 预留失败返回 `NoMemory`。
+    /// 无空闲端口返回 AddressInUse；预留失败返回 NoMemory，不发布 membership。
     pub(super) fn acquire_ephemeral(
         &mut self,
-        address: Option<Ipv4Addr>,
+        binding: PortBinding,
         reuse_address: bool,
     ) -> Result<PortLease, PortError> {
         let port = self
             .ephemeral
-            .next_candidate()
+            .next_candidate(binding.families)
             .ok_or(PortError::AddressInUse)?;
-        self.acquire(port, address, reuse_address)
+        self.acquire(port, binding, reuse_address)
     }
 
-    /// 预留 accepted TCP endpoint 的 exact local tuple membership storage。
+    /// 预留 accepted TCP child 的精确 membership；只在同一 NET guard 内准备和提交。
     ///
     /// # Parameters
-    ///
-    /// - `lease`: listener 当前 membership，只读借用且不改变其 claim。
-    /// - `address`: established child 的权威 local IPv4。
-    ///
+    /// - `lease`: 存活 listener 的 membership。
+    /// - `binding`: listener 地址空间内的实际精确本地地址。
     /// # Returns
-    ///
-    /// 可在同一 stack owner 临界区内无分配提交的 token。
-    ///
+    /// 可无分配提交的 token；丢弃 token 不发布 membership。
     /// # Errors
-    ///
-    /// exact-address node OOM 返回 `NoMemory`，namespace 不变。
+    /// 精确节点 OOM 返回 NoMemory；调用者传入不属于 listener 的地址会 fail-stop。
     pub(super) fn prepare_retain_for_address(
         &self,
         lease: PortLease,
-        address: Ipv4Addr,
+        binding: PortBinding,
     ) -> Result<PreparedPortLease, PortError> {
-        let needs_address = self
+        assert!(
+            lease.binding.contains(binding),
+            "child binding is outside parent address space"
+        );
+        let occupancy = self
             .entries
             .get(&lease.port)
-            .expect("retained port lease lost namespace entry")
-            .specific
-            .get(&address)
-            .is_none();
-        let address_slot = if needs_address {
-            Some(
-                FallibleMap::<Ipv4Addr, AddressOccupancy>::try_reserve_node()
-                    .map_err(|_| PortError::NoMemory)?,
-            )
-        } else {
-            None
-        };
+            .expect("retained port disappeared");
         Ok(PreparedPortLease {
             lease: PortLease {
-                address: Some(address),
+                binding,
                 listener: false,
                 ..lease
             },
-            address_slot,
+            storage: occupancy.prepare_address(binding)?,
         })
     }
 
-    /// 无分配发布已预留的 accepted TCP exact membership。
-    ///
-    /// # Parameters
-    ///
-    /// - `prepared`: 在同一 `NetworkStack` lock 周期内产生的未发布 token。
-    ///
-    /// # Returns
-    ///
-    /// listener claim 已清除、address 已精确化的 accepted lease。
-    ///
-    /// # Errors
-    ///
-    /// 无可恢复错误；跨 owner 或中途修改 namespace 会 fail-stop，否则会发布无 owner membership。
+    /// 无分配发布 prepared child；token 必须来自同一 owner guard，返回需精确释放的 child 租约。
     pub(super) fn commit_retained(&mut self, prepared: PreparedPortLease) -> PortLease {
-        let PreparedPortLease {
-            lease,
-            address_slot,
-        } = prepared;
+        let PreparedPortLease { lease, storage } = prepared;
         let occupancy = self
             .entries
             .get_mut(&lease.port)
-            .expect("retained port lease lost namespace entry");
-        if let Some(slot) = address_slot {
-            occupancy.specific.commit_vacant(slot.fill(
-                lease.address.expect("prepared exact lease lost address"),
-                AddressOccupancy::default(),
-            ));
-        }
-        occupancy.increment(lease);
+            .expect("retained port disappeared");
+        occupancy.install_address(lease.binding, storage);
+        occupancy.change_membership(lease, true);
         lease
     }
 
-    /// 预留 active connect 把 wildcard membership 迁移到 exact source IPv4 的 storage。
+    /// 为 connect 将本地地址空间精确化预留节点；尚不改变原 membership。
     ///
     /// # Parameters
-    ///
-    /// - `lease`: fresh TCP endpoint 当前 membership。
-    /// - `address`: 已验证的单 interface source IPv4。
-    ///
+    /// - `lease`: 尚未监听的 endpoint 当前 membership。
+    /// - `binding`: 已准入的精确本地地址，必须属于原地址空间。
     /// # Returns
-    ///
-    /// 可在 connect 成功后无分配提交的 token。
-    ///
+    /// 可在 connect 成功后同 guard 无分配提交的 token。
     /// # Errors
-    ///
-    /// exact-address node OOM 返回 `NoMemory`，原 wildcard membership 不变。
+    /// OOM 返回 NoMemory；不合法迁移会 fail-stop，避免借源地址选择扩大绑定权限。
     pub(super) fn prepare_readdress(
         &self,
         lease: PortLease,
-        address: Ipv4Addr,
+        binding: PortBinding,
     ) -> Result<PreparedPortReaddress, PortError> {
-        let address_slot = if lease.address == Some(address)
-            || self
-                .entries
-                .get(&lease.port)
-                .expect("readdressed port lease lost namespace entry")
-                .specific
-                .get(&address)
-                .is_some()
-        {
-            None
-        } else {
-            Some(
-                FallibleMap::<Ipv4Addr, AddressOccupancy>::try_reserve_node()
-                    .map_err(|_| PortError::NoMemory)?,
-            )
-        };
+        assert!(
+            !lease.listener && lease.binding.contains(binding),
+            "invalid connect binding refinement"
+        );
+        self.prepare_rebind(lease, binding)
+    }
+
+    /// 为同一端口的 policy/地址空间迁移准备存储，不重新准入已拥有的 membership。
+    /// # Parameters
+    /// `lease` 是当前租约，`binding` 由调用者的绑定锁、地址和接口授权验证；可用于已监听端点。
+    /// # Returns
+    /// 未发布的迁移 token；原租约和 listener claim 均不改变。
+    /// # Errors
+    /// 任一索引预留 OOM 返回 NoMemory，所有已预留存储自动释放。
+    pub(super) fn prepare_rebind(
+        &self,
+        lease: PortLease,
+        binding: PortBinding,
+    ) -> Result<PreparedPortReaddress, PortError> {
+        let occupancy = self
+            .entries
+            .get(&lease.port)
+            .expect("rebound port disappeared");
         Ok(PreparedPortReaddress {
             previous: lease,
-            lease: PortLease {
-                address: Some(address),
-                ..lease
-            },
-            address_slot,
+            lease: PortLease { binding, ..lease },
+            storage: occupancy.prepare_address(binding)?,
         })
     }
 
-    /// 无分配把 active TCP membership 迁移到已选定的 exact source IPv4。
-    ///
-    /// # Parameters
-    ///
-    /// - `prepared`: 在同一 stack owner 临界区内、connect 之前产生的 token。
-    ///
-    /// # Returns
-    ///
-    /// 已精确化的 lease，caller 必须回写 endpoint state。
-    ///
-    /// # Errors
-    ///
-    /// 无可恢复错误；跨 owner 或重复提交会 fail-stop，否则会破坏 exact occupancy。
+    /// 无分配提交 prepared binding 迁移；原租约被消费，返回同一端口的新 membership。
     pub(super) fn commit_readdress(&mut self, prepared: PreparedPortReaddress) -> PortLease {
         let PreparedPortReaddress {
             previous,
             lease,
-            address_slot,
+            storage,
         } = prepared;
-        if previous.address == lease.address {
+        if previous.binding == lease.binding {
             return lease;
         }
         let occupancy = self
             .entries
             .get_mut(&lease.port)
-            .expect("readdressed port lease lost namespace entry");
-        if let Some(slot) = address_slot {
-            occupancy.specific.commit_vacant(slot.fill(
-                lease.address.expect("prepared exact lease lost address"),
-                AddressOccupancy::default(),
-            ));
+            .expect("readdressed port disappeared");
+        occupancy.install_address(lease.binding, storage);
+        if previous.listener {
+            occupancy.change_listener(previous.binding, false);
         }
-        occupancy.decrement(previous);
-        occupancy.increment(lease);
+        occupancy.change_membership(previous, false);
+        occupancy.change_membership(lease, true);
+        if lease.listener {
+            occupancy.change_listener(lease.binding, true);
+        }
+        occupancy.remove_empty_address(previous.binding);
+        self.publish_port(lease.port);
         lease
     }
 
-    /// 失败 connect 完成恢复原始 bind；wildcard 直接转计数，explicit address 始终未改变。
-    /// 当前 source 精确化的 inverse，不重新准入，也不分配或释放 port capability。
+    /// connect 失败或 UDP disconnect 恢复原通配绑定，不分配且不释放端口身份。
+    ///
+    /// # Parameters
+    /// - `lease`: 当前非 listener membership。
+    /// - `binding`: 原先已取得的通配地址空间，或不变的精确绑定。
+    /// # Returns
+    /// 已恢复的唯一租约；调用者必须同步回写实际 endpoint tuple。
+    /// # Errors
+    /// 无可恢复错误；扩大到非原绑定的地址空间是调用者违反 inverse 契约。
     pub(super) fn restore_bound_address(
         &mut self,
         lease: PortLease,
-        address: Option<Ipv4Addr>,
+        binding: PortBinding,
     ) -> PortLease {
         assert!(
             !lease.listener,
             "connected endpoint cannot retain listener claim"
         );
-        if address == lease.address {
+        if binding == lease.binding {
             return lease;
         }
         assert!(
-            address.is_none(),
-            "explicit TCP bind cannot select a different source"
+            (binding.interface.is_none() || binding.interface == lease.binding.interface)
+                && binding.families & lease.binding.families == lease.binding.families
+                && (binding.address.is_none() || binding.address == lease.binding.address),
+            "restore must invert an address/interface refinement"
         );
-        let restored = PortLease { address, ..lease };
+        let restored = PortLease { binding, ..lease };
         let occupancy = self
             .entries
             .get_mut(&lease.port)
             .expect("restored binding lost port owner");
-        occupancy.decrement(lease);
-        occupancy.increment(restored);
+        occupancy.change_membership(lease, false);
+        occupancy.change_membership(restored, true);
+        occupancy.remove_empty_address(lease.binding);
+        self.publish_port(lease.port);
         restored
     }
 
-    /// 将已经停止的 listener claim 降回原 bind membership，不释放本地端口。
+    /// listener 停止时释放 claim，但保留原本地端口 membership。
     pub(super) fn stop_listener(&mut self, lease: PortLease) -> PortLease {
         assert!(lease.listener, "stopped endpoint lost listener claim");
         self.release_listener_claim(lease);
@@ -503,189 +319,80 @@ impl PortNamespace {
         }
     }
 
-    /// 把 bound TCP membership 原子提升为唯一的重叠 listener claim。
+    /// 将 bound TCP membership 提升为不与已有 listener 重叠的 claim。
     ///
     /// # Parameters
-    ///
-    /// - `lease`: 尚未 listening 的 TCP membership。
-    ///
+    /// - `lease`: 当前尚未 listening 的绑定。
     /// # Returns
-    ///
-    /// 带 listener claim 的新 token，必须回写 endpoint state。
-    ///
+    /// 带 claim 的新 token，必须回写 endpoint state。
     /// # Errors
-    ///
-    /// wildcard 或同 exact address 已有 listener 时返回 `AddressInUse`；不依赖 `SO_REUSEADDR`。
+    /// 即便两端 REUSEADDR，地址空间内已有 listener 仍返回 AddressInUse；不实现 REUSEPORT。
     pub(super) fn claim_listener(&mut self, lease: PortLease) -> Result<PortLease, PortError> {
+        assert!(!lease.listener, "listener claim acquired twice");
         let occupancy = self
             .entries
             .get_mut(&lease.port)
-            .expect("listener port lease lost namespace entry");
-        if occupancy.listener_conflicts(lease.address) {
+            .expect("listener port disappeared");
+        if occupancy.listener_conflicts(lease.binding) {
             return Err(PortError::AddressInUse);
         }
-        match lease.address {
-            None => {
-                occupancy.wildcard_listeners = occupancy
-                    .wildcard_listeners
-                    .checked_add(1)
-                    .expect("wildcard listener occupancy overflow");
-            }
-            Some(address) => {
-                occupancy.specific_listeners = occupancy
-                    .specific_listeners
-                    .checked_add(1)
-                    .expect("specific listener occupancy overflow");
-                let exact = occupancy
-                    .specific
-                    .get_mut(&address)
-                    .expect("listener lease lost specific address");
-                exact.listeners = exact
-                    .listeners
-                    .checked_add(1)
-                    .expect("exact listener occupancy overflow");
-            }
-        }
+        occupancy.change_listener(lease.binding, true);
         Ok(PortLease {
             listener: true,
             ..lease
         })
     }
 
-    /// 回滚尚未发布到 endpoint mode 的 listener claim。
-    ///
-    /// # Parameters
-    ///
-    /// - `lease`: `claim_listener` 返回但尚未写入 endpoint 的 token。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；base membership 仍存在，需要时由 caller 另行 release。
-    ///
-    /// # Errors
-    ///
-    /// token 不属于该 namespace 时 fail-stop，避免静默损坏 listener 计数。
+    /// 回滚尚未发布的 listener claim；base membership 保留，由调用者继续持有或释放。
     pub(super) fn release_listener_claim(&mut self, lease: PortLease) {
-        let occupancy = self
-            .entries
+        assert!(lease.listener, "released token has no listener claim");
+        self.entries
             .get_mut(&lease.port)
-            .expect("listener port lease lost namespace entry");
-        match lease.address {
-            None => {
-                occupancy.wildcard_listeners = occupancy
-                    .wildcard_listeners
-                    .checked_sub(1)
-                    .expect("released unowned wildcard listener");
-            }
-            Some(address) => {
-                occupancy.specific_listeners = occupancy
-                    .specific_listeners
-                    .checked_sub(1)
-                    .expect("released unowned specific listener");
-                let exact = occupancy
-                    .specific
-                    .get_mut(&address)
-                    .expect("listener lease lost specific address");
-                exact.listeners = exact
-                    .listeners
-                    .checked_sub(1)
-                    .expect("released unowned exact listener");
-            }
-        }
+            .expect("listener port disappeared")
+            .change_listener(lease.binding, false);
     }
 
-    /// 更新已绑定 endpoint 的 `SO_REUSEADDR` classification。
-    ///
-    /// # Parameters
-    ///
-    /// - `lease`: endpoint 当前持有的 token。
-    /// - `reuse_address`: 新分类。
-    ///
-    /// # Returns
-    ///
-    /// 已切换分类的 token，caller 必须回写，否则 drop 会从错误计数器释放。
-    ///
-    /// # Errors
-    ///
-    /// 无可恢复错误；不属于该 namespace 的 token 会 fail-stop。
+    /// 原位切换 REUSEADDR 分类，保留 listener claim 与精确节点，不分配或重新准入。
     pub(super) fn set_reuse(&mut self, lease: PortLease, reuse_address: bool) -> PortLease {
         if lease.reuse_address == reuse_address {
             return lease;
         }
+        let reclassified = PortLease {
+            reuse_address,
+            ..lease
+        };
         let occupancy = self
             .entries
             .get_mut(&lease.port)
-            .expect("reclassified port lease lost namespace entry");
-        match lease.address {
-            None => {
-                let old = if lease.reuse_address {
-                    &mut occupancy.wildcard_reusable
-                } else {
-                    &mut occupancy.wildcard_exclusive
-                };
-                *old = old.checked_sub(1).expect("reclassified unowned lease");
-                let new = if reuse_address {
-                    &mut occupancy.wildcard_reusable
-                } else {
-                    &mut occupancy.wildcard_exclusive
-                };
-                *new = new.checked_add(1).expect("port occupancy overflow");
-            }
-            Some(address) => {
-                let exact = occupancy
-                    .specific
-                    .get_mut(&address)
-                    .expect("reclassified lease lost specific address");
-                exact.decrement(lease.reuse_address);
-                exact.increment(reuse_address);
-                let old = if lease.reuse_address {
-                    &mut occupancy.specific_reusable
-                } else {
-                    &mut occupancy.specific_exclusive
-                };
-                *old = old.checked_sub(1).expect("reclassified unowned lease");
-                let new = if reuse_address {
-                    &mut occupancy.specific_reusable
-                } else {
-                    &mut occupancy.specific_exclusive
-                };
-                *new = new.checked_add(1).expect("port occupancy overflow");
-            }
-        }
-        PortLease {
-            reuse_address,
-            ..lease
-        }
+            .expect("reclassified port disappeared");
+        occupancy.change_membership(lease, false);
+        occupancy.change_membership(reclassified, true);
+        reclassified
     }
 
-    /// 精确释放 endpoint 持有的一份 membership。
-    ///
-    /// # Parameters
-    ///
-    /// - `lease`: 从 acquire/commit/set_reuse/claim 最后返回并由该 endpoint 持有的 token。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；最后一份会同时清除 bitmap 与 map entry。
-    ///
-    /// # Errors
-    ///
-    /// 重复释放或过期 token 会 fail-stop，防止把仍在使用的 port 标记为空闲。
+    /// 精确释放 endpoint 最后返回的 token；最后一份租约同时退休端口节点和空闲位图投影。
     pub(super) fn release(&mut self, lease: PortLease) {
         if lease.listener {
             self.release_listener_claim(lease);
         }
-        let empty = {
-            let occupancy = self
-                .entries
-                .get_mut(&lease.port)
-                .expect("released port lease lost namespace entry");
-            occupancy.decrement(lease);
-            occupancy.total() == 0
-        };
-        if empty {
+        let occupancy = self
+            .entries
+            .get_mut(&lease.port)
+            .expect("released port disappeared");
+        occupancy.change_membership(lease, false);
+        occupancy.remove_empty_address(lease.binding);
+        if occupancy.occupied_families() == 0 {
             self.entries.remove(&lease.port);
-            self.ephemeral.clear_occupied(lease.port);
         }
+        self.publish_port(lease.port);
+    }
+
+    /// 位图只投影当前 family counts；地址精确化可能释放一族，但不退休另一族的端口租约。
+    fn publish_port(&mut self, port: u16) {
+        let families = self
+            .entries
+            .get(&port)
+            .map_or(0, Occupancy::occupied_families);
+        self.ephemeral.publish(port, families);
     }
 }

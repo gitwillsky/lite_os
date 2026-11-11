@@ -77,7 +77,7 @@ fn stream_frames_distinguish_incomplete_input_and_invalid_headers_before_body_ca
         Ok(Message::RouteRefresh {
             afi: 2,
             subtype: 2,
-            safi: 1
+            safi: Some(1)
         })
     );
 }

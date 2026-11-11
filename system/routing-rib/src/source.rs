@@ -1,6 +1,7 @@
 //! 授权来源会话的寿命与完整替换；撤回只由主 Port 驱动，不能在 Drop 中分配或发 RPC。
 use super::*;
-use network_protocol::routing::{Grant, SourceService};
+use network_protocol::routing::{Grant, SourcePreparation, SourceService};
+use router_protocol::tracking::installation::{self, Installation};
 
 pub(super) struct Registration {
     pub(super) id: u64,
@@ -61,13 +62,27 @@ impl Rib {
     }
 }
 impl SourceService for Session {
+    fn watch_routes(&self) -> Result<(Channel, Event), Status> {
+        self.owner.watch_routes(self.id)
+    }
     fn track(
         &self,
         queries: Vec<router_protocol::tracking::Query>,
     ) -> Result<(Channel, Event), Status> {
-        self.owner.track(queries)
+        self.owner.track(queries, Some(self.id))
     }
-    fn replace(&self, batch: router_protocol::routing::Batch<'_>) -> Result<(), Status> {
+    fn prepare(
+        &self,
+        batch: router_protocol::routing::Batch<'_>,
+        queries: Vec<router_protocol::tracking::Query>,
+        checks: Vec<Installation>,
+    ) -> Result<SourcePreparation, Status> {
+        if batch.family() == router_protocol::routing::Family::Ipv6 && !self.grant.ipv6_unicast {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        if queries.iter().any(|query| !query.valid()) {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
         let source = Routes::capture_source(
             self.id,
             self.id,
@@ -75,6 +90,7 @@ impl SourceService for Session {
             self.grant.minimum_preference,
             batch,
         )?;
+        let (client, server) = Channel::create()?;
         let mut state = self.owner.state.lock();
         if state.pending.is_some() {
             return Err(native_abi::ERR_SHOULD_WAIT);
@@ -86,20 +102,54 @@ impl SourceService for Session {
         {
             return Err(native_abi::ERR_BAD_STATE);
         }
-        let PreparedRoutes { next, encoded } =
-            state
-                .routes
-                .prepare_sources(&self.owner.facts()?, Some(source), &[])?;
-        let execution = self.owner.installer.prepare_configuration(encoded)?;
-        if execution.activate().is_err() {
-            let _ = execution.abort();
-            return Err(native_abi::ERR_BAD_STATE);
-        }
-        transaction::confirm_execution(execution);
-        let old = state.publish(next);
+        let lease = state
+            .next
+            .checked_add(1)
+            .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        let PreparedRoutes {
+            next,
+            encoded,
+            outcomes,
+            recovery_changed,
+        } = state
+            .routes
+            .prepare_source(&self.owner.facts()?, source, &checks)?;
+        drop(checks);
+        // 查询与将要安装的 FIB 来自同一候选图；正文和 VMO 在取得执行租约/发表 pending 前准备。
+        let candidate = next.snapshot().ok_or(native_abi::ERR_BAD_STATE)?;
+        let bytes = candidate.encode(&queries)?;
+        let length = bytes.len() as u64;
+        let snapshot = native_runtime::Vmo::from_bytes(&bytes)?;
+        drop(bytes);
+        let verdicts = installation::encode_outcomes(self.id, candidate.generation(), &outcomes)
+            .map_err(|error| match error {
+                router_protocol::tracking::Error::Invalid => native_abi::ERR_INVALID_ARGS,
+                router_protocol::tracking::Error::NoMemory => native_abi::ERR_NO_MEMORY,
+            })?;
+        drop(outcomes);
+        let outcomes = (
+            native_runtime::Vmo::from_bytes(&verdicts)?,
+            verdicts.len() as u64,
+        );
+        let execution = self.owner.installer.prepare_configuration(encoded, network_protocol::ExecutionPolicy::default())?;
+        state.next = lease;
+        state.pending = Some(lease);
         drop(state);
-        drop(old);
-        Ok(())
+        transaction::Transaction::serve(
+            self.owner.clone(),
+            lease,
+            Some(self.id),
+            next,
+            execution,
+            server,
+        )?;
+        Ok(SourcePreparation {
+            source: self.id,
+            transaction: client,
+            snapshot: (snapshot, length),
+            outcomes,
+            recovery_changed,
+        })
     }
 }
 impl Drop for Session {

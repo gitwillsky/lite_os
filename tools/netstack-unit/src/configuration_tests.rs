@@ -2,8 +2,12 @@
 fn interface_plan(
     index: u32,
     subnet: u8,
-) -> router_protocol::interface::Ipv4InterfaceConfiguration {
-    router_protocol::interface::Ipv4InterfaceConfiguration {
+) -> router_protocol::interface::InterfaceConfiguration<'static> {
+    router_protocol::interface::InterfaceConfiguration {
+        ipv6: None,
+        delegated: None,
+        accept_ra: None,
+        advertise: None,
         index,
         up: true,
         mtu: None,
@@ -16,11 +20,11 @@ fn interface_plan(
 fn configuration_routes(
     scope: &crate::namespace::Namespace,
 ) -> Vec<(
-    network_protocol::routes::RouteAttributes,
-    Vec<network_protocol::routes::NextHopMember>,
+    network_protocol::routes::RouteAttributes<Ipv4Addr>,
+    Vec<network_protocol::routes::NextHopMember<Ipv4Addr>>,
     bool,
 )> {
-    route_snapshot(scope)
+    route_snapshot::<Ipv4Addr>(scope)
         .unwrap()
         .iter()
         .map(|snapshot| {
@@ -52,41 +56,44 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
     .unwrap();
     let before = configuration_routes(&net);
     let plans = [
-        router_protocol::interface::Ipv4InterfaceConfiguration {
+        router_protocol::interface::InterfaceConfiguration {
             mtu: Some(700),
             ..interface_plan(2, 60)
         },
-        router_protocol::interface::Ipv4InterfaceConfiguration {
+        router_protocol::interface::InterfaceConfiguration {
             mtu: Some(800),
             ..interface_plan(3, 61)
         },
     ];
-    let mut bytes = [0; 64];
+    let mut bytes = vec![0; router_protocol::interface::InterfaceConfigurationBatch::encoded_size(&plans).unwrap()];
     router_protocol::interface::InterfaceConfigurationBatch::encode(&plans, &mut bytes).unwrap();
     let batch = router_protocol::interface::InterfaceConfigurationBatch::parse(&bytes).unwrap();
     assert!(batch.iter().eq(plans));
-    let mut invalid = bytes;
+    let mut invalid = bytes.clone();
     invalid[..4].copy_from_slice(&2_u32.to_le_bytes());
     assert!(router_protocol::interface::InterfaceConfigurationBatch::parse(&invalid).is_err());
-    invalid = bytes;
+    invalid = bytes.clone();
+    invalid[15] = 4;
+    assert!(router_protocol::interface::InterfaceConfigurationBatch::parse(&invalid).is_err());
+    invalid = bytes.clone();
     invalid[12] &= !8;
     assert!(
         router_protocol::interface::InterfaceConfigurationBatch::parse(&invalid).is_err(),
         "None MTU cannot carry an ignored value"
     );
-    invalid = bytes;
+    invalid = bytes.clone();
     invalid[28] = 1;
     assert!(router_protocol::interface::InterfaceConfigurationBatch::parse(&invalid).is_err(), "absent default route cannot hide selection attributes");
     let members = [
         network_protocol::routes::NextHopMember {
             interface_index: 2,
-            gateway: Some(Ipv4Addr::new(10, 60, 0, 1)),
+            gateway: Some(Ipv4Addr::new(10, 60, 0, 1).into()),
             on_link: false,
             weight: 3,
         },
         network_protocol::routes::NextHopMember {
             interface_index: 3,
-            gateway: Some(Ipv4Addr::new(10, 61, 0, 1)),
+            gateway: Some(Ipv4Addr::new(10, 61, 0, 1).into()),
             on_link: false,
             weight: 1,
         },
@@ -103,7 +110,7 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
     };
     // 即将撤销的旧直连/LOCAL 不能证明新下一跳或显式源有效。
     let old_gateway = network_protocol::Ipv4RouteRequest {
-        gateway: Some(Ipv4Addr::new(10, 40, 0, 1)),
+        gateway: Some(Ipv4Addr::new(10, 40, 0, 1).into()),
         ..forwarded
     };
     assert!(matches!(
@@ -111,7 +118,7 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
             &net,
             batch.iter(),
             [].into_iter(),
-            [old_gateway.into()].into_iter()
+            [old_gateway.into()].into_iter(), None
         ),
         Err(SocketError::NetworkUnreachable)
     ));
@@ -125,7 +132,7 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
             &net,
             batch.iter(),
             [].into_iter(),
-            [old_source.into()].into_iter()
+            [old_source.into()].into_iter(), None
         ),
         Err(SocketError::Invalid)
     ));
@@ -133,7 +140,7 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
         &net,
         batch.iter(),
         [hop].into_iter(),
-        [selection].into_iter(),
+        [selection].into_iter(), None,
     )
     .unwrap();
     assert_eq!(
@@ -155,10 +162,7 @@ fn actual_configuration_batch_is_reversible_and_excludes_only_configuration_writ
         assert_eq!(snapshot.mtu, plan.mtu.unwrap() as i32);
         let socket = scoped_endpoint(&net, InetProtocol::Udp);
         socket
-            .bind(InetAddress {
-                address: plan.address.unwrap(),
-                port: 0,
-            })
+            .bind(InetAddress::V4(core::net::SocketAddrV4::new(plan.address.unwrap(), 0)))
             .unwrap();
     }
     {
@@ -220,12 +224,14 @@ fn actual_configuration_oom_is_prepublication_and_rollback_does_not_allocate() {
     initialize();
     let (net, _, _) = routing_domain(89241);
     let before = configuration_routes(&net);
+    let addresses = [router_protocol::configuration::Ipv6Address { address: "2001:db8:60::1".parse().unwrap(), prefix_length: 64, on_link: true }];
     let plans = [
-        router_protocol::interface::Ipv4InterfaceConfiguration {
-            mtu: Some(700),
+        router_protocol::interface::InterfaceConfiguration {
+            mtu: Some(1400),
+            ipv6: Some(router_protocol::interface::Ipv6Addresses::new(&addresses).unwrap()),
             ..interface_plan(2, 60)
         },
-        router_protocol::interface::Ipv4InterfaceConfiguration {
+        router_protocol::interface::InterfaceConfiguration {
             mtu: Some(800),
             ..interface_plan(3, 61)
         },
@@ -236,14 +242,14 @@ fn actual_configuration_oom_is_prepublication_and_rollback_does_not_allocate() {
         let forwarded = network_protocol::Ipv4RouteRequest {
             scope: 0,
             preferred_source: plans[0].address,
-            gateway: Some(Ipv4Addr::new(10, 60, 0, 1)),
+            gateway: Some(Ipv4Addr::new(10, 60, 0, 1).into()),
             ..static_route(Ipv4Addr::new(198, 51, 100, 0), 24, 2, 7)
         };
         let result = prepare_routes(
             &net,
             plans.into_iter(),
             [].into_iter(),
-            [forwarded.into()].into_iter(),
+            [forwarded.into()].into_iter(), None,
         );
         let consumed = crate::allocation_failure::was_consumed();
         match result {
@@ -282,40 +288,40 @@ fn actual_configuration_rejects_whole_invalid_batch_and_capability_close_rolls_b
     initialize();
     let (net, _, _) = routing_domain(89242);
     let before = configuration_routes(&net);
-    let valid = router_protocol::interface::Ipv4InterfaceConfiguration {
+    let valid = router_protocol::interface::InterfaceConfiguration {
         mtu: Some(700),
         ..interface_plan(2, 60)
     };
     for mtu in [0, 67, 1501, u32::MAX] {
-        let invalid = router_protocol::interface::Ipv4InterfaceConfiguration {
+        let invalid = router_protocol::interface::InterfaceConfiguration {
             mtu: Some(mtu),
             ..interface_plan(3, 61)
         };
         assert!(matches!(
-            prepare_configuration(&net, [valid, invalid].into_iter()),
+            prepare_configuration(&net, [valid, invalid].into_iter(), None),
             Err(SocketError::Invalid)
         ));
         assert_eq!(interface_snapshot(&net, 2).unwrap().mtu, 1500);
         assert_eq!(configuration_routes(&net), before);
     }
-    let unreachable = router_protocol::interface::Ipv4InterfaceConfiguration {
+    let unreachable = router_protocol::interface::InterfaceConfiguration {
         route: Some(router_protocol::interface::DefaultRoute { gateway: Ipv4Addr::new(192, 0, 2, 1), protocol: 3, attributes: router_protocol::routing::Attributes { preference: 1, metric: 0 } }),
         ..interface_plan(3, 61)
     };
     assert!(matches!(
-        prepare_configuration(&net, [valid, unreachable].into_iter()),
+        prepare_configuration(&net, [valid, unreachable].into_iter(), None),
         Err(SocketError::Invalid)
     ));
     assert!(matches!(
-        prepare_configuration(&net, [valid, valid].into_iter()),
+        prepare_configuration(&net, [valid, valid].into_iter(), None),
         Err(SocketError::Invalid)
     ));
     assert_eq!(configuration_routes(&net), before);
-    let transaction = prepare_configuration(&net, [valid].into_iter()).unwrap();
+    let transaction = prepare_configuration(&net, [valid].into_iter(), None).unwrap();
     transaction.activate().unwrap();
     drop(transaction);
     assert_eq!(configuration_routes(&net), before);
-    let transaction = prepare_configuration(&net, [valid].into_iter()).unwrap();
+    let transaction = prepare_configuration(&net, [valid].into_iter(), None).unwrap();
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
     drop(transaction);
@@ -323,10 +329,10 @@ fn actual_configuration_rejects_whole_invalid_batch_and_capability_close_rolls_b
     configure_up(&net, 2, true).unwrap();
 
     // 真实 NETDEV_UNREGISTER 可打断事务；回滚恢复其余接口，不复活已离线设备的路由。
-    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
     let transaction = prepare_configuration(
         &net,
-        [interface_plan(2, 70), interface_plan(removed, 80)].into_iter(),
+        [interface_plan(2, 70), interface_plan(removed, 80)].into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -348,10 +354,10 @@ fn actual_configuration_rejects_whole_invalid_batch_and_capability_close_rolls_b
     configure_up(&net, 2, true).unwrap();
 
     // 持久决定后只确认释放原资源；设备随后离线不能把其余接口的新配置撤销。
-    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
     let transaction = prepare_configuration(
         &net,
-        [interface_plan(2, 90), interface_plan(removed, 91)].into_iter(),
+        [interface_plan(2, 90), interface_plan(removed, 91)].into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -370,15 +376,18 @@ fn actual_configuration_rejects_whole_invalid_batch_and_capability_close_rolls_b
     );
     // 预备使用候选 MTU；原 lo 的 MTU 为零不能阻止同一批次恢复地址。
     configure_mtu(&net, 1, 0).unwrap();
-    let lo = router_protocol::interface::Ipv4InterfaceConfiguration {
-        index: 1,
+    let lo = router_protocol::interface::InterfaceConfiguration {
+        ipv6: None, index: 1,
+        delegated: None,
+        accept_ra: None,
+        advertise: None,
         mtu: Some(512),
         up: true,
         address: Some(Ipv4Addr::LOCALHOST),
         prefix_length: 8,
         route: None,
     };
-    let transaction = prepare_configuration(&net, [lo].into_iter()).unwrap();
+    let transaction = prepare_configuration(&net, [lo].into_iter(), None).unwrap();
     transaction.activate().unwrap();
     assert_eq!(interface_snapshot(&net, 1).unwrap().mtu, 512);
     assert_eq!(interface_snapshot(&net, 1).unwrap().address, lo.address);
@@ -415,7 +424,7 @@ fn actual_fib_collection_prepares_once_rolls_back_without_allocation_and_clears_
             &net,
             core::iter::empty(),
             [].into_iter(),
-            [a, b].into_iter().map(Into::into),
+            [a, b].into_iter().map(Into::into), None,
         );
         let consumed = crate::allocation_failure::was_consumed();
         match result {
@@ -448,7 +457,7 @@ fn actual_fib_collection_prepares_once_rolls_back_without_allocation_and_clears_
             &net,
             core::iter::empty(),
             [].into_iter(),
-            [a, a].into_iter().map(Into::into)
+            [a, a].into_iter().map(Into::into), None
         ),
         Err(SocketError::Invalid)
     ));
@@ -462,7 +471,7 @@ fn actual_fib_collection_prepares_once_rolls_back_without_allocation_and_clears_
         &net,
         core::iter::empty(),
         [].into_iter(),
-        [replacement].into_iter().map(Into::into),
+        [replacement].into_iter().map(Into::into), None,
     )
     .unwrap();
     crate::allocation_failure::fail_next();
@@ -477,7 +486,7 @@ fn actual_fib_collection_prepares_once_rolls_back_without_allocation_and_clears_
         &net,
         core::iter::empty(),
         [].into_iter(),
-        core::iter::empty(),
+        core::iter::empty(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -495,7 +504,7 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
         &net,
         core::iter::empty(),
         [].into_iter(),
-        [direct].into_iter().map(Into::into),
+        [direct].into_iter().map(Into::into), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -503,7 +512,7 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
     let dependent = network_protocol::Ipv4RouteRequest {
         destination: Ipv4Addr::new(203, 0, 113, 0),
         scope: 0,
-        gateway: Some(Ipv4Addr::new(198, 51, 100, 1)),
+        gateway: Some(Ipv4Addr::new(198, 51, 100, 1).into()),
         ..direct
     };
     assert!(matches!(
@@ -511,12 +520,12 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
             &net,
             core::iter::empty(),
             [].into_iter(),
-            [dependent].into_iter().map(Into::into)
+            [dependent].into_iter().map(Into::into), None
         ),
         Err(SocketError::NetworkUnreachable)
     ));
     let original = configuration_routes(&net);
-    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
     configure_up(&net, removed, true).unwrap();
     let other = network_protocol::Ipv4RouteRequest {
         destination: Ipv4Addr::new(192, 0, 2, 0),
@@ -527,7 +536,7 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
         &net,
         core::iter::empty(),
         [].into_iter(),
-        [direct, other].into_iter().map(Into::into),
+        [direct, other].into_iter().map(Into::into), None,
     )
     .unwrap();
     assert!(
@@ -540,7 +549,7 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
     assert_eq!(transaction.activate(), Err(SocketError::NoDevice));
     drop(transaction);
     assert_eq!(configuration_routes(&net), original);
-    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+    let removed = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
     configure_up(&net, removed, true).unwrap();
     let other = network_protocol::Ipv4RouteRequest {
         interface_index: Some(removed),
@@ -554,7 +563,7 @@ fn actual_fib_collection_cannot_reuse_withdrawn_dependencies_or_revive_hot_remov
         &net,
         core::iter::empty(),
         [].into_iter(),
-        [changed, other].into_iter().map(Into::into),
+        [changed, other].into_iter().map(Into::into), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -576,7 +585,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
     initialize();
     let (net, _, _) = routing_domain(89252);
     let original_output =
-        install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+        install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
     configure_address(&net, original_output, Ipv4Addr::new(10, 42, 0, 15)).unwrap();
     configure_netmask(&net, original_output, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
     configure_up(&net, original_output, true).unwrap();
@@ -604,7 +613,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
             &net,
             core::iter::empty(),
             [].into_iter(),
-            routes.into_iter()
+            routes.into_iter(), None
         ),
         Err(SocketError::Invalid)
     ));
@@ -613,7 +622,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
             &net,
             core::iter::empty(),
             [hop, hop].into_iter(),
-            routes.into_iter()
+            routes.into_iter(), None
         ),
         Err(SocketError::Invalid)
     ));
@@ -621,7 +630,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
         &net,
         core::iter::empty(),
         [hop].into_iter(),
-        routes.into_iter(),
+        routes.into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -704,7 +713,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
         &net,
         core::iter::empty(),
         [next].into_iter(),
-        [link].into_iter(),
+        [link].into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -715,7 +724,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
             NextHopConfiguration::new(
                 41,
                 &[NextHopMember {
-                    gateway: Some(Ipv4Addr::new(10, 41, 0, 1)),
+                    gateway: Some(Ipv4Addr::new(10, 41, 0, 1).into()),
                     ..next_members[0]
                 }]
             )
@@ -733,13 +742,13 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
     let members = [
         NextHopMember {
             interface_index: 3,
-            gateway: Some(Ipv4Addr::new(10, 41, 0, 1)),
+            gateway: Some(Ipv4Addr::new(10, 41, 0, 1).into()),
             on_link: false,
             weight: 1,
         },
         NextHopMember {
             interface_index: 2,
-            gateway: Some(Ipv4Addr::new(10, 40, 0, 1)),
+            gateway: Some(Ipv4Addr::new(10, 40, 0, 1).into()),
             on_link: false,
             weight: 3,
         },
@@ -757,7 +766,7 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
         &net,
         core::iter::empty(),
         [group].into_iter(),
-        [route].into_iter(),
+        [route].into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
@@ -830,19 +839,12 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
         .interface_index;
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
     sender
-        .bind(InetAddress {
-            address: source,
-            port: 45151,
-        })
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(source, 45151)))
         .unwrap();
     sender
         .send_to(
             b"weighted",
-            Some(InetAddress {
-                address: destination,
-                port: 45152,
-            }),
-            None,
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(destination, 45152))), &[],
         )
         .unwrap();
     net.protocol().unwrap().lock().unwrap().poll();
@@ -898,12 +900,12 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
         &net,
         core::iter::empty(),
         [group].into_iter(),
-        [route, protected].into_iter(),
+        [route, protected].into_iter(), None,
     )
     .unwrap();
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
-    let frozen = route_snapshot(&net).unwrap();
+    let frozen = route_snapshot::<Ipv4Addr>(&net).unwrap();
     let original_group = frozen
         .iter()
         .find(|row| row.route.destination == request.destination)

@@ -1,4 +1,4 @@
-//! 以太网卡 v11：显式协商 pair 数；共享环传递收发，链路变化独立于队列通知。
+//! 以太网卡 v13：显式协商 pair 数；共享环传递收发和链路事实，链路变化独立通知。
 mod client;
 mod queue;
 mod rss;
@@ -13,9 +13,8 @@ use device_model::network::{
 use native_runtime::native_abi::{self, Status};
 pub use server::publish;
 
-const NETWORK_VERSION: u16 = 11;
+const NETWORK_VERSION: u16 = 13;
 const STATISTICS: u32 = 8;
-const LINK: u32 = 9;
 const WATCH_LINK: u32 = 16;
 const MEMORY: u32 = 12;
 const QUEUE: u32 = 13;

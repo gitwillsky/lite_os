@@ -5,7 +5,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use fallible_tree::{FallibleMap, NodeSlot};
 use packet_wire::bgp::nlri::{Family, Prefix};
 
-/// 已完成协议选择的路由；每前缀只保留邻居身份，不复制整份邻居配置/解析状态。
+/// 一条协议选择；提案阶段仍须完成 RIB 准入，只有外部确认后才能作为当前 Loc-RIB 发表。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedRoute {
     peer: u64,
@@ -22,7 +22,37 @@ impl SelectedRoute {
         context: SelectionContext,
         candidates: &[Candidate<'_>],
     ) -> Result<Option<Self>, OutOfMemory> {
-        Ok(selector.select(context, candidates)?.map(|index| {
+        Ok(Self::capture(
+            selector.select(context, candidates)?,
+            candidates,
+        ))
+    }
+    pub(crate) fn select_observed(
+        selector: &mut Selector,
+        context: SelectionContext,
+        candidates: &[Candidate<'_>],
+        decisions: &mut Vec<router_protocol::bgp::RouteDecision>,
+    ) -> Result<Option<Self>, OutOfMemory> {
+        Ok(Self::capture(
+            selector.select_observed(context, candidates, decisions)?,
+            candidates,
+        ))
+    }
+    /// 准备尚未验证可达性的提案，仅供 RIB 检查，不可跳过实际 select 和来源确认。
+    /// # Errors
+    /// 选择工作区分配失败。
+    pub(crate) fn propose(
+        selector: &mut Selector,
+        context: SelectionContext,
+        candidates: &[Candidate<'_>],
+    ) -> Result<Option<Self>, OutOfMemory> {
+        Ok(Self::capture(
+            selector.propose(context, candidates)?,
+            candidates,
+        ))
+    }
+    fn capture(index: Option<usize>, candidates: &[Candidate<'_>]) -> Option<Self> {
+        index.map(|index| {
             let candidate = &candidates[index];
             Self {
                 peer: candidate.peer.id,
@@ -32,7 +62,7 @@ impl SelectedRoute {
                     .preference
                     .expect("selected route passed import policy"),
             }
-        }))
+        })
     }
     /// 稳定配置邻居身份；注册 owner 必须保持它与本路由的退出/重算次序一致。
     pub fn peer(&self) -> u64 {
@@ -58,7 +88,7 @@ pub enum LocRibError {
     NoMemory,
     /// 长度越界或前缀含主机位。
     InvalidPrefix,
-    /// 前缀不属于此次来源替换的授权地址族。
+    /// 前缀不属于此次候选替换的地址族。
     Family,
     /// 逻辑下一跳与目的前缀跨族，当前未协商/支持相应能力。
     NextHopFamily,
@@ -84,7 +114,8 @@ struct Proposed {
     route: Option<SelectedRoute>,
     insertion: Option<Insertion>,
 }
-fn canonical(prefix: Prefix) -> bool {
+/// 检查长度与主机位；Loc-RIB 与路由域工作入口共用，避免无效重算项永久阻塞后续接收。
+pub(crate) fn canonical(prefix: Prefix) -> bool {
     match prefix.address {
         IpAddr::V4(address) if prefix.length <= 32 => {
             u32::from(address)
@@ -136,7 +167,45 @@ impl LocRib {
         self.iter_family(Family::Ipv4)
             .chain(self.iter_family(Family::Ipv6))
     }
-    fn iter_family(&self, family: Family) -> impl Iterator<Item = (Prefix, &SelectedRoute)> {
+    /// 按标准索引边界取下一项；供有界出口游标定位，不从表头反复扫描。
+    pub(crate) fn next_prefix(&self, bound: core::ops::Bound<Prefix>) -> Option<Prefix> {
+        use core::ops::Bound;
+        let (prefix, inclusive) = match bound {
+            Bound::Included(prefix) => (prefix, true),
+            Bound::Excluded(prefix) => (prefix, false),
+            Bound::Unbounded => return self.iter().next().map(|(prefix, _)| prefix),
+        };
+        match prefix.address {
+            IpAddr::V4(address) => {
+                let key = (u32::from(address), prefix.length);
+                let next = if inclusive {
+                    self.ipv4.ceiling(&key)
+                } else {
+                    self.ipv4.successor(&key)
+                };
+                next.map(|((address, length), _)| Prefix {
+                    address: core::net::Ipv4Addr::from(*address).into(),
+                    length: *length,
+                })
+            }
+            IpAddr::V6(address) => {
+                let key = (u128::from(address), prefix.length);
+                let next = if inclusive {
+                    self.ipv6.ceiling(&key)
+                } else {
+                    self.ipv6.successor(&key)
+                };
+                next.map(|((address, length), _)| Prefix {
+                    address: core::net::Ipv6Addr::from(*address).into(),
+                    length: *length,
+                })
+            }
+        }
+    }
+    fn iter_family(
+        &self,
+        family: Family,
+    ) -> impl Iterator<Item = (Prefix, &SelectedRoute)> + Clone {
         // 来源候选只遍历实际所属的那一族；过滤合并全表会让 IPv6 发布无谓扫描百万条 IPv4 记录。
         let ipv4 = matches!(family, Family::Ipv4)
             .then_some(&self.ipv4)
@@ -166,7 +235,7 @@ impl LocRib {
             });
         ipv4.chain(ipv6)
     }
-    /// 按现有来源授权粒度准备单个 family 的整批更新；同前缀最后一项生效，None 撤回。
+    /// 按来源正文粒度准备单个 family 的整批更新；同前缀最后一项生效，None 撤回。
     /// 返回的 guard 独占本表，调用者通过其候选视图沿现有来源通道发布，确认成功后 commit。
     /// # Errors
     /// 非规范/错误族前缀、未支持的跨族下一跳、上游选择 OOM 或分配失败；旧表不变。
@@ -188,12 +257,11 @@ impl LocRib {
             ) {
                 return Err(LocRibError::Family);
             }
-            if route.as_ref().is_some_and(|route| {
-                !matches!(
-                    (prefix.address, route.next_hop.address),
-                    (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
-                )
-            }) {
+            if prefix.address.is_ipv6()
+                && route
+                    .as_ref()
+                    .is_some_and(|route| route.next_hop.address.is_ipv4())
+            {
                 return Err(LocRibError::NextHopFamily);
             }
             changes.try_reserve(1).map_err(|_| LocRibError::NoMemory)?;
@@ -250,7 +318,7 @@ impl LocRibUpdate<'_> {
         &self.prefixes
     }
     /// 借用合并该族旧表与本批增量的完整候选视图；不复制逐路由 DTO，不修改旧表。
-    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &SelectedRoute)> {
+    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &SelectedRoute)> + Clone {
         let mut old = self.rib.iter_family(self.family).peekable();
         let mut changes = self.changes.iter().peekable();
         core::iter::from_fn(move || {

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+zeroize = { version = "=1.9.1", default-features = false }
 packet-wire = { path = "../../libraries/packet-wire" }
 pci-config = { path = "../../libraries/pci-config" }
 native-abi = { path = "../../abi/native-abi" }

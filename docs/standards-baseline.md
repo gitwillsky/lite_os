@@ -7,6 +7,13 @@
 - 远程开发入口使用 SSH 2（[RFC 4251](https://www.rfc-editor.org/rfc/rfc4251)）、OpenSSH 的 SFTP 子系统与 Unix socket 转发。 服务端来自 Alpine v3.22 的 OpenSSH `10.0_p1-r11`，各架构包摘要由 `scripts/userland/artifacts.py` 固定。
 - 桌面访问遵循 [RFB 3.8（RFC 6143）](https://www.rfc-editor.org/rfc/rfc6143)，在认证后的 SSH 流内使用 Raw 帧更新。
 - DHCPv4 状态、租约计时与报文选项分别以 [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131) 和 [RFC 2132](https://www.rfc-editor.org/rfc/rfc2132) 为准。
+  服务端分配前冲突检查采用 RFC 2131 §3.1 与 [RFC 5227 §2.1.1](https://www.rfc-editor.org/rfc/rfc5227.html#section-2.1.1) 的 ARP 探测格式。
+
+- DNS 报文、大小写和 EDNS 按 [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035)、[RFC 4343](https://www.rfc-editor.org/rfc/rfc4343) 与 [RFC 6891](https://www.rfc-editor.org/rfc/rfc6891)。
+  回复匹配与缓存寿命按 [RFC 5452](https://www.rfc-editor.org/rfc/rfc5452)、[RFC 2181](https://www.rfc-editor.org/rfc/rfc2181) 和 [RFC 2308](https://www.rfc-editor.org/rfc/rfc2308)，
+  代理传输按 [RFC 5625](https://www.rfc-editor.org/rfc/rfc5625) 与 [RFC 7766](https://www.rfc-editor.org/rfc/rfc7766)。
+
+- IPv6 路由通告与 DNS 选项分别采用 [RFC 4861](https://www.rfc-editor.org/rfc/rfc4861) 和 [RFC 8106](https://www.rfc-editor.org/rfc/rfc8106)。
 
 ### Linux arm64 + riscv64 ABI
 

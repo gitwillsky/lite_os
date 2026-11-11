@@ -83,7 +83,7 @@ mod routing_compilation {
             &net,
             batch.interfaces().iter(),
             forwarding.next_hops(),
-            forwarding.iter(),
+            forwarding.iter(), None,
         )
         .unwrap();
         assert_eq!(
@@ -102,7 +102,7 @@ mod routing_compilation {
                 .unwrap();
             assert_eq!(
                 (output.interface_index, output.next_hop),
-                (2, Ipv4Addr::new(10, 40, 0, 1))
+                (2, Ipv4Addr::new(10, 40, 0, 1).into())
             );
         }
         for (address, error) in [
@@ -125,7 +125,7 @@ mod routing_compilation {
             &net,
             batch.interfaces().iter(),
             forwarding.next_hops(),
-            forwarding.iter(),
+            forwarding.iter(), None,
         )
         .unwrap();
         transaction.activate().unwrap();
@@ -141,7 +141,7 @@ mod routing_compilation {
             &net,
             clear.interfaces().iter(),
             forwarding.next_hops(),
-            forwarding.iter(),
+            forwarding.iter(), None,
         )
         .unwrap();
         transaction.activate().unwrap();
@@ -161,7 +161,7 @@ mod routing_compilation {
         );
         assert_eq!(
             resolved.encode_configuration(
-                &[router_protocol::interface::Ipv4InterfaceConfiguration {
+                &[router_protocol::interface::InterfaceConfiguration {
                     route: Some(router_protocol::interface::DefaultRoute { gateway: Ipv4Addr::new(10, 40, 0, 1), protocol: 3, attributes: routing::Attributes { preference: 1, metric: 0 } }),
                     ..interface_plan(2, 40)
                 }],
@@ -199,13 +199,13 @@ mod routing_compilation {
         let notified =
             || changes.0.load(core::sync::atomic::Ordering::Relaxed) & native_abi::signals::USER_0 != 0;
         let device = Arc::new(WireDevice::new());
-        let primary = install_interface(&net, device.clone(), crate::Channel).unwrap();
-        let secondary = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel).unwrap();
+        let primary = install_interface(&net, device.clone(), crate::Channel, crate::Event::default()).unwrap();
+        let secondary = install_interface(&net, Arc::new(WireDevice::new()), crate::Channel, crate::Event::default()).unwrap();
         assert!(notified(), "installation publishes the new interface");
         changes.signal(native_abi::signals::USER_0, 0).unwrap();
         let before = configuration_routes(&net);
         let plans = [
-            router_protocol::interface::Ipv4InterfaceConfiguration {
+            router_protocol::interface::InterfaceConfiguration {
                 route: Some(router_protocol::interface::DefaultRoute {
                     gateway: Ipv4Addr::new(10, 60, 0, 1),
                     protocol: 3,
@@ -216,7 +216,7 @@ mod routing_compilation {
                 }),
                 ..interface_plan(primary, 60)
             },
-            router_protocol::interface::Ipv4InterfaceConfiguration {
+            router_protocol::interface::InterfaceConfiguration {
                 route: Some(router_protocol::interface::DefaultRoute {
                     gateway: Ipv4Addr::new(10, 61, 0, 1),
                     protocol: 16,
@@ -230,10 +230,10 @@ mod routing_compilation {
         ];
         // 直接接口执行已不能生成默认路由；来源必须经过生产 RIB 编译，并使用候选而非旧地址证明网关。
         assert!(matches!(
-            prepare_configuration(&net, plans.into_iter()),
+            prepare_configuration(&net, plans.into_iter(), None),
             Err(SocketError::Invalid)
         ));
-        let facts = interface_snapshots(&net).unwrap();
+        let facts = routing_facts(&net);
         let mut routes = routing_rib::sources::Routes::default();
         assert!(
             routes.snapshot().is_none(),
@@ -246,7 +246,7 @@ mod routing_compilation {
         configuration
             .routes
             .push(router_protocol::configuration::StaticRoute {
-                destination: Ipv4Addr::new(172, 22, 0, 0),
+                destination: Ipv4Addr::new(172, 22, 0, 0).into(),
                 prefix_length: 16,
                 preference: 1,
                 metric: 2,
@@ -254,40 +254,40 @@ mod routing_compilation {
                     members: vec![router_protocol::configuration::StaticMember {
                         weight: 1,
                         target: router_protocol::configuration::StaticTarget::Recursive {
-                            address: Ipv4Addr::new(10, 60, 0, 9),
+                            address: Ipv4Addr::new(10, 60, 0, 9).into(),
                         },
                     }],
                 },
             });
         configuration.validate().unwrap();
-        let declaration = configuration.route_source(|_| Ok(Some(primary))).unwrap();
+        let declaration = configuration.route_source(router_protocol::routing::Family::Ipv4, |_| Ok(Some(primary))).unwrap();
         let encoded =
-            network_protocol::routing::Configuration::encode(&plans, Some(&declaration), None).unwrap();
+            network_protocol::routing::Configuration::encode(&plans, [Some(&declaration), None], None, None).unwrap();
         let request = network_protocol::routing::Configuration::parse(&encoded).unwrap();
         assert!(request.interfaces().iter().eq(plans));
         assert!(
             network_protocol::routing::Configuration::parse(
-                &network_protocol::ConfigurationBatch::encode(&plans, None).unwrap()
+                &network_protocol::ConfigurationBatch::encode(&plans).unwrap()
             )
             .is_err(),
-            "RIB intent and NET execution must not share a wire version"
+            "RIB intent must reject NET execution bytes"
         );
         let source = routing_rib::sources::Routes::capture_source(
             static_id,
             routing_rib::sources::CONFIGURATION_DOMAIN,
             4,
             1,
-            request.routes().unwrap(),
+            request.routes(router_protocol::routing::Family::Ipv4).unwrap(),
         )
         .unwrap();
         let static_candidate = routes
-            .prepare_configuration(&facts, &plans, Some(source), None)
+            .prepare_configuration(&facts, &plans, &[source], None, None)
             .unwrap();
         let batch = network_protocol::ConfigurationBatch::parse(&static_candidate.encoded).unwrap();
         let fib = batch.forwarding().unwrap();
         assert_eq!(fib.iter().len(), 2);
         let execution =
-            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter()).unwrap();
+            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
         assert_eq!(configuration_routes(&net), before);
         execution.activate().unwrap();
         assert_eq!(
@@ -305,7 +305,7 @@ mod routing_compilation {
         changes.signal(native_abi::signals::USER_0, 0).unwrap();
         drop(static_candidate);
         let staged = routes
-            .prepare_configuration(&facts, &plans, None, None)
+            .prepare_configuration(&facts, &plans, &[], None, None)
             .unwrap();
         let stage = |prepared: &routing_rib::sources::PreparedRoutes| {
             let batch = network_protocol::ConfigurationBatch::parse(&prepared.encoded).unwrap();
@@ -320,7 +320,7 @@ mod routing_compilation {
                 &net,
                 batch.interfaces().iter(),
                 forwarding.next_hops(),
-                forwarding.iter(),
+                forwarding.iter(), None,
             )
             .unwrap()
         };
@@ -342,7 +342,7 @@ mod routing_compilation {
                 output().unwrap().interface_index,
                 output().unwrap().next_hop
             ),
-            (primary, Ipv4Addr::new(10, 60, 0, 1))
+            (primary, Ipv4Addr::new(10, 60, 0, 1).into())
         );
         execution.abort().unwrap();
         assert_eq!(configuration_routes(&net), before);
@@ -353,20 +353,20 @@ mod routing_compilation {
         execution.confirm().unwrap();
         let routes = staged.next;
         let initial_snapshot = routes.snapshot().unwrap().clone();
-        let ordinary = router_protocol::tracking::Query {
-            address: Ipv4Addr::new(8, 8, 8, 8),
+        let ordinary = router_protocol::tracking::Query { prefix_length: None,
+            address: Ipv4Addr::new(8, 8, 8, 8).into(),
             resolve_via_default: false,
         };
-        let through_default = router_protocol::tracking::Query {
+        let through_default = router_protocol::tracking::Query { prefix_length: None,
             resolve_via_default: true,
             ..ordinary
         };
-        let connected = router_protocol::tracking::Query {
-            address: Ipv4Addr::new(10, 60, 0, 9),
+        let connected = router_protocol::tracking::Query { prefix_length: None,
+            address: Ipv4Addr::new(10, 60, 0, 9).into(),
             resolve_via_default: false,
         };
-        let broadcast = router_protocol::tracking::Query {
-            address: Ipv4Addr::new(10, 60, 0, 255),
+        let broadcast = router_protocol::tracking::Query { prefix_length: None,
+            address: Ipv4Addr::new(10, 60, 0, 255).into(),
             resolve_via_default: false,
         };
         let report = initial_snapshot
@@ -381,7 +381,7 @@ mod routing_compilation {
             router_protocol::tracking::State::Prohibit,
         ]));
         let unchanged = routes
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[], None, None)
+            .prepare_configuration(&routing_facts(&net), &[], &[], None, None)
             .unwrap();
         assert!(unchanged.next.snapshot().unwrap().generation() > initial_snapshot.generation());
         assert!(
@@ -393,7 +393,7 @@ mod routing_compilation {
         );
 
         // 偏好变化不能被稳定来源身份或旧选路遮住；代价必须原样导出，不能再由 ifindex 代替。
-        let demoted = router_protocol::interface::Ipv4InterfaceConfiguration {
+        let demoted = router_protocol::interface::InterfaceConfiguration {
             route: Some(router_protocol::interface::DefaultRoute {
                 attributes: routing::Attributes {
                     preference: 100,
@@ -404,7 +404,7 @@ mod routing_compilation {
             ..plans[0]
         };
         let demoted = routes
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[demoted], None, None)
+            .prepare_configuration(&routing_facts(&net), &[demoted], &[], None, None)
             .unwrap();
         assert!(
             demoted
@@ -431,14 +431,14 @@ mod routing_compilation {
         assert_eq!(output().unwrap().interface_index, secondary);
         let restored = demoted
             .next
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[plans[0]], None, None)
+            .prepare_configuration(&routing_facts(&net), &[plans[0]], &[], None, None)
             .unwrap();
         let execution = stage(&restored);
         execution.activate().unwrap();
         execution.confirm().unwrap();
         let routes = restored.next;
         assert_eq!(output().unwrap().interface_index, primary);
-        let cheaper = router_protocol::interface::Ipv4InterfaceConfiguration {
+        let cheaper = router_protocol::interface::InterfaceConfiguration {
             route: Some(router_protocol::interface::DefaultRoute {
                 attributes: routing::Attributes {
                     preference: 10,
@@ -449,7 +449,7 @@ mod routing_compilation {
             ..plans[1]
         };
         let cheaper = routes
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[cheaper], None, None)
+            .prepare_configuration(&routing_facts(&net), &[cheaper], &[], None, None)
             .unwrap();
         let execution = stage(&cheaper);
         execution.activate().unwrap();
@@ -461,7 +461,7 @@ mod routing_compilation {
         );
         let restored = cheaper
             .next
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[plans[1]], None, None)
+            .prepare_configuration(&routing_facts(&net), &[plans[1]], &[], None, None)
             .unwrap();
         let execution = stage(&restored);
         execution.activate().unwrap();
@@ -477,7 +477,7 @@ mod routing_compilation {
         );
         changes.signal(native_abi::signals::USER_0, 0).unwrap();
         let down = routes
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &plans, None, None)
+            .prepare_configuration(&routing_facts(&net), &plans, &[], None, None)
             .unwrap();
         let execution = stage(&down);
         execution.activate().unwrap();
@@ -492,7 +492,7 @@ mod routing_compilation {
         assert!(notified());
         changes.signal(native_abi::signals::USER_0, 0).unwrap();
         let restored = routes
-            .prepare_configuration(&interface_snapshots(&net).unwrap(), &[], None, None)
+            .prepare_configuration(&routing_facts(&net), &[], &[], None, None)
             .unwrap();
         let execution = stage(&restored);
         execution.activate().unwrap();
@@ -512,9 +512,9 @@ mod routing_compilation {
                 .remove_interface(primary)
         );
         assert_eq!(output(), Err(SocketError::NetworkUnreachable));
-        let facts = interface_snapshots(&net).unwrap();
+        let facts = routing_facts(&net);
         let backup = routes
-            .prepare_configuration(&facts, &[], None, None)
+            .prepare_configuration(&facts, &[], &[], None, None)
             .unwrap();
         let execution = stage(&backup);
         execution.activate().unwrap();
@@ -523,7 +523,7 @@ mod routing_compilation {
                 output().unwrap().interface_index,
                 output().unwrap().next_hop
             ),
-            (secondary, Ipv4Addr::new(10, 61, 0, 1))
+            (secondary, Ipv4Addr::new(10, 61, 0, 1).into())
         );
         execution.abort().unwrap();
         assert_eq!(
@@ -535,7 +535,7 @@ mod routing_compilation {
         execution.activate().unwrap();
         execution.confirm().unwrap();
         let routes = backup.next;
-        let default = route_snapshot(&net)
+        let default = route_snapshot::<Ipv4Addr>(&net)
             .unwrap()
             .iter()
             .find(|row| row.route.prefix_length == 0)
@@ -543,7 +543,7 @@ mod routing_compilation {
             .route;
         assert_eq!((default.protocol, default.metric), (16, 249));
         let before = configuration_routes(&net);
-        let invalid = router_protocol::interface::Ipv4InterfaceConfiguration {
+        let invalid = router_protocol::interface::InterfaceConfiguration {
             route: Some(router_protocol::interface::DefaultRoute {
                 gateway: Ipv4Addr::new(192, 0, 2, 1),
                 ..plans[1].route.unwrap()
@@ -551,15 +551,15 @@ mod routing_compilation {
             ..plans[1]
         };
         assert!(matches!(
-            routes.prepare_configuration(&facts, &[invalid], None, None),
+            routes.prepare_configuration(&facts, &[invalid], &[], None, None),
             Err(native_abi::ERR_INVALID_ARGS)
         ));
         assert!(matches!(
-            routes.prepare_configuration(&facts, &[plans[1], plans[1]], None, None),
+            routes.prepare_configuration(&facts, &[plans[1], plans[1]], &[], None, None),
             Err(native_abi::ERR_INVALID_ARGS)
         ));
         assert!(matches!(
-            routes.prepare_configuration(&facts, &[plans[0]], None, None),
+            routes.prepare_configuration(&facts, &[plans[0]], &[], None, None),
             Err(native_abi::ERR_NOT_FOUND)
         ));
         assert_eq!(configuration_routes(&net), before);
@@ -574,14 +574,14 @@ mod routing_compilation {
                     preference,
                     metric: 7,
                 }],
-                &[NextHop::new(
+                [NextHop::new(
                     Action::Forward,
                     &[Member {
                         target: Target::Recursive(gateway.parse().unwrap()),
                         weight: 1,
                     }],
                 )],
-                &[candidate("172.25.0.0", 16, 0)],
+                [candidate("172.25.0.0", 16, 0)],
             )
             .unwrap()
         };
@@ -612,7 +612,8 @@ mod routing_compilation {
                 "unused observed LOCAL/connected groups cannot leak into FIB definitions"
             );
             let execution =
-                prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter()).unwrap();
+                prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None)
+                    .unwrap();
             execution.activate().unwrap();
             execution.confirm().unwrap();
             prepared.next
@@ -652,23 +653,23 @@ mod routing_compilation {
             ],
         };
         let encoded =
-            network_protocol::routing::Configuration::encode(&[], None, Some(&policy)).unwrap();
+            network_protocol::routing::Configuration::encode(&[], [None, None], Some(&policy), None).unwrap();
         let request = network_protocol::routing::Configuration::parse(&encoded).unwrap();
-        assert!(request.routes().is_none() && request.interfaces().iter().len() == 0);
+        assert!(request.routes(router_protocol::routing::Family::Ipv4).is_none() && request.interfaces().iter().len() == 0);
         let staged = routes
-            .prepare_configuration(&facts, &[], None, request.into_policy())
+            .prepare_configuration(&facts, &[], &[], request.into_policy(), None)
             .unwrap();
         let batch = network_protocol::ConfigurationBatch::parse(&staged.encoded).unwrap();
         let fib = batch.forwarding().unwrap();
         let execution =
-            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter()).unwrap();
+            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
         assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 9));
         execution.activate().unwrap();
         assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 10));
         execution.abort().unwrap();
         assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 9));
         let routes = apply(staged);
-        let snapshot = route_snapshot(&net).unwrap();
+        let snapshot = route_snapshot::<Ipv4Addr>(&net).unwrap();
         assert_eq!(
             snapshot
                 .iter()
@@ -688,10 +689,8 @@ mod routing_compilation {
         let cleared = routes
             .prepare_configuration(
                 &facts,
-                &[],
-                None,
-                Some(router_protocol::policy::Policy::default()),
-            )
+                &[], &[],
+                Some(router_protocol::policy::Policy::default()), None)
             .unwrap();
         let routes = apply(cleared);
         assert_eq!(
@@ -704,14 +703,14 @@ mod routing_compilation {
             rules: vec![],
         };
         let staged = routes
-            .prepare_configuration(&facts, &[], None, Some(deny))
+            .prepare_configuration(&facts, &[], &[], Some(deny), None)
             .unwrap();
         let batch = network_protocol::ConfigurationBatch::parse(&staged.encoded).unwrap();
         let fib = batch.forwarding().unwrap();
         assert_eq!(fib.iter().len(), 0);
         assert_eq!(fib.next_hops().len(), 0);
         let execution =
-            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter()).unwrap();
+            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
         execution.activate().unwrap();
         assert_eq!(output(), Err(SocketError::NetworkUnreachable));
         assert!(
@@ -746,10 +745,189 @@ mod routing_compilation {
         assert_eq!(fib.iter().len(), 1);
         assert_eq!(fib.next_hops().len(), 1);
         let execution =
-            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter()).unwrap();
+            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
         execution.activate().unwrap();
         execution.confirm().unwrap();
         assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 1));
-    }
 
+        // 从真实 Session/接收表串到已确认 NET：已有来源用例不覆盖 BGP degree/管理距离和撤回桥接。
+        use crate::bgp_peer;
+        use ::bgp::{
+            Effect, Input, Peer, PeerKind, Reachability, RoutingDomain, SelectionContext,
+            SourcePeer,
+        };
+        use core::num::NonZeroU32;
+        let mut routes = prepared.next;
+        let mut session = bgp_peer::established(false, true);
+        let mut attributes = bgp_peer::base(false, true);
+        attributes
+            .iter_mut()
+            .find(|attribute| attribute.code == 3)
+            .unwrap()
+            .data = &[10, 61, 0, 9];
+        let bytes = bgp_peer::update(&[], &bgp_peer::attributes(&attributes), &[16, 172, 25]);
+        let prefix = packet_wire::bgp::nlri::Prefix {
+            address: "172.25.0.0".parse().unwrap(),
+            length: 16,
+        };
+        let query = router_protocol::tracking::Query { prefix_length: None,
+            address: Ipv4Addr::new(10, 61, 0, 9).into(),
+            resolve_via_default: false,
+        };
+        let tracked = routes.snapshot().unwrap().lookup(query);
+        assert_eq!(tracked.state, router_protocol::tracking::State::Forward);
+        assert_eq!(tracked.route.unwrap().length, 24);
+        assert_eq!(tracked.members[0].target.interface_index, secondary);
+        // 本例前缀不覆盖下一跳，已确认的直连 /24 也不依赖将安装的 BGP /16；不以旧默认路由作可达证明。
+        let peer = Peer {
+            route_reflector_client: false,
+            id: 73,
+            address: query.address,
+            identifier: session.negotiated().unwrap().peer_identifier,
+            asn: session.negotiated().unwrap().peer_as,
+            kind: PeerKind::External,
+        };
+        let context =
+            SelectionContext::new(session.config().local_as, session.config().identifier, None, None)
+                .unwrap();
+        let minimum = NonZeroU32::new(20).unwrap();
+        let mut domain = RoutingDomain::try_new(context).unwrap();
+        domain
+            .add_peer(
+                peer,
+                SourcePeer {
+                    preference: minimum,
+                    next_hop_interface: None,
+                },
+            )
+            .unwrap();
+        domain
+            .receive(peer.id, &bgp_peer::receive(&mut session, &bytes))
+            .unwrap();
+        let configured = router_protocol::configuration::Configuration::decode(br#"{
+            "version":1,"bgp":{"local_as":65000,"identifier":"192.0.2.1","neighbors":{"uplink":{
+                "address":"10.61.0.9","asn":65001,"preference":20,"hold_seconds":90,"retry_seconds":5,"passive":false,
+                "import":{"default":"deny","preference":100,"rules":[{"prefix":{"network":"172.25.0.0","length":16},"action":{"kind":"permit","preference":250,"origin":"egp","med":{"kind":"set","value":3},"communities":{"add":[42]}}}]}
+            }}}
+        }"#).unwrap();
+        let policy = configured.bgp.as_ref().unwrap().neighbors.values().next().unwrap().import.as_ref().unwrap();
+        let raw = domain.peer_routes(peer.id).unwrap().iter().next().unwrap().1.attributes().clone();
+        let decision = ::bgp::import_route(Some(policy), domain.peer_routes(peer.id).unwrap().iter().next().unwrap().0,
+            &peer, domain.peer_routes(peer.id).unwrap().iter().next().unwrap().1).unwrap();
+        let projected = domain.project_attributes(&raw, decision.changes()).unwrap();
+        let proposal = domain.propose(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, route| {
+            Ok(::bgp::import_route(Some(policy), prefix, peer, route).map_or_else(|| (route.next_hop(),None,route.attributes()), |decision| (decision.next_hop,Some(decision.preference),&projected)))
+        }).unwrap();
+        let bytes = proposal.encode_source(minimum).unwrap();
+        drop(proposal);
+        assert!(domain.selected().is_empty(), "an unverified proposal must not enter Loc-RIB");
+        let id = routes.reserve_source().unwrap();
+        let source = routing_rib::sources::Routes::capture_source(
+            id,
+            id,
+            186,
+            minimum.get(),
+            Batch::parse(&bytes).unwrap(),
+        )
+        .unwrap();
+        let staged = routes.prepare_sources(&facts, Some(source), &[]).unwrap();
+        assert_eq!(
+            selected(),
+            Ipv4Addr::new(10, 61, 0, 1),
+            "encoding/preparation cannot publish"
+        );
+        // 来源预备的观察必须来自新图，同时保留可撤销的真实 NET 事务；旧 NHT 不能冒充候选结果。
+        let destination = router_protocol::tracking::Query { prefix_length: None,
+            address: Ipv4Addr::new(172, 25, 4, 1).into(),
+            resolve_via_default: false,
+        };
+        let original = routes.snapshot().unwrap().encode(&[destination]).unwrap();
+        let proposed = staged.next.snapshot().unwrap().encode(&[destination]).unwrap();
+        let proposed = router_protocol::tracking::OwnedSnapshot::capture(proposed).unwrap();
+        let record = proposed.view().records().next().unwrap();
+        assert_eq!(record.route.unwrap().source, id);
+        assert_eq!(record.members().next().unwrap().target.gateway, Some(query.address));
+        let probe = router_protocol::tracking::installation::Installation { interface: None, network: "172.25.0.0".parse().unwrap(), length: 16, next_hop: query };
+        let proof = staged.next.snapshot().unwrap().evaluate_installations(id, &[probe]).unwrap();
+        assert_eq!(router_protocol::tracking::installation::decode_outcomes(&proof, id, proposed.view().generation(), 1).unwrap(), [router_protocol::tracking::installation::Outcome { reachable: true, interior_cost: Some(0) }]);
+        let outcome = router_protocol::tracking::installation::decode_outcomes(&proof, id, proposed.view().generation(), 1).unwrap()[0];
+        let candidate = domain.prepare(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, route| {
+            let decision = ::bgp::import_route(Some(policy), prefix, peer, route).unwrap();
+            Ok((decision.next_hop,Some(decision.preference),if outcome.reachable { Reachability::Resolved { interior_cost: outcome.interior_cost } } else { Reachability::Unresolved },&projected))
+        }).unwrap();
+        assert_eq!(candidate.encode_source(minimum).unwrap(), bytes, "confirmed selection must match the evaluated source proposal");
+        assert_ne!(proposed.view().generation(), routes.snapshot().unwrap().generation());
+        let batch = network_protocol::ConfigurationBatch::parse(&staged.encoded).unwrap();
+        let fib = batch.forwarding().unwrap();
+        let execution = prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
+        execution.activate().unwrap();
+        assert_eq!(selected(), query.address);
+        assert_eq!(routes.snapshot().unwrap().encode(&[destination]).unwrap(), original);
+        execution.abort().unwrap();
+        assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 1));
+        let routes = apply(staged);
+        candidate.commit();
+        assert_eq!(domain.selected().iter().next().unwrap().1.attributes().origin(), 1);
+        assert_eq!(domain.selected().iter().next().unwrap().1.attributes().med(), Some(3));
+        assert_eq!(domain.selected().iter().next().unwrap().1.attributes().communities(), &[42]);
+        assert!(raw.communities().is_empty());
+        assert_eq!(raw.origin(), 0);
+        assert_eq!(raw.med(), None);
+
+        assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 9));
+        assert_eq!(domain.selected().get(prefix).unwrap().preference(), 250);
+        assert_eq!(
+            routes
+                .snapshot()
+                .unwrap()
+                .lookup(router_protocol::tracking::Query { prefix_length: None,
+                    address: Ipv4Addr::new(172, 25, 4, 1).into(),
+                    resolve_via_default: false,
+                })
+                .route
+                .unwrap()
+                .preference,
+            20,
+            "BGP degree must not become native distance"
+        );
+
+        assert!(
+            session
+                .on(5, Input::Stop)
+                .into_iter()
+                .any(|effect| matches!(
+                    effect,
+                    Effect::Close {
+                        withdraw_routes: true,
+                        ..
+                    }
+                ))
+        );
+        domain.remove_peer(peer.id).unwrap();
+        let candidate = domain
+            .prepare(packet_wire::bgp::nlri::Family::Ipv4, |_, _, _| {
+                unreachable!("retired peer cannot leave raw candidates")
+            })
+            .unwrap();
+        let bytes = candidate.encode_source(minimum).unwrap();
+        let source = routing_rib::sources::Routes::capture_source(
+            id,
+            id,
+            186,
+            minimum.get(),
+            Batch::parse(&bytes).unwrap(),
+        )
+        .unwrap();
+        let withdrawn = routes.prepare_sources(&facts, Some(source), &[]).unwrap();
+        let batch = network_protocol::ConfigurationBatch::parse(&withdrawn.encoded).unwrap();
+        let fib = batch.forwarding().unwrap();
+        assert_eq!(fib.iter().len(), 1);
+        let execution =
+            prepare_routes(&net, batch.interfaces().iter(), fib.next_hops(), fib.iter(), None).unwrap();
+        execution.activate().unwrap();
+        execution.confirm().unwrap();
+        candidate.commit();
+        assert_eq!(selected(), Ipv4Addr::new(10, 61, 0, 1));
+        assert!(domain.selected().is_empty() && domain.pending().is_empty());
+    }
 }

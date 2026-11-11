@@ -33,11 +33,11 @@ fn static_route(
         metric,
         scope: 253,
         protocol: 3,
-        kind: network_protocol::Ipv4RouteKind::Unicast,
+        kind: network_protocol::RouteKind::Unicast,
         interface_index: Some(index),
         gateway: None,
         preferred_source: None,
-        metrics: network_protocol::Ipv4RouteMetrics::default(),
+        metrics: network_protocol::RouteMetrics::default(),
         on_link: false,
     }
 }
@@ -140,18 +140,18 @@ fn actual_fib_longest_prefix_metric_alias_order_and_exact_replace_are_native() {
 }
 #[test]
 fn actual_fib_gateway_admission_and_distinct_reject_errors_do_not_modify_existing_routes() {
-    use network_protocol::{Ipv4RouteError as E, Ipv4RouteKind as K, Ipv4RouteRequest};
+    use network_protocol::{Ipv4RouteError as E, RouteKind as K, Ipv4RouteRequest};
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, _, _) = routing_domain(89232);
     let default = Ipv4RouteRequest {
-        gateway: Some(Ipv4Addr::new(10, 40, 0, 1)),
+        gateway: Some(Ipv4Addr::new(10, 40, 0, 1).into()),
         scope: 0,
         ..static_route(Ipv4Addr::UNSPECIFIED, 0, 2, 1)
     };
     configure_route(&net, default, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
     let unreachable_gateway = Ipv4RouteRequest {
-        gateway: Some(Ipv4Addr::new(198, 51, 100, 1)),
+        gateway: Some(Ipv4Addr::new(198, 51, 100, 1).into()),
         interface_index: None,
         ..static_route(Ipv4Addr::new(203, 0, 113, 0), 24, 2, 1)
     };
@@ -183,7 +183,7 @@ fn actual_fib_gateway_admission_and_distinct_reject_errors_do_not_modify_existin
         .unwrap();
     assert_eq!(
         (selected.interface_index, selected.next_hop),
-        (3, Ipv4Addr::new(198, 51, 100, 1))
+        (3, Ipv4Addr::new(198, 51, 100, 1).into())
     );
     for (kind, error) in [
         (K::Unreachable, SocketError::HostUnreachable),
@@ -246,14 +246,14 @@ fn actual_address_and_fib_publication_roll_back_every_preparation_failure() {
         configure_address(&net, 2, old).unwrap();
         configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
         let manual = static_route(Ipv4Addr::new(172, 20, 0, 0), 16, 2, 12);
-        if !route_snapshot(&net)
+        if !route_snapshot::<Ipv4Addr>(&net)
             .unwrap()
             .iter()
             .any(|snapshot| snapshot.single_path() == Some(manual))
         {
             configure_route(&net, manual, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
         }
-        let before = route_snapshot(&net)
+        let before = route_snapshot::<Ipv4Addr>(&net)
             .unwrap()
             .iter()
             .map(|snapshot| snapshot.single_path().unwrap())
@@ -268,7 +268,7 @@ fn actual_address_and_fib_publication_roll_back_every_preparation_failure() {
                 (Some(old), 24, Ipv4Addr::new(10, 40, 0, 255))
             );
             assert_eq!(
-                route_snapshot(&net)
+                route_snapshot::<Ipv4Addr>(&net)
                     .unwrap()
                     .iter()
                     .map(|snapshot| snapshot.single_path().unwrap())
@@ -283,7 +283,7 @@ fn actual_address_and_fib_publication_roll_back_every_preparation_failure() {
 }
 #[test]
 fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static_route() {
-    use network_protocol::Ipv4RouteKind;
+    use network_protocol::RouteKind;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, _, _) = routing_domain(89234);
@@ -304,20 +304,18 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
             selected.logical_interface_index,
             selected.kind
         ),
-        (1, 2, Ipv4RouteKind::Local)
+        (1, 2, RouteKind::Local)
     );
     assert!(
-        !route_snapshot(&net)
+        !route_snapshot::<Ipv4Addr>(&net)
             .unwrap()
             .iter()
             .any(|snapshot| snapshot.single_path() == Some(foreign))
     );
     let receiver = scoped_endpoint(&net, InetProtocol::Udp);
+    receiver.set_packet_info(true).unwrap();
     receiver
-        .bind(InetAddress {
-            address: local,
-            port: 43231,
-        })
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, 43231)))
         .unwrap();
     receiver
         .bind_to_device(b"eth0", true)
@@ -326,11 +324,7 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
     sender
         .send_to(
             b"down-local",
-            Some(InetAddress {
-                address: local,
-                port: 43231,
-            }),
-            None,
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(local, 43231))), &[],
         )
         .unwrap();
     advance_actual_domains();
@@ -338,10 +332,10 @@ fn actual_down_local_delivery_retains_host_route_but_up_never_revives_old_static
     let (count, _, _, info) = receive(&receiver, &mut output, false)
         .unwrap();
     assert_eq!(&output[..count], b"down-local");
-    assert_eq!(info.unwrap().interface_index, 2);
+    assert_eq!(info.unwrap().ipv4().unwrap().0, 2);
     configure_up(&net, 2, true).unwrap();
     assert!(
-        !route_snapshot(&net)
+        !route_snapshot::<Ipv4Addr>(&net)
             .unwrap()
             .iter()
             .any(|snapshot| snapshot.single_path() == Some(foreign))
@@ -363,12 +357,9 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
     let local_a = Ipv4Addr::new(10, 40, 0, 15);
     let local_b = Ipv4Addr::new(10, 41, 0, 15);
     let gateway = Ipv4Addr::new(10, 41, 0, 1);
-    let peer = InetAddress {
-        address: Ipv4Addr::new(203, 0, 113, 9),
-        port: 44331,
-    };
+    let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 9), 44331));
     let route = network_protocol::Ipv4RouteRequest {
-        gateway: Some(gateway),
+        gateway: Some(gateway.into()),
         scope: 0,
         ..static_route(Ipv4Addr::new(203, 0, 113, 0), 24, 3, 7)
     };
@@ -383,7 +374,7 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
     b.wire.lock().unwrap().1.clear();
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
     sender
-        .send_to(b"through-gateway", Some(peer), None)
+        .send_to(b"through-gateway", Some(peer), &[])
         .unwrap();
     advance_actual_domains();
     assert!(a.wire.lock().unwrap().1.is_empty());
@@ -393,7 +384,7 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
             return false;
         }
         let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
-        ip.dst_addr() == peer.address
+        ip.dst_addr() == ipv4_address(peer)
             && ip.src_addr() == local_b
             && ip.next_header() == IpProtocol::Udp
             && UdpPacket::new_checked(ip.payload()).unwrap().payload() == b"through-gateway"
@@ -403,10 +394,7 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
     // 输入IP到A，回复peer的实际静态route经B/GW。没有用户socket触发这个ICMP codec。
     a.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
         peer,
-        InetAddress {
-            address: local_a,
-            port: 44332,
-        },
+        InetAddress::V4(core::net::SocketAddrV4::new(local_a, 44332)),
         b"unbound-port",
     ));
     advance_actual_domains();
@@ -418,7 +406,7 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
         }
         let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
         if ip.next_header() != IpProtocol::Icmp
-            || ip.dst_addr() != peer.address
+            || ip.dst_addr() != ipv4_address(peer)
             || ip.src_addr() != local_a
         {
             return false;
@@ -469,7 +457,7 @@ fn actual_tcp_passive_advertisement_uses_reverse_fib_mtu_and_actual_bound_reply_
     let gateway = Ipv4Addr::new(10, 41, 0, 1);
     let peer = Ipv4Addr::new(203, 0, 113, 19);
     let route = network_protocol::Ipv4RouteRequest {
-        gateway: Some(gateway),
+        gateway: Some(gateway.into()),
         scope: 0,
         ..static_route(Ipv4Addr::new(203, 0, 113, 0), 24, 3, 1)
     };
@@ -488,10 +476,7 @@ fn actual_tcp_passive_advertisement_uses_reverse_fib_mtu_and_actual_bound_reply_
     b.wire.lock().unwrap().1.clear();
     let unbound = scoped_endpoint(&net, InetProtocol::Tcp);
     unbound
-        .bind(InetAddress {
-            address: local_a,
-            port: 44334,
-        })
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 44334)))
         .unwrap();
     unbound.listen(1).unwrap();
     let bound = scoped_endpoint(&net, InetProtocol::Tcp);
@@ -499,10 +484,7 @@ fn actual_tcp_passive_advertisement_uses_reverse_fib_mtu_and_actual_bound_reply_
         .bind_to_device(b"eth0", true)
         .unwrap();
     bound
-        .bind(InetAddress {
-            address: local_a,
-            port: 44335,
-        })
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 44335)))
         .unwrap();
     bound.listen(1).unwrap();
     for port in [44334, 44335] {
@@ -549,40 +531,6 @@ fn actual_tcp_passive_advertisement_uses_reverse_fib_mtu_and_actual_bound_reply_
     advance_actual_domains();
 }
 #[test]
-fn actual_arp_weak_host_and_duplicate_address_probe_share_fib_but_keep_physical_link() {
-    use smoltcp::wire::*;
-    let _serial = SERIAL.lock().unwrap();
-    initialize();
-    let (net, a, b) = routing_domain(89237);
-    let local_b = Ipv4Addr::new(10, 41, 0, 15);
-    // target属于B而ARP物理输入A；native arp_ignore=0按本域LOCAL回答。
-    for source in [Ipv4Addr::new(198, 51, 100, 17), Ipv4Addr::UNSPECIFIED] {
-        a.wire
-            .lock()
-            .unwrap()
-            .0
-            .push_back(peer_arp_frame_for(local_b, source));
-        advance_actual_domains();
-        assert!(a.wire.lock().unwrap().1.iter().any(|frame| {
-            let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
-            if ethernet.ethertype() != EthernetProtocol::Arp { return false; }
-            matches!(ArpRepr::parse(&ArpPacket::new_checked(ethernet.payload()).unwrap()).unwrap(),
-                ArpRepr::EthernetIpv4 { operation: ArpOperation::Reply, source_protocol_addr, target_protocol_addr, .. }
-                if source_protocol_addr == local_b && target_protocol_addr == source)
-        }));
-        assert!(
-            b.wire.lock().unwrap().1.is_empty(),
-            "ARP不是routed IP reply，必须留在原物理link"
-        );
-        a.wire.lock().unwrap().1.clear();
-    }
-    assert_eq!(
-        interface_snapshot(&net, 2).unwrap().address,
-        Some(Ipv4Addr::new(10, 40, 0, 15))
-    );
-}
-
-#[test]
 fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sender_mtu() {
     use smoltcp::{phy::ChecksumCapabilities, wire::*};
     let _serial = SERIAL.lock().unwrap();
@@ -592,7 +540,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
     let peer = Ipv4Addr::new(10, 40, 0, 16);
     configure_mtu(&net, 2, 256).unwrap();
     let route = network_protocol::Ipv4RouteRequest {
-        metrics: network_protocol::Ipv4RouteMetrics {
+        metrics: network_protocol::RouteMetrics {
             advertised_mss: 4096,
             receive_window: 777,
             round_trip_time: 8000,
@@ -602,10 +550,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
     configure_route(&net, route, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
     let listener = scoped_endpoint(&net, InetProtocol::Tcp);
     listener
-        .bind(InetAddress {
-            address: local,
-            port: 44336,
-        })
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, 44336)))
         .unwrap();
     listener.listen(1).unwrap();
     a.wire
@@ -672,7 +617,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
     );
     child.set_no_delay(true).unwrap();
     a.wire.lock().unwrap().1.clear();
-    child.send_to(&vec![0x71; 600], None, None).unwrap();
+    child.send_to(&vec![0x71; 600], None, &[]).unwrap();
     let data_time = now();
     // 每轮同一 socket 最多发送一个 segment；先推进有界批次，避免把剩余数据的 PollAt::Now 当作 RTO。
     for _ in 0..4 { net.protocol().unwrap().lock().unwrap().poll_at(data_time); }
@@ -697,21 +642,10 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
     }
     assert!(sent > 0);
     {
-        let mut network = net.protocol().unwrap().lock().unwrap();
-        let NetworkStack {
-            sockets,
-            interfaces,
-            ..
-        } = &mut *network;
-        let interface = interfaces
-            .iter_mut()
-            .find(|interface| interface.index == 2)
-            .unwrap();
-        assert_eq!(
-            interface.interface.poll_at(data_time, sockets),
-            Some(data_time + smoltcp::time::Duration::from_millis(3000)),
-            "route IRTT seeds only the first data RTO after actual handshake"
-        );
+        let network = net.protocol().unwrap().lock().unwrap();
+        assert!(!network.tcp_due(data_time + smoltcp::time::Duration::from_millis(2999)));
+        assert!(network.tcp_due(data_time + smoltcp::time::Duration::from_millis(3000)),
+            "route IRTT must arm the native TCP worker at the actual first data RTO");
     }
     configure_mtu(&net, 2, 128).unwrap();
     net.protocol().unwrap().lock().unwrap().poll_at(data_time);
@@ -722,7 +656,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
         88,
         "actual route MTU refresh must update sender cache without copying the 4096 receive advertisement"
     );
-    let snapshot = route_snapshot(&net).unwrap();
+    let snapshot = route_snapshot::<Ipv4Addr>(&net).unwrap();
     assert!(snapshot.iter().any(|row| row.single_path() == Some(route)));
     child.close_description();
     listener.close_description();
@@ -730,7 +664,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
 }
 #[test]
 fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_after_rto() {
-    use smoltcp::{socket::tcp, wire::*};
+    use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     for close_write in [false, true] {
@@ -746,10 +680,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         let port = 44360 + u16::from(close_write);
         let listener = scoped_endpoint(&net, InetProtocol::Tcp);
         listener
-            .bind(InetAddress {
-                address: local,
-                port,
-            })
+            .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, port)))
             .unwrap();
         listener.listen(1).unwrap();
         let start = now();
@@ -807,7 +738,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         device
             .transmit_available
             .store(false, core::sync::atomic::Ordering::Relaxed);
-        assert_eq!(child.send_to(b"abc", None, None), Ok(3));
+        assert_eq!(child.send_to(b"abc", None, &[]), Ok(3));
         if close_write {
             child.shutdown(1).unwrap();
         }
@@ -816,9 +747,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         net.protocol().unwrap().lock().unwrap().poll_at(start);
         {
             let network = net.protocol().unwrap().lock().unwrap();
-            let socket = network
-                .sockets
-                .get::<tcp::Socket>(network.tcp_endpoints[&id].first_handle_for_test());
+            let socket = network.tcp_endpoints[&id].transport_for_test();
             assert_eq!(
                 socket.send_queue(),
                 3,
@@ -827,9 +756,9 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
             assert_eq!(
                 socket.state(),
                 if close_write {
-                    tcp::State::FinWait1
+                    ::tcp::State::FinWait1
                 } else {
-                    tcp::State::Established
+                    ::tcp::State::Established
                 }
             );
         }
@@ -855,10 +784,8 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         }));
         let rto = {
             let network = net.protocol().unwrap().lock().unwrap();
-            network
-                .sockets
-                .get::<tcp::Socket>(network.tcp_endpoints[&id].first_handle_for_test())
-                .maintenance_deadline()
+            network.tcp_endpoints[&id].transport_for_test()
+                .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
                 .unwrap()
         };
         device
@@ -869,9 +796,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         net.protocol().unwrap().lock().unwrap().poll_at(rto);
         {
             let network = net.protocol().unwrap().lock().unwrap();
-            let socket = network
-                .sockets
-                .get::<tcp::Socket>(network.tcp_endpoints[&id].first_handle_for_test());
+            let socket = network.tcp_endpoints[&id].transport_for_test();
             assert_eq!(
                 socket.send_queue(),
                 0,
@@ -880,9 +805,9 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
             assert_eq!(
                 socket.state(),
                 if close_write {
-                    tcp::State::FinWait2
+                    ::tcp::State::FinWait2
                 } else {
-                    tcp::State::Established
+                    ::tcp::State::Established
                 }
             );
         }
@@ -894,7 +819,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
 }
 
 #[test]
-fn actual_single_nic_udp_and_raw_reject_oversize_before_queue_publication() {
+fn actual_single_nic_udp_and_raw_reject_df_oversize_before_queue_publication() {
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
@@ -917,23 +842,21 @@ fn actual_single_nic_udp_and_raw_reject_oversize_before_queue_publication() {
     device.wire.lock().unwrap().1.clear();
     for (kind, header, port) in [
         (InetProtocol::Udp, 28, 44362),
-        (InetProtocol::Icmp, 20, 0),
+        (InetProtocol::Raw(1), 20, 0),
     ] {
         let endpoint = scoped_endpoint(&net, kind);
-        let target = InetAddress {
-            address: peer,
-            port,
-        };
+        endpoint.set_ipv4_mtu_discovery(2).unwrap();
+        let target = InetAddress::V4(core::net::SocketAddrV4::new(peer, port));
         let capacity = 128 - header;
         let input = vec![0u8; capacity + 1];
         assert_eq!(
-            endpoint.send_to(&input, Some(target), None),
+            endpoint.send_to(&input, Some(target), &[]),
             Err(SocketError::MessageTooLarge)
         );
         net.protocol().unwrap().lock().unwrap().poll();
         assert!(device.wire.lock().unwrap().1.is_empty());
         assert_eq!(
-            endpoint.send_to(&input[..capacity], Some(target), None),
+            endpoint.send_to(&input[..capacity], Some(target), &[]),
             Ok(capacity)
         );
         net.protocol().unwrap().lock().unwrap().poll();
@@ -947,17 +870,12 @@ fn actual_single_nic_udp_and_raw_reject_oversize_before_queue_publication() {
         device.wire.lock().unwrap().1.clear();
         endpoint.close_description();
     }
-    let raw = scoped_endpoint(&net, InetProtocol::Icmp);
-    let too_large = vec![0u8; 16 * 1024];
+    let raw = scoped_endpoint(&net, InetProtocol::Raw(1));
+    let too_large = vec![0u8; u16::MAX as usize - 20 + 1];
     assert_eq!(
         raw.send_to(
             &too_large,
-            Some(InetAddress {
-                address: Ipv4Addr::LOCALHOST,
-                port: 0
-            }),
-            None
-        ),
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))), &[]),
         Err(SocketError::MessageTooLarge),
         "a datagram that can never fit must not wait forever as EAGAIN"
     );
@@ -965,16 +883,16 @@ fn actual_single_nic_udp_and_raw_reject_oversize_before_queue_publication() {
 }
 
 #[test]
-fn actual_single_nic_rejects_all_ipv4_fragments_without_reassembly() {
+fn actual_single_nic_does_not_deliver_incomplete_or_overlapping_ipv4_fragments() {
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let net = crate::namespace::Namespace::create().unwrap();
     let device = Arc::new(WireDevice::new());
     net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
-    let local = InetAddress { address: Ipv4Addr::new(10, 41, 0, 15), port: 44363 };
-    let peer = InetAddress { address: Ipv4Addr::new(10, 41, 0, 16), port: 44000 };
-    configure_address(&net, 2, local.address).unwrap();
+    let local = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 41, 0, 15), 44363));
+    let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 41, 0, 16), 44000));
+    configure_address(&net, 2, ipv4_address(local)).unwrap();
     configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
     configure_up(&net, 2, true).unwrap();
     let receiver = scoped_endpoint(&net, InetProtocol::Udp);

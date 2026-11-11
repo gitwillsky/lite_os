@@ -7,6 +7,7 @@ pub mod buffer;
 pub mod checksum;
 pub mod dhcpv4;
 pub mod dhcpv6;
+pub mod dns;
 pub mod dns_name;
 pub mod ethernet;
 pub mod icmp;

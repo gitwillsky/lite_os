@@ -32,16 +32,18 @@ impl<T: Ord> Pool<T> {
     pub(crate) fn len(&self) -> usize {
         self.0.borrow().entries.len()
     }
-    pub(crate) fn intern(&mut self, value: T) -> Result<Shared<T>, OutOfMemory> {
-        // 1. 借用结束后才返回句柄；lookup 到 commit 是不调用用户代码的同线程同步流程。
-        let existing = self
-            .0
+    /// 比较器只读规范内容，不能回入该池；lookup 借用结束后才交出句柄，查询不分配或捕获属性副本。
+    pub(crate) fn find_by(&self, mut compare: impl FnMut(&T) -> Ordering) -> Option<Shared<T>> {
+        self.0
             .borrow()
             .entries
-            .get(&value)
-            .map(|value| value.upgrade().expect("indexed value has a live reference"));
-        if let Some(existing) = existing {
-            return Ok(Shared(existing));
+            .get_by(|stored| compare(stored.as_ref()))
+            .map(|value| Shared(value.upgrade().expect("indexed value has a live reference")))
+    }
+    pub(crate) fn intern(&mut self, value: T) -> Result<Shared<T>, OutOfMemory> {
+        // 1. 借用结束后才返回句柄；lookup 到 commit 是不调用用户代码的同线程同步流程。
+        if let Some(existing) = self.find_by(|stored| value.cmp(stored)) {
+            return Ok(existing);
         }
         // 2. 所有分配在借用外完成；未发表 Resident 析构只会移除不存在的 key。
         let value = Rc::try_new(value).map_err(|_| OutOfMemory)?;

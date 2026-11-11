@@ -171,19 +171,24 @@ fn no_as_zero(path: AsPath<'_>) -> bool {
 fn family(peer: Negotiated, afi: u16, safi: u8) -> bool {
     safi == 1 && (afi == 1 && peer.ipv4_unicast || afi == 2 && peer.ipv6_unicast)
 }
-fn mp_hop(afi: u16, bytes: &[u8]) -> Option<NextHop> {
-    match (afi, bytes) {
-        (1, [a, b, c, d]) => {
+fn mp_hop(bytes: &[u8]) -> Option<NextHop> {
+    match bytes {
+        [a, b, c, d] => {
             let address = Ipv4Addr::new(*a, *b, *c, *d);
             unicast(address).then_some(NextHop {
                 address: address.into(),
                 link_local: None,
             })
         }
-        (2, bytes) if matches!(bytes.len(), 16 | 32) => {
+        bytes if matches!(bytes.len(), 16 | 32) => {
             let address =
                 Ipv6Addr::from(<[u8; 16]>::try_from(&bytes[..16]).expect("checked next-hop width"));
-            if address.is_unspecified() || address.is_multicast() {
+            // RFC 2545 §3 的首地址必须非链路地址；无 zone 的 link-local-only 不可递归解析。
+            if address.is_unspecified()
+                || address.is_multicast()
+                || address.is_unicast_link_local()
+                || address.to_ipv4_mapped().is_some()
+            {
                 return None;
             }
             let link_local = if bytes.len() == 32 {
@@ -244,7 +249,8 @@ pub(super) fn capture<'a>(
     } else {
         AsnWidth::Two
     };
-    let internal = config.local_as == peer.peer_as;
+    let kind = config.peer_kind();
+    let internal = kind == crate::PeerKind::Internal;
     for scanned in update.scan_wire_attributes() {
         let (attribute, wire) = match scanned {
             Ok(value) => value,
@@ -263,7 +269,9 @@ pub(super) fn capture<'a>(
             continue;
         }
         // 已明确要求丢弃的属性不再参加语义准入；不能把 OLD 辅助属性或 eBGP LOCAL_PREF 当成可用政策。
-        if !internal && matches!(code, 5 | 9 | 10) {
+        if kind == crate::PeerKind::External && code == 5
+            || kind != crate::PeerKind::Internal && matches!(code, 9 | 10)
+        {
             continue;
         }
         if peer.four_octet_asn && matches!(code, 17 | 18) {
@@ -338,6 +346,22 @@ pub(super) fn capture<'a>(
                     }
                     as4_path = Some((path, attribute.flags & 0x20 != 0));
                 } else {
+                    let first = path.segments().next().map(|segment| segment.kind);
+                    let confederated = path.segments().any(|segment| {
+                        matches!(
+                            segment.kind,
+                            SegmentKind::ConfederationSequence | SegmentKind::ConfederationSet
+                        )
+                    });
+                    if confederated
+                        && (kind == crate::PeerKind::External
+                            || config.confederation_peer.is_none())
+                        || kind == crate::PeerKind::Confederation
+                            && first != Some(SegmentKind::ConfederationSequence)
+                    {
+                        malformed(&mut result, code);
+                        continue;
+                    }
                     base_path = Some(path);
                 }
             }
@@ -366,14 +390,19 @@ pub(super) fn capture<'a>(
                     subcode: 9,
                     data: wire,
                 })?;
-                if !matches!((mp.afi, mp.next_hop.len()), (1, 4) | (2, 16 | 32)) {
+                let accepted_width = match (mp.afi, mp.next_hop.len()) {
+                    (1, 4) | (2, 16 | 32) => true,
+                    (1, 16 | 32) => peer.receive_ipv4_via_ipv6,
+                    _ => false,
+                };
+                if !accepted_width {
                     return Err(Notice {
                         code: 3,
                         subcode: 9,
                         data: wire,
                     });
                 }
-                let hop = mp_hop(mp.afi, mp.next_hop);
+                let hop = mp_hop(mp.next_hop);
                 if hop.is_none() {
                     malformed(&mut result, code);
                 }

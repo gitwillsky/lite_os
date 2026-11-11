@@ -9,6 +9,7 @@ const SECOND: u64 = 1_000_000_000;
 fn config() -> Config {
     Config {
         local_as: 65000,
+        confederation_peer: None,
         peer_as: 65001,
         identifier: Ipv4Addr::new(192, 0, 2, 1),
         hold_seconds: 9,
@@ -49,7 +50,7 @@ fn connected(session: &mut Session) {
     );
     assert!(
         session
-            .on(SECOND, Input::Connected)
+            .on(SECOND, Input::Connected(::bgp::OpenOffer::Capabilities))
             .into_iter()
             .eq([Effect::SendOpen])
     );
@@ -62,7 +63,9 @@ fn established(session: &mut Session) {
         65001,
         30,
         Ipv4Addr::new(192, 0, 2, 2),
-        &[65, 4, 0, 0, 0xfd, 0xe9, 2, 0],
+        &[
+            65, 4, 0, 0, 0xfd, 0xe9, 2, 0, 1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1,
+        ],
     );
     assert!(
         session
@@ -71,6 +74,8 @@ fn established(session: &mut Session) {
             .eq([Effect::SendKeepalive])
     );
     assert_eq!(session.state(), State::OpenConfirm);
+    let peer = session.negotiated().unwrap();
+    assert!(!peer.send_ipv4_via_ipv6 && peer.receive_ipv4_via_ipv6);
     assert_eq!(
         session
             .on(3 * SECOND, Input::Sent(Kind::Keepalive))
@@ -99,7 +104,10 @@ fn handshake_timers_start_on_actual_send_and_timeout_withdraws_before_retry() {
     assert_eq!(session.next_deadline(), Some(6 * SECOND));
     // 重复就绪不能关闭当前连接，发送 UPDATE 后沿同一计时器推迟 KEEPALIVE。
     assert_eq!(
-        session.on(5 * SECOND, Input::Connected).into_iter().count(),
+        session
+            .on(5 * SECOND, Input::Connected(::bgp::OpenOffer::Capabilities))
+            .into_iter()
+            .count(),
         0
     );
     assert!(
@@ -135,6 +143,7 @@ fn handshake_timers_start_on_actual_send_and_timeout_withdraws_before_retry() {
     assert_eq!(
         effects,
         [Effect::Close {
+            received: None,
             notice: Some(Notice {
                 code: 4,
                 subcode: 0,
@@ -171,7 +180,10 @@ fn passive_stop_and_zero_hold_do_not_leave_polling_or_stale_renewal_work() {
     );
     assert!(
         session
-            .on(101 * SECOND, Input::Connected)
+            .on(
+                101 * SECOND,
+                Input::Connected(::bgp::OpenOffer::Capabilities)
+            )
             .into_iter()
             .eq([Effect::SendOpen])
     );
@@ -195,6 +207,7 @@ fn passive_stop_and_zero_hold_do_not_leave_polling_or_stale_renewal_work() {
             .on(1001 * SECOND, Input::TransportLost)
             .into_iter()
             .eq([Effect::Close {
+                received: None,
                 notice: None,
                 withdraw_routes: false,
                 send_extended: false,
@@ -225,6 +238,7 @@ fn open_negotiates_real_as_direction_capabilities_and_rfc6286_identifiers() {
         Ipv4Addr::new(224, 0, 0, 1),
         &[
             65, 4, 0, 1, 0, 1, 65, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1, 6, 0, 200, 0,
+            5, 6, 0, 1, 0, 1, 0, 2,
         ],
     );
     assert!(
@@ -239,12 +253,15 @@ fn open_negotiates_real_as_direction_capabilities_and_rfc6286_identifiers() {
         (65537, 6, true)
     );
     assert!(!peer.ipv4_unicast && peer.ipv6_unicast);
+    assert!(!peer.send_ipv4_via_ipv6 && !peer.receive_ipv4_via_ipv6);
     assert!(peer.send_extended && peer.receive_extended);
     assert!(!peer.send_refresh && peer.receive_refresh);
     assert!(!prefer_outgoing(policy, peer));
     let mut output = [0; 128];
     policy.local_as = 65538;
-    let length = policy.emit_open(&mut output).unwrap();
+    let length = policy
+        .emit_open(::bgp::OpenOffer::Capabilities, &mut output)
+        .unwrap();
     let Message::Open(open) = Frame::parse(&output[..length], false)
         .unwrap()
         .message()
@@ -253,6 +270,8 @@ fn open_negotiates_real_as_direction_capabilities_and_rfc6286_identifiers() {
         panic!("local OPEN")
     };
     assert_eq!(open.asn(), 23456);
+    assert!(open.parameters().flat_map(|parameter| parameter.capabilities().unwrap())
+        .any(|capability| capability == packet_wire::bgp::open::IPV4_VIA_IPV6));
     assert!(
         open.parameters()
             .flat_map(|parameter| parameter.capabilities().unwrap())
@@ -265,6 +284,7 @@ fn open_negotiates_real_as_direction_capabilities_and_rfc6286_identifiers() {
     // 协商先退休后，关闭命令仍携发送方向授权，不能借查询 None 而漏发/截断扩展错误数据。
     let data = vec![0; 5000];
     let Effect::Close {
+        received: None,
         notice: Some(notice),
         withdraw_routes: false,
         send_extended,
@@ -309,6 +329,7 @@ fn rejected_open_returns_standard_error_and_exact_unknown_parameter_wire() {
                 .on(2 * SECOND, Input::Frame(frame))
                 .into_iter()
                 .eq([Effect::Close {
+                    received: None,
                     notice: Some(Notice {
                         code: 2,
                         subcode,
@@ -339,6 +360,7 @@ fn rejected_open_returns_standard_error_and_exact_unknown_parameter_wire() {
         Input::Frame(Frame::parse(&bytes[..length], false).unwrap()),
     );
     let Effect::Close {
+        received: None,
         notice: Some(notice),
         withdraw_routes: false,
         send_extended: false,
@@ -380,6 +402,7 @@ fn rejected_open_returns_standard_error_and_exact_unknown_parameter_wire() {
                 )
                 .into_iter()
                 .eq([Effect::Close {
+                    received: None,
                     notice: Some(Notice {
                         code: 2,
                         subcode,
@@ -418,7 +441,10 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
                 Input::Frame(Frame::parse(&refresh, false).unwrap())
             )
             .into_iter()
-            .eq([Effect::Refresh { afi: 2, safi: 1 }])
+            .eq([Effect::Refresh {
+                family: bgp::nlri::Family::Ipv6,
+                enhanced: false
+            }])
     );
     refresh[20] = 100;
     assert_eq!(
@@ -449,6 +475,11 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
             )
             .into_iter()
             .eq([Effect::Close {
+                received: Some(Notice {
+                    code: 0,
+                    subcode: 0,
+                    data: &[]
+                }),
                 notice: None,
                 withdraw_routes: true,
                 send_extended: false,
@@ -470,6 +501,7 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
             .on(2 * SECOND, Input::CollisionLost)
             .into_iter()
             .eq([Effect::Close {
+                received: None,
                 notice: Some(Notice {
                     code: 6,
                     subcode: 7,
@@ -490,6 +522,7 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
             )
             .into_iter()
             .eq([Effect::Close {
+                received: None,
                 notice: Some(Notice {
                     code: 5,
                     subcode: 1,
@@ -511,6 +544,7 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
             )
             .into_iter()
             .eq([Effect::Close {
+                received: None,
                 notice: Some(Notice {
                     code: 1,
                     subcode: 2,
@@ -520,4 +554,280 @@ fn established_updates_notifications_and_collision_cleanup_share_one_owner() {
                 send_extended: false,
             }])
     );
+}
+
+#[test]
+fn optional_parameter_rejection_retries_a_real_basic_open_and_receives_two_octet_paths() {
+    use ::bgp::OpenOffer;
+    use packet_wire::bgp::{
+        attributes::{Attribute, Attributes},
+        nlri::{Family, Nlri},
+        update::Update,
+    };
+    // 原夹具只发送正常带能力的 OPEN，无法捕获“重试仍声明旧能力”或误用四字节路径的回归。
+    let mut policy = config();
+    policy.local_as = 70000;
+    policy.extended_messages = true;
+    let mut session = Session::new(policy).unwrap();
+    connected(&mut session);
+    let refusal = Notice {
+        code: 2,
+        subcode: 4,
+        data: &[2, 0],
+    };
+    let mut bytes = [0; 256];
+    let size = refusal.emit(&mut bytes, false).unwrap();
+    let effects = session
+        .on(
+            2 * SECOND,
+            Input::Frame(Frame::parse(&bytes[..size], false).unwrap()),
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        effects,
+        [
+            Effect::Close {
+                notice: None,
+                received: Some(refusal),
+                withdraw_routes: false,
+                send_extended: false
+            },
+            Effect::OpenRejected {
+                retry: Some(OpenOffer::BasicIpv4)
+            },
+        ]
+    );
+    assert_eq!(session.next_deadline(), Some(7 * SECOND));
+    assert_eq!(session.on(3 * SECOND, Input::Timer).into_iter().count(), 0);
+    assert!(
+        session
+            .on(7 * SECOND, Input::Timer)
+            .into_iter()
+            .eq([Effect::Connect])
+    );
+    assert!(
+        session
+            .on(8 * SECOND, Input::Connected(OpenOffer::BasicIpv4))
+            .into_iter()
+            .eq([Effect::SendOpen])
+    );
+    let size = policy.emit_open(session.open_offer(), &mut bytes).unwrap();
+    assert_eq!(size, 29);
+    let Message::Open(open) = Frame::parse(&bytes[..size], false)
+        .unwrap()
+        .message()
+        .unwrap()
+    else {
+        panic!("OPEN")
+    };
+    assert_eq!(open.asn(), 23456);
+    assert_eq!(open.parameters().count(), 0);
+    let size = Open::emit(&mut bytes, 65001, 30, "192.0.2.2".parse().unwrap(), &[]).unwrap();
+    assert!(
+        session
+            .on(
+                9 * SECOND,
+                Input::Frame(Frame::parse(&bytes[..size], false).unwrap())
+            )
+            .into_iter()
+            .eq([Effect::SendKeepalive])
+    );
+    let peer = session.negotiated().unwrap();
+    assert!(peer.ipv4_unicast);
+    assert!(!peer.ipv6_unicast && !peer.four_octet_asn);
+    assert!(!peer.send_ipv4_via_ipv6 && !peer.receive_ipv4_via_ipv6);
+    assert!(
+        !peer.send_refresh
+            && !peer.receive_refresh
+            && !peer.send_extended
+            && !peer.receive_extended
+    );
+    bgp::emit(&mut bytes[..19], Kind::Keepalive, false).unwrap();
+    assert!(
+        session
+            .on(
+                10 * SECOND,
+                Input::Frame(Frame::parse(&bytes[..19], false).unwrap())
+            )
+            .into_iter()
+            .eq([Effect::Established])
+    );
+    let mut content = [0; 128];
+    let size = Attributes::emit(
+        &mut content,
+        &[
+            Attribute {
+                flags: 0x40,
+                code: 1,
+                data: &[0],
+            },
+            Attribute {
+                flags: 0x40,
+                code: 2,
+                data: &[2, 1, 0xfd, 0xe9],
+            },
+            Attribute {
+                flags: 0x40,
+                code: 3,
+                data: &[192, 0, 2, 2],
+            },
+        ],
+    )
+    .unwrap();
+    let size = Update::emit(
+        &mut bytes,
+        Nlri::parse(&[], Family::Ipv4).unwrap(),
+        Attributes::parse(&content[..size]).unwrap(),
+        Nlri::parse(&[24, 198, 51, 100], Family::Ipv4).unwrap(),
+        false,
+    )
+    .unwrap();
+    let Effect::Update(route) = session
+        .on(
+            11 * SECOND,
+            Input::Frame(Frame::parse(&bytes[..size], false).unwrap()),
+        )
+        .into_iter()
+        .next()
+        .unwrap()
+    else {
+        panic!("UPDATE")
+    };
+    assert!(
+        route
+            .path()
+            .unwrap()
+            .segments()
+            .flat_map(|segment| segment.asns())
+            .eq([65001])
+    );
+    assert_eq!(session.state(), State::Established);
+
+    // 对方单方向仍发送能力，也不能放开本地从未声明的扩展消息/刷新或四字节路径。
+    let mut other = Session::new(policy).unwrap();
+    other.on(0, Input::Start);
+    other.on(SECOND, Input::Connected(OpenOffer::BasicIpv4));
+    let frame = remote(
+        &mut bytes,
+        65001,
+        30,
+        "192.0.2.2".parse().unwrap(),
+        &[65, 4, 0, 0, 0xfd, 0xe9, 2, 0, 6, 0],
+    );
+    other.on(2 * SECOND, Input::Frame(frame));
+    let peer = other.negotiated().unwrap();
+    assert!(
+        !peer.four_octet_asn
+            && !peer.send_refresh
+            && !peer.receive_refresh
+            && !peer.send_extended
+            && !peer.receive_extended
+    );
+}
+
+#[test]
+fn incompatible_or_repeated_capability_rejection_stops_retry_and_reports_required_family() {
+    use ::bgp::OpenOffer;
+    for (offer, ipv4, subcode) in [
+        (OpenOffer::Capabilities, true, 7),
+        (OpenOffer::BasicIpv4, true, 4),
+        (OpenOffer::Capabilities, false, 4),
+    ] {
+        let mut policy = config();
+        policy.ipv4_unicast = ipv4;
+        let mut session = Session::new(policy).unwrap();
+        session.on(0, Input::Start);
+        session.on(SECOND, Input::Connected(offer));
+        let notice = Notice {
+            code: 2,
+            subcode,
+            data: &[],
+        };
+        let mut bytes = [0; 128];
+        let size = notice.emit(&mut bytes, false).unwrap();
+        assert!(
+            session
+                .on(
+                    2 * SECOND,
+                    Input::Frame(Frame::parse(&bytes[..size], false).unwrap())
+                )
+                .into_iter()
+                .eq([
+                    Effect::Close {
+                        notice: None,
+                        received: Some(notice),
+                        withdraw_routes: false,
+                        send_extended: false
+                    },
+                    Effect::OpenRejected { retry: None },
+                ])
+        );
+        assert_eq!(session.state(), State::Idle);
+        assert_eq!(session.next_deadline(), None);
+        assert_eq!(
+            session.on(100 * SECOND, Input::Timer).into_iter().count(),
+            0
+        );
+    }
+    for (offer, ipv4, ipv6) in [
+        (OpenOffer::Capabilities, true, false),
+        (OpenOffer::Capabilities, false, true),
+        (OpenOffer::BasicIpv4, true, true),
+    ] {
+        let mut policy = config();
+        policy.ipv4_unicast = ipv4;
+        policy.ipv6_unicast = ipv6;
+        let mut session = Session::new(policy).unwrap();
+        session.on(0, Input::Start);
+        session.on(SECOND, Input::Connected(offer));
+        let mut bytes = [0; 128];
+        let frame = remote(
+            &mut bytes,
+            65001,
+            30,
+            "192.0.2.2".parse().unwrap(),
+            if ipv4 {
+                &[1, 4, 0, 2, 0, 1]
+            } else {
+                &[1, 4, 0, 1, 0, 1]
+            },
+        );
+        let required = if ipv4 {
+            &[1, 4, 0, 1, 0, 1]
+        } else {
+            &[1, 4, 0, 2, 0, 1]
+        };
+        let effects = session
+            .on(2 * SECOND, Input::Frame(frame))
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            effects,
+            [
+                Effect::Close {
+                    notice: Some(Notice {
+                        code: 2,
+                        subcode: 7,
+                        data: required
+                    }),
+                    received: None,
+                    withdraw_routes: false,
+                    send_extended: false
+                },
+                Effect::OpenRejected { retry: None },
+            ]
+        );
+        assert_eq!(session.negotiated(), None);
+        assert_eq!(session.next_deadline(), None);
+        assert_eq!(
+            session.on(100 * SECOND, Input::Timer).into_iter().count(),
+            0
+        );
+        if !ipv4 {
+            let mut output = [0x55; 128];
+            assert!(policy.emit_open(OpenOffer::BasicIpv4, &mut output).is_err());
+            assert_eq!(output, [0x55; 128]);
+        }
+    }
 }

@@ -43,11 +43,12 @@ impl InetSocket {
     ///
     /// 域没有协议实例、netstack 拒绝（缓冲区不足等）或就绪登记失败。
     pub(super) fn new(
+        family: network_protocol::InetFamily,
         protocol: InetProtocol,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
         namespace: Arc<NetNamespace>,
     ) -> Result<Arc<Self>, SocketError> {
-        let endpoint = netstack::protocol(&namespace)?.socket(protocol)?;
+        let endpoint = netstack::protocol(&namespace)?.socket(family, protocol)?;
         Self::attach(endpoint, protocol == InetProtocol::Tcp, notify, namespace)
     }
 
@@ -103,21 +104,51 @@ impl InetSocket {
         &self,
         input: &[u8],
         target: Option<InetAddress>,
-        packet_info: Option<InternetSendPacketInfo>,
+        packet_info: impl ExactSizeIterator<Item = InternetSendPacketInfo>,
     ) -> Result<usize, SocketError> {
         let input = if self.stream {
             &input[..input.len().min(TRANSFER_LIMIT)]
         } else {
             input
         };
-        self.remote.send_to(input, target, packet_info)
+        if self.stream {
+            self.remote.send_to(input, target, core::iter::empty())
+        } else {
+            self.remote.send_to(input, target, packet_info)
+        }
     }
 
     /// 取回至多 `output.remaining()` 字节（单次不超过 [`TRANSFER_LIMIT`]）。
     ///
     /// # Returns
     ///
-    /// 复制的字节数、消息完整长度、来源地址与 IP_PKTINFO 事实。
+    /// 复制的字节数、消息完整长度、来源地址与当前选项请求的双族 packet-info 事实。
+    pub(super) fn receive_error(
+        &self,
+        output: &mut ReceiveBuffer<'_>,
+    ) -> Result<super::ReceivedMessage, SocketError> {
+        let received = self.remote.receive_error(output.remaining())?;
+        output
+            .prepare_append(received.data.len())
+            .map_err(|()| SocketError::NoMemory)?;
+        let count = output.append(&received.data);
+        Ok(super::ReceivedMessage {
+            count,
+            full_length: received.full_length,
+            source: Some(super::SocketAddress::Inet(received.error.destination)),
+            internet_error: Some(received.error),
+            internet_packet_info: None,
+            packet_information: None,
+            rights: None,
+            credentials: None,
+        })
+    }
+
+    pub(super) fn set_receive_error(&self, ipv6: bool, enabled: bool) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::ReceiveError { ipv6, enabled })
+    }
+
     pub(super) fn receive(
         &self,
         output: &mut ReceiveBuffer<'_>,
@@ -224,6 +255,23 @@ impl InetSocket {
         self.remote.set_option(InetOptionChange::Broadcast(enabled))
     }
 
+    /// 设置 socket 的路由标记。没有所在网络域的 NET_RAW 或 NET_ADMIN 权限时返回 EPERM。
+    pub(super) fn set_mark(
+        &self,
+        mark: u32,
+        authority: &crate::namespace::NamespaceAuthority,
+    ) -> Result<(), SocketError> {
+        use linux_abi::capability::Capability;
+
+        let user = self.namespace.user_namespace();
+        if !authority.capable(&user, Capability::NET_RAW)
+            && !authority.capable(&user, Capability::NET_ADMIN)
+        {
+            return Err(SocketError::OperationNotPermitted);
+        }
+        self.remote.set_option(InetOptionChange::Mark(mark))
+    }
+
     /// 已绑定后改绑或解绑需要所在域 owning user namespace 中的 `CAP_NET_RAW`（由 netstack 按绑定状态裁决）。
     pub(super) fn bind_to_device(
         &self,
@@ -254,18 +302,118 @@ impl InetSocket {
             .set_option(InetOptionChange::Timer(option, value))
     }
 
+    pub(super) fn icmp_filter(
+        &self,
+        update: Option<network_protocol::IcmpFilterUpdate>,
+    ) -> Result<[u32; 8], SocketError> {
+        self.remote.icmp_filter(update)
+    }
+
+    pub(super) fn set_ipv6_option(
+        &self,
+        option: InternetOption,
+        value: i32,
+    ) -> Result<(), SocketError> {
+        self.remote.set_option(match option {
+            InternetOption::Ipv6MulticastAll => InetOptionChange::Ipv6MulticastAll(value != 0),
+            InternetOption::Ipv6MulticastInterface => {
+                InetOptionChange::Ipv6MulticastInterface(value as u32)
+            }
+            InternetOption::Ipv6MulticastHopLimit if (-1..=255).contains(&value) => {
+                InetOptionChange::Ipv6MulticastHopLimit(u8::try_from(value).ok())
+            }
+            InternetOption::Ipv6MulticastLoop if matches!(value, 0 | 1) => {
+                InetOptionChange::Ipv6MulticastLoop(value != 0)
+            }
+            InternetOption::Ipv6Only => InetOptionChange::Ipv6Only(value != 0),
+            InternetOption::Ipv6PacketInfo => InetOptionChange::Ipv6PacketInfo(value != 0),
+            InternetOption::Ipv6HopLimit => {
+                InetOptionChange::Ipv6HopLimit(u8::try_from(value).ok())
+            }
+            InternetOption::Ipv6Mtu => InetOptionChange::Ipv6Mtu(value),
+            InternetOption::Ipv6DontFragment => InetOptionChange::Ipv6DontFragment(value != 0),
+            InternetOption::Ipv6Checksum => InetOptionChange::Ipv6Checksum(value),
+            _ => return Err(SocketError::Invalid),
+        })
+    }
+
+    pub(super) fn ipv6_membership(
+        &self,
+        group: core::net::Ipv6Addr,
+        interface: u32,
+        join: bool,
+    ) -> Result<(), SocketError> {
+        self.remote.set_option(InetOptionChange::Ipv6Membership {
+            group,
+            interface,
+            join,
+        })
+    }
+    pub(super) fn ipv4_membership(
+        &self,
+        group: core::net::Ipv4Addr,
+        interface: u32,
+        address: core::net::Ipv4Addr,
+        join: bool,
+    ) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::Ipv4Membership {
+                group,
+                interface,
+                address,
+                join,
+            })
+            .map_err(|error| {
+                if error == SocketError::NoMemory {
+                    SocketError::NoBuffer
+                } else {
+                    error
+                }
+            })
+    }
+    pub(super) fn set_ipv4_multicast_interface(
+        &self,
+        interface: u32,
+        address: core::net::Ipv4Addr,
+    ) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::Ipv4MulticastInterface { interface, address })
+    }
+    pub(super) fn set_ipv4_multicast_option(
+        &self,
+        option: InternetOption,
+        value: i32,
+    ) -> Result<(), SocketError> {
+        self.remote.set_option(match option {
+            InternetOption::Ipv4MulticastHopLimit if (-1..=255).contains(&value) => {
+                InetOptionChange::Ipv4MulticastHopLimit(u8::try_from(value).ok())
+            }
+            InternetOption::Ipv4MulticastLoop => InetOptionChange::Ipv4MulticastLoop(value != 0),
+            _ => return Err(SocketError::Invalid),
+        })
+    }
+    pub(super) fn set_ipv4_mtu_discovery(&self, mode: u8) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::Ipv4MtuDiscovery(mode))
+    }
+    pub(super) fn set_ipv4_multicast_all(&self, enabled: bool) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::Ipv4MulticastAll(enabled))
+    }
+
     pub(super) fn set_max_segment(&self, value: i32) -> Result<(), SocketError> {
         self.remote.set_option(InetOptionChange::MaxSegment(value))
+    }
+    pub(super) fn set_md5_key(
+        &self,
+        selector: network_protocol::TcpMd5Selector,
+        key: &[u8],
+    ) -> Result<(), SocketError> {
+        self.remote.set_md5_key(selector, key)
     }
 
     pub(super) fn option(&self, option: InternetOption) -> Result<i32, SocketError> {
         self.remote.option(option)
-    }
-
-    /// recvmsg 是否生成 IP_PKTINFO。
-    pub(super) fn packet_info(&self) -> bool {
-        self.option(InternetOption::PacketInfo)
-            .is_ok_and(|value| value != 0)
     }
 }
 
@@ -297,8 +445,56 @@ pub(crate) fn network_snapshot(scope: &NetNamespace) -> Result<Vec<NetworkSnapsh
     netstack::protocol(scope)?.network_snapshot()
 }
 
-pub(crate) fn route_snapshot(scope: &NetNamespace) -> Result<RoutingSnapshot, SocketError> {
+/// 冻结指定 NET 的实际地址；index 0 表示全部接口，未知非零接口返回 NoDevice。
+pub(crate) fn address_snapshot(
+    scope: &NetNamespace,
+    index: u32,
+) -> Result<network_protocol::AddressSnapshot, SocketError> {
+    netstack::protocol(scope)?.address_snapshot(index)
+}
+
+/// 冻结指定 NET 的实际 IPv6 邻居；index 0 表示全部接口，未知非零接口返回 NoDevice。
+pub(crate) fn neighbor_snapshot(
+    scope: &NetNamespace,
+    index: u32,
+) -> Result<network_protocol::NeighborSnapshot, SocketError> {
+    netstack::protocol(scope)?.neighbor_snapshot(index)
+}
+
+/// 查本机流的实际发送出口，由对应 NET 域完成选路和选源。
+pub(crate) fn route_lookup(
+    scope: &NetNamespace,
+    query: network_protocol::routes::RouteLookup,
+) -> Result<network_protocol::routes::RoutePath, SocketError> {
+    netstack::protocol(scope)?.route_lookup(query)
+}
+
+pub(super) fn rule_snapshot(
+    scope: &NetNamespace,
+    family: Option<network_protocol::InetFamily>,
+) -> Result<network_protocol::routes::RuleSnapshot, SocketError> {
+    netstack::protocol(scope)?.rule_snapshot(family)
+}
+
+pub(crate) fn route_snapshot<A: network_protocol::routes::RouteAddress>(
+    scope: &NetNamespace,
+) -> Result<RoutingSnapshot<A>, SocketError> {
     netstack::protocol(scope)?.route_snapshot()
+}
+
+/// 同一 NET 发布代际的两族冻结路由，不用两个独立请求拼接 AF_UNSPEC。
+/// # Errors
+/// 域、传输、格式或资源失败，不返回部分集合。
+pub(crate) fn route_snapshots(
+    scope: &NetNamespace,
+) -> Result<
+    (
+        RoutingSnapshot<core::net::Ipv4Addr>,
+        RoutingSnapshot<core::net::Ipv6Addr>,
+    ),
+    SocketError,
+> {
+    netstack::protocol(scope)?.route_snapshots()
 }
 
 /// SIOCSIFMTU / IFLA_MTU。

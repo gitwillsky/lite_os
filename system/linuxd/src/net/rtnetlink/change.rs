@@ -8,7 +8,7 @@ use core::net::Ipv4Addr;
 
 use super::codec::{self, NLM_F_APPEND, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE};
 use crate::net::{
-    InterfaceSnapshot, Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest,
+    InterfaceSnapshot, Ipv4RouteError, RouteKind, RouteMetrics, Ipv4RouteRequest,
     NetNamespace, RouteChange, SocketError, configure_address, configure_broadcast, configure_mtu,
     configure_netmask, configure_route, configure_up, interface_snapshot, interface_snapshots,
 };
@@ -255,15 +255,15 @@ pub(super) fn address_delete(scope: &NetNamespace, payload: &[u8]) -> Result<(),
     configure_address(scope, index, Ipv4Addr::UNSPECIFIED).map_err(socket_errno)
 }
 
-fn route_kind(kind: u8) -> Result<Ipv4RouteKind, i32> {
+fn route_kind(kind: u8) -> Result<RouteKind, i32> {
     match kind {
-        1 => Ok(Ipv4RouteKind::Unicast),
-        2 => Ok(Ipv4RouteKind::Local),
-        3 => Ok(Ipv4RouteKind::Broadcast),
-        6 => Ok(Ipv4RouteKind::Blackhole),
-        8 => Ok(Ipv4RouteKind::Prohibit),
-        7 => Ok(Ipv4RouteKind::Unreachable),
-        9 => Ok(Ipv4RouteKind::Throw),
+        1 => Ok(RouteKind::Unicast),
+        2 => Ok(RouteKind::Local),
+        3 => Ok(RouteKind::Broadcast),
+        6 => Ok(RouteKind::Blackhole),
+        8 => Ok(RouteKind::Prohibit),
+        7 => Ok(RouteKind::Unreachable),
+        9 => Ok(RouteKind::Throw),
         // anycast、multicast、nat：FIB 没有对应语义。
         4 | 5 | 10 => Err(EOPNOTSUPP),
         _ => Err(EINVAL),
@@ -305,18 +305,18 @@ pub(super) fn route(
         metric: 0,
         scope: scope_value,
         protocol,
-        kind: Ipv4RouteKind::Unicast,
+        kind: RouteKind::Unicast,
         interface_index: None,
         gateway: None,
         preferred_source: None,
         on_link: route_flags & RTNH_F_ONLINK != 0,
-        metrics: Ipv4RouteMetrics::default(),
+        metrics: RouteMetrics::default(),
     };
     for (attribute, data) in codec::attributes(payload, 12) {
         match attribute {
             RTA_DST => request.destination = ipv4(data)?,
             RTA_OIF => request.interface_index = Some(u32_value(data)?),
-            RTA_GATEWAY => request.gateway = Some(ipv4(data)?),
+            RTA_GATEWAY => request.gateway = Some(ipv4(data)?.into()),
             RTA_PRIORITY => request.metric = u32_value(data)?,
             RTA_PREFSRC => request.preferred_source = Some(ipv4(data)?),
             RTA_TABLE => table = u32_value(data)?,
@@ -357,13 +357,13 @@ pub(super) fn route(
     }
     // RTN_UNSPEC 删除：FIB 按类型精确匹配，依次尝试每种类型，全部不存在才算 ESRCH。
     for candidate in [
-        Ipv4RouteKind::Unicast,
-        Ipv4RouteKind::Local,
-        Ipv4RouteKind::Broadcast,
-        Ipv4RouteKind::Unreachable,
-        Ipv4RouteKind::Throw,
-        Ipv4RouteKind::Blackhole,
-        Ipv4RouteKind::Prohibit,
+        RouteKind::Unicast,
+        RouteKind::Local,
+        RouteKind::Broadcast,
+        RouteKind::Unreachable,
+        RouteKind::Throw,
+        RouteKind::Blackhole,
+        RouteKind::Prohibit,
     ] {
         request.kind = candidate;
         match configure_route(scope, request, DELETE) {

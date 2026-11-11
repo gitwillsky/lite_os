@@ -76,6 +76,32 @@ fn ip_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({"anyOf":[{"type":"string","format":"ipv4"},{"type":"string","format":"ipv6"}]})
 }
 impl Prefix {
+    /// 匹配同族规范声明及长度范围；不读取运行时路由或接口事实。
+    pub fn matches(&self, network: IpAddr, length: u8) -> bool {
+        let Some((minimum, maximum)) = self.lengths() else {
+            return false;
+        };
+        if !(minimum..=maximum).contains(&length) {
+            return false;
+        }
+        match (self.network, network) {
+            (IpAddr::V4(base), IpAddr::V4(address)) => {
+                u32::from(address)
+                    & u32::MAX
+                        .checked_shl(32 - u32::from(self.length))
+                        .unwrap_or(0)
+                    == u32::from(base)
+            }
+            (IpAddr::V6(base), IpAddr::V6(address)) => {
+                u128::from(address)
+                    & u128::MAX
+                        .checked_shl(128 - u32::from(self.length))
+                        .unwrap_or(0)
+                    == u128::from(base)
+            }
+            _ => false,
+        }
+    }
     /// 返回该规范前缀的有效长度范围；只有 minimum 时上界为地址宽度，只有 maximum 时下界为 length。
     /// # Returns
     /// 地址/前缀不规范、范围倒置或越界返回 None；否则包含两端的最短/最长长度。

@@ -1,5 +1,5 @@
 //! 一条当前 TCP 连接的 BGP 状态与单调截止；不在状态转换中执行 I/O 或分配。
-use super::{Config, InvalidConfig, Negotiated, Notice, negotiation::negotiate};
+use super::{Config, InvalidConfig, Negotiated, Notice, OpenOffer, negotiation::negotiate};
 use packet_wire::bgp::{Frame, Kind, Message};
 
 const SECOND: u64 = 1_000_000_000;
@@ -22,7 +22,8 @@ pub enum State {
 pub enum Input<'a> {
     Start,
     Stop,
-    Connected,
+    /// 已接通 TCP，携邻居 owner 为本次选择的 OPEN 方式。
+    Connected(OpenOffer),
     ConnectFailed,
     TransportLost,
     Frame(Frame<'a>),
@@ -46,17 +47,29 @@ pub enum Effect<'a> {
     /// 一个完整终止义务：通知是 best-effort，失败仍须关闭 TCP；withdraw_routes 为真时还须完成来源撤回，不能短路清理。
     Close {
         notice: Option<Notice<'a>>,
+        /// 对端发来的通知仅供观察，不允许当成本地通知回发。
+        received: Option<Notice<'a>>,
         withdraw_routes: bool,
         /// 关闭前捕获本方向的发送授权，不能在协商退休后再查询或无条件发送扩展通知。
         send_extended: bool,
     },
     SendOpen,
+    /// OPEN 被拒后由邻居 owner 接管下一次尝试；None 暂停自动连接，配置重建后重新协商。
+    /// 该命令与 Close 同批返回，不能因 TCP 清理失败而忽略原清理义务。
+    OpenRejected {
+        retry: Option<OpenOffer>,
+    },
     SendKeepalive,
     Established,
     Update(super::ReceivedUpdate<'a>),
     Refresh {
-        afi: u16,
-        safi: u8,
+        family: packet_wire::bgp::nlri::Family,
+        enhanced: bool,
+    },
+    /// 对端开始或结束指定单播族的增强刷新。接收路由的寿命由 Adj-RIB-In 管理。
+    RefreshBoundary {
+        family: packet_wire::bgp::nlri::Family,
+        begin: bool,
     },
 }
 /// 一个事件最多产生“取消旧连接、尝试新连接”两项命令；终止义务不拆开，调用者必须在下一事件前消费。
@@ -88,6 +101,8 @@ impl<'a> IntoIterator for Effects<'a> {
 /// 当前连接唯一的协议状态与期限；所有时间为单调纳秒，调用者不得倒退时钟或并发投递事件。
 pub struct Session {
     config: Config,
+    // OWNER: 本 TCP 已选定的实际 OPEN；邻居的后续重试变化不能追溯放宽此连接的能力授权。
+    offer: OpenOffer,
     state: State,
     negotiated: Option<Negotiated>,
     retry_at: Option<u64>,
@@ -106,6 +121,7 @@ impl Session {
         config.validate()?;
         Ok(Self {
             config,
+            offer: OpenOffer::Capabilities,
             state: State::Idle,
             negotiated: None,
             retry_at: None,
@@ -121,9 +137,27 @@ impl Session {
     pub fn config(&self) -> Config {
         self.config
     }
+    /// 本 TCP 冻结的 OPEN 方式；发送者必须用它编码，不得从邻居的下次重试方式推断。
+    pub fn open_offer(&self) -> OpenOffer {
+        self.offer
+    }
     /// OPEN 确认阶段起可读的冻结协商；关闭时立即退休，不能沿用到重连。
     pub fn negotiated(&self) -> Option<Negotiated> {
         self.negotiated
+    }
+
+    /// 当前连接是否获准向对端发送指定单播族的基础刷新请求。
+    /// 对端是否返回增强边界由双方的能力 70 协商决定。
+    pub fn can_request_refresh(&self, family: packet_wire::bgp::nlri::Family) -> bool {
+        use packet_wire::bgp::nlri::Family;
+        self.state == State::Established
+            && self.negotiated.is_some_and(|peer| {
+                peer.send_refresh
+                    && match family {
+                        Family::Ipv4 => peer.ipv4_unicast,
+                        Family::Ipv6 => peer.ipv6_unicast,
+                    }
+            })
     }
     /// 下一次实际待办截止；None 表示无定时工作，传输 actor 应无限等待 I/O。
     pub fn next_deadline(&self) -> Option<u64> {
@@ -161,12 +195,14 @@ impl Session {
         &mut self,
         now: u64,
         notice: Option<Notice<'a>>,
+        received: Option<Notice<'a>>,
         restart: bool,
         effects: &mut Effects<'a>,
     ) {
         let established = self.state == State::Established;
         effects.push(Effect::Close {
             notice,
+            received,
             withdraw_routes: established,
             send_extended: self.negotiated.is_some_and(|peer| peer.send_extended),
         });
@@ -175,6 +211,20 @@ impl Session {
         self.hold_at = None;
         self.keepalive_at = None;
         self.retry_at = restart.then(|| at(now, self.config.retry_seconds));
+    }
+    fn rejected_open<'a>(&mut self, now: u64, notice: Notice<'a>, effects: &mut Effects<'a>) {
+        let opening = matches!(self.state, State::OpenSent | State::OpenConfirm);
+        if opening && notice.code == 2 && matches!(notice.subcode, 4 | 7) {
+            // 只在对方拒绝能力参数后尝试基础 IPv4；所需能力缺失或再次被拒必须交回配置 owner。
+            let retry = (notice.subcode == 4
+                && self.offer == OpenOffer::Capabilities
+                && self.config.supports_offer(OpenOffer::BasicIpv4))
+            .then_some(OpenOffer::BasicIpv4);
+            self.close(now, None, Some(notice), retry.is_some(), effects);
+            effects.push(Effect::OpenRejected { retry });
+        } else {
+            self.close(now, None, Some(notice), true, effects);
+        }
     }
     fn unexpected<'a>(&mut self, now: u64, kind: Kind, effects: &mut Effects<'a>) {
         let subcode = match self.state {
@@ -197,9 +247,72 @@ impl Session {
                 subcode,
                 data,
             }),
+            None,
             true,
             effects,
         );
+    }
+    fn route_refresh<'a>(
+        &mut self,
+        now: u64,
+        frame: Frame<'a>,
+        (afi, subtype, safi): (u16, u8, Option<u8>),
+        effects: &mut Effects<'a>,
+    ) {
+        use packet_wire::bgp::nlri::Family;
+        let peer = self.negotiated.expect("Established owns negotiated OPEN");
+        if !peer.receive_refresh {
+            self.close(
+                now,
+                Some(Notice {
+                    code: 1,
+                    subcode: 3,
+                    data: &[5],
+                }),
+                None,
+                true,
+                effects,
+            );
+            return;
+        }
+        // 旧对端按 RFC 2918 使用保留字节。双方启用 7313 时才解释 subtype。
+        let subtype = if peer.enhanced_refresh { subtype } else { 0 };
+        if subtype > 2 {
+            return;
+        }
+        if frame.bytes().len() != packet_wire::bgp::HEADER_BYTES + 4 {
+            let notice = if subtype == 0 {
+                Notice {
+                    code: 1,
+                    subcode: 2,
+                    data: frame.length_bytes(),
+                }
+            } else {
+                Notice {
+                    code: 7,
+                    subcode: 1,
+                    data: frame.bytes(),
+                }
+            };
+            self.close(now, Some(notice), None, true, effects);
+            return;
+        }
+        let family = match (afi, safi) {
+            (1, Some(1)) if peer.ipv4_unicast => Family::Ipv4,
+            (2, Some(1)) if peer.ipv6_unicast => Family::Ipv6,
+            _ => return,
+        };
+        effects.push(if subtype == 0 {
+            Effect::Refresh {
+                family,
+                enhanced: peer.enhanced_refresh,
+            }
+        } else {
+            Effect::RefreshBoundary {
+                family,
+                begin: subtype == 1,
+            }
+        });
     }
     /// 消费当前连接的一个事件并返回有序副作用；本方法不进行分配、I/O 或通知其他 owner。
     /// # Parameters
@@ -215,13 +328,19 @@ impl Session {
                         State::OpenSent | State::OpenConfirm | State::Established
                     )
                     .then(|| Notice::simple(6, 2));
-                    self.close(now, notice, false, &mut effects);
+                    self.close(now, notice, None, false, &mut effects);
                 } else {
                     self.retry_at = None;
                 }
             }
-            Input::Connected => {
+            Input::Connected(offer) => {
                 if matches!(self.state, State::Connect | State::Active) {
+                    if !self.config.supports_offer(offer) {
+                        self.close(now, None, None, false, &mut effects);
+                        effects.push(Effect::OpenRejected { retry: None });
+                        return effects;
+                    }
+                    self.offer = offer;
                     self.state = State::OpenSent;
                     self.retry_at = None;
                     self.hold_at = Some(at(now, OPEN_HOLD_SECONDS));
@@ -229,6 +348,7 @@ impl Session {
                 } else if self.state == State::Idle {
                     effects.push(Effect::Close {
                         notice: None,
+                        received: None,
                         withdraw_routes: false,
                         send_extended: false,
                     });
@@ -239,12 +359,13 @@ impl Session {
                 self.retry_at = Some(at(now, self.config.retry_seconds));
                 effects.push(Effect::Close {
                     notice: None,
+                    received: None,
                     withdraw_routes: false,
                     send_extended: false,
                 });
             }
             Input::TransportLost if self.state != State::Idle => {
-                self.close(now, None, true, &mut effects)
+                self.close(now, None, None, true, &mut effects)
             }
             Input::ProtocolError(notice)
                 if matches!(
@@ -252,14 +373,14 @@ impl Session {
                     State::OpenSent | State::OpenConfirm | State::Established
                 ) =>
             {
-                self.close(now, Some(notice), true, &mut effects)
+                self.close(now, Some(notice), None, true, &mut effects)
             }
             Input::CollisionLost
                 if self.state != State::Established && self.state != State::Idle =>
             {
                 let notice = matches!(self.state, State::OpenSent | State::OpenConfirm)
                     .then(|| Notice::simple(6, 7));
-                self.close(now, notice, false, &mut effects)
+                self.close(now, notice, None, false, &mut effects)
             }
             Input::Frame(frame)
                 if matches!(
@@ -277,22 +398,43 @@ impl Session {
                             subcode: 2,
                             data: frame.length_bytes(),
                         }),
+                        None,
                         true,
                         &mut effects,
                     );
                     return effects;
                 }
                 match frame.message() {
-                    Ok(Message::Notification { .. }) => self.close(now, None, true, &mut effects),
+                    Ok(Message::Notification {
+                        code,
+                        subcode,
+                        data,
+                    }) => {
+                        self.rejected_open(
+                            now,
+                            Notice {
+                                code,
+                                subcode,
+                                data,
+                            },
+                            &mut effects,
+                        );
+                    }
                     Ok(Message::Open(open)) if self.state == State::OpenSent => {
-                        match negotiate(self.config, open) {
+                        match negotiate(self.config, self.offer, open) {
                             Ok(peer) => {
                                 self.negotiated = Some(peer);
                                 self.state = State::OpenConfirm;
                                 self.hold(now);
                                 effects.push(Effect::SendKeepalive);
                             }
-                            Err(notice) => self.close(now, Some(notice), true, &mut effects),
+                            Err(notice) => {
+                                let blocked = notice.code == 2 && notice.subcode == 7;
+                                self.close(now, Some(notice), None, !blocked, &mut effects);
+                                if blocked {
+                                    effects.push(Effect::OpenRejected { retry: None });
+                                }
+                            }
                         }
                     }
                     Ok(Message::Keepalive) if self.state == State::OpenConfirm => {
@@ -312,31 +454,13 @@ impl Session {
                                 self.hold(now);
                                 effects.push(Effect::Update(update));
                             }
-                            Err(notice) => self.close(now, Some(notice), true, &mut effects),
+                            Err(notice) => self.close(now, Some(notice), None, true, &mut effects),
                         }
                     }
-                    Ok(Message::RouteRefresh { afi, safi, .. })
+                    Ok(Message::RouteRefresh { afi, subtype, safi })
                         if self.state == State::Established =>
                     {
-                        if self.negotiated.is_some_and(|peer| peer.receive_refresh) {
-                            if safi == 1
-                                && (afi == 1 && self.config.ipv4_unicast
-                                    || afi == 2 && self.config.ipv6_unicast)
-                            {
-                                effects.push(Effect::Refresh { afi, safi });
-                            }
-                        } else {
-                            self.close(
-                                now,
-                                Some(Notice {
-                                    code: 1,
-                                    subcode: 3,
-                                    data: &[5],
-                                }),
-                                true,
-                                &mut effects,
-                            );
-                        }
+                        self.route_refresh(now, frame, (afi, subtype, safi), &mut effects);
                     }
                     Err(_) => {
                         let notice = if frame.header().kind() == Kind::Open {
@@ -344,7 +468,7 @@ impl Session {
                         } else {
                             Notice::simple(3, 1)
                         };
-                        self.close(now, Some(notice), true, &mut effects);
+                        self.close(now, Some(notice), None, true, &mut effects);
                     }
                     _ => self.unexpected(now, frame.header().kind(), &mut effects),
                 }
@@ -352,11 +476,12 @@ impl Session {
             Input::Sent(kind) => self.sent(now, kind),
             Input::Timer => {
                 if self.hold_at.is_some_and(|deadline| deadline <= now) {
-                    self.close(now, Some(Notice::simple(4, 0)), true, &mut effects);
+                    self.close(now, Some(Notice::simple(4, 0)), None, true, &mut effects);
                 } else if self.retry_at.is_some_and(|deadline| deadline <= now) {
                     if self.state == State::Connect {
                         effects.push(Effect::Close {
                             notice: None,
+                            received: None,
                             withdraw_routes: false,
                             send_extended: false,
                         });

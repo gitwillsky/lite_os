@@ -9,7 +9,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_SHA256 = "e9f524442024f3f36ed3e3c6cd60a412a4d7b8d7879c2f7a31763940496f18f8"
 # 本地 transport owner 修改范围；新变化必须有固定规范与实际回归证明，不允许其他文件漂移。
-TRANSPORT_FILES = {"src/socket/udp.rs", "src/iface/interface/udp.rs", "src/socket/tcp.rs",
+TRANSPORT_FILES = { "src/iface/interface/udp.rs", "src/iface/interface/ethernet.rs", "src/iface/interface/ipv6.rs", "src/socket/tcp.rs",
                    "src/socket/raw.rs", "src/iface/interface/mod.rs", "src/iface/interface/ipv4.rs", "src/iface/mod.rs", "src/phy/mod.rs", "src/iface/interface/tcp.rs",
                    "src/wire/udp.rs"}
 LOCAL_FILES = {"UPSTREAM.sha256.json", "LITEOS.md"}
@@ -35,8 +35,8 @@ def verify(root: Path = ROOT) -> None:
         relative = path.relative_to(vendor).as_posix()
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
-    transport = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"}
-    # 产品协议引擎与 host 独立 oracle 共用固定源码；DHCP 编解码已迁至 packet-wire。
+    transport = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw"}
+    # TCP、UDP 和 ARP 已归原生 owner；产品与 host 共用同一 IPv4 接收 profile，DHCP feature 仅供 wire oracle。
     for relative, section, features in [("system/netstack/Cargo.toml", "dependencies", transport),
                                         ("tools/netstack-unit/Cargo.toml", "dependencies", transport),
                                         ("tools/netstack-unit/Cargo.toml", "dev-dependencies", {"proto-dhcpv4"})]:
@@ -46,9 +46,10 @@ def verify(root: Path = ROOT) -> None:
         if dependency.get("default-features") is not False or set(dependency["features"]) != features:
             raise ValueError(f"smoltcp: unexpected protocol features in {relative}")
 
-    dhcp = tomllib.loads((root / "system/dhcp-client/Cargo.toml").read_text())["dependencies"]
-    if "smoltcp" in dhcp or dhcp.get("packet-wire", {}).get("path") != "../../libraries/packet-wire":
-        raise ValueError("dhcp-client: packet formats must use packet-wire without a second codec")
+    for service in ("dhcp-client", "dhcp-server"):
+        dhcp = tomllib.loads((root / "system" / service / "Cargo.toml").read_text())["dependencies"]
+        if "smoltcp" in dhcp or dhcp.get("packet-wire", {}).get("path") != "../../libraries/packet-wire":
+            raise ValueError(f"{service}: packet formats must use packet-wire without a second codec")
 
 
 if __name__ == "__main__":

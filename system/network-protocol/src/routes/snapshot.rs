@@ -3,23 +3,25 @@ use super::*;
 use alloc::vec::Vec;
 use core::ops::Range;
 use forwarding::{get_attributes, put_attributes};
-const VERSION: u32 = 2;
-const HEADER: usize = 16;
+const VERSION: u32 = 4;
+const HEADER: usize = 20;
 const INTERFACE: usize = 24;
-const ROW: usize = 38;
+const fn row_bytes<A: RouteAddress>() -> usize {
+    30 + 2 * A::BYTES
+}
 const NO_GROUP: u32 = u32::MAX;
 
 /// 一条只读路由及其完整路径组；组身份只在所属快照内有效，不是配置身份或 Linux nhid。
 #[derive(Clone, Copy, Debug)]
-pub struct RouteSnapshot<'a> {
-    pub route: RouteAttributes,
-    pub next_hops: Option<NextHopConfiguration<'a>>,
+pub struct RouteSnapshot<'a, A: RouteAddress> {
+    pub route: RouteAttributes<A>,
+    pub next_hops: Option<NextHopConfiguration<'a, A>>,
     /// 仅无下一跳形态保留自身标志；有组时标志由各成员拥有。
     pub on_link: bool,
 }
-impl RouteSnapshot<'_> {
+impl<A: RouteAddress> RouteSnapshot<'_, A> {
     /// 投影为单路径请求；多成员返回 None，调用者不能静默丢弃其余路径。
-    pub fn single_path(self) -> Option<Ipv4RouteRequest> {
+    pub fn single_path(self) -> Option<crate::RouteRequest<A>> {
         let member = match self.next_hops {
             Some(group) if group.len() > 1 => return None,
             Some(group) => group.members().next(),
@@ -28,7 +30,7 @@ impl RouteSnapshot<'_> {
         if let Some(member) = member {
             return Some(member.request(self.route));
         }
-        Some(Ipv4RouteRequest {
+        Some(crate::RouteRequest {
             destination: self.route.destination,
             prefix_length: self.route.prefix_length,
             table: self.route.table,
@@ -46,13 +48,14 @@ impl RouteSnapshot<'_> {
 }
 /// 冻结的唯一正文及组偏移索引；没有逐路由堆对象、成员副本或可写实时状态。
 #[derive(Debug, PartialEq, Eq)]
-pub struct RoutingSnapshot {
+pub struct RoutingSnapshot<A> {
+    address: PhantomData<A>,
     bytes: Vec<u8>,
     interfaces: Range<usize>,
     groups: Vec<Range<usize>>,
     rows: Range<usize>,
 }
-impl RoutingSnapshot {
+impl<A: RouteAddress> RoutingSnapshot<A> {
     /// 编码一份原子捕获的 FIB；捕获者释放实时状态锁后再 parse 为只读视图。
     /// # Parameters
     /// `interfaces` 按正 ifindex 严格递增，`groups` 的身份为顺序号加一；
@@ -63,8 +66,8 @@ impl RoutingSnapshot {
     /// 数量/长度溢出、非法组或资源不足；失败不返回部分正文。
     pub fn encode<'a>(
         interfaces: impl Clone + Iterator<Item = (u32, [u8; 16])>,
-        groups: impl Clone + Iterator<Item = NextHopConfiguration<'a>>,
-        routes: impl Clone + Iterator<Item = (RouteAttributes, Option<u32>, bool)>,
+        groups: impl Clone + Iterator<Item = NextHopConfiguration<'a, A>>,
+        routes: impl Clone + Iterator<Item = (RouteAttributes<A>, Option<u32>, bool)>,
     ) -> Result<Vec<u8>, Status> {
         let ifcount =
             u32::try_from(interfaces.clone().count()).map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
@@ -77,7 +80,7 @@ impl RoutingSnapshot {
             .and_then(|size| size.checked_add(HEADER))
             .and_then(|size| {
                 (count as usize)
-                    .checked_mul(ROW)
+                    .checked_mul(row_bytes::<A>())
                     .and_then(|rows| size.checked_add(rows))
             })
             .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
@@ -88,7 +91,12 @@ impl RoutingSnapshot {
         })?;
         let mut writer = Writer::payload();
         writer.try_reserve(capacity)?;
-        writer.u32(VERSION).u32(ifcount).u32(groupcount).u32(count);
+        writer
+            .u32(VERSION)
+            .u32(A::FAMILY)
+            .u32(ifcount)
+            .u32(groupcount)
+            .u32(count);
         for (index, name) in interfaces {
             writer.u32(index).bytes(&name);
         }
@@ -106,7 +114,7 @@ impl RoutingSnapshot {
     /// 版本、计数、次序、字段、引用或尾部不合法，或资源不足。
     pub fn parse(bytes: Vec<u8>) -> Result<Self, Status> {
         let mut reader = Reader::new(&bytes);
-        if reader.u32()? != VERSION {
+        if reader.u32()? != VERSION || reader.u32()? != A::FAMILY {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let ifcount = reader.u32()? as usize;
@@ -127,7 +135,7 @@ impl RoutingSnapshot {
             previous = index;
             entry.finish()?;
         }
-        if groupcount > bytes.len().saturating_sub(end) / 26 {
+        if groupcount > bytes.len().saturating_sub(end) / (12 + nexthop::MEMBER_BYTES) {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let mut groups = Vec::new();
@@ -136,7 +144,7 @@ impl RoutingSnapshot {
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let mut cursor = end;
         for ordinal in 0..groupcount {
-            let group = get_next_hop(&mut Reader::new(
+            let group = get_next_hop::<A>(&mut Reader::new(
                 bytes.get(cursor..).ok_or(native_abi::ERR_INVALID_ARGS)?,
             ))?;
             if group.id != ordinal as u64 + 1 {
@@ -154,19 +162,20 @@ impl RoutingSnapshot {
             cursor = next;
         }
         let length = count
-            .checked_mul(ROW)
+            .checked_mul(row_bytes::<A>())
             .and_then(|size| cursor.checked_add(size))
             .ok_or(native_abi::ERR_INVALID_ARGS)?;
         if length != bytes.len() {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
-        for row in bytes[cursor..].as_chunks::<ROW>().0 {
-            let (_, group, flag) = get_row(row)?;
+        for row in bytes[cursor..].chunks_exact(row_bytes::<A>()) {
+            let (_, group, flag) = get_row::<A>(row)?;
             if group.is_some_and(|index| index as usize >= groupcount) || group.is_some() && flag {
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
         }
         Ok(Self {
+            address: PhantomData,
             interfaces: HEADER..end,
             groups,
             rows: cursor..length,
@@ -177,9 +186,14 @@ impl RoutingSnapshot {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
+    /// 移交唯一冻结正文并退休派生偏移，不复制字节或授予执行写权限。
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
     /// 路由条数。
     pub fn len(&self) -> usize {
-        self.rows.len() / ROW
+        self.rows.len() / row_bytes::<A>()
     }
     /// 是否没有路由。
     pub fn is_empty(&self) -> bool {
@@ -190,7 +204,7 @@ impl RoutingSnapshot {
         self.groups.len()
     }
     /// 查询快照内的组；越界返回 None。
-    pub fn group(&self, index: usize) -> Option<NextHopConfiguration<'_>> {
+    pub fn group(&self, index: usize) -> Option<NextHopConfiguration<'_, A>> {
         let range = self.groups.get(index)?.clone();
         Some(NextHopConfiguration::from_validated_bytes(
             index as u64 + 1,
@@ -198,12 +212,12 @@ impl RoutingSnapshot {
         ))
     }
     /// 按索引借用一行；不分配或复制成员，越界返回 None。
-    pub fn row(&self, index: usize) -> Option<RouteSnapshot<'_>> {
-        let entry = self.bytes[self.rows.clone()]
-            .as_chunks::<ROW>()
-            .0
-            .get(index)?;
-        let (route, group, on_link) = get_row(entry).expect("snapshot row framing was checked");
+    pub fn row(&self, index: usize) -> Option<RouteSnapshot<'_, A>> {
+        let width = row_bytes::<A>();
+        let start = index.checked_mul(width)?;
+        let entry = self.bytes[self.rows.clone()].get(start..start.checked_add(width)?)?;
+        let (route, group, on_link) =
+            get_row::<A>(entry).expect("snapshot row framing was checked");
         Some(RouteSnapshot {
             route,
             next_hops: group.map(|index| {
@@ -214,7 +228,7 @@ impl RoutingSnapshot {
         })
     }
     /// 按原 FIB 顺序借用全部行。
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = RouteSnapshot<'_>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = RouteSnapshot<'_, A>> {
         (0..self.len()).map(|index| self.row(index).expect("snapshot row index is bounded"))
     }
     /// 查询捕获时的接口名；未知身份返回 None，不读取另一时刻的设备状态。
@@ -235,7 +249,9 @@ fn interface_name(bytes: &[u8], index: u32) -> Option<[u8; 16]> {
             .expect("fixed interface name"),
     )
 }
-fn get_row(bytes: &[u8]) -> Result<(RouteAttributes, Option<u32>, bool), Status> {
+fn get_row<A: RouteAddress>(
+    bytes: &[u8],
+) -> Result<(RouteAttributes<A>, Option<u32>, bool), Status> {
     let mut reader = Reader::new(bytes);
     let route = get_attributes(&mut reader)?;
     let index = reader.u32()?;

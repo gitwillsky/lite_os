@@ -1,13 +1,15 @@
 #[cfg(not(test))]
 use super::{SocketDomain, SocketType};
-use network_protocol::MAX_IPV4_UDP_BYTES;
+use network_protocol::{MAX_IPV4_UDP_BYTES, MAX_IPV6_UDP_BYTES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MessageProtocol {
     Stream,
     UnixDatagram,
     Ipv4Udp,
+    Ipv6Udp,
     Ipv4Raw,
+    Ipv6Raw,
     Packet,
     NetlinkUevent,
     Unsupported,
@@ -25,7 +27,9 @@ pub(super) fn protocol(domain: SocketDomain, socket_type: SocketType) -> Message
             MessageProtocol::UnixDatagram
         }
         (SocketDomain::Inet, SocketType::Datagram) => MessageProtocol::Ipv4Udp,
+        (SocketDomain::Inet6, SocketType::Datagram) => MessageProtocol::Ipv6Udp,
         (SocketDomain::Inet, SocketType::Raw) => MessageProtocol::Ipv4Raw,
+        (SocketDomain::Inet6, SocketType::Raw) => MessageProtocol::Ipv6Raw,
         (SocketDomain::Packet, SocketType::Datagram | SocketType::Raw) => MessageProtocol::Packet,
         (SocketDomain::Netlink, SocketType::Datagram | SocketType::Raw) => {
             MessageProtocol::NetlinkUevent
@@ -40,7 +44,9 @@ fn maximum_send_length(protocol: MessageProtocol) -> Option<usize> {
         // AF_UNIX 实际 sndbuf 校验由 endpoint owner 完成，无第二份固定 payload 上限。
         MessageProtocol::UnixDatagram => None,
         MessageProtocol::Ipv4Udp => Some(MAX_IPV4_UDP_BYTES),
+        MessageProtocol::Ipv6Udp => Some(MAX_IPV6_UDP_BYTES),
         MessageProtocol::Ipv4Raw => Some(MAX_IPV4_RAW_BYTES),
+        MessageProtocol::Ipv6Raw => Some(65535 + 40),
         MessageProtocol::Packet => Some(MAX_PACKET_BYTES),
         MessageProtocol::NetlinkUevent => Some(u16::MAX as usize),
         MessageProtocol::Unsupported => Some(0),
@@ -82,8 +88,9 @@ pub(super) fn receive_capacity(
         MessageProtocol::Stream => stream_maximum,
         MessageProtocol::UnixDatagram => requested,
         MessageProtocol::Ipv4Udp => MAX_IPV4_UDP_BYTES,
+        MessageProtocol::Ipv6Udp => MAX_IPV6_UDP_BYTES,
         // Raw receive 含内核重建的 IPv4 header，最大为完整 u16 total length。
-        MessageProtocol::Ipv4Raw => u16::MAX as usize,
+        MessageProtocol::Ipv4Raw | MessageProtocol::Ipv6Raw => u16::MAX as usize,
         MessageProtocol::Packet => MAX_PACKET_BYTES,
         MessageProtocol::NetlinkUevent => u16::MAX as usize,
         MessageProtocol::Unsupported => 0,

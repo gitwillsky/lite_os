@@ -95,6 +95,10 @@ impl<'a> Dhcpv4Packet<'a> {
     pub fn hardware_address(self) -> &'a [u8] {
         &self.bytes[28..28 + usize::from(self.bytes[2])]
     }
+    /// Whether the client requests link broadcast for a reply before configuring its address.
+    pub fn broadcast(self) -> bool {
+        self.bytes[10] & 0x80 != 0
+    }
     /// ciaddr；客户端已有地址时使用。
     pub fn client_address(self) -> Ipv4Addr {
         self.address(12)

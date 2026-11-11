@@ -1,7 +1,6 @@
 use super::*;
 
-/// 新connect/listen复用同一个实际slot；reset已移交唯一有预算报文队列。
-/// buffer准备可失败，OOM保留原bind与slot，报文不借用端口也不新增orphan身份。
+/// 同一 CLOSED endpoint 内完整准备流缓冲；OOM 保留原绑定与机制，旧 reset 只由报文队列持有。
 pub(super) fn prepare_closed_transport(
     network: &mut NetworkStack,
     id: usize,
@@ -10,45 +9,26 @@ pub(super) fn prepare_closed_transport(
         network.tcp_endpoints[&id].mode,
         TcpMode::Closed { .. }
     ));
-    let send_mss = network
-        .sockets
-        .get::<tcp::Socket<'static>>(network.tcp_endpoints[&id].handles[0].handle)
-        .send_mss();
+    let send_mss = network.tcp_endpoints[&id].handles[0].transport.send_mss();
     network.queue_tcp_resets(super::super::now());
-    let NetworkStack {
-        tcp_endpoints,
-        sockets,
-        ..
-    } = network;
-    let state = tcp_endpoints
+    let state = network
+        .tcp_endpoints
         .get_mut(&id)
         .expect("closed endpoint disappeared");
-    for entry in state.handles.drain(1..) {
-        sockets.remove(entry.handle);
-    }
-    let handle = network.tcp_endpoints[&id].handles[0].handle;
-    if network
-        .sockets
-        .get::<tcp::Socket<'static>>(handle)
-        .recv_capacity()
-        == 0
-    {
-        // 取消 SYN_SENT 后原 slot 保留零 buffer 的 CLOSED socket，维持 cleanup 容量证明。
-        // 新 buffer 完整准备后才替换同一个 slot；OOM 不改变原 bind 或生命周期。
+    state.handles.truncate(1);
+    if state.handles[0].transport.recv_capacity() == 0 {
         let mut prepared = super::storage::allocate_socket()?;
         prepared.set_send_mss(send_mss);
-        *network.sockets.get_mut::<tcp::Socket<'static>>(handle) = prepared;
+        state.handles[0].transport = prepared;
     }
-    let options = network.tcp_endpoints[&id].options;
-    options.apply_tcp(network.sockets.get_mut::<tcp::Socket<'static>>(handle));
+    state.options.apply_tcp(&mut state.handles[0].transport);
     Ok(())
 }
 
-/// native tcp_disconnect：清空实际连接/accept 队列，恢复原 bind；不等待 NIC 或分配。
+/// 取消实际连接/监听并恢复原绑定；只保留待交付 reset 所需的机制，报文取得副本后不借端口。
 pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
     let NetworkStack {
         tcp_endpoints,
-        sockets,
         tcp_ports,
         ..
     } = network;
@@ -63,14 +43,11 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
     };
     let send_mss = match state.mode {
         TcpMode::Listening { send_mss, .. } => send_mss,
-        _ => sockets
-            .get::<tcp::Socket<'static>>(state.handles[0].handle)
-            .send_mss(),
+        _ => state.handles[0].transport.send_mss(),
     };
-    // native tcp_disconnect 清空 rx_opt（含 user_mss），但保留 mss_cache。
     state.options.user_mss = None;
     if !listener && let Some(entry) = state.handles.first() {
-        let tcp = sockets.get::<tcp::Socket<'static>>(entry.handle);
+        let tcp = &entry.transport;
         if matches!(
             tcp.state(),
             State::SynSent
@@ -86,7 +63,7 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
     }
     let mut retained = false;
     state.handles.retain_mut(|entry| {
-        let tcp = sockets.get_mut::<tcp::Socket<'static>>(entry.handle);
+        let tcp = &mut entry.transport;
         let needs_reset = matches!(
             tcp.state(),
             State::SynReceived
@@ -97,7 +74,11 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
         ) || matches!(tcp.state(), State::Closing | State::LastAck)
             && tcp.send_queue() != 0
             || tcp.state() == State::Closed && tcp.remote_endpoint().is_some();
-        entry.passive = None;
+        if let Some(policy) = entry.passive.take()
+            && let Some(lease) = policy.port_lease
+        {
+            tcp_ports.release(lease);
+        }
         tcp.set_user_mss(None);
         tcp.set_send_mss(send_mss);
         if needs_reset {
@@ -105,15 +86,11 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
             retained = true;
             true
         } else if !retained {
-            // 每个实际 facade 始终持至少一个 SocketSet slot；否则大量取消握手的
-            // socket 会绕过 fixed cleanup ring 与 SocketSet capacity 的一对一界限。
             *tcp = placeholder_socket();
             tcp.set_send_mss(send_mss);
             retained = true;
             true
         } else {
-            // native SYN_SENT/TIME_WAIT 等状态取消不发送 RST；直接释放实际 transport。
-            sockets.remove(entry.handle);
             false
         }
     });
@@ -122,7 +99,15 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
             lease = tcp_ports.stop_listener(lease);
         }
         state.port_lease = Some(
-            tcp_ports.restore_bound_address(lease, bound.and_then(|bound| bound.addr).map(from_ip)),
+            tcp_ports.restore_bound_address(
+                lease,
+                PortBinding::new(
+                    bound.unwrap_or_else(|| unspecified(state.family, 0)).ip(),
+                    state.options.ipv6_only,
+                )
+                .expect("existing TCP binding remains valid")
+                .with_interface(state.options.bound_to_device),
+            ),
         );
     }
     state.mode = TcpMode::Closed {
@@ -130,9 +115,16 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
         shutdown_read: false,
     };
     network.queue_tcp_resets(super::super::now());
+    // reset 字节已独立移交或按预算丢弃；关闭的监听槽不应继续占用连接容量和流缓冲。
+    network
+        .tcp_endpoints
+        .get_mut(&id)
+        .expect("disconnect lost closed endpoint")
+        .handles
+        .truncate(1);
 }
 
-/// AF_UNSPEC 主动取消 TCP 连接或监听；本地 bind identity 继续由同一 endpoint 持有。
+/// AF_UNSPEC 取消连接或监听；状态与端口仍归同一 endpoint。
 pub(in crate::inet) fn disconnect(socket: &InetSocket) -> Result<(), SocketError> {
     let mut network = socket.stack()?.lock()?;
     let id = endpoint_id(socket);
@@ -145,16 +137,7 @@ pub(in crate::inet) fn disconnect(socket: &InetSocket) -> Result<(), SocketError
     Ok(())
 }
 
-/// 释放 TCP endpoint，同时保留 connected FIN/TIME_WAIT 协议生命周期。
-///
-/// # Parameters
-///
-/// - `network`: 已由 protocol owner 独占的完整 NetworkStack。
-/// - `id`: 正在析构的 facade 所持稳定 endpoint id。
-///
-/// # Errors
-///
-/// endpoint 缺失或已删除时幂等忽略。
+/// 最后一个描述符移交关闭责任；完整读取的活动连接保留 FIN/TIME_WAIT，未读流立即 abort。
 pub(in crate::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize) {
     let Some(mode) = network.tcp_endpoints.get(&id).map(|state| state.mode) else {
         return;
@@ -163,24 +146,14 @@ pub(in crate::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize) {
         mode,
         TcpMode::Listening { .. } | TcpMode::Closed { .. } | TcpMode::Connecting { .. }
     ) {
-        let NetworkStack {
-            tcp_endpoints,
-            sockets,
-            ..
-        } = &mut *network;
-        let state = tcp_endpoints
-            .get_mut(&id)
-            .expect("TCP endpoint disappeared while stack lock is held");
+        let state = network.tcp_endpoints.get_mut(&id).unwrap();
         state.endpoint = Weak::new();
         state.orphaned = true;
-        for entry in &state.handles {
-            let handle = entry.handle;
-            let tcp = sockets.get_mut::<tcp::Socket<'static>>(handle);
-            // 最后 OFD 丢弃未读数据是 native abortive close，不能向 peer 宣称完整 FIN。
-            if tcp.can_recv() {
-                tcp.abort();
+        for entry in &mut state.handles {
+            if entry.transport.can_recv() {
+                entry.transport.abort();
             } else {
-                tcp.close_orphan(super::super::now());
+                entry.transport.close_orphan(at(super::super::now()));
             }
         }
         network.queue_tcp_resets(super::super::now());
@@ -192,12 +165,8 @@ pub(in crate::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize) {
     let state = network
         .tcp_endpoints
         .remove(&id)
-        .expect("TCP endpoint disappeared while stack lock is held");
+        .expect("TCP endpoint disappeared during final close");
     if let Some(lease) = state.port_lease {
         network.tcp_ports.release(lease);
-    }
-    let handles = state.handles;
-    for entry in handles {
-        network.sockets.remove(entry.handle);
     }
 }

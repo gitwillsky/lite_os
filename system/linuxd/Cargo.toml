@@ -25,6 +25,7 @@ launch-protocol = { path = "../launch-protocol" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
 linux-abi = { path = "../../abi/linux-abi" }
 bitflags = "2.9.1"
+zeroize = { version = "=1.9.1", default-features = false }
 
 [build-dependencies]
 launch-protocol = { path = "../launch-protocol" }

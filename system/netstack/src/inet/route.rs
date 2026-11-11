@@ -1,11 +1,15 @@
 //! 一个域的实际IPv4 FIB；所有前缀/metric/自动与用户路由共享同一记录和查找。
 use super::{InterfaceState, interface::NetworkInterface};
 use alloc::vec::Vec;
-use core::net::Ipv4Addr;
-use network_protocol::{
-    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, SocketError,
-};
+use core::net::{IpAddr, Ipv4Addr};
+use network_protocol::{Ipv4RouteError, Ipv4RouteRequest, RouteKind, RouteMetrics, SocketError};
 
+mod output;
+mod policy;
+pub(super) use output::{Output, output_for, probe_gateway};
+pub(super) use policy::SelectionRules;
+mod ipv6;
+pub(super) use ipv6::{Ipv6InterfaceFacts, Ipv6Routes, Ipv6Selection, default_multicast_interface};
 mod admission;
 mod configuration;
 mod fib;
@@ -16,11 +20,20 @@ mod nexthop;
 pub(super) use configuration::PreparedRouteChange;
 use prefix_index as poptrie;
 
-pub(super) const TABLE_MAIN: u32 = 254;
-pub(super) const TABLE_LOCAL: u32 = 255;
+pub(super) use router_protocol::policy_routing::{TABLE_LOCAL, TABLE_MAIN};
+
+/// 把查找终止动作和表未命中投影为原生错误。
+pub(super) fn selection_error(kind: RouteKind) -> SocketError {
+    match kind {
+        RouteKind::Unreachable => SocketError::HostUnreachable,
+        RouteKind::Blackhole => SocketError::Invalid,
+        RouteKind::Prohibit => SocketError::PermissionDenied,
+        _ => SocketError::NetworkUnreachable,
+    }
+}
 
 /// 路由的传输参数：未配置的 advertised MSS 按出口 MTU 推导。
-fn transport(metrics: Ipv4RouteMetrics, mtu: usize) -> smoltcp::iface::IpRouteContext {
+fn transport(metrics: RouteMetrics, mtu: usize) -> smoltcp::iface::IpRouteContext {
     smoltcp::iface::IpRouteContext {
         mtu,
         advertised_mss: if metrics.advertised_mss == 0 {
@@ -53,8 +66,10 @@ pub(super) struct RouteSelection {
     pub(super) interface_index: u32,
     pub(super) logical_interface_index: u32,
     pub(super) preferred_source: Option<Ipv4Addr>,
-    pub(super) next_hop: Ipv4Addr,
-    pub(super) kind: Ipv4RouteKind,
+    pub(super) next_hop: IpAddr,
+    pub(super) via_gateway: bool,
+    pub(super) table: u32,
+    pub(super) kind: RouteKind,
     pub(super) transport: smoltcp::iface::IpRouteContext,
 }
 /// 一次 L3 流查找键；明确出口只收紧同一组，不创建旁路 selector。
@@ -93,7 +108,32 @@ pub(super) struct PreparedInterfaceRoutes {
 fn mask(prefix: u8) -> u32 {
     u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0)
 }
+
+fn source_for_ipv4_path(
+    index: u32,
+    gateway: Option<IpAddr>,
+    interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+) -> Option<Ipv4Addr> {
+    interfaces
+        .clone()
+        .find(|interface| interface.index == index)
+        .and_then(|interface| interface.address)
+        .or_else(|| {
+            // IPv6-only 出口可发送本域其他接口的 IPv4 地址；链路本地和回环地址不能跨接口使用。
+            gateway.filter(IpAddr::is_ipv6)?;
+            interfaces
+                .filter(|interface| interface.up)
+                .find_map(|interface| {
+                    interface
+                        .address
+                        .filter(|address| !address.is_loopback() && !address.is_link_local())
+                })
+        })
+}
 impl RoutingTable {
+    pub(super) fn has_gateway(&self, index: u32, gateway: IpAddr) -> bool {
+        self.fib.has_gateway(index, gateway)
+    }
     pub(super) fn new() -> Self {
         Self { fib: Fib::new() }
     }
@@ -145,9 +185,9 @@ impl RoutingTable {
         };
         let mut append = |destination: Ipv4Addr,
                           prefix_length: u8,
-                          kind: Ipv4RouteKind|
+                          kind: RouteKind|
          -> Result<(), SocketError> {
-            let table = if kind == Ipv4RouteKind::Unicast {
+            let table = if kind == RouteKind::Unicast {
                 TABLE_MAIN
             } else {
                 TABLE_LOCAL
@@ -157,18 +197,14 @@ impl RoutingTable {
                 prefix_length,
                 table,
                 metric: 0,
-                scope: if kind == Ipv4RouteKind::Local {
-                    254
-                } else {
-                    253
-                },
+                scope: if kind == RouteKind::Local { 254 } else { 253 },
                 protocol: 2,
                 kind,
                 interface_index: Some(index),
                 gateway: None,
                 preferred_source: Some(address),
                 on_link: false,
-                metrics: Ipv4RouteMetrics::default(),
+                metrics: RouteMetrics::default(),
             };
             // explicit broadcast等于prefix broadcast时native FIB exact alias只保留一次。
             if entries.iter().any(|record| record.request == request) {
@@ -185,11 +221,11 @@ impl RoutingTable {
             Ok(())
         };
         // 1. fib_add_ifaddr在IFF_UP检查之前创建LOCAL /32；DOWN不删除scope HOST的本地成员。
-        append(address, 32, Ipv4RouteKind::Local)?;
+        append(address, 32, RouteKind::Local)?;
         if state.up {
             // 2. explicit与prefix broadcast可同时存在；limited broadcast不建立独立record。
             if !state.broadcast.is_unspecified() && !state.broadcast.is_broadcast() {
-                append(state.broadcast, 32, Ipv4RouteKind::Broadcast)?;
+                append(state.broadcast, 32, RouteKind::Broadcast)?;
             }
             let network = u32::from(address) & mask(state.prefix_length);
             if network >> 24 != 0 && (network != u32::from(address) || state.prefix_length < 32) {
@@ -197,16 +233,16 @@ impl RoutingTable {
                     Ipv4Addr::from(network),
                     state.prefix_length,
                     if index == 1 {
-                        Ipv4RouteKind::Local
+                        RouteKind::Local
                     } else {
-                        Ipv4RouteKind::Unicast
+                        RouteKind::Unicast
                     },
                 )?;
                 if state.prefix_length < 31 {
                     append(
                         Ipv4Addr::from(network | !mask(state.prefix_length)),
                         32,
-                        Ipv4RouteKind::Broadcast,
+                        RouteKind::Broadcast,
                     )?;
                 }
             }
@@ -252,20 +288,49 @@ impl RoutingTable {
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
         include: impl Fn(&Record) -> bool,
     ) -> Option<Record> {
-        let candidates = self.fib.matching(destination);
-        for table in [TABLE_LOCAL, TABLE_MAIN] {
+        self.lookup_tables(
+            Flow {
+                source,
+                destination,
+                bound,
+            },
+            minimum_scope,
+            interfaces,
+            include,
+            None,
+        )
+    }
+
+    fn lookup_tables(
+        &self,
+        flow: Flow,
+        minimum_scope: u8,
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        include: impl Fn(&Record) -> bool,
+        policy: Option<(u32, u32, &[router_protocol::policy_routing::Rule])>,
+    ) -> Option<Record> {
+        let candidates = self.fib.matching(flow.destination);
+        let policy = policy.into_iter().flat_map(|(ingress, mark, rules)| {
+            rules
+                .iter()
+                .filter(move |rule| {
+                    (!flow.source.is_unspecified() || rule.prefix_length == 0)
+                        && rule.matches(flow.source.into(), ingress, mark)
+                })
+                .map(|rule| rule.table)
+        });
+        for table in core::iter::once(TABLE_LOCAL)
+            .chain(policy)
+            .chain(core::iter::once(TABLE_MAIN))
+        {
             if let Some(record) = self.matching(
                 table,
-                Flow {
-                    source,
-                    destination,
-                    bound,
-                },
+                flow,
                 candidates.clone(),
                 minimum_scope,
                 interfaces.clone(),
                 &include,
-            ) && record.request.kind != Ipv4RouteKind::Throw
+            ) && record.request.kind != RouteKind::Throw
             {
                 return Some(record);
             }
@@ -323,22 +388,84 @@ impl RoutingTable {
         destination: Ipv4Addr,
         bound: Option<u32>,
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
-    ) -> Result<RouteSelection, Ipv4RouteKind> {
+    ) -> Result<RouteSelection, RouteKind> {
+        self.select(
+            Flow {
+                source,
+                destination,
+                bound,
+            },
+            interfaces,
+            None,
+        )
+    }
+
+    /// 为跨接口报文应用实际入接口的规则。
+    pub(super) fn select_transit(
+        &self,
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        (ingress, mark, rules): (u32, u32, &[router_protocol::policy_routing::Rule]),
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    ) -> Result<RouteSelection, RouteKind> {
+        self.select(
+            Flow {
+                source,
+                destination,
+                bound: None,
+            },
+            interfaces,
+            Some((ingress, mark, rules)),
+        )
+    }
+
+    /// 为本机单播查询回环身份对应的规则；组播和有限广播保留链路输出语义。
+    pub(super) fn select_output(
+        &self,
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        bound: Option<u32>,
+        (mark, rules): (u32, &[router_protocol::policy_routing::Rule]),
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    ) -> Result<RouteSelection, RouteKind> {
+        let policy =
+            (!rules.is_empty() && !destination.is_multicast() && !destination.is_broadcast())
+                .then_some((router_protocol::interface::LOOPBACK_INDEX, mark, rules));
+        self.select(
+            Flow {
+                source,
+                destination,
+                bound,
+            },
+            interfaces,
+            policy,
+        )
+    }
+
+    fn select(
+        &self,
+        flow: Flow,
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        policy: Option<(u32, u32, &[router_protocol::policy_routing::Rule])>,
+    ) -> Result<RouteSelection, RouteKind> {
+        let Flow {
+            destination, bound, ..
+        } = flow;
         // limited broadcast/本地组播的明确oif绕过FIB gateway；原生route_output先处理。
         let local_multicast = destination.octets()[..3] == [224, 0, 0];
         if bound.is_some() && (destination.is_broadcast() || local_multicast) {
             return Self::direct(destination, bound, interfaces);
         }
-        if let Some(record) =
-            self.lookup_record(source, destination, bound, 0, interfaces.clone(), |_| true)
-        {
+        if let Some(record) = self.lookup_tables(flow, 0, interfaces.clone(), |_| true, policy) {
             let kind = record.request.kind;
             if matches!(
                 kind,
-                Ipv4RouteKind::Unreachable | Ipv4RouteKind::Blackhole | Ipv4RouteKind::Prohibit
+                RouteKind::Unreachable | RouteKind::Blackhole | RouteKind::Prohibit
             ) {
                 // 原生explicit oif在FIB失败时使用on-link fallback，不能让kernel另写selector。
-                return if bound.is_some() {
+                return if bound.is_some()
+                    && matches!(record.request.table, TABLE_LOCAL | TABLE_MAIN)
+                {
                     Self::direct(destination, bound, interfaces)
                 } else {
                     Err(kind)
@@ -347,37 +474,33 @@ impl RoutingTable {
             let logical = record
                 .interface_index
                 .expect("forwarding route must own actual device");
-            let output = if kind == Ipv4RouteKind::Local {
-                1
-            } else {
-                logical
-            };
+            let output = if kind == RouteKind::Local { 1 } else { logical };
             let Some(output_interface) = interfaces
                 .clone()
                 .find(|interface| interface.index == output && interface.up)
             else {
-                return Err(Ipv4RouteKind::Throw);
+                return Err(RouteKind::Throw);
+            };
+            let gateway = if destination.is_broadcast() || destination.is_multicast() {
+                None
+            } else {
+                record.request.gateway
             };
             return Ok(RouteSelection {
                 interface_index: output,
                 logical_interface_index: logical,
                 preferred_source: record.request.preferred_source.or_else(|| {
-                    if kind == Ipv4RouteKind::Local {
+                    if kind == RouteKind::Local {
                         Some(destination)
                     } else {
-                        interfaces
-                            .clone()
-                            .find(|interface| interface.index == logical)
-                            .and_then(|interface| interface.address)
+                        source_for_ipv4_path(logical, record.request.gateway, interfaces.clone())
                     }
                 }),
-                next_hop: if destination.is_broadcast() || destination.is_multicast() {
-                    destination
-                } else {
-                    record.request.gateway.unwrap_or(destination)
-                },
+                next_hop: gateway.unwrap_or_else(|| destination.into()),
+                via_gateway: gateway.is_some(),
+                table: record.request.table,
                 kind: if destination.is_broadcast() {
-                    Ipv4RouteKind::Broadcast
+                    RouteKind::Broadcast
                 } else {
                     kind
                 },
@@ -391,7 +514,7 @@ impl RoutingTable {
         destination: Ipv4Addr,
         bound: Option<u32>,
         mut interfaces: impl Iterator<Item = InterfaceFacts>,
-    ) -> Result<RouteSelection, Ipv4RouteKind> {
+    ) -> Result<RouteSelection, RouteKind> {
         if let Some(index) = bound
             && let Some(interface) = interfaces
                 .find(|interface| interface.index == index && interface.up && interface.mtu >= 68)
@@ -400,16 +523,18 @@ impl RoutingTable {
                 interface_index: index,
                 logical_interface_index: index,
                 preferred_source: interface.address,
-                next_hop: destination,
+                next_hop: destination.into(),
+                via_gateway: false,
+                table: TABLE_MAIN,
                 kind: if destination.is_broadcast() {
-                    Ipv4RouteKind::Broadcast
+                    RouteKind::Broadcast
                 } else {
-                    Ipv4RouteKind::Unicast
+                    RouteKind::Unicast
                 },
-                transport: transport(Ipv4RouteMetrics::default(), interface.mtu),
+                transport: transport(RouteMetrics::default(), interface.mtu),
             });
         }
-        Err(Ipv4RouteKind::Throw)
+        Err(RouteKind::Throw)
     }
     /// 实际LOCAL成员用于bind与prefsrc；DOWN保留HOST record，不伪造127/8成员。
     pub(super) fn is_local(&self, address: Ipv4Addr, interfaces: &[NetworkInterface]) -> bool {
@@ -423,7 +548,7 @@ impl RoutingTable {
         self.lookup_record(Ipv4Addr::UNSPECIFIED, address, None, 0, interfaces, |_| {
             true
         })
-        .is_some_and(|record| record.request.kind == Ipv4RouteKind::Local)
+        .is_some_and(|record| record.request.kind == RouteKind::Local)
     }
     /// 发布前按最终候选核对 prefsrc；只有真实失效时申请一位/条的标记，不存另一份本地地址表。
     fn validate_sources(
@@ -452,23 +577,32 @@ impl RoutingTable {
         }
         Ok(())
     }
-    /// ingress目的分类与broadcast/multicast spec_dst使用同一FIB；结果在RX入队冻结。
+    /// 按唯一 FIB 分类本次目的；不是第二份本机地址或转发策略表。
+    pub(super) fn destination_kind(
+        &self,
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    ) -> Option<RouteKind> {
+        self.lookup_record(source, destination, None, 0, interfaces, |_| true)
+            .map(|record| record.request.kind)
+    }
+    /// ingress 的目的分类来自同一 NET guard 的 destination_kind，避免新转发入口使本机收包重复查找；其余事实在 RX 入队冻结。
     pub(super) fn ingress(
         &self,
         source: Ipv4Addr,
         destination: Ipv4Addr,
-        index: u32,
+        (index, kind): (u32, Option<RouteKind>),
+        path_mtu: Option<(&super::path_mtu::PathMtu, u64)>,
+        rules: &[router_protocol::policy_routing::Rule],
         interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
     ) -> smoltcp::iface::Ipv4IngressFacts {
-        let kind = self
-            .lookup_record(source, destination, None, 0, interfaces.clone(), |_| true)
-            .map(|record| record.request.kind);
-        let broadcast = destination.is_broadcast() || kind == Some(Ipv4RouteKind::Broadcast);
-        let local = kind == Some(Ipv4RouteKind::Local);
+        let broadcast = destination.is_broadcast() || kind == Some(RouteKind::Broadcast);
+        let local = kind == Some(RouteKind::Local);
         // 一次reverse查找同时投影spec_dst/MTU；同设备bound只收紧同一匹配，
         // 在同guard无mutation下可直接消费这个结论，不重复扫描相同FIB。
         let reverse = self
-            .select_facts(destination, source, None, interfaces.clone())
+            .select_output(destination, source, None, (0, rules), interfaces.clone())
             .ok();
         let specific_destination = if broadcast || destination.is_multicast() {
             reverse
@@ -485,11 +619,12 @@ impl RoutingTable {
         let bound_reverse = match reverse {
             Some(route) if route.logical_interface_index == index => Some(route),
             _ => self
-                .select_facts(destination, source, Some(index), interfaces.clone())
+                .select_output(destination, source, Some(index), (0, rules), interfaces.clone())
                 .ok(),
         };
-        let reverse_route = reverse.map(|route| route.transport);
-        let bound_reverse_route = bound_reverse.map(|route| route.transport);
+        let transport = |route| Self::reverse_transport(route, destination, source, path_mtu);
+        let reverse_route = reverse.map(transport);
+        let bound_reverse_route = bound_reverse.map(transport);
         smoltcp::iface::Ipv4IngressFacts {
             destination,
             interface_index: index,
@@ -499,5 +634,27 @@ impl RoutingTable {
             reverse_route,
             bound_reverse_route,
         }
+    }
+
+    /// 将反向选路的链路参数与同一次收包时刻的路径 MTU 合并。
+    pub(super) fn reverse_transport(
+        route: RouteSelection,
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        path_mtu: Option<(&super::path_mtu::PathMtu, u64)>,
+    ) -> smoltcp::iface::IpRouteContext {
+        let mut transport = route.transport;
+        if let Some((paths, now)) = path_mtu {
+            transport.mtu = paths.get(
+                super::path_mtu::Path {
+                    interface: route.logical_interface_index,
+                    source: source.into(),
+                    destination: destination.into(),
+                },
+                transport.mtu,
+                now,
+            );
+        }
+        transport
     }
 }

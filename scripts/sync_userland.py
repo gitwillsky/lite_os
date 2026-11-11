@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import debugfs_path, find_debugfs, offline_development_image, verify_root_owned_files
-from userland.busybox import ACCOUNT_APPLETS, build_busybox, obtain_source
+from userland.busybox import DEVELOPMENT_APPLETS, build_busybox, obtain_source
 from userland import UserlandArtifact
 from userland.artifacts import base_userland
 from toolchain.musl import cached_musl_paths, find_compiler
@@ -59,7 +59,7 @@ def managed_path(path: str) -> bool:
     if path == "/usr/share/mime/packages/liteos.xml" or path.startswith("/usr/share/icons/hicolor/"):
         return True
     return path in {
-        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        *RETIRED_FILES, *(f"/bin/{name}" for name in DEVELOPMENT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/savedump", "/bin/session-launch",
         "/bin/resolvd", "/bin/ipconfig", "/usr/sbin/sshd", "/usr/bin/ssh-keygen", "/usr/lib/ssh/sshd-auth",
@@ -392,7 +392,7 @@ def main() -> int:
     binary = build_busybox(obtain_source(), compiler, None)
     artifacts = base_userland(cached_musl_paths(compiler))
     # 同一个固定 BusyBox ELF 以标准 applet 名安装，旧开发镜像无需替换 init 或覆盖账户数据。
-    artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in ACCOUNT_APPLETS)
+    artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in DEVELOPMENT_APPLETS)
     synchronize(image, artifacts)
     return 0
 

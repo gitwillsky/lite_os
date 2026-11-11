@@ -9,10 +9,7 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
     configure_route(&net, route, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
     let endpoint = scoped_endpoint(&net, InetProtocol::Tcp);
     assert_eq!(
-        endpoint.connect(InetAddress {
-            address: peer,
-            port: 44337
-        }),
+        endpoint.connect(InetAddress::V4(core::net::SocketAddrV4::new(peer, 44337))),
         Err(SocketError::InProgress)
     );
     let InetEndpoint::Tcp(id) = endpoint.endpoint else {
@@ -20,12 +17,9 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
     };
     let deadline = {
         let mut network = net.protocol().unwrap().lock().unwrap();
-        let handle = network.tcp_endpoints[&id].first_handle_for_test();
-        let socket = network
-            .sockets
-            .get_mut::<smoltcp::socket::tcp::Socket>(handle);
-        socket.set_timeout(Some(Duration::from_millis(500)));
-        socket.maintenance_deadline().unwrap()
+        let socket = network.tcp_endpoints.get_mut(&id).unwrap().transport_for_test_mut();
+        socket.set_timeout(Some(::tcp::time::Duration::from_millis(500)));
+        socket.maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros())).unwrap()
     };
     configure_route(&net, route, network_protocol::RouteChange { delete: true, replace: false, create: false, exclusive: false, append: false }).unwrap();
     configure_up(&net, 2, false).unwrap();
@@ -83,10 +77,7 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
             );
         }
         listener
-            .bind(InetAddress {
-                address: local,
-                port: 44338,
-            })
+            .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, 44338)))
             .unwrap();
         listener.listen(1).unwrap();
         let start = now();
@@ -153,11 +144,9 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
                 net.protocol().unwrap().lock().unwrap().poll_at(timestamp);
                 assert_eq!(child.take_error(), None);
                 let network = net.protocol().unwrap().lock().unwrap();
-                let socket = network.sockets.get::<smoltcp::socket::tcp::Socket>(
-                    network.tcp_endpoints[&id].first_handle_for_test(),
-                );
+                let socket = network.tcp_endpoints[&id].transport_for_test();
                 assert_eq!(
-                    socket.maintenance_deadline(),
+                    socket.maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros())),
                     Some(timestamp + Duration::from_millis(1000)),
                     "actual route failure consumes one probe and schedules a future deadline"
                 );
@@ -302,10 +291,7 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
     }
     for endpoint in [&retry, &timed] {
         assert_eq!(
-            endpoint.connect(InetAddress {
-                address: peer,
-                port: 44339
-            }),
+            endpoint.connect(InetAddress::V4(core::net::SocketAddrV4::new(peer, 44339))),
             Err(SocketError::InProgress)
         );
     }
@@ -314,10 +300,8 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
             unreachable!()
         };
         let network = net.protocol().unwrap().lock().unwrap();
-        network
-            .sockets
-            .get::<smoltcp::socket::tcp::Socket>(network.tcp_endpoints[&id].first_handle_for_test())
-            .maintenance_deadline()
+        network.tcp_endpoints[&id].transport_for_test()
+            .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
             .unwrap()
     };
     let retry_start = deadline(&retry) - Duration::from_millis(1000);
@@ -375,10 +359,7 @@ fn actual_zero_window_clock_preserves_user_deadline_and_unrouted_probe_budget() 
             listener.set_timer_option(O::UserTimeout, 1000).unwrap();
         }
         listener
-            .bind(InetAddress {
-                address: local,
-                port,
-            })
+            .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, port)))
             .unwrap();
         listener.listen(1).unwrap();
         let start = now();
@@ -429,17 +410,15 @@ fn actual_zero_window_clock_preserves_user_deadline_and_unrouted_probe_budget() 
         let child = listener
             .accept(Arc::new(crate::Event::default()))
             .unwrap();
-        child.send_to(b"x", None, None).unwrap();
+        child.send_to(b"x", None, &[]).unwrap();
         net.protocol().unwrap().lock().unwrap().poll_at(start);
         let InetEndpoint::Tcp(id) = child.endpoint else {
             unreachable!()
         };
         let deadline = || {
             let network = net.protocol().unwrap().lock().unwrap();
-            network
-                .sockets
-                .get::<smoltcp::socket::tcp::Socket>(network.tcp_endpoints[&id].first_handle_for_test())
-                .maintenance_deadline()
+            network.tcp_endpoints[&id].transport_for_test()
+                .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
                 .unwrap()
         };
         let first = deadline();

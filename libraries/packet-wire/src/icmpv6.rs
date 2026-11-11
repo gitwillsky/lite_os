@@ -127,26 +127,40 @@ pub fn emit(
     Ok(())
 }
 
-/// 构造 Destination Unreachable/Time Exceeded 与可选 RFC 4884 扩展，返回实际消息长度。
+/// 构造四类 ICMPv6 错误，返回实际消息长度；Destination Unreachable/Time Exceeded 可带 RFC 4884 扩展。
 /// # Parameters
 /// quote 可截断；有扩展时自动补齐至少 128 bytes 并按八字节对齐。两个地址用于伪头，调用者负责外层 MTU/错误发送策略。
-/// Packet Too Big/Parameter Problem 不支持此扩展布局，须用普通 emit 保留它们的完整参数。
+/// parameter 在类型 2/4 保存完整 MTU/Pointer，类型 1/3 必须为零；类型 2/4 不接受扩展对象。
 /// # Errors
 /// 类型不支持、扩展/引用长度非法或容量不足；失败不改变输出。
 pub fn emit_error(
     packet: &mut [u8],
     message_type: u8,
     code: u8,
-    source: Ipv6Addr,
-    destination: Ipv6Addr,
+    parameter: u32,
+    endpoints: (Ipv6Addr, Ipv6Addr),
     quote: &[u8],
     objects: &[Object<'_>],
 ) -> Result<usize, PacketError> {
-    if !matches!(message_type, 1 | 3) {
-        return Err(PacketError::Unsupported);
-    }
-    let (length, units) = crate::icmp::emit_error_body(packet, quote, 8, objects)?;
-    packet[4..8].copy_from_slice(&[units, 0, 0, 0]);
+    let (source, destination) = endpoints;
+    let length = match message_type {
+        1 | 3 if parameter == 0 => {
+            let (length, units) = crate::icmp::emit_error_body(packet, quote, 8, objects)?;
+            packet[4..8].copy_from_slice(&[units, 0, 0, 0]);
+            length
+        }
+        2 | 4 if objects.is_empty() => {
+            let length = quote.len().checked_add(8).ok_or(PacketError::Capacity)?;
+            if length > packet.len() {
+                return Err(PacketError::Capacity);
+            }
+            u32::try_from(length).map_err(|_| PacketError::Malformed)?;
+            packet[4..8].copy_from_slice(&parameter.to_be_bytes());
+            packet[8..length].copy_from_slice(quote);
+            length
+        }
+        _ => return Err(PacketError::Unsupported),
+    };
     emit(
         &mut packet[..length],
         message_type,

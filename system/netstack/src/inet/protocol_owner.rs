@@ -13,8 +13,8 @@ const NETWORK_CLEANUP_BUDGET: usize = 64;
 
 struct NetworkStackState {
     stack: NetworkStack,
-    // OWNER: 每个成功 take 在 placeholder 可见前后精确 +1/-1；缺失时 poll 会把 closed
-    // placeholder 当真实 endpoint 推进并丢失 ingress/egress protocol state。
+    // OWNER: 每个成功 take 在借出对象的空占位可见前后精确 +1/-1；缺失时 poll 会把 closed
+    // placeholder 当真实 endpoint 推进并丢失 ingress/egress protocol state 或原生 UDP 队列。
     payload_loans: usize,
 }
 
@@ -50,11 +50,11 @@ impl NetworkStackGuard<'_> {
     }
 }
 
-/// IPv4 protocol state 的唯一 owner。
+/// 网络协议 state 的唯一 owner。
 ///
 /// 普通 task 竞争时通过 `TaskMutex` 睡眠；deferred poll 只尝试取得 owner，竞争或存在
-/// payload loan 时立即回投。payload loan 只在短 owner transaction 中用同类型 placeholder
-/// 取出/归还一个 socket；大块 copy 不持全局互斥 guard，只保留 O(1) loan-count 完整性证明。
+/// payload loan 时立即回投。payload loan 只在短 owner transaction 中用同类型空占位
+/// 取出/归还库 socket 或原生 UDP 队列；大块 copy 不持全局互斥 guard，只保留 O(1) loan-count 完整性证明。
 pub(crate) struct NetworkStackOwner {
     // OWNER: 唯一 protocol state；TaskMutex 只允许 task waiter 睡眠，deferred 只能 try。
     state: TaskMutex<NetworkStackState>,
@@ -64,7 +64,7 @@ pub(crate) struct NetworkStackOwner {
 }
 
 impl NetworkStackOwner {
-    /// 创建唯一 IPv4 protocol owner 与空 final-cleanup ring。
+    /// 创建唯一 网络协议 owner 与空 final-cleanup ring。
     ///
     /// # Parameters
     ///
@@ -156,7 +156,7 @@ impl NetworkStackOwner {
     ///
     /// # Returns
     ///
-    /// owner 正忙或 payload loan 使 SocketSet 暂时不完整时返回 `None`。
+    /// owner 正忙或 payload loan 使实际传输对象暂时不完整时返回 `None`。
     ///
     /// # Errors
     ///
@@ -176,9 +176,9 @@ impl NetworkStackOwner {
     ///
     /// # Parameters
     ///
-    /// - `take`: 用同类型 placeholder 从 SocketSet 取出真实 socket。
+    /// - `take`: 用同类型 placeholder 从 SocketSet 或原生 UDP endpoint 取出实际载荷队列。
     /// - `operation`: 只访问借出的 socket并执行 payload copy。
-    /// - `restore`: 把真实 socket 归还原 handle，并消费 placeholder。
+    /// - `restore`: 把真实传输对象归还原登记，并消费 placeholder。
     ///
     /// # Returns
     ///
@@ -233,7 +233,7 @@ impl NetworkStackOwner {
     ///
     /// # Errors
     ///
-    /// 超过 SocketSet capacity 表示 lifetime 不变量破坏并 fail-stop，不设 overflow fallback。
+    /// 超过统一 socket admission capacity 表示 lifetime 不变量破坏并 fail-stop，不设 overflow fallback。
     pub(super) fn cleanup_or_defer(&self, endpoint: InetEndpoint) {
         if let Some(mut state) = self.state.try_lock() {
             super::cleanup_endpoint(&mut state.stack, endpoint);

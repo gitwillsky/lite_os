@@ -18,17 +18,17 @@ impl RoutingTable {
     /// 下一跳只按邻接/本机路由验证；不能借即将撤销的受管 FIB 证明自己有效。
     pub(super) fn admit_next_hop(
         &self,
-        definition: NextHopConfiguration<'_>,
+        definition: NextHopConfiguration<'_, core::net::Ipv4Addr>,
         interfaces: &[NetworkInterface],
-    ) -> Result<group::Group, SocketError> {
+    ) -> Result<group::Group<Ipv4Addr>, SocketError> {
         Self::admit_group(definition, |request| {
             self.admit(request, interfaces, Origin::Forwarding)
         })
     }
     fn admit_group(
-        definition: NextHopConfiguration<'_>,
+        definition: NextHopConfiguration<'_, core::net::Ipv4Addr>,
         admit: impl Fn(Ipv4RouteRequest) -> Result<Record, Ipv4RouteError>,
-    ) -> Result<group::Group, SocketError> {
+    ) -> Result<group::Group<Ipv4Addr>, SocketError> {
         if definition.id == 0 || definition.is_empty() {
             return Err(SocketError::Invalid);
         }
@@ -41,9 +41,9 @@ impl RoutingTable {
                 metric: 0,
                 scope: 0,
                 protocol: 0,
-                kind: Ipv4RouteKind::Unicast,
+                kind: RouteKind::Unicast,
                 preferred_source: None,
-                metrics: Ipv4RouteMetrics::default(),
+                metrics: RouteMetrics::default(),
             }))
             .map_err(route_error)?;
         }
@@ -52,8 +52,8 @@ impl RoutingTable {
     /// 同批准备接口邻接及完整受管路由/具名定义；其他来源仍按同一候选接口事实保留或退休。
     pub(in crate::inet) fn prepare_routes<'a>(
         &self,
-        definitions: impl ExactSizeIterator<Item = NextHopConfiguration<'a>>,
-        routes: impl ExactSizeIterator<Item = RouteConfiguration>,
+        definitions: impl ExactSizeIterator<Item = NextHopConfiguration<'a, core::net::Ipv4Addr>>,
+        routes: impl ExactSizeIterator<Item = RouteConfiguration<core::net::Ipv4Addr>>,
         interfaces: &[NetworkInterface],
         changes: &[InterfaceChange],
     ) -> Result<(PreparedRouteChange, Vec<u32>), SocketError> {
@@ -64,6 +64,7 @@ impl RoutingTable {
                 request,
                 facts.clone(),
                 Origin::Forwarding,
+                (interfaces, changes),
                 |destination, bound, minimum_scope| {
                     self.configuration_lookup(
                         Flow {

@@ -2,11 +2,14 @@
 use super::*;
 use network_protocol::routes::{NextHopConfiguration, NextHopMember};
 
-pub(super) struct Group {
-    members: Vec<NextHopMember>,
+pub(super) struct Group<A: network_protocol::routes::RouteAddress> {
+    members: Vec<NextHopMember<A>>,
 }
-impl Group {
-    pub(super) fn capture(definition: NextHopConfiguration<'_>) -> Result<Self, SocketError> {
+impl<A: network_protocol::routes::RouteAddress> Group<A> {
+    pub(super) fn capture(definition: NextHopConfiguration<'_, A>) -> Result<Self, SocketError> {
+        if definition.is_empty() {
+            return Err(SocketError::Invalid);
+        }
         u32::try_from(definition.len()).map_err(|_| SocketError::NoSpace)?;
         let mut members = Vec::new();
         members
@@ -30,7 +33,7 @@ impl Group {
         }
         Ok(Self { members })
     }
-    pub(super) fn members(&self) -> &[NextHopMember] {
+    pub(super) fn members(&self) -> &[NextHopMember<A>] {
         &self.members
     }
     pub(super) fn retire(&mut self, index: u32, force: bool) {
@@ -49,19 +52,20 @@ impl Group {
         });
     }
 }
-fn eligible(
-    member: NextHopMember,
+fn eligible_mtu(
+    index: u32,
     bound: Option<u32>,
-    kind: Ipv4RouteKind,
+    kind: RouteKind,
     interfaces: impl Iterator<Item = InterfaceFacts>,
-) -> bool {
-    bound.is_none_or(|index| member.interface_index == index)
-        && interfaces
-            .into_iter()
-            .find(|interface| interface.index == member.interface_index)
-            .is_some_and(|interface| {
-                interface.mtu >= 68 && (interface.up || kind == Ipv4RouteKind::Local)
-            })
+) -> Option<usize> {
+    if bound.is_some_and(|bound| index != bound) {
+        return None;
+    }
+    interfaces
+        .into_iter()
+        .find(|interface| interface.index == index)
+        .filter(|interface| interface.mtu >= 68 && (interface.up || kind == RouteKind::Local))
+        .map(|interface| interface.mtu)
 }
 /// 源/目的地址键与 Linux 默认 L3 ECMP 一致；分片不依赖只在首片存在的端口。
 /// Jenkins lookup3 的 two-word final，seed 只分隔组身份，不声称是抗攻击密钥。
@@ -69,9 +73,12 @@ fn hash(source: Ipv4Addr, destination: Ipv4Addr, seed: u64) -> u32 {
     let init = 0xdead_beef_u32
         .wrapping_add(8)
         .wrapping_add(seed as u32 ^ (seed >> 32) as u32);
-    let mut a = u32::from(source).wrapping_add(init);
-    let mut b = u32::from(destination).wrapping_add(init);
-    let mut c = init;
+    let a = u32::from(source).wrapping_add(init);
+    let b = u32::from(destination).wrapping_add(init);
+    let c = init;
+    finish(a, b, c)
+}
+fn finish(mut a: u32, mut b: u32, mut c: u32) -> u32 {
     c ^= b;
     c = c.wrapping_sub(b.rotate_left(14));
     a ^= c;
@@ -87,40 +94,113 @@ fn hash(source: Ipv4Addr, destination: Ipv4Addr, seed: u64) -> u32 {
     c ^= b;
     c.wrapping_sub(b.rotate_left(24))
 }
+
 pub(super) fn select(
-    members: &[NextHopMember],
+    members: &[NextHopMember<core::net::Ipv4Addr>],
     flow: Flow,
     seed: u64,
-    kind: Ipv4RouteKind,
+    kind: RouteKind,
     interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
-) -> Option<NextHopMember> {
-    if let [member] = members {
-        return eligible(*member, flow.bound, kind, interfaces).then_some(*member);
-    }
-    // 成员数和每个权重都不超过 u32::MAX，总权重不溢出 u64；两遍读取由同一 NET guard 保证一致。
-    // capture 已按出口排列；一次读取同一出口事实即可裁决整个连续路径组，不复制可用性状态。
-    let runs = || {
-        members
-            .chunk_by(|left, right| left.interface_index == right.interface_index)
-            .filter(|run| eligible(run[0], flow.bound, kind, interfaces.clone()))
+) -> Option<NextHopMember<core::net::Ipv4Addr>> {
+    let mtu = |index| eligible_mtu(index, flow.bound, kind, interfaces.clone());
+    let usable = |member: &NextHopMember<Ipv4Addr>, mtu| {
+        mtu >= 1280 || !member.gateway.is_some_and(|gateway| gateway.is_ipv6())
     };
-    let total: u64 = runs()
-        .flat_map(|run| run.iter())
-        .map(|member| u64::from(member.weight))
-        .sum();
+    if let [member] = members {
+        return mtu(member.interface_index)
+            .filter(|mtu| usable(member, *mtu))
+            .map(|_| *member);
+    }
+    // 成员数与权重均不超过 u32::MAX；同出口连续排列，资格检查不按每个网关重复。
+    choose(
+        || {
+            members
+                .chunk_by(|left, right| left.interface_index == right.interface_index)
+                .filter_map(|run| mtu(run[0].interface_index).map(|mtu| (run, mtu)))
+                .flat_map(|(run, mtu)| run.iter().filter(move |member| usable(member, mtu)))
+        },
+        || hash(flow.source, flow.destination, seed),
+    )
+}
+
+pub(super) fn select_members<A: network_protocol::routes::RouteAddress>(
+    members: &[NextHopMember<A>],
+    hash: impl FnOnce() -> u32,
+    eligible: impl Fn(&NextHopMember<A>) -> bool,
+) -> Option<NextHopMember<A>> {
+    if let [member] = members {
+        return eligible(member).then_some(*member);
+    }
+    choose(|| members.iter().filter(|member| eligible(member)), hash)
+}
+
+fn choose<
+    'a,
+    A: network_protocol::routes::RouteAddress + 'a,
+    I: Iterator<Item = &'a NextHopMember<A>>,
+>(
+    members: impl Fn() -> I,
+    hash: impl FnOnce() -> u32,
+) -> Option<NextHopMember<A>> {
+    let total: u64 = members().map(|member| u64::from(member.weight)).sum();
     if total == 0 {
         return None;
     }
-    let point =
-        ((u128::from(hash(flow.source, flow.destination, seed)) * u128::from(total)) >> 32) as u64;
+    let point = ((u128::from(hash()) * u128::from(total)) >> 32) as u64;
     let mut cumulative = 0u64;
-    for run in runs() {
-        for member in run {
-            cumulative += u64::from(member.weight);
-            if point < cumulative {
-                return Some(*member);
-            }
+    for member in members() {
+        cumulative += u64::from(member.weight);
+        if point < cumulative {
+            return Some(*member);
         }
     }
     unreachable!("weighted next-hop selection escaped the eligible interval")
+}
+
+/// Jenkins lookup3/jhash2 的八字 L3 键；两个 IPv6 地址的全部位参与，不折叠高低半部。
+pub(super) fn hash_ipv6(
+    source: core::net::Ipv6Addr,
+    destination: core::net::Ipv6Addr,
+    seed: u64,
+) -> u32 {
+    let source = source.octets();
+    let destination = destination.octets();
+    let mut words = [0; 8];
+    for (word, bytes) in words.iter_mut().zip(
+        source
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .chain(destination.as_chunks::<4>().0),
+    ) {
+        *word = u32::from_be_bytes(*bytes);
+    }
+    let init = 0xdead_beef_u32
+        .wrapping_add(32)
+        .wrapping_add(seed as u32 ^ (seed >> 32) as u32);
+    let (mut a, mut b, mut c) = (init, init, init);
+    for offset in [0, 3] {
+        a = a.wrapping_add(words[offset]);
+        b = b.wrapping_add(words[offset + 1]);
+        c = c.wrapping_add(words[offset + 2]);
+        a = a.wrapping_sub(c);
+        a ^= c.rotate_left(4);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= a.rotate_left(6);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= b.rotate_left(8);
+        b = b.wrapping_add(a);
+        a = a.wrapping_sub(c);
+        a ^= c.rotate_left(16);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= a.rotate_left(19);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= b.rotate_left(4);
+        b = b.wrapping_add(a);
+    }
+    finish(a.wrapping_add(words[6]), b.wrapping_add(words[7]), c)
 }

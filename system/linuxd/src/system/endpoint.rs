@@ -136,7 +136,7 @@ pub(crate) fn reply_with_rights(
         Some(SocketSendDestination::Address(source)),
         &mut rights,
         &credentials,
-        None,
+        core::iter::empty(),
         false,
     );
 }
