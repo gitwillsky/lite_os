@@ -269,9 +269,9 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
 - VirtIO Console 的 duplicate/unknown head、非法 device-written length、RX ring overflow、repost/
   notify failure 必须进入同一 terminal failure，exactly once reset device 并唤醒全部 port waiter；
   reset 后不得继续使用原 queue。
-- GPU successor order 必须在 request 编码和 descriptor 摘取前验证；2D scanout 的
-  `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH`、2D damage 的 transfer/flush 与 disable 的
-  递增 slot UNREF chain 不得跳步、倒序或跨 operation。已完成 VirGL render 的 alternate target 必须把
+- GPU successor order 必须在编码及摘取 descriptor 前验证。2D scanout 按 `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH` 推进，disable 按槽顺序 UNREF。
+  2D damage 的所有 transfer fence 完成后，不可见资源即可同步完成，仅当前显示的资源等待 FLUSH。后缓冲在绑定为 scanout 后刷新。
+  已完成 VirGL render 的 alternate target 必须把
   `SET_SCANOUT→RESOURCE_FLUSH` 作为一个 ordered batch 发布：前者只绑定 host scanout texture，后者才触发
   display update；operation fence 只能在 flush completion 发布。两条 command 不得经 completion round-trip
   串行提交，否则一次 page flip 会多付一次 host event-loop/display-sync 延迟。失败保持当前 operation owner，

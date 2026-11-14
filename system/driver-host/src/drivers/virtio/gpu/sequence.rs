@@ -251,17 +251,7 @@ pub(super) fn complete(
                 retirement: SequenceRetirement::Boot { boot, evicted },
             }))
         }
-        RuntimeStage::FlushDamage => {
-            let target = match control.operation.take() {
-                Some(RuntimeOperation::Damage(target)) => target,
-                _ => return Err(DisplayError::Device),
-            };
-            let evicted = control.resources.complete(target, false, true);
-            Ok(SequenceCompletion::operation(
-                fence,
-                SequenceRetirement::Resident(evicted),
-            ))
-        }
+        RuntimeStage::FlushDamage => finish_damage(control, fence),
         RuntimeStage::UnrefReleased => {
             let release = match control.operation.take() {
                 Some(RuntimeOperation::Release(release)) => release,
@@ -377,20 +367,23 @@ fn unref_disabled(
     }
 }
 
-/// damage batch 全部完成后选择下一批，或唯一最终 FLUSH command。
+/// damage batch 全部完成后推进下一批；只对当前显示的资源发送最终 FLUSH。
 pub(super) fn finish_damage_batch(
     control: &mut ControlQueue,
 ) -> Result<SequenceAction, DisplayError> {
     let operation_fence = control.damage.operation_fence();
     control.damage.finish_batch();
-    let (mode, resource_id) = operation_target(&control.operation, &control.resources)?;
+    let Some(RuntimeOperation::Damage(target)) = control.operation.as_ref() else {
+        return Err(DisplayError::Device);
+    };
+    let resource_id = target.id(&control.resources);
     if control.damage.has_remaining() {
         Ok(SequenceAction::DamageBatch {
             operation_fence,
-            mode,
+            mode: target.mode(&control.resources),
             resource_id,
         })
-    } else {
+    } else if target.is_scanned_out(&control.resources) {
         Ok(SequenceAction::Command {
             command: GpuCommand::Flush {
                 rectangle: control.damage.flush_rectangle(),
@@ -399,5 +392,19 @@ pub(super) fn finish_damage_batch(
             },
             operation_fence,
         })
+    } else {
+        // 不可见资源在有 fence 的 TRANSFER 完成后即可供翻页使用；SET_SCANOUT 后才刷新显示。
+        finish_damage(control, operation_fence)
     }
+}
+
+fn finish_damage(control: &mut ControlQueue, fence: u64) -> Result<SequenceAction, DisplayError> {
+    let Some(RuntimeOperation::Damage(target)) = control.operation.take() else {
+        return Err(DisplayError::Device);
+    };
+    let evicted = control.resources.complete(target, false, true);
+    Ok(SequenceCompletion::operation(
+        fence,
+        SequenceRetirement::Resident(evicted),
+    ))
 }

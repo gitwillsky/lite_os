@@ -2485,6 +2485,7 @@ system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl Resour
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn evicted_id (& self) -> Option < u32 >
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn id (& self , resources : & ResourceSet) -> u32
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn is_new (& self) -> bool
+system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn is_scanned_out (& self , resources : & ResourceSet) -> bool
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn mode (& self , resources : & ResourceSet) -> DisplayMode
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl ResourceTarget :: fn synchronized (& self , resources : & ResourceSet) -> bool
 system/driver-host/src/drivers/virtio/gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn disable_active_scanout (& self) -> Result < u64 , DisplayError >

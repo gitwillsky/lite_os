@@ -399,8 +399,8 @@ Benchmark 决策：最终使用已有 canvas/真实输出交互 workload，对�
 CPU 输出用 DIRTYFB 同步 Frame 的目标修复区，再通过原有同步凭据翻页；不新增 native 协议或驱动事务。
 区域超过现有 32-clip UAPI 上限时取外接矩形，最多多传输，不额外分配或建立多次同步状态。
 同一像素对账用例增加逐 framebuffer 的设备副本，防止误把前台 damage 当成后缓冲的完整修改集。
-成本决策：CPU 路径增加一次标准 ioctl/完成往返，换取局部更新时减少 DMA 字节；沿现有纯 2D 输出门禁诊断，
-全屏视频或首帧未声称更快。KMS FB_DAMAGE_CLIPS/GPU 区域 flush 的实现与成本见下文，不以代码检查替代实际 GPU/画面验收。
+成本决策：CPU 路径用标准 ioctl 提交局部 transfer 来减少 DMA 字节。不可见缓冲在最后一批 transfer 完成时返回，省掉首个 FLUSH，当前显示的目标仍等待 FLUSH。
+沿现有纯 2D 输出 workload 测量 transfer 完成到 flip 的设备往返与上屏时间。KMS FB_DAMAGE_CLIPS/GPU 区域 flush 的实现与成本见下文。
 
 ## KMS property blob 所有权
 

@@ -238,6 +238,8 @@ QEMU 11.1.2 的 `info virtio-status` 和 `x-query-virtio-status` 会使本测试
 空载和带载各 10 轮均完成，菜单、移动及缩放的中位数分别为 457/36/395 ms 与 640/63/772 ms。停发后，两侧各发一次 IPv4 和 IPv6 ICMP 探测，四次均成功。
 该拓扑用于确认多队列转发与桌面交互可同时推进。嵌套 TCG 的空载延迟已偏高，带载延迟进一步上升，共享 CPU 下的流畅度仍未通过。原始记录见 `target/logs/router-multiqueue-desktop-controlled-nov14.log`。
 
+后续使用四核 AArch64/HVF 的私有镜像验证 2D 输出。打开及关闭开始菜单时，QMP 截图达到预期像素。打开阶段的 VirtIO trace 显示，两块后缓冲各自在 transfer 后直接绑定 scanout，绑定后才刷新显示。本轮未施加转发负载。
+
 ## 单个路由域的多核吞吐
 
 2026-11-12 在隔离 Linux 中启动四核 AArch64/TCG 来宾，按[多队列吞吐验收](../architecture-contract/ip-forwarding.md#隔离的多队列吞吐验收)接入两块各四对队列的网卡。
