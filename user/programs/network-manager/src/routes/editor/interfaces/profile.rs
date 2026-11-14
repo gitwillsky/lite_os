@@ -184,8 +184,8 @@ async fn edit_ipv4(
         .or_else(|| device.map(|value| Ipv4Configuration::from_projection(&value.config)));
     let (labels, modes): (&[_], &[_]) = if named {
         (
-            &["不配置 IPv4 地址", "手动设置"],
-            &[None, Some(Assignment::Static)],
+            &["不配置 IPv4 地址", "DHCP", "手动设置"],
+            &[None, Some(Assignment::Dhcp), Some(Assignment::Static)],
         )
     } else {
         (

@@ -405,6 +405,7 @@ impl RouterConfig {
                         gateway.prefix_length,
                     ),
                     prefixes,
+                    None,
                 )
                 .map_err(StageError::Unchanged)?,
             );
@@ -458,7 +459,12 @@ impl RouterConfig {
                 inner.next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
                 Ok((
                     key,
-                    self.open_dhcp(&inner.interfaces[staged.position], key)?,
+                    self.open_dhcp(
+                        &link.network,
+                        inner.interfaces[staged.position].index,
+                        inner.interfaces[staged.position].mac,
+                        key,
+                    )?,
                 ))
             })();
             match result {

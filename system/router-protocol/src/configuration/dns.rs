@@ -31,8 +31,12 @@ pub struct DnsForwarding {
 }
 
 impl DnsForwarding {
-    pub(super) fn validate(&self, configuration: &Configuration) -> Result<(), ValidationError> {
-        let path = "/dns/forwarding";
+    pub(super) fn validate<'a>(
+        &self,
+        interfaces: &BTreeMap<Name, Interface>,
+        gateway: impl Fn(&Name) -> Option<&'a VlanGateway>,
+        path: &str,
+    ) -> Result<(), ValidationError> {
         if !(1..=32).contains(&self.listen.len()) || !(1..=8).contains(&self.upstream.len()) {
             return Err(invalid(
                 path,
@@ -40,26 +44,25 @@ impl DnsForwarding {
             ));
         }
         for (index, listener) in self.listen.iter().enumerate() {
-            let configured =
-                if let Some(profile) = configuration.interfaces.get(&listener.interface) {
-                    match listener.address {
-                        IpAddr::V4(address) => profile.ipv4.as_ref().is_some_and(|ipv4| {
-                            ipv4.assignment == Assignment::Static && ipv4.address == address
-                        }),
-                        IpAddr::V6(address) => profile.ipv6.as_ref().is_some_and(|ipv6| {
-                            ipv6.addresses.iter().any(|entry| entry.address == address)
-                        }),
+            let configured = if let Some(profile) = interfaces.get(&listener.interface) {
+                match listener.address {
+                    IpAddr::V4(address) => profile.ipv4.as_ref().is_some_and(|ipv4| {
+                        ipv4.assignment == Assignment::Static && ipv4.address == address
+                    }),
+                    IpAddr::V6(address) => profile.ipv6.as_ref().is_some_and(|ipv6| {
+                        ipv6.addresses.iter().any(|entry| entry.address == address)
+                    }),
+                }
+            } else if let Some(gateway) = gateway(&listener.interface) {
+                match listener.address {
+                    IpAddr::V4(address) => gateway.address == Some(address),
+                    IpAddr::V6(address) => {
+                        gateway.ipv6.iter().any(|entry| entry.address == address)
                     }
-                } else if let Some(gateway) = configuration.vlan_gateway(&listener.interface) {
-                    match listener.address {
-                        IpAddr::V4(address) => gateway.address == Some(address),
-                        IpAddr::V6(address) => {
-                            gateway.ipv6.iter().any(|entry| entry.address == address)
-                        }
-                    }
-                } else {
-                    return Err(invalid(path, "listener interface does not exist"));
-                };
+                }
+            } else {
+                return Err(invalid(path, "listener interface does not exist"));
+            };
             if !configured || self.listen[..index].contains(listener) {
                 return Err(invalid(
                     path,
@@ -85,7 +88,7 @@ impl DnsForwarding {
                 || upstream
                     .interface
                     .as_ref()
-                    .is_some_and(|name| configuration.interface_reference(name).is_none())
+                    .is_some_and(|name| !interfaces.contains_key(name) && gateway(name).is_none())
                 || self.upstream[..index].contains(upstream)
                 || self.listen.iter().any(|listener| {
                     listener.address == upstream.address

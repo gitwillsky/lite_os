@@ -15,22 +15,30 @@ pub(super) async fn edit(
     dialogs: &Dialogs,
     parent: &Window,
     config: &mut RouterConfiguration,
+    domain: Option<&ConfigurationName>,
 ) -> liteos_ui::Result<bool> {
     let (window, mut events, root) = form(dialogs, parent, "地址分发与 DNS", 531, 228)?;
-    let physical: Vec<_> = config
-        .interfaces
-        .keys()
-        .filter(|&name| {
-            !config
-                .bridges
-                .values()
-                .any(|bridge| bridge.ports.contains_key(name))
-        })
-        .cloned()
-        .collect();
+    let physical: Vec<_> = match domain {
+        Some(name) => config.routing_domains[name]
+            .interfaces
+            .keys()
+            .cloned()
+            .collect(),
+        None => config
+            .interfaces
+            .keys()
+            .filter(|&name| {
+                !config
+                    .bridges
+                    .values()
+                    .any(|bridge| bridge.ports.contains_key(name))
+            })
+            .cloned()
+            .collect(),
+    };
     let mut names = physical.clone();
     let mut vlans = Vec::new();
-    for (bridge_name, bridge) in &config.bridges {
+    for (bridge_name, bridge) in config.bridges.iter().filter(|_| domain.is_none()) {
         for (&id, gateway) in &bridge.gateways {
             names.push(gateway.name.clone());
             vlans.push((bridge_name.clone(), id));
@@ -80,8 +88,10 @@ pub(super) async fn edit(
         WidgetKind::Label,
         if names.is_empty() {
             "先在路由接口中保存下游接口配置。"
-        } else {
+        } else if domain.is_none() {
             "选择要分发地址的物理接口或 VLAN 网关。"
+        } else {
+            "选择本路由域中要分发地址的接口。"
         },
         Layout::default(),
     )?;
@@ -97,20 +107,37 @@ pub(super) async fn edit(
             } => break,
             EventKind::Activate { .. } if event.node == back.id() => break,
             EventKind::Activate { .. } if event.node == dns.id() => {
-                if let Some(next) = dns::edit(dialogs, &window, config).await?
-                    && config.dns != next
-                {
-                    config.dns = next;
-                    changed = true;
+                if let Some(next) = dns::edit(dialogs, &window, config, domain).await? {
+                    if let Some(domain) = domain {
+                        let target = &mut config
+                            .routing_domains
+                            .get_mut(domain)
+                            .expect("selected domain")
+                            .dns_forwarding;
+                        changed |= *target != next.forwarding;
+                        *target = next.forwarding;
+                    } else {
+                        changed |= config.dns != next;
+                        config.dns = next;
+                    }
                 }
             }
             EventKind::Activate { .. } if event.node == pd.id() => {
                 if let Some(next) =
-                    delegation::edit(dialogs, &window, &physical, &names, config).await?
-                    && config.prefix_delegation != next
+                    delegation::edit(dialogs, &window, &physical, &names, config, domain).await?
                 {
-                    config.prefix_delegation = next;
-                    changed = true;
+                    let target = match domain {
+                        Some(name) => {
+                            &mut config
+                                .routing_domains
+                                .get_mut(name)
+                                .expect("selected domain")
+                                .prefix_delegation
+                        }
+                        None => &mut config.prefix_delegation,
+                    };
+                    changed |= *target != next;
+                    *target = next;
                 }
             }
             EventKind::Activate { .. } if event.node == dhcp.id() || event.node == ra.id() => {
@@ -119,8 +146,17 @@ pub(super) async fn edit(
                 };
                 let name = &names[index];
                 if index < physical.len() {
-                    let profile = config
-                        .interfaces
+                    let interfaces = match domain {
+                        Some(name) => {
+                            &mut config
+                                .routing_domains
+                                .get_mut(name)
+                                .expect("selected domain")
+                                .interfaces
+                        }
+                        None => &mut config.interfaces,
+                    };
+                    let profile = interfaces
                         .get_mut(name)
                         .expect("physical interface from draft");
                     if event.node == dhcp.id() {

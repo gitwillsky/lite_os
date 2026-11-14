@@ -192,7 +192,6 @@ pub(super) async fn run(
         remove.set_state(disabled(selected.is_none()))?;
         delete_table.set_state(disabled(selected_table == 0))?;
         delete_domain.set_state(disabled(selected_domain.is_none()))?;
-        address_services.set_state(disabled(selected_domain.is_some()))?;
         bridges.set_state(disabled(selected_domain.is_some()))?;
         review.set_state(disabled(!dirty))?;
         summary.set_text(&format!(
@@ -405,8 +404,8 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == address_services.id() && selected_domain.is_none() {
-                if services::edit(dialogs, &window, &mut config).await? {
+            } else if event.node == address_services.id() {
+                if services::edit(dialogs, &window, &mut config, selected_domain.as_ref()).await? {
                     dirty = true;
                     status.set_text("")?;
                 }

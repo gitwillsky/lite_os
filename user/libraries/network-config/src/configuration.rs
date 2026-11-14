@@ -407,9 +407,12 @@ impl ManagementClient {
         Ok(())
     }
 
-    /// Read a page of leases for the given system interface.
+    /// Read a page of leases for the given system interface in `domain`, or in the default domain.
+    /// # Errors
+    /// Invalid interface, failed transport, or invalid lease reply.
     pub fn dhcp_server_bindings(
         &mut self,
+        domain: Option<&str>,
         interface: &[u8],
         after: std::net::Ipv4Addr,
     ) -> io::Result<(
@@ -424,7 +427,10 @@ impl ManagementClient {
         let (generation, page) = self.configuration_request(
             ordinal::DHCP_SERVER_BINDINGS,
             Some(&query),
-            Default::default(),
+            administration::Request {
+                domain,
+                ..Default::default()
+            },
         )?;
         let (observed_ms, leases, more) = dhcp_server::decode_page(&page)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DHCP 租约回复无效"))?;

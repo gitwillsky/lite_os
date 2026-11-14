@@ -199,7 +199,6 @@ const ROUTING_RIB_USES: &[&[u8]] = &[
     service_directory::NETWORK,
     service_directory::NETWORK_INSTALLER,
 ];
-const NETWORK_ONLY_USES: &[&[u8]] = &[service_directory::NETWORK];
 
 /// 一个受监督原生服务的启动描述。
 struct ServiceSpec {
@@ -397,7 +396,7 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &DHCP_SPEC,
             Provider::Dhcp,
-            || vec![services(NETWORK_ONLY_USES).into_handle()],
+            alloc::vec::Vec::new,
         )
         .await;
     });
@@ -409,7 +408,7 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &DHCP_SERVER_SPEC,
             Provider::DhcpServer,
-            || vec![services(NETWORK_ONLY_USES).into_handle()],
+            alloc::vec::Vec::new,
         )
         .await;
     });
@@ -421,7 +420,7 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &DNS_CACHE_SPEC,
             Provider::DnsCache,
-            || vec![services(NETWORK_ONLY_USES).into_handle()],
+            alloc::vec::Vec::new,
         )
         .await;
     });

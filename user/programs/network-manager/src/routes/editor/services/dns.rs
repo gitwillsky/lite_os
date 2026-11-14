@@ -33,20 +33,33 @@ pub(super) async fn edit(
     dialogs: &Dialogs,
     parent: &Window,
     config: &RouterConfiguration,
+    domain: Option<&ConfigurationName>,
 ) -> liteos_ui::Result<Option<DnsConfiguration>> {
-    let (window, mut events, root) = form(dialogs, parent, "DNS 设置", 550, 301)?;
-    let (_, suffix) = field(&root, "主 DNS 后缀", &config.dns.primary_suffix)?;
-    let (_, search) = field(&root, "搜索域", &config.dns.search_list.join(" "))?;
-    let append = checkbox(
-        &root,
-        "自动搜索时也尝试主后缀的父域",
-        config.dns.append_parent_suffixes,
+    let (window, mut events, root) = form(
+        dialogs,
+        parent,
+        "DNS 设置",
+        550,
+        if domain.is_some() { 185 } else { 301 },
     )?;
-    let enabled = checkbox(
-        &root,
-        "向下游提供 DNS 转发与缓存",
-        config.dns.forwarding.is_some(),
-    )?;
+    let host_fields = domain
+        .is_none()
+        .then(|| {
+            let (_, suffix) = field(&root, "主 DNS 后缀", &config.dns.primary_suffix)?;
+            let (_, search) = field(&root, "搜索域", &config.dns.search_list.join(" "))?;
+            let append = checkbox(
+                &root,
+                "自动搜索时也尝试主后缀的父域",
+                config.dns.append_parent_suffixes,
+            )?;
+            Ok::<_, liteos_ui::Error>((suffix, search, append))
+        })
+        .transpose()?;
+    let current = match domain {
+        Some(name) => config.routing_domains[name].dns_forwarding.as_ref(),
+        None => config.dns.forwarding.as_ref(),
+    };
+    let enabled = checkbox(&root, "向下游提供 DNS 转发与缓存", current.is_some())?;
     let bar = child(&root, WidgetKind::Row, "", row())?;
     let listeners = child(
         &bar,
@@ -69,15 +82,19 @@ pub(super) async fn edit(
     let status = child(
         &root,
         WidgetKind::Label,
-        "多个搜索域以空格分隔，留空时自动搜索。",
+        if domain.is_none() {
+            "多个搜索域以空格分隔，留空时自动搜索。"
+        } else {
+            ""
+        },
         Layout::default(),
     )?;
     let (save, cancel) = form_buttons(&root)?;
-    let (mut listen, mut resolvers) = config.dns.forwarding.as_ref().map_or_else(
+    let (mut listen, mut resolvers) = current.map_or_else(
         || (Vec::new(), Vec::new()),
         |value| (value.listen.clone(), value.upstream.clone()),
     );
-    let interfaces = interface_names(config, None);
+    let interfaces = interface_names(config, domain);
     set_forwarding_buttons(checked(&enabled)?, &listeners, &upstream)?;
 
     while let Some(event) = events.next().await? {
@@ -93,7 +110,7 @@ pub(super) async fn edit(
                 set_forwarding_buttons(checked(&enabled)?, &listeners, &upstream)?
             }
             EventKind::Activate { .. } if event.node == listeners.id() => {
-                let choices = listen_addresses(config);
+                let choices = listen_addresses(config, domain);
                 if choices.is_empty() && listen.is_empty() {
                     status.set_text("先为下游接口设置静态 IPv4 或 IPv6 地址。")?;
                     continue;
@@ -157,21 +174,25 @@ pub(super) async fn edit(
                 }
             }
             EventKind::Activate { .. } if event.node == save.id() => {
-                let primary_suffix = suffix.text()?.trim().to_owned();
-                if dns_suffix(primary_suffix.as_bytes()).is_err() {
-                    status.set_text("主 DNS 后缀无效。")?;
-                    suffix.focus()?;
-                    continue;
-                }
-                let search_list: Vec<_> = search
-                    .text()?
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect();
-                if !valid_search_list(&search_list) {
-                    status.set_text("搜索域须为有效且不重复的域名。")?;
-                    search.focus()?;
-                    continue;
+                let mut next = DnsConfiguration::default();
+                if let Some((suffix, search, append)) = &host_fields {
+                    next.primary_suffix = suffix.text()?.trim().to_owned();
+                    if dns_suffix(next.primary_suffix.as_bytes()).is_err() {
+                        status.set_text("主 DNS 后缀无效。")?;
+                        suffix.focus()?;
+                        continue;
+                    }
+                    next.search_list = search
+                        .text()?
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect();
+                    if !valid_search_list(&next.search_list) {
+                        status.set_text("搜索域须为有效且不重复的域名。")?;
+                        search.focus()?;
+                        continue;
+                    }
+                    next.append_parent_suffixes = checked(append)?;
                 }
                 let forwarding = if checked(&enabled)? {
                     if listen.is_empty() || resolvers.is_empty() {
@@ -185,12 +206,8 @@ pub(super) async fn edit(
                 } else {
                     None
                 };
-                return Ok(Some(DnsConfiguration {
-                    forwarding,
-                    search_list,
-                    primary_suffix,
-                    append_parent_suffixes: checked(&append)?,
-                }));
+                next.forwarding = forwarding;
+                return Ok(Some(next));
             }
             _ => {}
         }
@@ -207,9 +224,15 @@ fn set_forwarding_buttons(
     upstream.set_state(disabled(!on))
 }
 
-fn listen_addresses(config: &RouterConfiguration) -> Vec<DnsListener> {
+fn listen_addresses(
+    config: &RouterConfiguration,
+    domain: Option<&ConfigurationName>,
+) -> Vec<DnsListener> {
     let mut addresses = Vec::new();
-    for (name, profile) in &config.interfaces {
+    let interfaces = domain.map_or(&config.interfaces, |name| {
+        &config.routing_domains[name].interfaces
+    });
+    for (name, profile) in interfaces {
         if let Some(ipv4) = &profile.ipv4
             && ipv4.assignment == Assignment::Static
         {
@@ -228,6 +251,7 @@ fn listen_addresses(config: &RouterConfiguration) -> Vec<DnsListener> {
     for gateway in config
         .bridges
         .values()
+        .filter(|_| domain.is_none())
         .flat_map(|bridge| bridge.gateways.values())
     {
         if let Some(address) = gateway.address {

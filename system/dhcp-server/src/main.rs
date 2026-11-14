@@ -19,10 +19,9 @@ use native_runtime::{
     system::monotonic,
 };
 use network_protocol::{
-    NetworkClient, PacketAddress, PacketKind, RemoteNamespace, RemotePacketSocket, SocketError,
+    PacketAddress, PacketKind, RemoteNamespace, RemotePacketSocket, SocketError,
 };
 use router_protocol::dhcp_server as protocol;
-use service_directory::ServiceDirectory;
 
 native_runtime::entry!(main);
 
@@ -35,27 +34,26 @@ const RESUME: u64 = 3;
 const PACKET_BATCH: usize = 16;
 
 struct Directory {
-    services: ServiceDirectory,
-    // Owns interface claims across factory connections. Without this, two packet sockets could
-    // serve independent pools on the same interface during replacement or a concurrent request.
-    occupied: Mutex<FallibleMap<u32, ()>>,
+    // Claims use the delegated namespace channel identity and its local interface index. The
+    // configuration owner duplicates the same channel, including during RIB reconnects.
+    // Without this, two concurrent requests could serve separate pools on the same interface.
+    occupied: Mutex<FallibleMap<(u64, u32), ()>>,
 }
 
 struct Claim {
     directory: Arc<Directory>,
-    index: u32,
+    interface: (u64, u32),
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.directory.occupied.lock().remove(&self.index);
+        self.directory.occupied.lock().remove(&self.interface);
     }
 }
 
 fn main(mut startup: Startup) -> i64 {
     use launch_protocol::dhcp_server;
     let directory = Arc::new(Directory {
-        services: ServiceDirectory::new(Channel::from_handle(startup.take(dhcp_server::SERVICES))),
         occupied: Mutex::new(FallibleMap::new()),
     });
     let outgoing = Channel::from_handle(startup.take(dhcp_server::OUTGOING));
@@ -97,24 +95,29 @@ fn start(
     let index = request.u32()?;
     let pool = Pool::decode(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     request.finish()?;
-    if !handles.is_empty() || index <= 1 {
+    let [network]: [Handle; 1] = handles
+        .try_into()
+        .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    if index <= 1 {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
+    let interface = (network.basic()?.koid, index);
+    let network = RemoteNamespace::from_channel(Channel::from_handle(network));
     {
         let mut occupied = directory.occupied.lock();
-        if occupied.get(&index).is_some() {
+        if occupied.get(&interface).is_some() {
             return Err(native_abi::ERR_ALREADY_BOUND);
         }
         occupied
-            .try_insert(index, ())
+            .try_insert(interface, ())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     }
     let claim = Claim {
         directory: directory.clone(),
-        index,
+        interface,
     };
     let (control, peer) = Channel::create()?;
-    let session = Session::open(claim, pool, control)?;
+    let session = Session::open(network, claim, pool, control)?;
     let mut returned = Vec::new();
     returned
         .try_reserve_exact(1)
@@ -182,18 +185,17 @@ struct Session {
 }
 
 impl Session {
-    fn open(claim: Claim, pool: Pool, control: Channel) -> Result<Self, Status> {
-        let client = NetworkClient::new(
-            claim
-                .directory
-                .services
-                .connect(service_directory::NETWORK)?,
-        );
-        let network = client.create_namespace(true)?;
-        let mac = validate_link(&network, claim.index, &pool)?;
-        let input = Input::open(&network, claim.index, FIRST_RX, ETH_IPV4)?;
+    fn open(
+        network: RemoteNamespace,
+        claim: Claim,
+        pool: Pool,
+        control: Channel,
+    ) -> Result<Self, Status> {
+        let index = claim.interface.1;
+        let mac = validate_link(&network, index, &pool)?;
+        let input = Input::open(&network, index, FIRST_RX, ETH_IPV4)?;
         let arp = if pool.options.probe_addresses {
-            Some(Input::open(&network, claim.index, FIRST_RX + 1, ETH_ARP)?)
+            Some(Input::open(&network, index, FIRST_RX + 1, ETH_ARP)?)
         } else {
             None
         };
@@ -348,7 +350,7 @@ impl Session {
             return Ok(());
         }
         let pool = Pool::decode(body).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        let mac = validate_link(&self.network, self.claim.index, &pool)?;
+        let mac = validate_link(&self.network, self.claim.interface.1, &pool)?;
         let input = if self.input.is_none() {
             Some(self.open_input(ETH_IPV4)?)
         } else {
@@ -377,7 +379,7 @@ impl Session {
     fn open_input(&mut self, protocol: u16) -> Result<Input, Status> {
         let key = self.next_rx_key;
         self.next_rx_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
-        Input::open(&self.network, self.claim.index, key, protocol)
+        Input::open(&self.network, self.claim.interface.1, key, protocol)
     }
 
     fn drain(&mut self, protocol: u16) -> Result<bool, Status> {
@@ -424,7 +426,7 @@ impl Session {
         };
         // ARP is fixed-size and permits Ethernet padding beyond its payload.
         if (protocol == ETH_IPV4 && received.full_length != received.data.len())
-            || received.source.interface_index as u32 != self.claim.index
+            || received.source.interface_index as u32 != self.claim.interface.1
             || received.source.address_length != 6
         {
             return Ok(true);
@@ -444,8 +446,10 @@ impl Session {
                 let mut probe = [0; ARP_BYTES];
                 arp_probe(address, self.mac, &mut probe).map_err(|_| native_abi::ERR_IO)?;
                 let socket = &self.arp.as_ref().expect("probing enabled").socket;
-                let result =
-                    socket.send_to(&probe, Some(link(self.claim.index, [0xff; 6], ETH_ARP)));
+                let result = socket.send_to(
+                    &probe,
+                    Some(link(self.claim.interface.1, [0xff; 6], ETH_ARP)),
+                );
                 match result {
                     Ok(ARP_BYTES) => self.server.probe_transmitted(address, Some(now_ms())),
                     Ok(_)
@@ -455,7 +459,12 @@ impl Session {
                     Err(error) => return Err(socket_status(error)),
                 }
             }
-            Err(Error::NoMemory) => warn!("dhcp-server: allocation failed on {}", self.claim.index),
+            Err(Error::NoMemory) => {
+                warn!(
+                    "dhcp-server: allocation failed on {}",
+                    self.claim.interface.1
+                );
+            }
             _ => {}
         }
         Ok(true)
@@ -471,7 +480,10 @@ impl Session {
             Delivery::Broadcast => [0xff; 6],
             Delivery::Unicast { mac, .. } => mac,
         };
-        match socket.send_to(reply.bytes, Some(link(self.claim.index, mac, ETH_IPV4))) {
+        match socket.send_to(
+            reply.bytes,
+            Some(link(self.claim.interface.1, mac, ETH_IPV4)),
+        ) {
             Ok(_) | Err(SocketError::Again | SocketError::NoBuffer | SocketError::NetworkDown) => {
                 Ok(())
             }

@@ -108,9 +108,9 @@ IPv6 定义与 AddressState 同次冻结；新物理地址保持 Tentative，相
 NET 退出会结束对应 RIB 实例，配置 owner 丢弃旧 ifindex 并重装网卡；单独 RIB 退出只重连/重放配置，不重复打开存活设备。
 NET 的 `INSTALL_DEVICE(1)` 使用 u32 版本 3、u64 目录 ID、长度前缀域名和设备描述，随一个目录能力传输；空域名指默认域。根 RIB 连接独占放置权限，目标具名域须已打开。
 同域重试重交原接口。改绑前核对目录与设备描述，依据登记的弱域引用、ifindex 与实际 lifetime 撤回旧接口，再打开新会话；旧域事务在途返回 ShouldWait，目录独占保护队列寿命。NET/设备事件不反向获取登记锁。
-`routing_domains` 与根配置同一次持久决定。网卡归属变化触发重扫，受影响的域独立确认接口、路由、选路规则和防火墙。重试期间报告 Applying。[配置方法](../../user/libraries/network-config/README.md#建立独立静态路由域)
-NET 安装能力的 WATCH_ROUTING_INPUTS(5) 返回合并 Event。USER_0 报告接口拓扑变化，USER_1 报告双栈网关可达性变化。预备与纯 FIB 发布不通知。
-该 Event 在 NIC 发布前装配，链路回调绑定到同一通知源。RIB 清除并重新武装两类信号，然后冻结接口、地址和双栈邻居事实，重新计算递归依赖及实际 FIB。
+`routing_domains` 与根配置同一次持久决定。改绑时重扫，各域独立确认接口、路由、选路规则和防火墙。重试期间报告 Applying。
+各域共用地址池、DNS 和 DHCP 执行状态，独立持有租约。IPv6 委派租约通过 `Delegation` 接收、分配，随下游接口事务确认后再切换上联。失败通过本域重试，DNS 观察本域地址变化。
+NET 在发布 NIC 前装配 WATCH_ROUTING_INPUTS(5) 的合并 Event，USER_0 表示拓扑变化，USER_1 表示双栈网关可达性变化。RIB 清除并重武装信号后重新捕获输入。预备与纯 FIB 发布不通知。
 RIB 主线程以一个 Port 等待 NET 关闭、路由输入变化、来源撤回和租约释放。持久提交期间保留 WaitingForLease 工作，释放后重取快照并求解。
 资源/执行暂态失败只为未完成工作设置重试截止，成功归空闲；纯 FIB 更新不回馈通知，避免重算自激。初始重算清理旧实例的无来源执行集合，配置 owner 重放持久意图。
 配置来源的旧 REFRESH、配置服务中的路由重试字段及热拔出中转调用已删除；配置服务仍用 lifetime 清理界面记录和 DHCP，会话不再充当选路通知 owner。
@@ -450,7 +450,7 @@ source_retry_at 只拥有“完整路由意图（静态来源/准入策略）尚
 Linux 客户端经 [router-api](userspace-abi.md#网络管理入口) 调用；网关按账户授权后，通过 root 私有设置端点转发给原生服务。
 
 - `router-protocol::administration` 是控制帧的唯一编解码 owner，root/适配层/客户端共用 Request/Reply。
-  请求以 u32 管理控制版本 11 开头，随后是操作专有字段和 u64 正文长度。按域的操作追加长度前缀域名，零长度指默认域。`OPEN_NETWORK_NAMESPACE(28)` 回复固定控制字段、16 字节实例身份和一个原生网络 channel。
+  请求以 u32 管理控制版本 12 开头，随后是操作专有字段和 u64 正文长度。按域的操作（包括下游 DHCPv4 租约查询）追加长度前缀域名，零长度指默认域。`OPEN_NETWORK_NAMESPACE(28)` 回复固定控制字段、16 字节实例身份和一个原生网络 channel。
   IMPORT 带 24 字节预期代际，IMPORT/COMMIT_RESULT 带 16 字节提交编号，备份导出/删除带 bytes 身份。非空正文携带一个 VMO。具名请求只解析到已配置的作用域。
 - 回复控制字段固定 36 字节（u32 线版本、24 字节代际、u64 文档逻辑长度）。EXPORT/SCHEMA/VALIDATE/DIFF 一律返回一个只读 VMO，
   IMPORT 和备份删除仅返回代际、文档长度零且无句柄；其余操作成功时均携带一个内容能力，逻辑长度为零也不能省略能力。

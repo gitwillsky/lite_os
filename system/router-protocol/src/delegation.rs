@@ -5,8 +5,9 @@ use core::net::Ipv6Addr;
 
 use crate::{Decoder, Encoder, Invalid};
 
-/// DHCP 服务中用于打开上联前缀委派会话的序号。
-pub const START: u32 = 2;
+/// Open an upstream DHCPv6-PD session. The request carries the network domain channel and
+/// the link-change Event in that order, followed by the reply's lease channel lifetime.
+pub const START: u32 = 4;
 /// 同一个 IA 可接纳的前缀数。所有前缀必须能随双 DUID 在最小 IPv6 MTU 中续租。
 pub const MAX_PREFIXES: usize = 32;
 

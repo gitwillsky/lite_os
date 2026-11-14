@@ -207,7 +207,7 @@ fn handle(
                 content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
             )
             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-            owner.pool_bindings(name, after)?
+            owner.pool_bindings(metadata.domain, name, after)?
         }
         ordinal::BGP_ROUTES => {
             let query = router_protocol::tracking::IpPrefix::parse(
@@ -417,11 +417,11 @@ pub(super) fn serve(router_config: Arc<RouterConfig>, channel: Channel) -> Resul
                         wait_connection_changes(&router_config, cursor)?;
                     }
                     router_protocol::ordinal::DHCP => {
-                        let name = request.bytes()?;
-                        let action = DhcpAction::decode(request.u8()?)
-                            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                        let (domain, name, action) =
+                            router_protocol::dhcp_command::decode(request.bytes()?)
+                                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                         request.finish()?;
-                        router_config.dhcp_command(name, action)?;
+                        router_config.dhcp_command(domain, name, action)?;
                     }
                     router_protocol::ordinal::RENAME => {
                         let interface = request.bytes()?;

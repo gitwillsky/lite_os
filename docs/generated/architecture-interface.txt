@@ -12237,9 +12237,17 @@ system/router-config/src/bgp.rs :: pub (super) impl RouterConfig :: fn queue_bgp
 system/router-config/src/bgp.rs :: pub (super) impl RouterConfig :: fn start_bgp (& self , controller : & RoutingConfigurator , configuration : & router_protocol :: bgp :: Configuration , scopes : Option < & [u32] > ,) -> Result < BgpInstance , Status >
 system/router-config/src/delegation.rs :: pub (super) Delegation :: retry_at : Option < i64 >
 system/router-config/src/delegation.rs :: pub (super) fn downstream (configuration : Option < & Configuration > , interface : & Interface ,) -> Option < u64 >
-system/router-config/src/delegation.rs :: pub (super) fn prefix_plan ((index , up , address , prefix_length) : (u32 , bool , Option < Ipv4Addr > , u8) , prefixes : & [DelegatedPrefix] ,) -> Result < InterfaceConfiguration < '_ > , Status >
+system/router-config/src/delegation.rs :: pub (super) fn prefix_plan ((index , up , address , prefix_length) : (u32 , bool , Option < Ipv4Addr > , u8) , prefixes : & [DelegatedPrefix] , route : Option < router_protocol :: interface :: DefaultRoute > ,) -> Result < InterfaceConfiguration < '_ > , Status >
 system/router-config/src/delegation.rs :: pub (super) fn vlan_assignments < 'a > (inner : & Inner , candidate : Option < & Configuration > , ports : Ports < 'a > , retain : bool , now : i64 ,) -> Result < Vec < (router_protocol :: switching :: Gateway < 'a > , Vec < DelegatedPrefix > ,) > , Status , >
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn confirm_projection (& mut self)
 system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn has_session (& self) -> bool
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn needs_projection (& self) -> bool
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn receive (& mut self , port : & Port , key : u64) -> bool
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn remove_interface (& mut self , index : u32) -> bool
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn retains (& self , index : u32 , config : & PrefixDelegation) -> bool
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn retire (& mut self)
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn start (& mut self , owner : & RouterConfig , network : & RemoteNamespace , index : u32 , link_changed : & Event , config : & PrefixDelegation , next_key : & mut u64 ,) -> Result < () , Status >
+system/router-config/src/delegation.rs :: pub (super) impl Delegation :: fn subnets (& self , config : & PrefixDelegation , subnet : u64 , now : i64 ,) -> Result < Vec < DelegatedPrefix > , Status >
 system/router-config/src/delegation.rs :: pub (super) impl RouterConfig :: fn apply_delegation (& self , inner : & mut Inner) -> Result < () , Status >
 system/router-config/src/delegation.rs :: pub (super) impl RouterConfig :: fn delegated_prefixes (inner : & Inner , candidate : Option < & Configuration > , subnet : Option < u64 > , now : i64 , retain : bool ,) -> Result < Vec < DelegatedPrefix > , Status >
 system/router-config/src/delegation.rs :: pub (super) impl RouterConfig :: fn delegation_interface_removed (& self , inner : & mut Inner , index : u32)
@@ -12249,24 +12257,34 @@ system/router-config/src/delegation.rs :: pub (super) impl RouterConfig :: fn re
 system/router-config/src/delegation.rs :: pub (super) struct Delegation
 system/router-config/src/dhcp_server.rs :: pub (super) PoolExecution :: retry_at : Option < i64 >
 system/router-config/src/dhcp_server.rs :: pub (super) fn stage (execution : & mut PoolExecution , interfaces : & [Interface] , configuration : Option < & Configuration > , ports : Ports < '_ > , plans : & [InterfaceConfiguration < '_ >] ,) -> Result < StagedPools , Status >
+system/router-config/src/dhcp_server.rs :: pub (super) impl PoolExecution :: fn bindings_channel (& self , index : u32) -> Result < Channel , Status >
+system/router-config/src/dhcp_server.rs :: pub (super) impl PoolExecution :: fn remove_closed (& mut self , key : u64) -> Option < bool >
 system/router-config/src/dhcp_server.rs :: pub (super) impl PoolExecution :: fn remove_interface (& mut self , index : u32)
 system/router-config/src/dhcp_server.rs :: pub (super) impl RouterConfig :: fn apply_pools (& self , inner : & mut Inner) -> Result < () , Status >
-system/router-config/src/dhcp_server.rs :: pub (super) impl RouterConfig :: fn pool_bindings (& self , name : & [u8] , after : Ipv4Addr ,) -> Result < (Revision , Vec < u8 >) , Status >
+system/router-config/src/dhcp_server.rs :: pub (super) impl RouterConfig :: fn pool_bindings (& self , domain : Option < & str > , name : & [u8] , after : Ipv4Addr ,) -> Result < (Revision , Vec < u8 >) , Status >
 system/router-config/src/dhcp_server.rs :: pub (super) impl RouterConfig :: fn pool_closed (& self , key : u64) -> bool
 system/router-config/src/dhcp_server.rs :: pub (super) impl RouterConfig :: fn queue_pools (& self , inner : & mut Inner)
+system/router-config/src/dhcp_server.rs :: pub (super) impl StagedPools :: fn apply (self , owner : & RouterConfig , execution : & mut PoolExecution , next_key : & mut u64 , network : & RemoteNamespace ,) -> Result < () , Status >
 system/router-config/src/dhcp_server.rs :: pub (super) impl StagedPools :: fn confirm (self , owner : & RouterConfig , inner : & mut Inner) -> Result < () , Status >
 system/router-config/src/dhcp_server.rs :: pub (super) impl StagedPools :: fn hold (& mut self , execution : & mut PoolExecution)
+system/router-config/src/dhcp_server.rs :: pub (super) impl StagedPools :: fn prepare (execution : & mut PoolExecution , mut desired : Vec < (u32 , Pool) > , present : impl Fn (u32) -> bool ,) -> Result < Self , Status >
 system/router-config/src/dhcp_server.rs :: pub (super) struct PoolExecution
 system/router-config/src/dhcp_server.rs :: pub (super) struct StagedPools
 system/router-config/src/dns_cache.rs :: pub (super) DnsExecution :: retry_at : Option < i64 >
+system/router-config/src/dns_cache.rs :: pub (super) fn compile < 'a > (network : & RemoteNamespace , forwarding : Option < & 'a DnsForwarding > , reference : impl Fn (& 'a Name) -> Option < InterfaceReference < 'a > > ,) -> Result < Option < Settings > , Status >
+system/router-config/src/dns_cache.rs :: pub (super) impl DnsExecution :: fn pause (& mut self) -> Result < () , Status >
+system/router-config/src/dns_cache.rs :: pub (super) impl DnsExecution :: fn remove_closed (& mut self , key : u64) -> bool
 system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn apply_dns (& self , inner : & mut Inner) -> Result < () , Status >
+system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn apply_dns_settings (& self , execution : & mut DnsExecution , next_key : & mut u64 , network : & RemoteNamespace , settings : Option < Settings > ,) -> Result < () , Status >
 system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn dns_closed (& self , key : u64) -> bool
 system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn pause_dns (& self , inner : & mut Inner , configuration : Option < & Configuration > , positions : impl Iterator < Item = usize > ,) -> Result < Option < Channel > , Status >
 system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn queue_dns (& self , inner : & mut Inner)
 system/router-config/src/dns_cache.rs :: pub (super) impl RouterConfig :: fn retain_dns_pause (inner : & mut Inner , token : Option < Channel >)
 system/router-config/src/dns_cache.rs :: pub (super) struct DnsExecution
+system/router-config/src/leases.rs :: pub (super) fn apply_address (installer : & RoutingConfigurator , index : u32 , address : Option < Ipv4Addr > , prefix_length : u8 , route : Option < router_protocol :: interface :: DefaultRoute > ,) -> Result < () , Status >
+system/router-config/src/leases.rs :: pub (super) fn read_event (events : & Channel , port : & Port , key : u64 ,) -> Result < (LeaseEvent , Option < Channel >) , Status >
 system/router-config/src/leases.rs :: pub (super) impl RouterConfig :: fn lease_ready (& self , key : u64)
-system/router-config/src/leases.rs :: pub (super) impl RouterConfig :: fn open_dhcp (& self , interface : & Interface , key : u64) -> Result < Channel , Status >
+system/router-config/src/leases.rs :: pub (super) impl RouterConfig :: fn open_dhcp (& self , network : & RemoteNamespace , index : u32 , mac : [u8 ; 6] , key : u64 ,) -> Result < Channel , Status >
 system/router-config/src/ospf.rs :: pub (super) fn changed (previous : Option < & Configuration > , next : & Configuration) -> bool
 system/router-config/src/ospf.rs :: pub (super) impl RouterConfig :: fn apply_ospf (& self , inner : & mut Inner) -> Result < () , Status >
 system/router-config/src/ospf.rs :: pub (super) impl RouterConfig :: fn ospf_closed (& self)
@@ -12302,19 +12320,29 @@ system/router-config/src/routing_domains.rs :: pub (super) Domains :: retry_at :
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn bgp_closed (& mut self) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn bgp_instance (& self , name : & str) -> Result < & BgpInstance , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn controller (& self , name : & str) -> Result < & RoutingConfigurator , Status >
+system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn dhcp_channel (& self , domain : & str , name : & [u8]) -> Result < & Channel , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn namespace (& self , name : & str) -> Result < (NonZeroU128 , & RemoteNamespace) , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn network (& self , name : & str) -> Result < & RemoteNamespace , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn ospf_closed (& mut self) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn ospf_instance (& self , name : & str) -> Result < & OspfInstance , Status >
+system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn pool_bindings_channel (& self , domain : & str , name : & [u8] ,) -> Result < Channel , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn apply_domains (& self , inner : & mut Inner) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn commit_domains (& self , inner : & mut Inner , previous : Option < & Configuration >)
+system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn domain_dns_event (& self , inner : & mut Inner , key : u64) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn domain_interface_removed (& self , inner : & mut Inner , key : u64) -> bool
+system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn domain_pool_closed (& self , inner : & mut Inner , key : u64) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn install_in_domain (& self , inner : & mut Inner , entry : & device_protocol :: directory :: Entry , name : & Name , mac : [u8 ; 6] ,) -> Result < () , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl RouterConfig :: fn queue_domains (& self , inner : & mut Inner)
 system/router-config/src/routing_domains.rs :: pub (super) struct Domains
+system/router-config/src/routing_domains/prefix_delegation.rs :: pub (in super :: super) impl RouterConfig :: fn domain_delegation_ready (& self , inner : & mut Inner , key : u64) -> bool
+system/router-config/src/routing_domains/prefix_delegation.rs :: pub (super) impl Scope :: fn delegated_assignments (& self , domain : & RoutingDomain , retain : bool , now : i64 ,) -> Result < Vec < Vec < DelegatedPrefix > > , Status >
+system/router-config/src/routing_domains/prefix_delegation.rs :: pub (super) impl Scope :: fn retains_delegation (& self , domain : & RoutingDomain) -> bool
+system/router-config/src/routing_domains/prefix_delegation.rs :: pub (super) impl Scope :: fn start_delegation (& mut self , owner : & RouterConfig , domain : Option < & RoutingDomain > , next_key : & mut u64 ,) -> Result < () , Status >
+system/router-config/src/routing_domains/uplink_dhcp.rs :: pub (in super :: super) impl RouterConfig :: fn domain_lease_ready (& self , inner : & mut Inner , key : u64)
 system/router-config/src/transaction.rs :: enum StageError :: RollbackFailed { cause : Status , rollback : Status }
 system/router-config/src/transaction.rs :: enum StageError :: Unchanged (Status)
 system/router-config/src/transaction.rs :: pub (super) enum StageError
+system/router-config/src/transaction.rs :: pub (super) fn abort_execution (transaction : PreparedConfiguration , cause : Status) -> StageError
 system/router-config/src/transaction.rs :: pub (super) fn activate_execution (prepared : Result < PreparedConfiguration , Status > ,) -> Result < PreparedConfiguration , StageError >
 system/router-config/src/transaction.rs :: pub (super) fn retry_at () -> i64
 system/router-config/src/transaction.rs :: pub (super) impl RouterConfig :: fn project_interfaces (& self , inner : & Inner , candidate : & Configuration ,) -> Result < Vec < (InterfaceConfig , u32) > , Status >

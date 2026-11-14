@@ -21,6 +21,113 @@ impl Delegation {
     pub(super) fn has_session(&self) -> bool {
         self.session.is_some()
     }
+
+    /// Check the session identity against the current upstream and persistent policy.
+    pub(super) fn retains(&self, index: u32, config: &PrefixDelegation) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.matches(index, config))
+    }
+
+    /// Retire the session and remember whether downstream withdrawal is still owed.
+    pub(super) fn retire(&mut self) {
+        self.session = None;
+        self.project_pending |= !self.prefixes.is_empty();
+        self.prefixes.clear();
+    }
+
+    /// Retire if this interface was our upstream. Returns true when it matched.
+    pub(super) fn remove_interface(&mut self, index: u32) -> bool {
+        if !self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.interface == index)
+        {
+            return false;
+        }
+        self.retire();
+        true
+    }
+
+    /// Compute current /64 assignments for one downstream subnet in this domain.
+    /// # Errors
+    /// Memory for the subnet projection could not be reserved.
+    pub(super) fn subnets(
+        &self,
+        config: &PrefixDelegation,
+        subnet: u64,
+        now: i64,
+    ) -> Result<Vec<DelegatedPrefix>, Status> {
+        config
+            .subnets(&self.prefixes, subnet, now)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)
+    }
+
+    /// Open the configured session after the interface and downstream prefix plan are confirmed.
+    /// # Errors
+    /// Interface lookup, RPC, observer registration or resource reservation failed.
+    pub(super) fn start(
+        &mut self,
+        owner: &RouterConfig,
+        network: &RemoteNamespace,
+        index: u32,
+        link_changed: &Event,
+        config: &PrefixDelegation,
+        next_key: &mut u64,
+    ) -> Result<(), Status> {
+        let snapshot = network
+            .interface_snapshot(index)
+            .map_err(configuration_status)?;
+        let name = snapshot
+            .name
+            .split(|&byte| byte == 0)
+            .next()
+            .unwrap_or_default();
+        let key = *next_key;
+        let next = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        self.session =
+            Some(owner.open_delegation(network, index, name, link_changed, config, key)?);
+        *next_key = next;
+        Ok(())
+    }
+
+    /// Decode and apply a lease snapshot or retire its closed session.
+    pub(super) fn receive(&mut self, port: &Port, key: u64) -> bool {
+        let Some(session) = self.session.as_ref().filter(|session| session.key == key) else {
+            return false;
+        };
+        let received = (|| {
+            if session.events.wait_one(signals::PEER_CLOSED, 0) != Err(native_abi::ERR_TIMED_OUT) {
+                return Err(native_abi::ERR_PEER_CLOSED);
+            }
+            let message = session.events.read();
+            session
+                .events
+                .wait_async(port, key, signals::READABLE | signals::PEER_CLOSED)?;
+            let message = message?;
+            if !message.handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            delegation::decode(&message.bytes).map_err(|_| native_abi::ERR_INVALID_ARGS)
+        })();
+        match received {
+            Ok(prefixes) if prefixes != self.prefixes => {
+                self.prefixes = prefixes;
+                self.project_pending = true;
+            }
+            Ok(_) | Err(native_abi::ERR_SHOULD_WAIT) => {}
+            Err(_) => self.retire(),
+        }
+        true
+    }
+
+    pub(super) fn needs_projection(&self) -> bool {
+        self.project_pending
+    }
+
+    pub(super) fn confirm_projection(&mut self) {
+        self.project_pending = false;
+    }
 }
 
 struct Session {
@@ -33,8 +140,8 @@ struct Session {
 }
 
 impl Session {
-    fn matches(&self, interface: &Interface, config: &PrefixDelegation) -> bool {
-        self.interface == interface.index
+    fn matches(&self, index: u32, config: &PrefixDelegation) -> bool {
+        self.interface == index
             && self.duid == config.duid()
             && self.iaid == config.iaid
             && self.accept_reconfigure == config.accept_reconfigure
@@ -74,6 +181,7 @@ fn vlan_subnet(config: Option<&Configuration>, name: &[u8; 16]) -> Option<u64> {
 pub(super) fn prefix_plan(
     (index, up, address, prefix_length): (u32, bool, Option<Ipv4Addr>, u8),
     prefixes: &[DelegatedPrefix],
+    route: Option<router_protocol::interface::DefaultRoute>,
 ) -> Result<InterfaceConfiguration<'_>, Status> {
     Ok(InterfaceConfiguration {
         index,
@@ -81,7 +189,7 @@ pub(super) fn prefix_plan(
         address,
         prefix_length,
         mtu: None,
-        route: None,
+        route,
         ipv6: None,
         delegated: Some(
             DelegatedPrefixes::new(prefixes).map_err(|_| native_abi::ERR_INVALID_ARGS)?,
@@ -165,12 +273,7 @@ impl RouterConfig {
             return Ok(false);
         };
         let upstream = self.upstream(inner, candidate, config)?;
-        Ok(inner
-            .delegation
-            .session
-            .as_ref()
-            .zip(upstream)
-            .is_some_and(|(session, interface)| session.matches(interface, config)))
+        Ok(upstream.is_some_and(|interface| inner.delegation.retains(interface.index, config)))
     }
 
     pub(super) fn delegated_prefixes(
@@ -186,23 +289,24 @@ impl RouterConfig {
         let config = candidate
             .and_then(|configuration| configuration.prefix_delegation.as_ref())
             .expect("downstream requires delegation configuration");
-        config
-            .subnets(&inner.delegation.prefixes, subnet, now)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)
+        inner.delegation.subnets(config, subnet, now)
     }
 
     fn open_delegation(
         &self,
-        interface: &Interface,
+        network: &RemoteNamespace,
+        index: u32,
+        name: &[u8],
+        link_changed: &Event,
         config: &PrefixDelegation,
         key: u64,
     ) -> Result<Session, Status> {
         let channel = self.services.connect(service_directory::DHCP)?;
         let duid = config.duid();
         let mut request = service_rpc::Writer::request(delegation::START);
-        request.try_reserve(13 + interface.name.len() + duid.len())?;
+        request.try_reserve(13 + name.len() + duid.len())?;
         request
-            .bytes(&interface.name)
+            .bytes(name)
             .u32(config.iaid)
             .bytes(&duid)
             .bool(config.accept_reconfigure);
@@ -210,8 +314,8 @@ impl RouterConfig {
             &channel,
             &request,
             alloc::vec![
-                interface
-                    .link_changed
+                network.duplicate()?.into_channel().into_handle(),
+                link_changed
                     .duplicate(native_abi::rights::SAME)?
                     .into_handle(),
             ],
@@ -223,7 +327,7 @@ impl RouterConfig {
         let events = Channel::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?);
         events.wait_async(&self.port, key, signals::READABLE | signals::PEER_CLOSED)?;
         Ok(Session {
-            interface: interface.index,
+            interface: index,
             duid,
             iaid: config.iaid,
             accept_reconfigure: config.accept_reconfigure,
@@ -247,20 +351,8 @@ impl RouterConfig {
         }
     }
 
-    fn retire_delegation(inner: &mut Inner) {
-        inner.delegation.session = None;
-        inner.delegation.project_pending |= !inner.delegation.prefixes.is_empty();
-        inner.delegation.prefixes.clear();
-    }
-
     pub(super) fn delegation_interface_removed(&self, inner: &mut Inner, index: u32) {
-        if inner
-            .delegation
-            .session
-            .as_ref()
-            .is_some_and(|session| session.interface == index)
-        {
-            Self::retire_delegation(inner);
+        if inner.delegation.remove_interface(index) {
             self.queue_delegation(inner);
         }
     }
@@ -280,7 +372,7 @@ impl RouterConfig {
         let candidate = saved.as_deref();
         let retain = self.retains_delegation(inner, candidate)?;
         if !retain {
-            Self::retire_delegation(inner);
+            inner.delegation.retire();
         }
         if inner.delegation.project_pending {
             self.project_delegation(inner, candidate, retain)?;
@@ -303,11 +395,21 @@ impl RouterConfig {
         if interface.retry_at.is_some() {
             return Err(native_abi::ERR_SHOULD_WAIT);
         }
-        let key = inner.next_key;
-        let next = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
-        inner.delegation.session = Some(self.open_delegation(interface, config, key)?);
-        inner.next_key = next;
-        Ok(())
+        let index = interface.index;
+        let link_changed = interface.link_changed.duplicate(native_abi::rights::SAME)?;
+        let network = &inner
+            .link
+            .as_ref()
+            .ok_or(native_abi::ERR_BAD_STATE)?
+            .network;
+        inner.delegation.start(
+            self,
+            network,
+            index,
+            &link_changed,
+            config,
+            &mut inner.next_key,
+        )
     }
 
     fn project_delegation(
@@ -333,8 +435,8 @@ impl RouterConfig {
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let now = native_runtime::system::monotonic();
         for snapshot in snapshots {
-            let subnet = if snapshot.vlan {
-                vlan_subnet(candidate, &snapshot.name)
+            let (subnet, route) = if snapshot.vlan {
+                (vlan_subnet(candidate, &snapshot.name), None)
             } else {
                 let Some(interface) = inner
                     .interfaces
@@ -349,7 +451,19 @@ impl RouterConfig {
                 if interface.retry_at.is_some() {
                     return Err(native_abi::ERR_SHOULD_WAIT);
                 }
-                Some(subnet)
+                // RIB replaces the entire per-interface default route on every interface
+                // transaction, including a lease event that only changes IPv6 prefixes.
+                let route = if snapshot.up && snapshot.address.is_some() {
+                    let protocol = if interface.config.method == Method::Dhcp {
+                        RTPROT_DHCP
+                    } else {
+                        RTPROT_BOOT
+                    };
+                    routing::default_route(candidate, interface, interface.gateway, protocol)?
+                } else {
+                    None
+                };
+                (Some(subnet), route)
             };
             let Some(subnet) = subnet else { continue };
             let prefixes = Self::delegated_prefixes(
@@ -362,7 +476,7 @@ impl RouterConfig {
             assignments
                 .try_reserve(1)
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            assignments.push((snapshot, prefixes));
+            assignments.push((snapshot, prefixes, route));
         }
         if assignments.is_empty() {
             return Ok(());
@@ -371,7 +485,7 @@ impl RouterConfig {
         plans
             .try_reserve_exact(assignments.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for (snapshot, prefixes) in &assignments {
+        for (snapshot, prefixes, route) in &assignments {
             plans.push(prefix_plan(
                 (
                     snapshot.index,
@@ -380,6 +494,7 @@ impl RouterConfig {
                     snapshot.prefix_length,
                 ),
                 prefixes,
+                *route,
             )?);
         }
         link.activate_configuration(
@@ -397,38 +512,11 @@ impl RouterConfig {
     /// 只有当前会话的事件可发布租约；关闭或无效消息撤销租约。
     pub(super) fn delegation_ready(&self, key: u64) -> bool {
         let mut inner = self.inner.lock();
-        let Some(session) = inner
-            .delegation
-            .session
-            .as_ref()
-            .filter(|session| session.key == key)
-        else {
-            return false;
-        };
-        let received = (|| {
-            if session.events.wait_one(signals::PEER_CLOSED, 0) != Err(native_abi::ERR_TIMED_OUT) {
-                return Err(native_abi::ERR_PEER_CLOSED);
-            }
-            let message = session.events.read()?;
-            if !message.handles.is_empty() {
-                return Err(native_abi::ERR_INVALID_ARGS);
-            }
-            let prefixes =
-                delegation::decode(&message.bytes).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-            session
-                .events
-                .wait_async(&self.port, key, signals::READABLE | signals::PEER_CLOSED)?;
-            Ok(prefixes)
-        })();
-        match received {
-            Ok(prefixes) => {
-                if prefixes == inner.delegation.prefixes {
-                    return true;
-                }
-                inner.delegation.prefixes = prefixes;
-                inner.delegation.project_pending = true;
-            }
-            Err(_) => Self::retire_delegation(&mut inner),
+        if !inner.delegation.receive(&self.port, key) {
+            return self.domain_delegation_ready(&mut inner, key);
+        }
+        if !inner.delegation.needs_projection() && inner.delegation.has_session() {
+            return true;
         }
         if let Ok(notification) = Self::prepare_notification(&inner) {
             let _ = self.apply_delegation(&mut inner);

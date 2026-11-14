@@ -9,12 +9,11 @@ use native_runtime::native_abi::{self, Status, signals};
 use native_runtime::system::{cprng_draw, monotonic};
 use native_runtime::{Channel, Event, Handle, Port};
 use network_protocol::{
-    InetFamily, InetOptionChange, InetProtocol, InternetPacketInfo, NetworkClient,
-    RemoteInetSocket, RemoteNamespace, SocketError,
+    InetFamily, InetOptionChange, InetProtocol, InternetPacketInfo, RemoteInetSocket,
+    RemoteNamespace, SocketError,
 };
 use packet_wire::dhcpv6::{CLIENT_PORT, MessageType, SERVER_PORT, options::Duid};
 use router_protocol::delegation::{self, DelegatedPrefix, MAX_PREFIXES};
-use service_directory::ServiceDirectory;
 
 use self::wire::{
     Association, Exchange, Lifetime, OUTPUT_BYTES, Prefix, ReconfigureAuth, ReconfigureKey,
@@ -31,7 +30,6 @@ const LINK_CHANGE: u64 = 3;
 const LINK_REVALIDATE_MAX_DURATION: i64 = 10 * SECOND;
 
 pub(super) fn start(
-    services: &ServiceDirectory,
     request: &mut service_rpc::Reader<'_>,
     handles: Vec<Handle>,
 ) -> Result<Vec<Handle>, Status> {
@@ -40,23 +38,25 @@ pub(super) fn start(
     let client = request.bytes()?;
     let accept_reconfigure = request.bool()?;
     request.finish()?;
-    if handles.len() != 1 || name.is_empty() || Duid::parse(client).is_err() {
+    if name.is_empty() || Duid::parse(client).is_err() {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
 
-    let link_changed = Event::from_handle(handles.into_iter().next().expect("validated handle"));
+    let [network, link_changed]: [Handle; 2] = handles
+        .try_into()
+        .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let mut returned = Vec::new();
     returned
         .try_reserve_exact(1)
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let (events, peer) = Channel::create()?;
     let session = Session::open(
-        services,
+        RemoteNamespace::from_channel(Channel::from_handle(network)),
         name,
         iaid,
         Identifier::new(client),
         events,
-        link_changed,
+        Event::from_handle(link_changed),
         accept_reconfigure,
     )?;
     drop(native_runtime::thread::spawn(b"dhcpv6-pd", move || {
@@ -249,7 +249,7 @@ struct Session {
 
 impl Session {
     fn open(
-        services: &ServiceDirectory,
+        network: RemoteNamespace,
         name: &[u8],
         iaid: u32,
         client: Identifier,
@@ -257,8 +257,6 @@ impl Session {
         link_changed: Event,
         accept_reconfigure: bool,
     ) -> Result<Self, Status> {
-        let control = NetworkClient::new(services.connect(service_directory::NETWORK)?);
-        let network = control.create_namespace(true)?;
         let index = network.interface_index(name).map_err(socket_status)?;
         let endpoint = network
             .socket(InetFamily::Ipv6, InetProtocol::Udp)

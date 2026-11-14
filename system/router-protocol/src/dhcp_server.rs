@@ -4,8 +4,9 @@ use crate::{Decoder, Encoder, Invalid, configuration::DhcpV4Pool};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
-/// 以实际接口序号和编码后的 Pool 打开一个服务会话，关闭回复 channel 停止服务。
-pub const START: u32 = 1;
+/// 在随请求交付的网络域能力中，以接口序号和编码后的 Pool 开启服务。
+/// 关闭回复 channel 停止会话。
+pub const START: u32 = 4;
 const VERSION: u32 = 1;
 const POOL_VERSION: u32 = 2;
 /// 暂停收发，直到请求附带的寿命 channel 关闭。第一个句柄为单次回复。

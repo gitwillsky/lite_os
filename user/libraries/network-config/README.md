@@ -72,7 +72,10 @@ ipconfig /import router.json "$reviewed_revision"
 
 域内 `routes` 沿用[静态路由格式](../../../docs/architecture-contract/router-configuration.md#静态路由配置)，出口填写本域的接口配置名。多个域可以使用重叠的 IPv4 和 IPv6 地址。也可为同一域分配多个接口，在它们之间转发。
 按[审阅配置](#审阅配置)导入后，用 `ipconfig /watch-config` 查看应用状态。跨域改绑期间旧链路会中断，新配置随系统启动加载。删除域或设备分配后，网卡回到默认域并采用其设置。
-具名域支持静态地址与路由、转发开关和 IPv6 通告。域内 DHCP 和 DNS 仍待接入。
+具名域支持静态与 DHCPv4 上联地址、静态路由、转发开关、下游 DHCPv4、IPv6 通告、IPv6 前缀委派和 DNS 转发。
+
+需要从上联获取 IPv4 时，将接口 `ipv4.assignment` 设为 `dhcp`。通过 `ipconfig /domain lab /exec ip -4 addr` 和 `ipconfig /domain lab /routes` 查看本域的地址和默认路由。
+管理员可运行 `ipconfig /domain lab /renew eth0` 或 `ipconfig /domain lab /release eth0`，其中 `eth0` 是域内的实际接口名。租约提供的 DNS 不会修改默认域的系统解析设置，具名域的转发上游在 `dns_forwarding` 配置。
 
 ### 在指定路由域启动应用
 
@@ -443,6 +446,7 @@ IPv6 同样适用，源网段填写 IPv6 前缀。TCP、UDP 优先保留原源�
 ```
 
 示例假定下游使用单独的局域网。DNS 填客户端实际能访问的解析器。修改后使用原有 `ipconfig /import` 保存，使用 `ipconfig /leases eth1` 查看对应实际接口的地址、客户端 MAC 和剩余租期。
+具名域将同一 `dhcp_v4_server` 对象放在 `routing_domains.<域名>.interfaces` 的下游接口内，用 `ipconfig /domain lab /leases eth0` 查询。不同域可使用相同网段和地址池。
 服务器默认在提供新地址前检查冲突。在明确由管理员独占管理的链路上，可在地址池中设置 `"probe_addresses": false` 关闭检查。
 删除地址池或禁用接口会停止分发。再次启用前，当前会话仍保留未过期的地址占用。配置备份保存地址池设置，运行时租约留在服务中。
 
@@ -465,6 +469,7 @@ IPv6 同样适用，源网段填写 IPv6 前缀。TCP、UDP 优先保留原源�
 
 通过同一 `ipconfig /import` 保存并应用。把下游 `dhcp_v4_server.dns` 设为 `["192.168.50.1"]`，
 客户端取得或续订租约后通过该地址解析域名。省略 `forwarding` 或设为 `null` 停用服务。
+具名域将此对象作为 `routing_domains.<域名>.dns_forwarding`，监听地址和链路本地上游只引用本域物理接口。各域可复用相同地址和端口，分别通过自己的上游查询并缓存结果。
 IPv6 链路本地上游还须设置 `interface`，如 `{"address":"fe80::1","interface":"wan"}`。
 若启用[网桥与 VLAN](#网桥与-vlan)示例中的 `lan10`，可在 `listen` 中指定 `{"interface":"lan10","address":"192.168.10.1"}` 和 `{"interface":"lan10","address":"fd10::1"}`，并将对应地址填入 VLAN 的 DHCPv4 和 IPv6 通告 DNS 列表。
 监听在网关地址可用后启动。链路本地上游失联时，查询可使用列表中其他可用的上游。
@@ -485,6 +490,7 @@ IPv6 链路本地上游还须设置 `interface`，如 `{"address":"fe80::1","int
 ### DHCPv6 前缀委派
 
 可在导出的配置根对象中加入 `prefix_delegation`。上联使用 `interfaces` 中的路由接口名称，下游使用物理接口的配置名或 VLAN 网关名。
+在具名域使用时，将同一对象放在 `routing_domains.<域名>.prefix_delegation`，上联与下游只引用本域的物理接口配置。用 `ipconfig /domain lab /routes` 查看该域分配的 /64。
 
 ```json
 "prefix_delegation": {
@@ -745,7 +751,8 @@ BGP 的 `"redistribute":{"connected":true,"protocols":[4,188]}` 发布实际直�
 该条件与网段、AS 包含及团体条件同时满足才命中；入口检查原始有效路径，出口检查已采用的路径，均先匹配再执行本条动作。
 支持 ASCII 分组、分支、字符类和重复；不支持环视、反向引用或 Unicode，非法/过于复杂的表达式在导入时拒绝。完整边界见[路径筛选契约](../../../docs/architecture-contract/router-configuration.md#bgp-as-路径筛选)。
 
-对端不识别 OPEN 能力参数时，允许 IPv4 的邻居会按标准改用无可选参数的 OPEN 重试；不会把扩展消息、刷新或四字节路径当成已协商能力。
+LiteOS 在常规 BGP OPEN 中公布扩展消息能力，允许邻居发送最长 65,535 字节的 UPDATE。向邻居发送扩展更新须由该邻居公布能力。
+对端不识别 OPEN 能力参数时，允许 IPv4 的邻居会按标准改用无可选参数的 OPEN 重试。基础 OPEN 接收上限为 4,096 字节，刷新与四字节路径也不启用。
 必需能力不相容或再次被拒时，`ipconfig /bgp` 显示协议错误和“协商已暂停”。修正配置后修改本机 BGP 配置，或关闭再启用 BGP；重新导入完全相同配置不会重建会话。
 
 ### 网桥与 VLAN

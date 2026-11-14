@@ -177,10 +177,8 @@ fn forward(channel: &Channel, ordinal: u32, payload: &[u8]) -> Result<Vec<u8>, S
             request.bytes(payload);
         }
         ordinal::DHCP => {
-            let name = decoder.bytes().map_err(invalid)?;
-            let action = decoder.u8().map_err(invalid)?;
-            decoder.finish().map_err(invalid)?;
-            request.bytes(name).u8(action);
+            router_protocol::dhcp_command::decode(payload).map_err(invalid)?;
+            request.bytes(payload);
         }
         ordinal::RENAME => {
             let interface = decoder.bytes().map_err(invalid)?;

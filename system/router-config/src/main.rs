@@ -71,8 +71,6 @@ const KEY_DNS: u64 = 7;
 const KEY_OSPF: u64 = 8;
 /// Port key 的起点：各接口 DHCP 会话的租约事件 channel 与接口 lifetime channel（每个一个新 key）。
 const KEY_DHCP_FIRST: u64 = 1 << 32;
-/// dhcp-client 的 DHCP 请求序号（与 dhcp-client 一致）。
-const DHCP_START: u32 = 1;
 /// Bounds the settings RPC even when no DHCP server answers discovery.
 const DHCP_COMMAND_TIMEOUT: i64 = 15_000_000_000;
 /// 默认路由的路由协议标识（`RTPROT_DHCP` / `RTPROT_BOOT`）。
@@ -905,16 +903,25 @@ impl RouterConfig {
 
     /// Send an operation to the installed session. Its reply is completed only
     /// after the resulting lease event has been applied by the configuration owner.
-    fn dhcp_command(&self, name: &[u8], action: DhcpAction) -> Result<(), Status> {
+    fn dhcp_command(
+        &self,
+        domain: Option<&str>,
+        name: &[u8],
+        action: DhcpAction,
+    ) -> Result<(), Status> {
         let (reply, completion) = Channel::create()?;
         {
             let inner = self.inner.lock();
-            let interface = inner
-                .interfaces
-                .iter()
-                .find(|interface| interface.name == name)
-                .ok_or(native_abi::ERR_NOT_FOUND)?;
-            let (_, session) = interface.dhcp.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
+            let session = if let Some(domain) = domain {
+                inner.domains.dhcp_channel(domain, name)?
+            } else {
+                let interface = inner
+                    .interfaces
+                    .iter()
+                    .find(|interface| interface.name == name)
+                    .ok_or(native_abi::ERR_NOT_FOUND)?;
+                &interface.dhcp.as_ref().ok_or(native_abi::ERR_BAD_STATE)?.1
+            };
             session.write(&[action as u8], alloc::vec![completion.into_handle()])?;
         }
         let deadline = native_runtime::system::monotonic().saturating_add(DHCP_COMMAND_TIMEOUT);

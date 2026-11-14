@@ -26,13 +26,13 @@
 | `system/audio-core` | PCM 输出会话、混音引擎、主音量、独占格式切换、USB 声卡热插拔 | device-protocol、audio-protocol；不拥有 ALSA 状态、子流编号或 Linux ioctl |
 | `system/pager-pool` | 进程内 native pager、port、key 注册与可增长补页线程池 | native-runtime；补页政策由各内容 owner 的 `PageSource` 决定 |
 | `system/netstack` | 网络域、双栈 FIB/地址/端口、转发过滤与连接状态、原生 TCP/UDP/RAW 与链路、AF_PACKET、执行事务 | device-protocol、network-protocol 与 router-protocol 执行描述；不发现网卡、不决定接口配置，不拥有 Linux syscall、信号或阻塞超时 |
-| `system/router-config` | 网卡发现与安装授权、配置树与提交决定、原文件撤销、执行重试及动态路由实例寿命 | network-protocol、device-protocol、filesystem-protocol、router-protocol；不拥有协议栈状态 |
+| `system/router-config` | 网卡发现与安装授权、配置树与提交决定、原文件撤销、执行重试及各域的路由和地址分发会话寿命 | network-protocol、device-protocol、filesystem-protocol、router-protocol；不拥有协议栈状态 |
 | `system/routing-rib` | 候选与解析；授权来源会话、接口/静态意图与统一来源确认 | 候选库复用 prefix-index；原生服务经 network-protocol 委托 NET 执行，不持 FIB 前像 |
 | `system/bgp` | 原生 TCP 会话、接收路由与状态；纯库拥有协议裁决、选路、来源及出口链路资格投影 | 库依赖 packet-wire/router-protocol/fallible-tree/alloc；bin 从 NET 投影资格并装配原生服务，不持持久配置；只接管显式委托来源，见[BGP 契约](bgp.md) |
 | `system/ospf` | 接口绑定、认证与接收序列、邻接、数据库、通告、洪泛、老化及区域内和跨区域选路 | 经 network-protocol 取得网络事实、收发报文并提交获授权的 RIB 来源。见[OSPF 契约](ospf.md) |
 | `system/dhcp-client` | DHCPv4 地址和 DHCPv6 委派租约 | 通过 network-protocol 收发；租约交给 router-config 应用 |
-| `system/dhcp-server` | 下游 DHCPv4 地址池、客户端身份和租约截止时间 | 只接受 router-config 的会话请求，通过绑定接口的 packet socket 收发 |
-| `system/dns-cache` | 原生 DNS 监听、上游事务及回复缓存 | 核心依赖 packet-wire 和 fallible-tree，执行器只接受路由配置能力，经 network-protocol 收发。见 [DNS 转发契约](dns-forwarding.md) |
+| `system/dhcp-server` | 下游 DHCPv4 地址池、客户端身份和租约截止时间 | 只接受 router-config 授予的域和接口，通过绑定接口的 packet socket 收发 |
+| `system/dns-cache` | 各域的 DNS 监听、上游事务及回复缓存 | 核心依赖 packet-wire 和 fallible-tree，经 router-config 授予的网络域能力收发。见 [DNS 转发契约](dns-forwarding.md) |
 | `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS、tmpfs 与 Linux FUSE 守护进程的页缓存、设备 UAPI（含 ALSA 状态机）、Linux IPC、授权端点适配 | restricted mode 执行应用；只消费路由给它的设备类与协议 |
 
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。
@@ -97,7 +97,7 @@ service-rpc::Writer 的 from_bytes/into_bytes 仅转移编码存储所有权，�
 2. 路由给 linuxd 的协议：`liteos.network.Control`、`liteos.storage.Blocks`、`liteos.filesystem.Ext4`、
    `liteos.network.Settings`、`liteos.audio.Core`、`liteos.driver.Update`；给 router-config：`liteos.network.Control`、`liteos.routing.Configuration`、
    `liteos.network.Dhcp`、`liteos.network.DhcpServer`、`liteos.network.DnsCache`、`liteos.bgp.Configuration`、`liteos.ospf.Configuration`；
-   给 routing-rib：`liteos.network.Control`、`liteos.network.Installer`；给 dhcp-client、dhcp-server、dns-cache、bgp 与 ospf：`liteos.network.Control`。
+   给 routing-rib：`liteos.network.Control`、`liteos.network.Installer`；给 BGP 和 OSPF：`liteos.network.Control`。DHCP 客户端、服务端和 dns-cache 从配置服务取得各会话的网络域能力。
    `liteos.storage.Admin` 只供 component-manager 派生私有目录；配置来源能力不能直接提交 FIB、下一跳更新或任意来源身份。
 3. 设备目录按类派生：Network → router-config，Block → fshost，Pcm → audio-core，其余 → linuxd；派生目录不能扩大范围。
 4. 监督：netstack、routing-rib、bgp、ospf、dhcp-client、dhcp-server、dns-cache、router-config、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束）。
@@ -131,7 +131,7 @@ Netstack 的设备 adapter 消费校验和机制构造伪头 seed，driver-host 
 libraries/prefix-index 唯一拥有 Poptrie 机制，依赖只到 alloc。每个索引拥有自己的记录区间，前缀键集合相同的 FIB 根可共享不可变的位图、叶和祖先链。
 system/routing-rib 同时提供候选库与原生服务：Source 拥有不可变来源头部（身份/授权代价比较范围/元数据）、声明及共享规范字典引用，Catalogue 只保活来源并索引八字节行引用。
 候选机制依赖 prefix-index、router-protocol 的无运行时词汇及 fallible-tree；服务装配额外依赖 native-runtime、launch-protocol、service-directory 和 service-rpc。
-router-config::leases 拥有 DHCP 会话与租约事件的地址发布；默认路由属性借唯一持久配置投影，不保存会话创建时的政策副本。
+router-config::leases 与具名域共用 DHCPv4 启动、事件解码和地址事务。租约只投影至获取它的域，默认路由属性取当前持久接口策略。系统解析器只消费默认域的租约 DNS。
 router-protocol::configuration 同时拥有静态 IPv4 持久模型及来源投影；实际 DeviceMatch→ifindex 绑定由配置服务借当前接口提供，不持久化运行时身份。
 sources::Routes 以（身份、族）协调声明，Facts 只冻结本轮接口/地址；配置覆盖不猜地址出处。
 router-protocol::routing 唯一拥有双栈来源正文及借用验证；routing-rib::declaration 接管已验证字典、规范路径/权重，再交给原 Source 捕获，不复制另一套 codec 或逐路由成员。

@@ -5,7 +5,7 @@
 //!
 //! 1. router_config 经 `liteos.network.Dhcp` 为一个接口请求 DHCP：请求携带接口序号与 MAC，回复一条租约事件
 //!    channel；router_config 关闭该 channel 即停止该接口的 DHCP。
-//! 2. 每个接口一个线程，经 netstack 默认网络的 datagram packet socket（EtherType IPv4）收发 IPv4/UDP/DHCP
+//! 2. 每个接口一个线程，经配置服务授予的网络域 packet socket（EtherType IPv4）收发 IPv4/UDP/DHCP
 //!    报文（与 udhcpc 的 raw socket 做法相同），按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND →
 //!    RENEWING → REBINDING；取得、续租、失效时向 router_config 发租约事件，地址由 router_config 配置。
 //! 3. DHCPv6 委派经同一授权服务开启，使用绑定到上联的 IPv6 UDP 和独立的 IA_PD 租约。
@@ -22,20 +22,19 @@ use core::net::Ipv4Addr;
 
 use native_runtime::native_abi::{self, Status, packet, signals};
 use native_runtime::{Channel, Event, Port, Startup};
-use network_protocol::{NetworkClient, PacketAddress, PacketKind, RemotePacketSocket, SocketError};
+use network_protocol::{
+    PacketAddress, PacketKind, RemoteNamespace, RemotePacketSocket, SocketError,
+};
 use packet_wire::dhcpv4::{
     CLIENT_PORT as DHCP_CLIENT_PORT, Dhcpv4Builder, Dhcpv4Header, Dhcpv4Packet,
     MessageType as DhcpMessageType, SERVER_PORT as DHCP_SERVER_PORT,
 };
 use packet_wire::ipv4::{Ipv4Header, Ipv4Packet};
 use packet_wire::udp::{self, UdpPacket};
-use router_protocol::{DhcpAction, Encoder, LeaseEvent, LeaseTiming};
-use service_directory::ServiceDirectory;
+use router_protocol::{DHCP_V4_START, DhcpAction, Encoder, LeaseEvent, LeaseTiming};
 
 native_runtime::entry!(main);
 
-/// DHCP 请求：接口序号（`u32`）与 MAC（6 字节）。
-const START: u32 = 1;
 /// `ETH_P_IP`，packet socket 以网络字节序传递 EtherType。
 const ETH_P_IP: u16 = 0x0800;
 /// 以太网硬件类型（`ARPHRD_ETHER`）。
@@ -60,17 +59,14 @@ const BUFFER: usize = 1500;
 fn main(mut startup: Startup) -> i64 {
     use launch_protocol::dhcp_client;
     let outgoing = Channel::from_handle(startup.take(dhcp_client::OUTGOING));
-    let services = Arc::new(ServiceDirectory::new(Channel::from_handle(
-        startup.take(dhcp_client::SERVICES),
-    )));
     service_directory::serve_directory(
         outgoing,
         b"dhcp-outgoing",
-        Arc::new(move |protocol: &[u8], channel: Channel| {
+        Arc::new(|protocol: &[u8], channel: Channel| {
             if protocol != service_directory::DHCP {
                 return Err(native_abi::ERR_NOT_FOUND);
             }
-            serve(channel, services.clone())
+            serve(channel)
         }),
     )
     .expect("dhcp-client outgoing service");
@@ -78,20 +74,20 @@ fn main(mut startup: Startup) -> i64 {
     native_runtime::task::exit_thread()
 }
 
-fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status> {
+fn serve(channel: Channel) -> Result<(), Status> {
     service_rpc::serve(
         channel,
         1,
         b"dhcp",
         Arc::new(
-            move |ordinal: u32,
-                  request: &mut service_rpc::Reader<'_>,
-                  handles: Vec<native_runtime::Handle>,
-                  _: &mut service_rpc::Writer| {
+            |ordinal: u32,
+             request: &mut service_rpc::Reader<'_>,
+             handles: Vec<native_runtime::Handle>,
+             _: &mut service_rpc::Writer| {
                 if ordinal == router_protocol::delegation::START {
-                    return delegation::start(&services, request, handles);
+                    return delegation::start(request, handles);
                 }
-                if ordinal != START {
+                if ordinal != DHCP_V4_START {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
                 }
                 let index = request.u32()?;
@@ -100,15 +96,15 @@ fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status
                     .try_into()
                     .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                 request.finish()?;
-                if !handles.is_empty() {
-                    return Err(native_abi::ERR_INVALID_ARGS);
-                }
+                let [network] =
+                    <[_; 1]>::try_from(handles).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                let network = RemoteNamespace::from_channel(Channel::from_handle(network));
                 let mut returned = Vec::new();
                 returned
                     .try_reserve_exact(1)
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let (events, peer) = Channel::create()?;
-                let interface = Interface::open(&services, index, mac, events)?;
+                let interface = Interface::open(&network, index, mac, events)?;
                 let thread = native_runtime::thread::spawn(b"dhcp-interface", move || {
                     interface.run();
                 })?;
@@ -155,13 +151,11 @@ struct Interface {
 
 impl Interface {
     fn open(
-        services: &ServiceDirectory,
+        network: &RemoteNamespace,
         index: u32,
         mac: [u8; 6],
         events: Channel,
     ) -> Result<Self, Status> {
-        let control = NetworkClient::new(services.connect(service_directory::NETWORK)?);
-        let network = control.create_namespace(true)?;
         let endpoint = network
             .packet_socket(PacketKind::Datagram, ETH_P_IP.to_be())
             .map_err(|_| native_abi::ERR_NO_RESOURCES)?;

@@ -102,6 +102,33 @@ impl PoolExecution {
     pub(super) fn remove_interface(&mut self, index: u32) {
         self.sessions.retain(|session| session.index != index);
     }
+
+    pub(super) fn remove_closed(&mut self, key: u64) -> Option<bool> {
+        let position = self
+            .sessions
+            .iter()
+            .position(|session| session.key == key)?;
+        let session = self.sessions.swap_remove(position);
+        Some(session.applied.is_some() || session.pending_pause.is_some())
+    }
+
+    pub(super) fn bindings_channel(&self, index: u32) -> Result<Channel, Status> {
+        let session = self
+            .sessions
+            .iter()
+            .find(|session| session.index == index && session.applied.is_some())
+            .ok_or_else(|| {
+                if self.retry_at.is_some() {
+                    native_abi::ERR_SHOULD_WAIT
+                } else {
+                    native_abi::ERR_NOT_FOUND
+                }
+            })?;
+        if session.pending_pause.is_some() || session.closed() {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        session.control.duplicate(native_abi::rights::SAME)
+    }
 }
 
 struct Change {
@@ -114,7 +141,7 @@ struct Change {
 pub(super) struct StagedPools(Vec<Change>);
 
 impl StagedPools {
-    fn prepare(
+    pub(super) fn prepare(
         execution: &mut PoolExecution,
         mut desired: Vec<(u32, Pool)>,
         present: impl Fn(u32) -> bool,
@@ -171,15 +198,31 @@ impl StagedPools {
 
     pub(super) fn confirm(self, owner: &RouterConfig, inner: &mut Inner) -> Result<(), Status> {
         inner.pools.retry_at = None;
+        let link = inner.link.as_ref().ok_or(native_abi::ERR_PEER_CLOSED)?;
+        let result = self.apply(owner, &mut inner.pools, &mut inner.next_key, &link.network);
+        if result.is_err() {
+            owner.queue_pools(inner);
+        }
+        result
+    }
+
+    pub(super) fn apply(
+        self,
+        owner: &RouterConfig,
+        execution: &mut PoolExecution,
+        next_key: &mut u64,
+        network: &RemoteNamespace,
+    ) -> Result<(), Status> {
         let mut result = Ok(());
         for change in self.0 {
             if change.retire {
-                inner.pools.remove_interface(change.index);
+                execution.remove_interface(change.index);
                 continue;
             }
-            if let Err(status) = owner.apply_pool(inner, change.index, change.desired) {
-                if let Some(session) = inner
-                    .pools
+            if let Err(status) =
+                owner.apply_pool(execution, next_key, network, change.index, change.desired)
+            {
+                if let Some(session) = execution
                     .sessions
                     .iter_mut()
                     .find(|session| session.index == change.index)
@@ -189,9 +232,6 @@ impl StagedPools {
                 }
                 result = Err(status);
             }
-        }
-        if result.is_err() {
-            owner.queue_pools(inner);
         }
         result
     }
@@ -281,40 +321,46 @@ pub(super) fn stage(
 }
 
 impl RouterConfig {
-    fn apply_pool(&self, inner: &mut Inner, index: u32, pool: Option<Pool>) -> Result<(), Status> {
-        if let Some(position) = inner
-            .pools
+    fn apply_pool(
+        &self,
+        execution: &mut PoolExecution,
+        next_key: &mut u64,
+        network: &RemoteNamespace,
+        index: u32,
+        pool: Option<Pool>,
+    ) -> Result<(), Status> {
+        if let Some(position) = execution
             .sessions
             .iter()
             .position(|session| session.index == index)
         {
-            let session = &mut inner.pools.sessions[position];
+            let session = &mut execution.sessions[position];
             if !session.closed() {
                 return session.apply(pool);
             }
-            inner.pools.sessions.swap_remove(position);
+            execution.sessions.swap_remove(position);
         }
         let Some(pool) = pool else { return Ok(()) };
-        inner
-            .pools
+        execution
             .sessions
             .try_reserve(1)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let key = inner.next_key;
-        inner.next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        let key = *next_key;
+        *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
         let service = self.services.connect(service_directory::DHCP_SERVER)?;
         let mut request = service_rpc::Writer::request(protocol::START);
         let bytes = pool.encode().map_err(|_| native_abi::ERR_NO_MEMORY)?;
         request.try_reserve(8 + bytes.len())?;
         request.u32(index).bytes(&bytes);
-        let mut reply = service_rpc::call(&service, &request, Vec::new())?;
+        let network = network.channel().duplicate(native_abi::rights::SAME)?;
+        let mut reply = service_rpc::call(&service, &request, alloc::vec![network.into_handle()])?;
         reply.reader().finish()?;
         if reply.handles.len() != 1 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let control = Channel::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?);
         control.wait_async(&self.port, key, signals::PEER_CLOSED)?;
-        inner.pools.sessions.push(PoolSession {
+        execution.sessions.push(PoolSession {
             index,
             key,
             control,
@@ -373,16 +419,10 @@ impl RouterConfig {
 
     pub(super) fn pool_closed(&self, key: u64) -> bool {
         let mut inner = self.inner.lock();
-        let Some(position) = inner
-            .pools
-            .sessions
-            .iter()
-            .position(|session| session.key == key)
-        else {
-            return false;
+        let Some(retry) = inner.pools.remove_closed(key) else {
+            return self.domain_pool_closed(&mut inner, key);
         };
-        let session = inner.pools.sessions.swap_remove(position);
-        if session.applied.is_some() || session.pending_pause.is_some() {
+        if retry {
             self.queue_pools(&mut inner);
             Self::changed(&mut inner);
         }
@@ -392,10 +432,17 @@ impl RouterConfig {
     /// Read a page through the authorized settings endpoint without holding the configuration lock.
     pub(super) fn pool_bindings(
         &self,
+        domain: Option<&str>,
         name: &[u8],
         after: Ipv4Addr,
     ) -> Result<(Revision, Vec<u8>), Status> {
-        let (generation, control) = {
+        let (generation, control) = if let Some(domain) = domain {
+            let inner = self.inner.lock();
+            (
+                inner.generation,
+                inner.domains.pool_bindings_channel(domain, name)?,
+            )
+        } else {
             let inner = self.inner.lock();
             let link = inner.link.as_ref().ok_or(native_abi::ERR_PEER_CLOSED)?;
             let index = link
@@ -409,25 +456,7 @@ impl RouterConfig {
             {
                 return Err(native_abi::ERR_SHOULD_WAIT);
             }
-            let session = inner
-                .pools
-                .sessions
-                .iter()
-                .find(|session| session.index == index && session.applied.is_some())
-                .ok_or_else(|| {
-                    if inner.pools.retry_at.is_some() {
-                        native_abi::ERR_SHOULD_WAIT
-                    } else {
-                        native_abi::ERR_NOT_FOUND
-                    }
-                })?;
-            if session.pending_pause.is_some() {
-                return Err(native_abi::ERR_SHOULD_WAIT);
-            }
-            (
-                inner.generation,
-                session.control.duplicate(native_abi::rights::SAME)?,
-            )
+            (inner.generation, inner.pools.bindings_channel(index)?)
         };
         let (receive, reply) = Channel::create()?;
         control.write(&protocol::query(after), alloc::vec![reply.into_handle()])?;

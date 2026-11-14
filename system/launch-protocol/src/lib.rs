@@ -401,8 +401,6 @@ pub mod dns_cache {
     pub const BASE: usize = 0x40_0000;
     /// 仅发布执行会话工厂的目录。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 只包含原生网络控制服务的路由目录。
-    pub const SERVICES: usize = ROLE_HANDLES + 1;
 }
 
 /// BGP 原生协议服务；配置工厂只委托给配置 owner，实例能力关闭即停止相应路由域。
@@ -474,8 +472,6 @@ pub mod dhcp_client {
     pub const BASE: usize = 0x40_0000;
     /// outgoing 服务目录的服务端：接受 `service_directory::DHCP` 连接。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 根服务的服务路由目录（netstack 控制）。
-    pub const SERVICES: usize = ROLE_HANDLES + 1;
 }
 
 /// 下游 DHCPv4 地址分发，由 router-config 按接口开启。
@@ -488,6 +484,4 @@ pub mod dhcp_server {
     pub const BASE: usize = 0x40_0000;
     /// 服务目录的提供端。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 根服务路由目录，只包含网络控制能力。
-    pub const SERVICES: usize = ROLE_HANDLES + 1;
 }

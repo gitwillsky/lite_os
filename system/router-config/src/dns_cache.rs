@@ -4,7 +4,7 @@ use super::*;
 use core::net::{IpAddr, SocketAddr, SocketAddrV6};
 use network_protocol::InterfaceSnapshot;
 use router_protocol::{
-    configuration::{InterfaceReference, Name},
+    configuration::{DnsForwarding, InterfaceReference, Name},
     dns_cache::{self as protocol, Binding, Settings},
 };
 
@@ -78,6 +78,32 @@ impl Session {
             || self.applied.upstream.iter().any(
                 |address| matches!(address, SocketAddr::V6(address) if address.scope_id() == index),
             )
+    }
+}
+
+impl DnsExecution {
+    pub(super) fn pause(&mut self) -> Result<(), Status> {
+        if self.session.as_ref().is_some_and(Session::closed) {
+            self.session = None;
+        }
+        if let Some(session) = &mut self.session
+            && session.pending_pause.is_none()
+        {
+            session.pending_pause = Some(session.pause()?);
+        }
+        Ok(())
+    }
+
+    pub(super) fn remove_closed(&mut self, key: u64) -> bool {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.key == key && session.closed())
+        {
+            self.session = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -162,28 +188,40 @@ impl RouterConfig {
 
     /// 从唯一持久决定重建实际监听和上游，不持有接口索引的持久副本。
     pub(super) fn apply_dns(&self, inner: &mut Inner) -> Result<(), Status> {
-        let result = self.apply_dns_decision(inner);
+        let result = (|| {
+            let saved = inner.saved.as_deref();
+            let network = &inner
+                .link
+                .as_ref()
+                .ok_or(native_abi::ERR_BAD_STATE)?
+                .network;
+            let forwarding = saved.and_then(|saved| saved.dns.forwarding.as_ref());
+            let settings = compile(network, forwarding, |name| saved?.interface_reference(name))?;
+            self.apply_dns_settings(&mut inner.dns, &mut inner.next_key, network, settings)
+        })();
         inner.dns.retry_at = result.as_ref().err().map(|_| transaction::retry_at());
         result
     }
 
-    fn apply_dns_decision(&self, inner: &mut Inner) -> Result<(), Status> {
-        let Some(settings) = compile(inner)? else {
-            if let Some(session) = &mut inner.dns.session
-                && !session.closed()
-            {
-                if session.pending_pause.is_none() {
-                    session.pending_pause = Some(session.pause()?);
-                }
+    pub(super) fn apply_dns_settings(
+        &self,
+        execution: &mut DnsExecution,
+        next_key: &mut u64,
+        network: &RemoteNamespace,
+        settings: Option<Settings>,
+    ) -> Result<(), Status> {
+        let Some(settings) = settings else {
+            execution.pause()?;
+            if let Some(session) = &execution.session {
                 session.command(protocol::APPLY, &[], None)?;
             }
-            inner.dns.session = None;
+            execution.session = None;
             return Ok(());
         };
-        if inner.dns.session.as_ref().is_some_and(Session::closed) {
-            inner.dns.session = None;
+        if execution.session.as_ref().is_some_and(Session::closed) {
+            execution.session = None;
         }
-        if let Some(session) = &mut inner.dns.session {
+        if let Some(session) = &mut execution.session {
             if session.applied == settings && session.pending_pause.is_none() {
                 return Ok(());
             }
@@ -196,21 +234,22 @@ impl RouterConfig {
             session.pending_pause = None;
             return Ok(());
         }
-        let key = inner.next_key;
-        inner.next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        let key = *next_key;
+        *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
         let bytes = settings.encode().map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let service = self.services.connect(service_directory::DNS_CACHE)?;
         let mut request = service_rpc::Writer::request(protocol::START);
         request.try_reserve(4 + bytes.len())?;
         request.bytes(&bytes);
-        let mut reply = service_rpc::call(&service, &request, Vec::new())?;
+        let network = network.channel().duplicate(native_abi::rights::SAME)?;
+        let mut reply = service_rpc::call(&service, &request, alloc::vec![network.into_handle()])?;
         reply.reader().finish()?;
         if reply.handles.len() != 1 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let control = Channel::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?);
         control.wait_async(&self.port, key, signals::PEER_CLOSED)?;
-        inner.dns.session = Some(Session {
+        execution.session = Some(Session {
             key,
             control,
             applied: settings,
@@ -221,33 +260,23 @@ impl RouterConfig {
 
     pub(super) fn dns_closed(&self, key: u64) -> bool {
         let mut inner = self.inner.lock();
-        if !inner
-            .dns
-            .session
-            .as_ref()
-            .is_some_and(|session| session.key == key && session.closed())
-        {
-            return false;
+        if !inner.dns.remove_closed(key) {
+            return self.domain_dns_event(&mut inner, key);
         }
-        inner.dns.session = None;
         self.queue_dns(&mut inner);
         Self::changed(&mut inner);
         true
     }
 }
 
-fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
-    let Some(saved) = inner.saved.as_deref() else {
+pub(super) fn compile<'a>(
+    network: &RemoteNamespace,
+    forwarding: Option<&'a DnsForwarding>,
+    reference: impl Fn(&'a Name) -> Option<InterfaceReference<'a>>,
+) -> Result<Option<Settings>, Status> {
+    let Some(forwarding) = forwarding else {
         return Ok(None);
     };
-    let Some(forwarding) = &saved.dns.forwarding else {
-        return Ok(None);
-    };
-    let network = &inner
-        .link
-        .as_ref()
-        .ok_or(native_abi::ERR_BAD_STATE)?
-        .network;
     let interfaces = network
         .interface_snapshots()
         .map_err(configuration_status)?;
@@ -262,7 +291,7 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
         .try_reserve_exact(forwarding.listen.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for listener in &forwarding.listen {
-        let Some(interface) = resolve(saved, &interfaces, &listener.interface)? else {
+        let Some(interface) = resolve(&interfaces, reference(&listener.interface))? else {
             continue;
         };
         if usable()
@@ -283,7 +312,7 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for server in &forwarding.upstream {
         let address = if let Some(name) = &server.interface {
-            let Some(interface) = resolve(saved, &interfaces, name)? else {
+            let Some(interface) = resolve(&interfaces, reference(name))? else {
                 continue;
             };
             if !usable().any(|row| {
@@ -305,13 +334,10 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
 }
 
 fn resolve<'a>(
-    configuration: &Configuration,
     interfaces: &'a [InterfaceSnapshot],
-    name: &Name,
+    reference: Option<InterfaceReference<'_>>,
 ) -> Result<Option<&'a InterfaceSnapshot>, Status> {
-    let reference = configuration
-        .interface_reference(name)
-        .ok_or(native_abi::ERR_INVALID_ARGS)?;
+    let reference = reference.ok_or(native_abi::ERR_INVALID_ARGS)?;
     let mut matching = interfaces.iter().filter(|snapshot| {
         if snapshot.loopback {
             return false;

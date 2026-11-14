@@ -10,40 +10,38 @@ mod socket;
 mod upstream;
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use fallible_tree::FallibleMap;
 use native_runtime::{
     Channel, Handle, Startup,
     native_abi::{self, Status},
+    sync::Mutex,
     warn,
 };
-use network_protocol::NetworkClient;
+use network_protocol::RemoteNamespace;
 use router_protocol::dns_cache::{START, Settings};
-use service_directory::ServiceDirectory;
 
 use session::Session;
 
 native_runtime::entry!(main);
 
 struct Factory {
-    services: ServiceDirectory,
-    // Only one active policy may bind listeners in this network domain. The admitted session
-    // releases the claim after closing its sockets. Concurrent START must not create a rival.
-    active: AtomicBool,
+    // The configuration owner delegates duplicates of its namespace channel. An exclusive
+    // per-channel claim prevents concurrent policies from binding listeners in the same domain.
+    active: Mutex<FallibleMap<u64, ()>>,
 }
 
-struct Claim(Arc<Factory>);
+struct Claim(Arc<Factory>, u64);
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.0.active.store(false, Ordering::Release);
+        self.0.active.lock().remove(&self.1);
     }
 }
 
 fn main(mut startup: Startup) -> i64 {
     use launch_protocol::dns_cache;
     let factory = Arc::new(Factory {
-        services: ServiceDirectory::new(Channel::from_handle(startup.take(dns_cache::SERVICES))),
-        active: AtomicBool::new(false),
+        active: Mutex::new(FallibleMap::new()),
     });
     let outgoing = Channel::from_handle(startup.take(dns_cache::OUTGOING));
     service_directory::serve_directory(
@@ -66,13 +64,13 @@ fn main(mut startup: Startup) -> i64 {
                         if ordinal != START {
                             return Err(native_abi::ERR_NOT_SUPPORTED);
                         }
-                        if !handles.is_empty() {
-                            return Err(native_abi::ERR_INVALID_ARGS);
-                        }
+                        let [network]: [Handle; 1] = handles
+                            .try_into()
+                            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                         let settings = Settings::decode(request.bytes()?)
                             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                         request.finish()?;
-                        start(&factory, settings)
+                        start(&factory, Channel::from_handle(network), settings)
                     },
                 ),
             )
@@ -82,14 +80,23 @@ fn main(mut startup: Startup) -> i64 {
     native_runtime::task::exit_thread()
 }
 
-fn start(factory: &Arc<Factory>, settings: Settings) -> Result<Vec<Handle>, Status> {
-    factory
-        .active
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .map_err(|_| native_abi::ERR_ALREADY_BOUND)?;
-    let claim = Claim(factory.clone());
-    let network = NetworkClient::new(factory.services.connect(service_directory::NETWORK)?)
-        .create_namespace(true)?;
+fn start(
+    factory: &Arc<Factory>,
+    network: Channel,
+    settings: Settings,
+) -> Result<Vec<Handle>, Status> {
+    let key = network.basic()?.koid;
+    {
+        let mut active = factory.active.lock();
+        if active.get(&key).is_some() {
+            return Err(native_abi::ERR_ALREADY_BOUND);
+        }
+        active
+            .try_insert(key, ())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    }
+    let claim = Claim(factory.clone(), key);
+    let network = RemoteNamespace::from_channel(network);
     let (control, peer) = Channel::create()?;
     let mut result = Vec::new();
     result

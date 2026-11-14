@@ -3,11 +3,18 @@
 use super::*;
 use alloc::format;
 use core::num::NonZeroU128;
+use dhcp_server::{PoolExecution, StagedPools};
+use dns_cache::DnsExecution;
 use network_protocol::bgp::BgpInstance;
 use network_protocol::ospf::OspfInstance;
-use router_protocol::configuration::{DeviceMatch, InterfaceReference, Name, RoutingDomain};
-use router_protocol::interface::{DefaultRoute, Ipv6Addresses};
+use router_protocol::configuration::{
+    Assignment, DeviceMatch, InterfaceReference, Name, RoutingDomain,
+};
+use router_protocol::interface::{DefaultRoute, DelegatedPrefixes, Ipv6Addresses};
 use router_protocol::routing::{Attributes, Family};
+
+mod prefix_delegation;
+mod uplink_dhcp;
 
 #[derive(Default)]
 pub(super) struct Domains {
@@ -28,6 +35,12 @@ struct Scope {
     interfaces: Vec<Attached>,
     // 仅配置决定或本域接口事实变化时重放；失败保留工作，不在空闲时轮询。
     pending: bool,
+    pools: PoolExecution,
+    dns: DnsExecution,
+    delegation: delegation::Delegation,
+    // Created on first DNS configuration. The NET domain signals when a listener address or
+    // scoped upstream becomes available, including after IPv6 duplicate address detection.
+    dns_watch: Option<(u64, Event)>,
     bgp: Option<BgpInstance>,
     // 协议失败只重试会话配置，不重编译已确认的静态数据面。
     bgp_pending: bool,
@@ -40,6 +53,49 @@ struct Attached {
     mac: [u8; 6],
     index: u32,
     lifetime: (u64, Channel),
+    link_changed: Event,
+    dhcp: Option<(u64, Channel)>,
+    lease: Option<DomainLease>,
+}
+
+struct DomainLease {
+    address: Ipv4Addr,
+    prefix_length: u8,
+    gateway: Ipv4Addr,
+    timing: LeaseTiming,
+}
+
+impl DomainLease {
+    fn valid_at(&self, now: i64) -> bool {
+        self.timing.duration_seconds == u32::MAX
+            || now
+                < self
+                    .timing
+                    .requested_at_ns
+                    .saturating_add(i64::from(self.timing.duration_seconds) * 1_000_000_000)
+    }
+}
+
+impl Attached {
+    fn profile<'a>(
+        &self,
+        domain: &'a RoutingDomain,
+    ) -> Option<&'a router_protocol::configuration::Interface> {
+        domain
+            .interfaces
+            .values()
+            .find(|profile| profile.device == DeviceMatch::Mac(self.mac))
+    }
+
+    fn wants_dhcp(&self, domain: &RoutingDomain) -> bool {
+        self.profile(domain).is_some_and(|profile| {
+            profile.enabled != Some(false)
+                && profile
+                    .ipv4
+                    .as_ref()
+                    .is_some_and(|ipv4| ipv4.assignment == Assignment::Dhcp)
+        })
+    }
 }
 
 impl Domains {
@@ -60,6 +116,42 @@ impl Domains {
 
     pub(super) fn network(&self, name: &str) -> Result<&RemoteNamespace, Status> {
         Ok(&self.find(name)?.network)
+    }
+
+    pub(super) fn pool_bindings_channel(
+        &self,
+        domain: &str,
+        name: &[u8],
+    ) -> Result<Channel, Status> {
+        let scope = self.find(domain)?;
+        if scope.pending {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        let index = scope
+            .network
+            .interface_index(name)
+            .map_err(configuration_status)?;
+        scope.pools.bindings_channel(index)
+    }
+
+    /// Select the active DHCP client on the named domain's actual interface.
+    /// # Errors
+    /// The domain or interface is unavailable, or the interface has no current session.
+    pub(super) fn dhcp_channel(&self, domain: &str, name: &[u8]) -> Result<&Channel, Status> {
+        let scope = self.find(domain)?;
+        if scope.pending {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        let index = scope
+            .network
+            .interface_index(name)
+            .map_err(configuration_status)?;
+        scope
+            .interfaces
+            .iter()
+            .find(|port| port.index == index)
+            .and_then(|port| port.dhcp.as_ref().map(|(_, channel)| channel))
+            .ok_or(native_abi::ERR_BAD_STATE)
     }
 
     pub(super) fn ospf_instance(&self, name: &str) -> Result<&OspfInstance, Status> {
@@ -135,6 +227,10 @@ impl Domains {
             network,
             interfaces: Vec::new(),
             pending: true,
+            pools: PoolExecution::default(),
+            dns: DnsExecution::default(),
+            delegation: delegation::Delegation::default(),
+            dns_watch: None,
             bgp: None,
             bgp_pending: true,
             ospf: None,
@@ -151,6 +247,8 @@ impl Domains {
                 .position(|port| port.lifetime.0 == key)
             {
                 let removed = scope.interfaces.remove(position);
+                scope.delegation.remove_interface(removed.index);
+                scope.pools.remove_interface(removed.index);
                 scope.pending = true;
                 if !scope.retired {
                     scope.bgp_port_changed(
@@ -184,6 +282,11 @@ impl RouterConfig {
             let after = saved.routing_domains.get(&scope.name);
             scope.retired = after.is_none();
             scope.pending |= execution_changed(before, after);
+            if before.and_then(|profile| profile.dns_forwarding.as_ref())
+                != after.and_then(|profile| profile.dns_forwarding.as_ref())
+            {
+                scope.dns.retry_at = Some(native_runtime::system::monotonic());
+            }
             scope.commit_bgp(before, after);
             if ospf_changed(before, after) {
                 scope.restart_ospf();
@@ -232,7 +335,7 @@ impl RouterConfig {
             .try_reserve_exact(1)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         delegated.push(self.directory.duplicate()?.into_handle());
-        let (index, lifetime, _) = root.install_device(
+        let (index, lifetime, link_changed) = root.install_device(
             entry.id,
             Some(&scope.instance_name),
             &entry.description,
@@ -245,6 +348,9 @@ impl RouterConfig {
             mac,
             index,
             lifetime: (key, lifetime),
+            link_changed,
+            dhcp: None,
+            lease: None,
         });
         scope.pending = true;
         scope.bgp_port_changed(
@@ -266,6 +372,44 @@ impl RouterConfig {
         self.queue_domains(inner);
         Self::changed(inner);
         true
+    }
+
+    pub(super) fn domain_pool_closed(&self, inner: &mut Inner, key: u64) -> bool {
+        for scope in &mut inner.domains.scopes {
+            if let Some(retry) = scope.pools.remove_closed(key) {
+                if retry {
+                    scope.pools.retry_at = Some(native_runtime::system::monotonic());
+                    self.queue_domains(inner);
+                    Self::changed(inner);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(super) fn domain_dns_event(&self, inner: &mut Inner, key: u64) -> bool {
+        for scope in &mut inner.domains.scopes {
+            let mut changed = scope.dns.remove_closed(key);
+            if let Some((watch_key, event)) = &scope.dns_watch
+                && *watch_key == key
+            {
+                changed = true;
+                let result = event
+                    .signal(signals::USER_0, 0)
+                    .and_then(|()| event.wait_async(&self.port, key, signals::USER_0));
+                if let Err(status) = result {
+                    error!("router-config: domain DNS observer rearm failed: {status}");
+                    scope.dns_watch = None;
+                }
+            }
+            if changed {
+                scope.dns.retry_at = Some(native_runtime::system::monotonic());
+                self.queue_domains(inner);
+                return true;
+            }
+        }
+        false
     }
 
     pub(super) fn apply_domains(&self, inner: &mut Inner) -> bool {
@@ -291,7 +435,13 @@ impl RouterConfig {
             ..RoutingDomain::default()
         };
         for scope in &mut inner.domains.scopes {
-            if !scope.pending && !scope.bgp_pending && !scope.ospf_pending {
+            if !scope.pending
+                && scope.pools.retry_at.is_none()
+                && scope.dns.retry_at.is_none()
+                && scope.delegation.retry_at.is_none()
+                && !scope.bgp_pending
+                && !scope.ospf_pending
+            {
                 continue;
             }
             let profile = inner
@@ -301,11 +451,22 @@ impl RouterConfig {
                 .filter(|_| !scope.retired);
             let result = (|| {
                 scope.reconnect(root)?;
+                let pools = if scope.pending || scope.pools.retry_at.is_some() {
+                    scope.apply(self, profile.unwrap_or(&retired), &mut inner.next_key)
+                } else {
+                    Ok(())
+                };
                 if scope.pending {
-                    scope.apply(profile.unwrap_or(&retired))?;
-                    scope.pending = false;
+                    return pools;
                 }
-                scope.apply_protocols(self, profile)
+                let dns = if scope.dns.retry_at.is_some() {
+                    scope.apply_dns(self, profile, &mut inner.next_key)
+                } else {
+                    Ok(())
+                };
+                let protocols = scope.apply_protocols(self, profile);
+                let delegation = scope.start_delegation(self, profile, &mut inner.next_key);
+                pools.and(dns).and(protocols).and(delegation)
             })();
             match result {
                 Ok(()) => {}
@@ -320,6 +481,9 @@ impl RouterConfig {
         }
         inner.domains.scopes.retain(|scope| {
             scope.pending
+                || scope.pools.retry_at.is_some()
+                || scope.dns.retry_at.is_some()
+                || scope.delegation.retry_at.is_some()
                 || scope.bgp_pending
                 || scope.ospf_pending
                 || !scope.interfaces.is_empty()
@@ -356,12 +520,15 @@ fn execution_changed(before: Option<&RoutingDomain>, after: Option<&RoutingDomai
         ipv6_forwarding,
         bgp: _,
         ospf: _,
+        dns_forwarding: _,
+        prefix_delegation,
     } = before;
     *interfaces != after.interfaces
         || *routes != after.routes
         || *policy_routing != after.policy_routing
         || *firewall != after.firewall
         || *route_policy != after.route_policy
+        || *prefix_delegation != after.prefix_delegation
         || *ipv4_forwarding != after.ipv4_forwarding
         || *ipv6_forwarding != after.ipv6_forwarding
 }
@@ -380,6 +547,21 @@ fn ospf_changed(before: Option<&RoutingDomain>, after: Option<&RoutingDomain>) -
                     })
             })
         })
+}
+
+fn domain_default_route(
+    profile: &router_protocol::configuration::Interface,
+    gateway: Ipv4Addr,
+    protocol: u8,
+) -> Option<DefaultRoute> {
+    (!gateway.is_unspecified()).then(|| DefaultRoute {
+        gateway,
+        protocol,
+        attributes: profile.default_route.unwrap_or(Attributes {
+            preference: 1,
+            metric: 0,
+        }),
+    })
 }
 
 impl Scope {
@@ -528,7 +710,82 @@ impl Scope {
         Ok(())
     }
 
-    fn apply(&self, domain: &RoutingDomain) -> Result<(), Status> {
+    fn apply(
+        &mut self,
+        owner: &RouterConfig,
+        domain: &RoutingDomain,
+        next_key: &mut u64,
+    ) -> Result<(), Status> {
+        let mut desired = Vec::new();
+        for port in &self.interfaces {
+            let profile = domain.interfaces.values().find(|profile| {
+                profile.device == DeviceMatch::Mac(port.mac) && profile.enabled != Some(false)
+            });
+            if let Some(profile) = profile
+                && let Some(pool) = profile
+                    .dhcp_pool()
+                    .map_err(|_| native_abi::ERR_INVALID_ARGS)?
+            {
+                desired
+                    .try_reserve(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                desired.push((port.index, pool));
+            }
+        }
+        let mut pools = StagedPools::prepare(&mut self.pools, desired, |index| {
+            self.interfaces.iter().any(|port| port.index == index)
+        })?;
+        if self.pending {
+            self.dns.pause()?;
+            if domain.dns_forwarding.is_some() {
+                self.dns.retry_at = Some(native_runtime::system::monotonic());
+            }
+            // The new decision is already durable. An obsolete pool must remain paused if the
+            // interface transaction fails or its confirmation is lost, until replay succeeds.
+            if let Err(status) = self.apply_network(owner, domain, next_key) {
+                pools.hold(&mut self.pools);
+                return Err(status);
+            }
+            self.pending = false;
+        }
+        let result = pools.apply(owner, &mut self.pools, next_key, &self.network);
+        self.pools.retry_at = result.is_err().then(transaction::retry_at);
+        result
+    }
+
+    fn apply_dns(
+        &mut self,
+        owner: &RouterConfig,
+        profile: Option<&RoutingDomain>,
+        next_key: &mut u64,
+    ) -> Result<(), Status> {
+        let forwarding = profile.and_then(|profile| profile.dns_forwarding.as_ref());
+        if forwarding.is_none() {
+            self.dns_watch = None;
+        }
+        let result = (|| {
+            if forwarding.is_some() && self.dns_watch.is_none() {
+                let event = self.network.watch_dns().map_err(configuration_status)?;
+                let key = *next_key;
+                *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+                event.wait_async(&owner.port, key, signals::USER_0)?;
+                self.dns_watch = Some((key, event));
+            }
+            let settings = dns_cache::compile(&self.network, forwarding, |name| {
+                profile?.interface_reference(name)
+            })?;
+            owner.apply_dns_settings(&mut self.dns, next_key, &self.network, settings)
+        })();
+        self.dns.retry_at = result.is_err().then(transaction::retry_at);
+        result
+    }
+
+    fn apply_network(
+        &mut self,
+        owner: &RouterConfig,
+        domain: &RoutingDomain,
+        next_key: &mut u64,
+    ) -> Result<(), Status> {
         let resolve = |reference: InterfaceReference<'_>| {
             let InterfaceReference::Device(DeviceMatch::Mac(mac)) = reference else {
                 return Err(router_protocol::Invalid);
@@ -557,43 +814,56 @@ impl Scope {
         plans
             .try_reserve_exact(self.interfaces.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for port in &self.interfaces {
-            let profile = domain
-                .interfaces
-                .values()
-                .find(|profile| profile.device == DeviceMatch::Mac(port.mac));
+        let now = native_runtime::system::monotonic();
+        let retain_delegation = self.retains_delegation(domain);
+        let assignments = self.delegated_assignments(domain, retain_delegation, now)?;
+        for (port, prefixes) in self.interfaces.iter().zip(&assignments) {
+            let profile = port.profile(domain);
             let up = profile.is_some_and(|profile| profile.enabled.unwrap_or(true));
             let ipv4 = profile
                 .filter(|_| up)
-                .and_then(|profile| profile.ipv4.as_ref());
+                .and_then(|profile| profile.ipv4.as_ref())
+                .filter(|ipv4| ipv4.assignment == Assignment::Static);
+            let lease = port
+                .lease
+                .as_ref()
+                .filter(|lease| port.wants_dhcp(domain) && lease.valid_at(now));
             let ipv6 = profile.and_then(|profile| profile.ipv6.as_ref());
             plans.push(InterfaceConfiguration {
                 index: port.index,
                 mtu: profile.map(|profile| profile.mtu),
                 up,
-                address: ipv4.map(|address| address.address),
-                prefix_length: ipv4.map_or(0, |address| address.prefix_length),
-                route: ipv4
-                    .filter(|address| !address.gateway.is_unspecified())
-                    .map(|address| DefaultRoute {
-                        gateway: address.gateway,
-                        protocol: RTPROT_BOOT,
-                        attributes: profile.and_then(|profile| profile.default_route).unwrap_or(
-                            Attributes {
-                                preference: 1,
-                                metric: 0,
-                            },
-                        ),
-                    }),
+                address: ipv4
+                    .map(|address| address.address)
+                    .or_else(|| lease.map(|lease| lease.address)),
+                prefix_length: ipv4
+                    .map(|address| address.prefix_length)
+                    .or_else(|| lease.map(|lease| lease.prefix_length))
+                    .unwrap_or(0),
+                route: profile.and_then(|profile| {
+                    if let Some(ipv4) = ipv4 {
+                        domain_default_route(profile, ipv4.gateway, RTPROT_BOOT)
+                    } else {
+                        lease.and_then(|lease| {
+                            domain_default_route(profile, lease.gateway, RTPROT_DHCP)
+                        })
+                    }
+                }),
                 ipv6: Some(
                     Ipv6Addresses::new(ipv6.map_or(&[][..], |policy| policy.addresses.as_slice()))
                         .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
                 ),
-                delegated: None,
+                delegated: Some(
+                    DelegatedPrefixes::new(prefixes).map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+                ),
                 accept_ra: Some(ipv6.map_or_else(Default::default, |policy| policy.accept_ra)),
                 advertise: Some(ipv6.map_or_else(Default::default, |policy| policy.advertise)),
             });
         }
+        let mut started = Vec::new();
+        started
+            .try_reserve_exact(self.interfaces.len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let transaction = transaction::activate_execution(self.controller.prepare_configuration(
             &plans,
             [Some(&ipv4), Some(&ipv6)],
@@ -609,6 +879,40 @@ impl Scope {
             },
         ))
         .map_err(StageError::status)?;
-        transaction.confirm().map_err(configuration_status)
+        for (position, port) in self.interfaces.iter().enumerate() {
+            if !port.wants_dhcp(domain) || port.dhcp.is_some() {
+                continue;
+            }
+            let result = (|| {
+                let key = *next_key;
+                *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+                Ok((
+                    key,
+                    owner.open_dhcp(&self.network, port.index, port.mac, key)?,
+                ))
+            })();
+            match result {
+                Ok(session) => started.push((position, session)),
+                Err(status) => {
+                    drop(started);
+                    return Err(transaction::abort_execution(transaction, status).status());
+                }
+            }
+        }
+        transaction.confirm().map_err(configuration_status)?;
+        if !retain_delegation {
+            self.delegation.retire();
+        }
+        self.delegation.confirm_projection();
+        for port in &mut self.interfaces {
+            if !port.wants_dhcp(domain) {
+                port.dhcp = None;
+                port.lease = None;
+            }
+        }
+        for (position, session) in started {
+            self.interfaces[position].dhcp = Some(session);
+        }
+        Ok(())
     }
 }

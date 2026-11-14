@@ -494,10 +494,30 @@ impl Configuration {
             ));
         }
         if let Some(forwarding) = &self.dns.forwarding {
-            forwarding.validate(self)?;
+            forwarding.validate(
+                &self.interfaces,
+                |name| self.vlan_gateway(name),
+                "/dns/forwarding",
+            )?;
         }
         if let Some(delegation) = &self.prefix_delegation {
-            delegation.validate(self)?;
+            delegation.validate(
+                |name| {
+                    self.interfaces.contains_key(name)
+                        && !self
+                            .bridges
+                            .values()
+                            .any(|bridge| bridge.ports.contains_key(name))
+                },
+                |name| {
+                    self.interfaces
+                        .get(name)
+                        .is_some_and(Interface::advertises_ipv6)
+                        || self.vlan_gateway(name).is_some_and(|gateway| {
+                            gateway.advertise != RouterAdvertisements::Disabled
+                        })
+                },
+            )?;
         }
         if let Some(bgp) = &self.bgp {
             bgp.validate()?;

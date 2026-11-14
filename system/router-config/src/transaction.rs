@@ -35,7 +35,8 @@ impl StageError {
     }
 }
 
-fn abort_execution(transaction: PreparedConfiguration, cause: Status) -> StageError {
+/// Roll back `transaction` and retain `cause` along with any unconfirmed rollback status.
+pub(super) fn abort_execution(transaction: PreparedConfiguration, cause: Status) -> StageError {
     match transaction.abort() {
         Ok(()) => StageError::Unchanged(cause),
         Err(error) => {

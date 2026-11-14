@@ -5,8 +5,8 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
 use crate::{Decoder, Encoder, Invalid};
 
-/// 应用执行设置并返回会话寿命 channel。
-pub const START: u32 = 1;
+/// 应用执行设置和随请求移交的网络域 channel，返回会话寿命 channel。
+pub const START: u32 = 4;
 /// 暂停 DNS 收发直到附带的寿命 channel 关闭，第一个句柄为单次回复。
 pub const PAUSE: u32 = 2;
 /// 暂停期间替换监听和上游设置，正文为 Settings，空正文停用，附单次回复 channel。

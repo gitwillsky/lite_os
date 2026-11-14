@@ -20,8 +20,14 @@ pub(super) async fn edit(
     physical: &[ConfigurationName],
     interfaces: &[ConfigurationName],
     config: &RouterConfiguration,
+    domain: Option<&ConfigurationName>,
 ) -> liteos_ui::Result<Option<Option<PrefixDelegation>>> {
-    let current = config.prefix_delegation.as_ref();
+    let current = domain.map_or(config.prefix_delegation.as_ref(), |name| {
+        config.routing_domains[name].prefix_delegation.as_ref()
+    });
+    let profiles = domain.map_or(&config.interfaces, |name| {
+        &config.routing_domains[name].interfaces
+    });
     let (window, mut events, root) = form(dialogs, parent, "DHCPv6 前缀委派", 540, 321)?;
     let enabled = checkbox(&root, "从上联取得 IPv6 前缀并分配给下游", current.is_some())?;
     let selectors = child(&root, WidgetKind::Row, "", row())?;
@@ -83,18 +89,19 @@ pub(super) async fn edit(
     let advertised: Vec<_> = interfaces
         .iter()
         .filter(|&name| {
-            config
-                .interfaces
+            profiles
                 .get(name)
                 .and_then(|profile| profile.ipv6.as_ref())
                 .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled)
-                || config
-                    .bridges
-                    .values()
-                    .flat_map(|bridge| bridge.gateways.values())
-                    .any(|gateway| {
-                        gateway.name == *name && gateway.advertise != RouterAdvertisements::Disabled
-                    })
+                || domain.is_none()
+                    && config
+                        .bridges
+                        .values()
+                        .flat_map(|bridge| bridge.gateways.values())
+                        .any(|gateway| {
+                            gateway.name == *name
+                                && gateway.advertise != RouterAdvertisements::Disabled
+                        })
         })
         .collect();
     let set_enabled = |on: bool| {

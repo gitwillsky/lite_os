@@ -65,19 +65,18 @@ impl PrefixDelegation {
         Ok(result)
     }
 
-    pub(super) fn validate(&self, configuration: &Configuration) -> Result<(), ValidationError> {
+    pub(super) fn validate(
+        &self,
+        routed: impl Fn(&Name) -> bool,
+        advertised: impl Fn(&Name) -> bool,
+    ) -> Result<(), ValidationError> {
         if self.duid_mac == [0; 6] || self.duid_mac[0] & 1 != 0 {
             return Err(invalid(
                 "/prefix_delegation/duid_mac",
                 "expected a unicast Ethernet address",
             ));
         }
-        if !configuration.interfaces.contains_key(&self.upstream)
-            || configuration
-                .bridges
-                .values()
-                .any(|bridge| bridge.ports.contains_key(&self.upstream))
-        {
+        if !routed(&self.upstream) {
             return Err(invalid(
                 "/prefix_delegation/upstream",
                 "expected a routed physical interface",
@@ -91,15 +90,7 @@ impl PrefixDelegation {
         }
         let mut identifiers = BTreeSet::new();
         for (name, identifier) in &self.downstream {
-            let advertised = configuration
-                .interfaces
-                .get(name)
-                .and_then(|interface| interface.ipv6.as_ref())
-                .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled)
-                || configuration
-                    .vlan_gateway(name)
-                    .is_some_and(|gateway| gateway.advertise != RouterAdvertisements::Disabled);
-            if name == &self.upstream || !advertised || !identifiers.insert(identifier) {
+            if name == &self.upstream || !advertised(name) || !identifiers.insert(identifier) {
                 return Err(invalid(
                     "/prefix_delegation/downstream",
                     "requires distinct downstream interfaces with advertisements and unique subnet identifiers",
@@ -107,6 +98,14 @@ impl PrefixDelegation {
             }
         }
         Ok(())
+    }
+}
+
+impl Interface {
+    pub(super) fn advertises_ipv6(&self) -> bool {
+        self.ipv6
+            .as_ref()
+            .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled)
     }
 }
 

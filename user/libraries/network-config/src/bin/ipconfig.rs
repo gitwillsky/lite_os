@@ -345,7 +345,7 @@ fn dhcp(
     }
     let mut failed = false;
     for interface in interfaces {
-        if let Err(status) = client.dhcp(&interface.name, action) {
+        if let Err(status) = client.dhcp(None, &interface.name, action) {
             let name = String::from_utf8_lossy(&interface.name);
             eprintln!("{name}：{status}");
             failed = true;
@@ -359,6 +359,7 @@ fn dhcp(
 
 fn show_dhcp_server_leases(
     client: &mut ManagementClient,
+    domain: Option<&str>,
     interface: &std::ffi::OsStr,
 ) -> io::Result<()> {
     use std::net::Ipv4Addr;
@@ -368,7 +369,7 @@ fn show_dhcp_server_leases(
     let mut generation = None;
     loop {
         let (current, observed, bindings, more) =
-            client.dhcp_server_bindings(interface.as_encoded_bytes(), after)?;
+            client.dhcp_server_bindings(domain, interface.as_encoded_bytes(), after)?;
         if generation.is_some_and(|previous| previous != current) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -748,6 +749,9 @@ fn run(
                 b"/bgp-refresh",
                 b"/ospf",
                 b"/routes",
+                b"/leases",
+                b"/renew",
+                b"/release",
                 b"/connections",
                 b"/watch-connections",
                 b"/clear-connection",
@@ -756,7 +760,7 @@ fn run(
             .any(|option| word.eq_ignore_ascii_case(option))
         })
     {
-        eprintln!("ipconfig: /domain 可用于路由、BGP、OSPF 和转发连接操作");
+        eprintln!("ipconfig: /domain 可用于路由、BGP、OSPF、DHCP 租约和转发连接操作");
         return ExitCode::FAILURE;
     }
     let domain = domain.as_deref();
@@ -818,6 +822,7 @@ fn run(
         {
             show_dhcp_server_leases(
                 client,
+                domain,
                 adapter.as_deref().expect("interface argument exists"),
             )
         }
@@ -943,17 +948,28 @@ fn run(
             } else {
                 DhcpAction::Release
             };
-            match adapter.as_ref() {
-                Some(value) => value.to_str().map_or_else(
-                    || {
-                        Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "无效的连接名称",
-                        ))
-                    },
-                    |name| dhcp(client, action, Some(name)),
-                ),
-                None => dhcp(client, action, None),
+            if let Some(domain) = domain {
+                adapter
+                    .as_ref()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "请指定域内实际接口名")
+                    })
+                    .and_then(|interface| {
+                        client.dhcp(Some(domain), interface.as_encoded_bytes(), action)
+                    })
+            } else {
+                match adapter.as_ref() {
+                    Some(value) => value.to_str().map_or_else(
+                        || {
+                            Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "无效的连接名称",
+                            ))
+                        },
+                        |name| dhcp(client, action, Some(name)),
+                    ),
+                    None => dhcp(client, action, None),
+                }
             }
         }
         _ => {

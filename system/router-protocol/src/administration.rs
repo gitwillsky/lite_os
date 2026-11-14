@@ -8,12 +8,13 @@ mod domain;
 pub use commit::{CommitId, CommitResult};
 pub use domain::{domain_names, parse_domain_names, parse_scoped_query, scoped_query};
 
-const VERSION: u32 = 11;
+const VERSION: u32 = 12;
 
 fn accepts_domain(operation: u32) -> bool {
     matches!(
         operation,
         ordinal::FIREWALL_COUNTERS
+            | ordinal::DHCP_SERVER_BINDINGS
             | ordinal::CONNECTIONS
             | ordinal::CLEAR_CONNECTION
             | ordinal::CONNECTION_CHANGES

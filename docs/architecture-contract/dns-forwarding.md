@@ -2,12 +2,12 @@
 
 ## 执行与配置边界
 
-- `dns-cache` 是受监督的原生执行服务。其工厂 `liteos.network.DnsCache` 只授权给 router-config，服务自身只接收 NET 能力。`resolvd` 继续负责桌面应用的 `/etc/resolv.conf` 投影。
-- 工厂接受版本 2 的完整执行配置，指定下游接口及其实际地址，以及当前可用的有序上游。监听按实际接口和已可用的 IPv4/IPv6 地址绑定 UDP/TCP 53。
+- `dns-cache` 是受监督的原生执行服务，工厂 `liteos.network.DnsCache` 只授权给 router-config。`START(4)` 同时接收版本 2 的执行配置与一个网络域 channel。该能力用于本域监听及上游收发。
+- 每个域 channel 对象只有一个活动会话，各域独立拥有 UDP/TCP 53、上游和缓存，可复用相同地址和端口。`resolvd` 负责默认域的 `/etc/resolv.conf` 投影。
 - 持久配置须包含上游。执行配置允许零个上游，全部有作用域的上游失联时仍可监听，未命中缓存的查询返回 SERVFAIL。
 - 单个会话拥有监听和缓存，关闭控制能力或 NET 退出时释放全部资源。暂停会清除在途查询和客户端流，直到配置 owner 释放暂停能力。
   替换时先预备新增监听，成功后退休已删除监听并保留未变化的监听。上游集合或次序变化时丢弃原缓存。
-- 持久配置来自 `dns.forwarding`。监听及链路本地上游可引用物理接口配置名或 VLAN 网关名，监听地址须属于该接口的静态配置。实际 ifindex 只在执行时解析。
+- 默认域使用 `dns.forwarding`，具名域使用 `routing_domains.<域名>.dns_forwarding`。监听或链路本地上游引用本域接口配置名，默认域也可引用 VLAN 网关。监听地址须属于该接口的静态配置，实际接口编号仅在执行时解析。
   链路本地上游使用对应接口的作用域，避免相同地址落入其他 VLAN。[RFC 4007 §11](https://www.rfc-editor.org/rfc/rfc4007.html#section-11)
 - 桌面通过[地址分发与 DNS](../../user/programs/network-manager/README.md#地址分发与-dns)审阅同一持久配置，可与接口地址、DHCPv4 和 IPv6 通告一并提交。
 - 监听只采用当前可用的地址。禁用、拔出或地址冲突会撤掉受影响的监听，链路及地址恢复后按原配置重建。等待某个 IPv6 地址完成冲突检测期间，其他可用地址仍可服务。

@@ -16,6 +16,7 @@ pub mod bgp;
 pub mod configuration;
 pub mod connections;
 pub mod delegation;
+pub mod dhcp_command;
 pub mod dhcp_server;
 pub mod dns;
 pub mod dns_cache;
@@ -35,6 +36,9 @@ pub mod tracking;
 
 /// 设置/租约消息的固定线版本；解码不接受旧布局或未知版本。
 pub const VERSION: u32 = 5;
+
+/// DHCPv4 client factory request with interface index, MAC and a delegated network domain channel.
+pub const DHCP_V4_START: u32 = 3;
 
 pub use revision::Revision;
 

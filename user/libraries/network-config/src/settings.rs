@@ -33,7 +33,7 @@ pub fn wait(generation: Revision) -> io::Result<Revision> {
 /// # Errors
 /// 接口没有 DHCP 会话、等待超时、无权限或服务不可用。
 pub fn dhcp(name: &[u8], action: DhcpAction) -> io::Result<()> {
-    ManagementClient::local().dhcp(name, action)
+    ManagementClient::local().dhcp(None, name, action)
 }
 
 impl ManagementClient {
@@ -74,13 +74,18 @@ impl ManagementClient {
         }
     }
 
-    /// 在指定接口续租或释放 DHCP，等待执行结果。
+    /// 在 `domain` 或默认域的指定接口续租或释放 DHCP，等待执行结果。
     /// # Errors
     /// 接口无 DHCP 会话、等待超时、无权限或服务不可用。
-    pub fn dhcp(&mut self, name: &[u8], action: DhcpAction) -> io::Result<()> {
-        let mut encoder = Encoder::default();
-        encoder.bytes(name).u8(action as u8);
-        self.settings_request(ordinal::DHCP, &encoder.0, Duration::from_secs(17))
+    pub fn dhcp(
+        &mut self,
+        domain: Option<&str>,
+        name: &[u8],
+        action: DhcpAction,
+    ) -> io::Result<()> {
+        let payload = router_protocol::dhcp_command::encode(domain, name, action)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        self.settings_request(ordinal::DHCP, &payload, Duration::from_secs(17))
             .map(drop)
     }
 }

@@ -29,6 +29,12 @@ pub struct RoutingDomain {
     /// 本域受管路由的准入策略。
     #[serde(default)]
     pub route_policy: crate::policy::Policy,
+    /// 本域的下游 DNS 监听和上游解析器。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_forwarding: Option<DnsForwarding>,
+    /// 上联 DHCPv6 身份与本域下游的 /64 子网分配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_delegation: Option<PrefixDelegation>,
     /// 本域的 BGP 邻居和收发策略。链路本地邻居引用本域接口配置名称。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bgp: Option<crate::bgp::Configuration>,
@@ -51,6 +57,8 @@ impl Default for RoutingDomain {
             policy_routing: Default::default(),
             firewall: Default::default(),
             route_policy: Default::default(),
+            dns_forwarding: None,
+            prefix_delegation: None,
             bgp: None,
             ospf: None,
             ipv4_forwarding: forwarding_default(),
@@ -60,7 +68,8 @@ impl Default for RoutingDomain {
 }
 
 impl RoutingDomain {
-    fn interface_reference(&self, name: &Name) -> Option<InterfaceReference<'_>> {
+    /// 返回本域接口的持久设备引用。找不到接口时返回 `None`。
+    pub fn interface_reference(&self, name: &Name) -> Option<InterfaceReference<'_>> {
         self.interfaces
             .get(name)
             .map(|row| InterfaceReference::Device(&row.device))
@@ -161,6 +170,24 @@ impl Configuration {
                 .validate(interface_exists)
                 .map_err(at_domain)?;
             validate_route_policy(&domain.route_policy).map_err(at_domain)?;
+            if let Some(delegation) = &domain.prefix_delegation {
+                delegation
+                    .validate(
+                        |name| domain.interfaces.contains_key(name),
+                        |name| {
+                            domain
+                                .interfaces
+                                .get(name)
+                                .is_some_and(Interface::advertises_ipv6)
+                        },
+                    )
+                    .map_err(at_domain)?;
+            }
+            if let Some(forwarding) = &domain.dns_forwarding {
+                forwarding
+                    .validate(&domain.interfaces, |_| None, "/dns_forwarding")
+                    .map_err(at_domain)?;
+            }
             if let Some(ospf) = &domain.ospf {
                 ospf.validate_links(interface_exists).map_err(at_domain)?;
             }
@@ -199,15 +226,14 @@ impl Configuration {
                         "device belongs to multiple routing domains",
                     ));
                 }
-                if interface.ipv4.as_ref().is_some_and(|ipv4| {
-                    ipv4.assignment != Assignment::Static
-                        || !ipv4.dns.is_empty()
-                        || !ipv4.dns_suffix.is_empty()
-                }) || interface.dhcp_v4_server.is_some()
+                if interface
+                    .ipv4
+                    .as_ref()
+                    .is_some_and(|ipv4| !ipv4.dns.is_empty() || !ipv4.dns_suffix.is_empty())
                 {
                     return Err(invalid(
                         path,
-                        "routing domain supports static IPv4 without DHCP or resolver settings",
+                        "host resolver overrides apply only to the default routing domain",
                     ));
                 }
             }

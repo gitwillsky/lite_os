@@ -8,8 +8,8 @@ use liteos_ui::{
 };
 use network_config::{
     configuration::{
-        Assignment, ConfigurationName, DeviceMatch, InterfaceState, RouterConfiguration,
-        RouterInterface, RoutingDomain, valid_routing_domain_name,
+        ConfigurationName, DeviceMatch, InterfaceState, RouterConfiguration, RouterInterface,
+        RoutingDomain, valid_routing_domain_name,
     },
     format_mac,
 };
@@ -204,13 +204,19 @@ pub(super) async fn assign(
                     .cloned()
                     .unwrap_or_else(|| RouterInterface::new(binding.clone()));
                 profile.device = binding;
-                if target.is_some() && !prepare_named(&mut profile) && dialogs.message(
-                    &window,
-                    "分配网卡",
-                    "目标路由域支持静态 IPv4 设置。是否移除此网卡的 DHCP 和 IPv4 DNS 设置并继续？",
-                    MessageButtons::YesNo,
-                    MessageIcon::Warning,
-                )?.await? != MessageResult::Yes {
+                if target.is_some()
+                    && !prepare_named(&mut profile)
+                    && dialogs
+                        .message(
+                            &window,
+                            "分配网卡",
+                            "手动 DNS 覆盖用于默认路由域。是否移除此网卡的手动 DNS 设置并继续？",
+                            MessageButtons::YesNo,
+                            MessageIcon::Warning,
+                        )?
+                        .await?
+                        != MessageResult::Yes
+                {
                     continue;
                 }
                 let source = row.domain.cloned();
@@ -320,16 +326,11 @@ fn domain_label(domain: Option<&ConfigurationName>) -> String {
 
 // 返回配置是否原本就可用于具名域，供调用者决定是否确认移除设置。
 fn prepare_named(profile: &mut RouterInterface) -> bool {
-    let mut unchanged = profile.dhcp_v4_server.take().is_none();
-    if let Some(ipv4) = &mut profile.ipv4 {
-        if ipv4.assignment == Assignment::Static {
-            unchanged &= ipv4.dns.is_empty() && ipv4.dns_suffix.is_empty();
-            ipv4.dns.clear();
-            ipv4.dns_suffix.clear();
-        } else {
-            profile.ipv4 = None;
-            unchanged = false;
-        }
-    }
+    let Some(ipv4) = &mut profile.ipv4 else {
+        return true;
+    };
+    let unchanged = ipv4.dns.is_empty() && ipv4.dns_suffix.is_empty();
+    ipv4.dns.clear();
+    ipv4.dns_suffix.clear();
     unchanged
 }

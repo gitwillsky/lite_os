@@ -12,7 +12,7 @@
    未知版本、尾部、句柄数和完整 JSON 先校验；创建后先取得一次真实状态回复，才把初始化视为成功。该握手不代表邻居已 Established。
 2. 每域单线程持有全部邻居、RoutingDomain 与一个 Port，属性的 Rc 不跨线程。每邻居至多一个主动与一个入站连接，按实际 Established/OPEN 身份处理碰撞。
    原生 TCP 使用同一双栈 179 监听，仅接受已配置的 IPv4/IPv6 邻居；主动重连、hold/keepalive 全部使用 Session 的单调截止，空闲无限等待。
-   邻居 ipv4_unicast（缺省 true）与 ipv6_unicast（缺省 false）独立选择路由族，不随 TCP 地址族推断，至少开启一族；启用四字节 AS 和路由刷新，尚未启用扩展消息。
+   邻居 ipv4_unicast（缺省 true）与 ipv6_unicast（缺省 false）独立选择路由族，不随 TCP 地址族推断，至少开启一族；标准 OPEN 公布四字节 AS、路由刷新和扩展消息能力。
    address 使用原生 IP 文本；link-local IPv6 须有 interface 名称，其他地址不带 scope；拒绝 mapped 别名。同一链路地址可在不同接口配置，同地址/接口不得重复。
    每次主动连接用实际 TCP 绑定解析接口，入站按真实 peer scope 查询一次接口名再匹配配置；只在当前操作借用事实，不缓存 ifindex 或另建邻居目录。
    实际 link-local TCP 的本机地址及 scope 才授予 SourcePeer 共链路证明，不能从 BGP Identifier 或多跳 TCP 猜测；OPEN 拒绝保护也核对这一范围，不能误保留另一接口上的同地址会话。
@@ -301,7 +301,7 @@ Config 是从唯一配置树投影的不可变连接参数，不是另一份持�
    Route Refresh 必须已在本地宣告，未宣告的族/SAFI 忽略；原 reserved/subtype 按基础刷新语义处理，不宣称增强刷新已接入。
 5. OPEN 阶段收到 2/4 后，若允许 IPv4，则同批 Close/OpenRejected 请求无参数重试；仅允许 IPv6 时不能降级。2/7、再次拒绝或没有共同地址族暂停该邻居，配置重建后再协商。
    NeighborState::open_offer 唯一持有下一次主动/被动尝试方式；None 同时阻止启动循环、入站接纳及其他半开连接。并发输家不能停用已建立连接，成功连接按自己的真实 offer 更新下次方式。
-   本次 offer 不随邻居重试决定改变；基础模式不授权 AS4 路径、IPv6、扩展消息或刷新。地址族 TLV 由 packet-wire 的 Capabilities::{unicast,bytes} 同时供 OPEN 与拒绝通知使用，不在协议 actor 重建布局。
+   本次 offer 不随邻居重试决定改变；基础模式不授权 AS4 路径、IPv6、扩展消息接收或刷新。地址族 TLV 由 packet-wire 的 Capabilities::{unicast,bytes} 同时供 OPEN 与拒绝通知使用，不在协议 actor 重建布局。
    新增状态仅为每邻居/连接标量，仍用两槽无分配 Effects，无额外锁或轮询；仅握手拒绝检查同邻居的已建立身份，成本 O(邻居数)。不新增微基准，沿完整会话/收敛基准评估。
    Effects 只有固定两槽，最坏为“取消旧尝试、发起新尝试”；不新增锁、缓存、堆消息或协议状态副本。
 
@@ -496,5 +496,5 @@ UPDATE 冻结视图只持固定四个 NLRI 区间及借用元数据；Effects �
 ## 扩展消息与验收范围
 
 原生服务公布 RFC 8654 能力。收包按本连接实际 OPEN 授权，发送按对端授权。OPEN 与 KEEPALIVE 仍沿用各自标准上限。接收缓冲仅在通过校验的长帧到达时按声明长度增长，每次读取仍至多 4 KiB。
-现有出口夹具覆盖扩展 UPDATE 的接收和标准邻居的撤回。无长帧时沿用原缓冲上限，吞吐和内存随全表加载测量。
+现有出口夹具覆盖扩展 UPDATE 的接收和标准邻居的撤回。隔离 AArch64/HVF 冷启动以 TCP 对端验证了 65,535 字节 UPDATE 安装至主路由表、断开后撤回。无长帧时沿用原缓冲上限，吞吐和内存随全表加载测量。
 ORF、真实对端互通、百万前缀传播与在线换钥仍需交付或验收。跨重启恢复留到二期。
