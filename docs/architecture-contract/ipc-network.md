@@ -113,7 +113,7 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
     decoder 保留生命周期、T1/T2 与前缀字节，地址配置 owner 再按消息方向与客户端/服务端角色验证，不隐式接受租约。
     typed emitter 预检所有字段/容量后写完整值；raw option builder 仅提供 TLV 编码，不能把成功当成已知内容/位置有效。
     信封在已就位 options 前原位填写，失败不改头；无 DHCPv4 END/PAD 语义，UDP/IPv6 负责完整 checksum。
-    已废弃 IA_TA/Server Unicast 在接收时保留供协议忽略，typed output 不再产生；RKAP/MAC/重放、租约与 PD 状态机尚未实现。
+    已废弃 IA_TA/Server Unicast 在接收时保留供协议忽略，typed output 不再产生。RKAP 密钥、报文认证、重放检查与租约状态归[前缀委派会话](#dhcpv6-前缀委派会话)。
 14. 非压缩 DNS 名称只有一个 owner，DHCPv6 Domain Search 与 ND DNSSL 共享它；名称不隐式转 UTF-8、改大小写或执行 IDNA。
     label 长度最大 63，含 root 的编码名称最大 255；压缩/扩展 label 与截断 root 拒绝。DHCPv6 不加 padding，
     DNSSL 只在一个完整名称之后识别最多七字节的零 padding，不能把 terminator 剥掉或凭空增添搜索域。
@@ -158,9 +158,8 @@ Ethernet RX 在设备批交接后调用 packet-wire::batch：先检查全批 MAC
 输出只借原帧，逐槽记录错误，不因一帧无效丢弃整批或重排；未知协议/LLC 保留精确 payload，IPv6 保留错误字段位置。
 每批把当前主机引擎需要的地址事实投影到调用者的固定栈窗口，读取阶段不再分别重解这些头；所有借用在帧移动/归还前结束。
 RST 终止原因只来自原生 TCP 的完整校验和实际 Closed transition，不在设备 adapter 另存事件。原始帧仍送 AF_PACKET 和协议引擎，不因预解析错误而跳过抓包。
-VLAN 网桥成员在主机解析前转交[二层 owner](switching.md)。主机引擎的 VLAN 接收仍未接入。IP-medium loopback 在独占 claim 时只解析一次队列头，
-复用同一 IP 头结构投影供路由消费。链路准入仍归 Delivery，不能因格式解析失败跳过原来的协议接收路径。
-这完成了现有 RX 路由的批内头部分类；transport 校验/dispatch 仍逐帧，R16 完整批处理图、卸载集成和最终原生主机引擎仍未完成。
+VLAN 网桥成员在主机解析前转交[二层 owner](switching.md)。送给本机的帧由 VLAN 逻辑接口领取，进入同一个主机和三层转发入口。
+IP-medium loopback 在独占 claim 时解析队列头并复用 IP 头投影。接收批次共享头部分类，协议状态按帧推进。传输校验可消费设备卸载结果，链路准入仍归 Delivery。
 
 ## Interface
 
@@ -169,11 +168,10 @@ VLAN 网桥成员在主机解析前转交[二层 owner](switching.md)。主机�
   配置使用 `router-protocol::configuration::Configuration` 的 JSON 版本 1，历史二进制 1–5 只读迁入相同模型。
   私有对象 `interfaces` 同时保存配置和[提交编号](router-configuration.md#原生配置审阅与整份替换)。类型声明生成固定 Draft 2020-12 字段元数据；
   Serde 严格解码与配置语义校验拒绝未知字段、重复对象键、重复设备/显示名和非法地址/域名，不把错误当空配置。
-  当前配置树只覆盖接口/IPv4 和 DNS 核心，不等于完整路由 schema、跨执行服务事务或 WebSocket API；旧设置端点待 API 阶段整体替换。
-  当前接口/DNS 提交由配置 owner 协调可逆执行、持久决定与确认；失败及未确认状态不返回普通成功，具体边界见下文。
+  [配置事务](router-configuration.md)涵盖接口、地址服务、路由域、双栈转发、网桥、防火墙和动态路由等配置。Linux 程序通过[统一管理入口](userspace-abi.md#网络管理入口)读写。
 - 执行安装能力只授权给 RIB；router-config 经专用配置来源能力委托设备目录、ID 和静态描述，两者均不预先打开硬件会话。
   netstack 的 worker owner 选择非零 pair 数，经目录 OPEN 的设备类 options 交给 driver controller；硬件超限请求失败，不静默截断。
-  当前主机协议引擎单 worker 明确请求一对，最终每核/RSS 数据面仍属路由计划。目录转发不复制队列策略或配置状态。
+  多队列和 RSS 的可用范围及分派规则见[转发唤醒与共享调度](ip-forwarding.md#转发唤醒与共享-cpu-调度)。
 
 
 - DHCP 租约事件带服务器标识、发出请求的单调时刻及租期。router-config 只在地址配置成功后发布租约，失效或切换配置时一并清除。

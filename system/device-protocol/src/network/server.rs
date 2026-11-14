@@ -235,18 +235,34 @@ impl NetworkSession {
 }
 impl SessionQueue {
     fn poll(&self, device: &dyn NetworkProvider, queue: u16) -> Result<(), Status> {
+        let mut progressed = false;
+        let mut again = false;
         for _ in 0..BATCHES_PER_DISPATCH {
-            if !self.dispatch_batch(device, queue)? {
-                return Ok(());
+            let (more, published) = self.dispatch_batch(device, queue)?;
+            progressed |= published;
+            again = more;
+            if !again {
+                break;
             }
         }
-        self.ready.signal(0, signals::SIGNALED)
+        // RX 和 TX 完成已发表到共享环，本次分派只通知一次。批次失败由会话关闭路径通知。
+        if progressed {
+            self.progress.signal(0, signals::USER_0)?;
+        }
+        if again {
+            self.ready.signal(0, signals::SIGNALED)?;
+        }
+        Ok(())
     }
 
-    fn dispatch_batch(&self, device: &dyn NetworkProvider, queue: u16) -> Result<bool, Status> {
+    fn dispatch_batch(
+        &self,
+        device: &dyn NetworkProvider,
+        queue: u16,
+    ) -> Result<(bool, bool), Status> {
         let mut state = self.consumer.lock();
         if !state.opened || self.ring.closed() {
-            return Ok(false);
+            return Ok((false, false));
         }
         self.ring.begin_dispatch();
         if self.ring.aborted() {
@@ -276,10 +292,10 @@ impl SessionQueue {
         }
         self.ring
             .push(Ring::Completion, &records[..completed.completed])?;
-        let mut produced = completed.completed;
         let mut again = completed.backlog && limit != 0;
         let count = self.ring.pop(Ring::Fill, &mut records)?;
-        for (position, [slot, ticket, reserved, extra, last]) in records[..count].iter().enumerate() {
+        for (position, [slot, ticket, reserved, extra, last]) in records[..count].iter().enumerate()
+        {
             let slot = u16::try_from(*slot).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             let held = state
                 .received
@@ -396,12 +412,8 @@ impl SessionQueue {
             ];
         }
         self.ring.push(Ring::Receive, &records[..count])?;
-        produced += count;
         again |= count != 0 && count == limit;
-        if produced != 0 {
-            self.progress.signal(0, signals::USER_0)?;
-        }
-        Ok(again)
+        Ok((again, completed.completed != 0 || count != 0))
     }
 }
 impl Drop for NetworkSession {
