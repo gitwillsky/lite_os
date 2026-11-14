@@ -20,7 +20,7 @@ use super::{
     Client, Content, CursorRequest, ForeignInfo, LayerView, Output, Window, WindowCommand,
 };
 
-/// 每次读取的上限；一条消息至多 4096 字节，所以一次读取至少能推进状态机。
+/// 每轮每连接的读取上限，让输入和其他连接能在连续提交期间推进。
 const READ_BYTES: usize = 4096;
 
 struct Connection {
@@ -62,28 +62,22 @@ impl Connection {
         }
     }
 
-    /// 读空 socket 并处理消息；对端关闭、读错误或协议错误都会标记 `closing`。
+    /// 读取一批并处理其中的完整消息。未读数据仍使 socket 就绪，半条消息由 framer 保留。
     fn read(&mut self) {
         let mut buffer = [0u8; READ_BYTES];
-        loop {
-            match recv_fds(self.stream.as_fd(), &mut buffer) {
-                Ok((0, _)) => {
+        match recv_fds(self.stream.as_fd(), &mut buffer) {
+            Ok((0, _)) => self.closing = true,
+            Ok((count, fds)) => {
+                if self.client.receive(&buffer[..count], fds).is_err() {
                     self.closing = true;
-                    return;
-                }
-                Ok((count, fds)) => {
-                    if self.client.receive(&buffer[..count], fds).is_err() {
-                        self.closing = true;
-                        return;
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => {
-                    self.closing = true;
-                    return;
                 }
             }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => self.closing = true,
         }
     }
 }

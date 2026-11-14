@@ -147,3 +147,32 @@ fn many_clients_are_served_independently() {
     assert_eq!(server.connection_count(), 8);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn a_readable_client_keeps_its_backlog_for_the_next_poll_turn() {
+    let path = socket_path("read-budget");
+    let mut server = Server::bind(&path, OUTPUT).unwrap();
+    let (session, mut peer) = UnixStream::pair().unwrap();
+    server.add_session(session).unwrap();
+
+    let mut writer = Writer::new();
+    for callback in 2..402 {
+        wl_display::Request::Sync {
+            callback: id(callback),
+        }
+        .encode(ObjectId::DISPLAY, &mut writer)
+        .unwrap();
+    }
+    // 4800 字节。第 4096 字节落在请求中间，续读必须保留半条消息。
+    peer.write_all(writer.bytes()).unwrap();
+    pump(&mut server);
+
+    {
+        let mut descriptors: Vec<_> = server.descriptors().collect();
+        poll(&mut descriptors, Some(Duration::ZERO)).unwrap();
+        assert!(descriptors[1].returned().contains(PollEvents::READ));
+    }
+    pump(&mut server);
+    assert_eq!(server.connection_count(), 1);
+    std::fs::remove_file(path).unwrap();
+}
