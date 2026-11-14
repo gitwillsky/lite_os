@@ -129,6 +129,16 @@ enum Shape {
     },
 }
 
+/// 已完成的硬件光标状态。位置由独立的 move 路径更新。
+enum AppliedCursor {
+    Hidden,
+    Builtin(&'static str),
+    Client {
+        image: crate::wayland::Content,
+        hotspot: (u32, u32),
+    },
+}
+
 /// 启动画面阶段的状态：画面数据、进度、动画带的起始时刻，以及上一次计时与最后一次画出的帧。
 struct BootScreen {
     scene: boot::Scene,
@@ -173,8 +183,8 @@ pub struct Session {
     /// 硬件光标的图像缓冲；释放它会撤掉光标图像，所以要在整个会话期间持有。
     hardware_cursor: DumbBuffer,
     shape: Shape,
-    /// 成功上传的客户端光标像素与热点；不可变引用避免场景 dirty 时反复上传同一图像。
-    applied_client_cursor: Option<(crate::wayland::Content, (u32, u32))>,
+    /// 形状或可见性变化才提交硬件更新；首次提交前为 None。
+    applied_cursor: Option<AppliedCursor>,
     last_pointer_focus: Option<((ClientId, ObjectId), u32)>,
     /// 当前按下的指针按钮。非空期间指针焦点固定在按下时的 surface（Wayland 的隐式抓取）：
     /// 否则拖动 layer surface 这类“随指针移动”的界面时，指针一旦跑出 surface 就收不到后续 motion 与释放。
@@ -235,7 +245,7 @@ impl Session {
             cursors: parts.cursors,
             hardware_cursor: parts.hardware_cursor,
             shape: Shape::Default,
-            applied_client_cursor: None,
+            applied_cursor: None,
             last_pointer_focus: None,
             keyboard_layer: None,
             shell: None,

@@ -170,7 +170,7 @@ impl Session {
         self.scanout
             .compose(&self.theme, &drawables, overlay_bounds, overlay)?;
         // 硬件光标不在场景四边形中；实际上传的客户端光标仍参与同一显示节拍，避免动画光标等待 frame 永久停住。
-        if self.applied_client_cursor.is_some()
+        if matches!(self.applied_cursor, Some(AppliedCursor::Client { .. }))
             && let Shape::Client {
                 client, surface, ..
             } = self.shape
