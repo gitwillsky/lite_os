@@ -297,7 +297,8 @@ pub trait NetworkProvider: Send + Sync {
     /// 授权共享 VMO 与真实布局；无效队列、句柄复制或分配失败返回错误。
     fn memory(&self, queue: u16) -> Result<NetworkQueueMemory, NetworkError>;
     /// 有界领取 RX 完成，返回写入 output 的数量；已交出的槽在 release_receive_batch 前归 CPU。
-    /// 空队列返回零，设备错误返回失败并由调用者停止数据面。
+    /// 非空 output 被填满时调用者必须续调度；设备可以暂停完成通知，直到下一次观察到队列排空。
+    /// 没有可领取的报文时返回零，设备错误返回失败并由调用者停止数据面。
     fn receive_batch(
         &self,
         queue: u16,
@@ -314,6 +315,7 @@ pub trait NetworkProvider: Send + Sync {
         input: &[NetworkTransmitDescriptor],
     ) -> Result<usize, NetworkError>;
     /// 回收至多 output.len 个完成，写入真实槽号；所有输出都已结束 DMA 并归还硬件槽。
+    /// 有剩余完成时返回 backlog，调用者必须在有输出空间时续调度；设备可以在积压期间暂停完成通知。
     fn reap_transmit(
         &self,
         queue: u16,

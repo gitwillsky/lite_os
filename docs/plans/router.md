@@ -149,7 +149,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
   [桌面转发 CPU 设置](../../user/programs/network-manager/README.md#转发专用-cpu)
 - **同时转发多个路由域的双栈流量**。在有多颗可用 CPU 的共享模式下，多个路由域可同时转发 IPv4 和 IPv6 流量。[转发行为](../architecture-contract/ip-forwarding.md#转发唤醒与共享-cpu-调度)
 - **提高单个路由域的双栈吞吐**。在网卡支持多队列时，管理员可增加转发专用 CPU，提高同一路由域并发转发 IPv4 和 IPv6 流量的总吞吐。[多核吞吐验证](../development/desktop-verification.md#单个路由域的多核吞吐)
-- **空闲时降低转发的 CPU 占用**。网络空闲时转发的 CPU 占用自动下降，收到流量后自动恢复转发。[转发行为](../architecture-contract/ip-forwarding.md#转发唤醒与共享-cpu-调度)
+- **按负载自动调整转发**。持续有流量时批量收发，空闲后自动降低 CPU 占用，收到新流量即恢复转发。[转发行为](../architecture-contract/ip-forwarding.md#转发唤醒与共享-cpu-调度)
 - **静态路由**。可配置及查询 IPv4 和 IPv6 路由，指定直连或经其他路由可达的网关，为多个出口设置权重，或丢弃及拒绝匹配流量。[路由配置](../architecture-contract/router-configuration.md)、[查询](../architecture-contract/packet-netlink.md)
 - **按来源和前缀选用路由**。管理员可决定哪些 IPv4 和 IPv6 路由进入主路由表，并调整采用时的优先级。[路由准入](../architecture-contract/router-configuration.md#路由准入策略)
 - **查询双栈选路结果**。管理员可查看生效的选路规则，并查询本机发送或从指定接口进入的报文将使用的路由表、出口和网关。

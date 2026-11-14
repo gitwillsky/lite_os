@@ -280,8 +280,8 @@ impl NetworkProvider for ActiveNetwork {
         let mut count = 0;
         while count < output.len() {
             let mut completion = queues.receive.used();
-            if event_index && matches!(completion, Ok(None)) {
-                queues.receive.arm_used_notification();
+            if matches!(completion, Ok(None)) {
+                queues.receive.set_used_notification(event_index, true);
                 completion = queues.receive.used();
             }
             let used = match completion {
@@ -333,6 +333,10 @@ impl NetworkProvider for ActiveNetwork {
                 checksum_valid,
             };
             count += 1;
+        }
+        if count != 0 && count == output.len() {
+            // 服务端已承诺再轮询一批。直到它实际读到空，继续收包不需要 IRQ。
+            queues.receive.set_used_notification(event_index, false);
         }
         Ok(count)
     }
@@ -498,9 +502,12 @@ impl NetworkProvider for ActiveNetwork {
             drop(queues);
             return Err(self.fail_device());
         }
+        let event_index = self.features & VIRTIO_F_EVENT_IDX != 0;
         let mut backlog = queues.transmit.has_used();
-        if !backlog && self.features & VIRTIO_F_EVENT_IDX != 0 {
-            queues.transmit.arm_used_notification();
+        if backlog && completed != 0 {
+            queues.transmit.set_used_notification(event_index, false);
+        } else if !backlog {
+            queues.transmit.set_used_notification(event_index, true);
             backlog = queues.transmit.has_used();
         }
         Ok(device_model::network::NetworkCompletion {

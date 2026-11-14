@@ -2713,13 +2713,13 @@ system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: 
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn add_dma (& mut self , buffers : & [DmaSlice < '_ >]) -> Result < u16 , VirtQueueError >
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn add_to_avail (& mut self , desc_idx : u16)
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn addresses (& self) -> VirtQueueAddresses
-system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn arm_used_notification (& mut self)
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn free_descriptor_count (& self) -> u16
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn has_used (& self) -> bool
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn needs_available_notification (& self , added : u16 , event_index : bool) -> bool
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn new (size : u16 , bti : & QueueBti) -> Option < Self >
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn recycle_used (& mut self , completion : UsedDescriptor) -> Result < () , () >
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn retire_unpublished (& mut self , head : u16) -> Result < () , () >
+system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn set_used_notification (& mut self , event_index : bool , enabled : bool)
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) impl VirtQueue :: fn used (& mut self) -> Result < Option < UsedDescriptor > , () >
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct UsedDescriptor
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtQueue

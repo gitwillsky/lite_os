@@ -72,10 +72,18 @@ fn used_does_not_recycle_before_adapter_owner_claim() {
     );
     queue.recycle_used(completion).unwrap();
     assert_eq!(queue.free_descriptor_count(), 4);
-    queue.arm_used_notification();
+    queue.set_used_notification(true, false);
     // SAFETY: the event word follows the four available slots in this test queue.
     let event = unsafe { &*queue.avail.cast::<AtomicU16>().add(2 + 4) };
+    assert_eq!(event.load(Ordering::Relaxed), 0);
+    queue.set_used_notification(true, true);
     assert_eq!(event.load(Ordering::Relaxed), 1);
+    queue.set_used_notification(false, false);
+    // SAFETY: the queue owns the available header for the duration of the test.
+    let flags = unsafe { &(*queue.avail).flags };
+    assert_eq!(flags.load(Ordering::Relaxed), 1);
+    queue.set_used_notification(false, true);
+    assert_eq!(flags.load(Ordering::Relaxed), 0);
 }
 
 #[test]

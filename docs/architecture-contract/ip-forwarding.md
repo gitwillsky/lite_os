@@ -54,11 +54,11 @@
   支持队列亲和的设备在安装时按分区设置中断目标。对照同域多块单队列网卡、RSS 网卡及 CPU 布局切换，测量中断分布、吞吐和桌面延迟。[Linux VirtIO-net 亲和分配](https://github.com/torvalds/linux/blob/v6.12/drivers/net/virtio_net.c#L3427-L3480)
 - 队列数受设备、可用逻辑 CPU 和 RSS 表上限约束。VirtIO 自动分流可直接使用设备公布的多个队列。未建立反向流时，自动分流的行为由设备决定。
   [VirtIO 1.4 §5.1.9.5.6](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)
-  多队列吞吐验收使用实际提供多个队列的隔离后端。常规 QEMU 用户态网络只提供一对队列，打开 `mq` 或 `rss` 不会改变该数量。
-  [QEMU 队列数量](https://github.com/qemu/qemu/blob/e545d8bb9d63e9dd61542b88463183314cff9482/hw/net/virtio-net.c#L3661-L3674)
-- 队列线程在域锁外领取和归还 RX、发布 TX 并回收完成，每轮最多领取及归还各四批 RX、发布四批 TX 并回收 64 项 TX。容量跃迁与收发故障按网卡合并再通知域，空闲读取不扫描队列。
-  单纯发布 TX 或归还 RX 槽只推进队列。若域在同一线程，直接登记协议工作。布局变更重新登记两类工作，应用与链路变化仍直接通知域。
-  归还 FIFO 按设备槽数预留，每槽只登记一次。空 FIFO 首次登记时唤醒，VirtIO 按已协商的事件索引或标准抑制位合并通知。整机测量通知次数、RX 周转和吞吐。[VirtIO 1.4 §2.7](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)
+  多队列验收使用隔离的多队列后端。QEMU 用户态后端只有一对队列。[QEMU 队列数量](https://github.com/qemu/qemu/blob/e545d8bb9d63e9dd61542b88463183314cff9482/hw/net/virtio-net.c#L3661-L3674)
+- 队列线程在域锁外领取和归还各四批 RX、发布四批 TX 并回收 64 项 TX。容量跃迁与收发故障按网卡合并后通知域，空闲不扫描队列。
+  发布 TX 或归还 RX 槽只推进队列，同线程直接登记协议工作。布局变更重新登记两类工作，应用与链路变化直接通知域。
+  RX 归还 FIFO 按槽预留，每槽登记一次，空转非空时唤醒。VirtIO 有积压时以 EVENT_IDX 或 NO_INTERRUPT 抑制 IRQ，排空先恢复再复查 used index。
+  队列服务每次处理最多四批并逐批释放锁。整机对比 IRQ 和 Event 次数、吞吐、空闲后首包及桌面延迟。[VirtIO 1.4 §2.7](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)
   发送描述符与可选的只读载荷持有按提交顺序进入预留 FIFO。待发和已发布槽均占用发送容量，只有匹配的完成可回收。
   双栈物理单播可由独立出口线程复制不变的载荷后缀。NAT 用同一字段遍历确定改写前缀。抓包、重组及重新分片的 IPv4 在协议线程完成编码。最后一个读者释放后归还 RX 槽。
   跨线程载荷增加一次 RX 票据持有和 FIFO 元数据。整机对比普通转发与双栈 NAT 的吞吐、域线程占用和 RX 槽周转，覆盖最小帧、常见 MTU 和出口背压。

@@ -48,6 +48,7 @@ pub(super) const VIRTQ_DESC_F_NEXT: u16 = 1;
 pub(super) const VIRTQ_DESC_F_WRITE: u16 = 2;
 pub(super) const VIRTIO_F_EVENT_IDX: u64 = 1 << 29;
 const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
+const VIRTQ_AVAIL_F_NO_INTERRUPT: u16 = 1;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -464,15 +465,27 @@ impl VirtQueue {
         }
     }
 
-    /// 请求下一次 used 完成通知。仅在协商 EVENT_IDX 后调用，随后须重新读取 used index。
-    pub(super) fn arm_used_notification(&mut self) {
-        // SAFETY: 队列构造时初始化 avail 尾部的 u16 event word，当前锁下只有本驱动写它。
+    /// 当前消费者有续调度时抑制完成通知，排空时恢复。调用者在原队列锁内串行化。
+    ///
+    /// 恢复后须复查 used index，覆盖通知被抑制时发布的完成。持续轮询时每个有积压的批次
+    /// 刷新 EVENT_IDX，保持阈值落在设备生产者之后。通知本身允许有竞态和冗余。
+    pub(super) fn set_used_notification(&mut self, event_index: bool, enabled: bool) {
+        // SAFETY: avail 头与尾部 u16 event word 在 DMA ring 寿命内有效且对齐。
+        // 只在同一队列锁下写协商模式对应的字段。两个字段都按 VirtIO 小端发布。
         unsafe {
-            let event = self.avail.cast::<AtomicU16>().add(2 + usize::from(self.size));
-            (*event).store(self.last_used_idx, Ordering::Relaxed);
+            if event_index {
+                let event = self.avail.cast::<AtomicU16>().add(2 + usize::from(self.size));
+                let index = self.last_used_idx.wrapping_sub(u16::from(!enabled));
+                (*event).store(index.to_le(), Ordering::Relaxed);
+            } else {
+                let flags = if enabled { 0 } else { VIRTQ_AVAIL_F_NO_INTERRUPT };
+                (*self.avail).flags.store(flags.to_le(), Ordering::Relaxed);
+            }
         }
-        // 与设备发布 used index 后读取 used_event 配对。复查可见的完成不能等待下一次 IRQ。
-        fence(Ordering::SeqCst);
+        if enabled {
+            // 与设备 publish used 后读取抑制字段配对。不能把后续 index 复查移到重新启用之前。
+            fence(Ordering::SeqCst);
+        }
     }
 
     fn recycle_descriptors(&mut self, head: u16) -> Result<(), ()> {

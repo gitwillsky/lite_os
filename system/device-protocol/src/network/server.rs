@@ -14,6 +14,9 @@ use native_runtime::native_abi::{self, Status, rights, signals};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Handle, Vmo};
 
+// 一次事件最多推进四批。用完后重新登记，让其他队列和控制请求有机会运行。
+const BATCHES_PER_DISPATCH: usize = 4;
+
 enum TransmitOwner {
     Free { last_ticket: u64 },
     Queued { ticket: u64 },
@@ -118,7 +121,7 @@ impl NetworkSession {
     }
     fn dispatch(&self, index: usize) -> Result<(), Status> {
         let queue = self.queues.get(index).ok_or(native_abi::ERR_INVALID_ARGS)?;
-        if let Err(error) = queue.dispatch(&*self.device, index as u16) {
+        if let Err(error) = queue.poll(&*self.device, index as u16) {
             self.close_after_stop();
             return Err(error);
         }
@@ -231,10 +234,19 @@ impl NetworkSession {
     }
 }
 impl SessionQueue {
-    fn dispatch(&self, device: &dyn NetworkProvider, queue: u16) -> Result<(), Status> {
+    fn poll(&self, device: &dyn NetworkProvider, queue: u16) -> Result<(), Status> {
+        for _ in 0..BATCHES_PER_DISPATCH {
+            if !self.dispatch_batch(device, queue)? {
+                return Ok(());
+            }
+        }
+        self.ready.signal(0, signals::SIGNALED)
+    }
+
+    fn dispatch_batch(&self, device: &dyn NetworkProvider, queue: u16) -> Result<bool, Status> {
         let mut state = self.consumer.lock();
         if !state.opened || self.ring.closed() {
-            return Ok(());
+            return Ok(false);
         }
         self.ring.begin_dispatch();
         if self.ring.aborted() {
@@ -389,10 +401,7 @@ impl SessionQueue {
         if produced != 0 {
             self.progress.signal(0, signals::USER_0)?;
         }
-        if again {
-            self.ready.signal(0, signals::SIGNALED)?;
-        }
-        Ok(())
+        Ok(again)
     }
 }
 impl Drop for NetworkSession {
