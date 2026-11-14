@@ -217,7 +217,7 @@ impl Sessions {
                 receive_add_path: parameters.receive_add_path,
                 send_add_path: parameters.send_add_path,
                 route_refresh: true,
-                extended_messages: false,
+                extended_messages: true,
             };
             peers.push(NeighborState {
                 name,

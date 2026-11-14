@@ -313,18 +313,20 @@ def prepare(
     return VM_PACKAGE
 
 
-def _ctl(*arguments: str) -> str:
+def _ctl(*arguments: str, executable: Path = UTMCTL, timeout: float = 30) -> str:
     try:
         result = subprocess.run(
-            [str(UTMCTL), *arguments],
+            [str(executable), *arguments],
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=30,
+            capture_output=True,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(f"utmctl {' '.join(arguments)} did not complete") from error
+    # utmctl 的 Apple Event delegate 写 stderr 后仍可能返回零，系统诊断也使用 stderr。
+    if "Error from event:" in result.stderr:
+        raise RuntimeError(f"utmctl {' '.join(arguments)}: {result.stderr.strip()}")
     return result.stdout.strip()
 
 
@@ -389,8 +391,8 @@ def _open_application() -> None:
         command = command.strip()
         if command.endswith(suffix) and Path(command) != UTM_APP / "Contents/MacOS/UTM":
             other = Path(command).parents[2]
-            status = subprocess.run([str(other / "Contents/MacOS/utmctl"), "list"], check=True, text=True, capture_output=True, timeout=15)
-            if any(value != "stopped" for value in _listed_vms(status.stdout).values()):
+            listing = _ctl("list", executable=other / "Contents/MacOS/utmctl", timeout=15)
+            if any(value != "stopped" for value in _listed_vms(listing).values()):
                 raise RuntimeError("Stop the running VM in the other UTM application before starting LiteOS")
             try:
                 subprocess.run(["osascript", "-e", f'tell application "{_apple_string(str(other))}" to quit'], check=True, capture_output=True, timeout=15)

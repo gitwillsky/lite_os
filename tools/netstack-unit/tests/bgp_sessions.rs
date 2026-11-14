@@ -706,7 +706,7 @@ fn optional_parameter_rejection_retries_a_real_basic_open_and_receives_two_octet
     );
     assert_eq!(session.state(), State::Established);
 
-    // 对方单方向仍发送能力，也不能放开本地从未声明的扩展消息/刷新或四字节路径。
+    // 扩展消息由接收方授权。对端声明后可向它发送，本地基本 OPEN 仍只接收标准帧。
     let mut other = Session::new(policy).unwrap();
     other.on(0, Input::Start);
     other.on(SECOND, Input::Connected(OpenOffer::BasicIpv4));
@@ -723,7 +723,7 @@ fn optional_parameter_rejection_retries_a_real_basic_open_and_receives_two_octet
         !peer.four_octet_asn
             && !peer.send_refresh
             && !peer.receive_refresh
-            && !peer.send_extended
+            && peer.send_extended
             && !peer.receive_extended
     );
 }

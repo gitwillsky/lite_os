@@ -131,14 +131,14 @@ pub struct Tracking {
     changes: Event,
 }
 impl Tracking {
-    pub(super) fn from_reply(mut reply: service_rpc::Reply) -> Result<Self, Status> {
+    pub(super) fn from_reply(reply: service_rpc::Reply) -> Result<Self, Status> {
         reply.reader().finish()?;
-        if reply.handles.len() != 2 {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        let channel = Channel::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?);
-        let changes = Event::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?);
-        Ok(Self { channel, changes })
+        let [channel, changes] =
+            <[Handle; 2]>::try_from(reply.handles).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        Ok(Self {
+            channel: Channel::from_handle(channel),
+            changes: Event::from_handle(changes),
+        })
     }
     /// 此 RIB 实例退出/跟踪终止后为 PEER_CLOSED，旧代际不跨实例复用。
     pub fn channel(&self) -> &Channel {

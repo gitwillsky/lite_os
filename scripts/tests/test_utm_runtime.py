@@ -253,9 +253,17 @@ class UtmRuntimeTests(unittest.TestCase):
             "UUID Status Name\n"
             f"{utm_runtime.VM_UUID} started LiteOS\n"
         )
-        with patch.object(utm_runtime, "_ctl", return_value=listing) as ctl:
+        result = utm_runtime.subprocess.CompletedProcess(
+            [str(utm_runtime.UTMCTL), "list"], 0, listing,
+            "Keyboard Layouts: duplicate keyboard layout identifier -17410.\n",
+        )
+        with patch.object(utm_runtime.subprocess, "run", return_value=result) as run:
             self.assertEqual(utm_runtime._status(), "started")
-        ctl.assert_called_once_with("list")
+            run.assert_called_once_with(result.args, check=True, text=True, capture_output=True, timeout=30)
+
+            result.stderr = "Error from event: Not authorized to send Apple events."
+            with self.assertRaisesRegex(RuntimeError, "Not authorized"):
+                utm_runtime._status()
 
     def test_interrupt_stops_only_the_managed_vm_and_exits_cleanly(self) -> None:
         for enabled in (True, False):

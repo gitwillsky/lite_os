@@ -70,6 +70,7 @@ pub(super) fn context() -> ExportContext {
         ipv6_unicast: false,
         ipv4_unicast: true,
         send_ipv4_via_ipv6: false,
+        send_extended: false,
         local_address: "192.0.2.9".parse().unwrap(),
         cluster_id: None,
         target: Peer {
@@ -108,7 +109,7 @@ pub(super) fn receiver(context: ExportContext) -> Session {
         route_refresh: true,
         receive_add_path: false,
         send_add_path: false,
-        extended_messages: false,
+        extended_messages: context.send_extended,
     };
     let mut session = Session::new(config).unwrap();
     session.on(0, Input::Start);

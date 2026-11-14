@@ -183,19 +183,31 @@ impl Transport {
         }
         Ok(None)
     }
-    pub(super) fn receive(&self, input: &mut InputBuffer) -> Result<bool, SocketError> {
+    pub(super) fn receive(
+        &self,
+        input: &mut InputBuffer,
+        extended: bool,
+    ) -> Result<bool, SocketError> {
         if input.consumed != 0 {
             input.bytes.copy_within(input.consumed.., 0);
             input.bytes.truncate(input.bytes.len() - input.consumed);
             input.consumed = 0;
         }
-        let available = wire::STANDARD_LIMIT - input.bytes.len();
+        // 只有已校验的长帧才扩展缓冲。每次 TCP 读取仍受原 4 KiB 工作额度约束。
+        let limit = if input.bytes.len() < wire::STANDARD_LIMIT {
+            wire::STANDARD_LIMIT
+        } else {
+            wire::Header::parse(&input.bytes, extended)
+                .map_err(|_| SocketError::MessageTooLarge)?
+                .length()
+        };
+        let available = (limit - input.bytes.len()).min(wire::STANDARD_LIMIT);
         if available == 0 {
             return Err(SocketError::MessageTooLarge);
         }
         input
             .bytes
-            .try_reserve_exact(available)
+            .try_reserve_exact(limit - input.bytes.len())
             .map_err(|_| SocketError::NoMemory)?;
         match self.socket.receive(available, false) {
             Ok(received) if received.data.is_empty() => Err(SocketError::ConnectionReset),
@@ -247,8 +259,9 @@ pub(super) struct InputBuffer {
     consumed: usize,
 }
 impl InputBuffer {
-    pub(super) fn next(&self) -> Result<Option<Frame<'_>>, HeaderError> {
-        Frame::read(&self.bytes[self.consumed..], false).map(|frame| frame.map(|(frame, _)| frame))
+    pub(super) fn next(&self, extended: bool) -> Result<Option<Frame<'_>>, HeaderError> {
+        Frame::read(&self.bytes[self.consumed..], extended)
+            .map(|frame| frame.map(|(frame, _)| frame))
     }
     pub(super) fn consume(&mut self, length: usize) {
         self.consumed += length;
@@ -569,6 +582,7 @@ impl Connection {
                         } else {
                             AsnWidth::Two
                         },
+                        send_extended: peer.send_extended,
                         interval_ns: u64::from(io.parameters.advertisement_seconds.unwrap_or(
                             if target.kind == PeerKind::Internal {
                                 5
@@ -674,7 +688,7 @@ impl Connection {
                 .transport
                 .as_ref()
                 .is_some_and(|transport| transport.armed)
-            && matches!(self.input.next(), Ok(None))
+            && matches!(self.input.next(self.session.accepts_extended()), Ok(None))
         {
             return Ok(false);
         }
@@ -746,8 +760,9 @@ impl Connection {
             transport.arm(io.port)?;
             return Ok(false);
         }
-        if matches!(self.input.next(), Ok(None)) {
-            match transport.receive(&mut self.input) {
+        let extended = self.session.accepts_extended();
+        if matches!(self.input.next(extended), Ok(None)) {
+            match transport.receive(&mut self.input, extended) {
                 Ok(false) => {
                     transport.arm(io.port)?;
                     return Ok(false);
@@ -760,7 +775,7 @@ impl Connection {
                 }
             }
         }
-        match self.input.next() {
+        match self.input.next(extended) {
             Ok(Some(frame)) => {
                 let length = frame.bytes().len();
                 let effects = self.session.on(time(), Input::Frame(frame));

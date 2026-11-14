@@ -305,7 +305,7 @@ pub(super) fn negotiate<'a>(
                 && add_path_send[index]
         }),
         four_octet_asn: capabilities && asn.is_some(),
-        send_extended: capabilities && config.extended_messages && extended,
+        send_extended: extended,
         receive_extended: capabilities && config.extended_messages,
         send_refresh: capabilities && refresh,
         receive_refresh: capabilities && config.route_refresh,

@@ -12,6 +12,11 @@ pub const HEADER_BYTES: usize = 19;
 /// 未协商扩展消息的单帧上限；OPEN 始终使用此上限。
 pub const STANDARD_LIMIT: usize = 4096;
 
+/// 单方向消息长度上限。OPEN 和 KEEPALIVE 始终沿用各自的标准边界。
+pub const fn message_limit(extended: bool) -> usize {
+    if extended { u16::MAX as usize } else { STANDARD_LIMIT }
+}
+
 /// 标准消息类型；未知类型由消息头 owner 明确拒绝。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -45,11 +50,7 @@ fn kind(value: u8) -> Result<Kind, HeaderError> {
     }
 }
 fn valid_length(kind: Kind, length: usize, extended: bool) -> bool {
-    let limit = if extended && kind != Kind::Open {
-        usize::from(u16::MAX)
-    } else {
-        STANDARD_LIMIT
-    };
+    let limit = message_limit(extended && kind != Kind::Open);
     length <= limit
         && match kind {
             Kind::Open => length >= 29,

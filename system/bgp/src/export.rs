@@ -38,6 +38,8 @@ pub struct ExportContext {
     pub target: Peer,
     /// 对端实际协商的 AS 号宽度。
     pub width: AsnWidth,
+    /// 对端 OPEN 声明接收扩展消息，允许本方向发送超过标准长度的 UPDATE。
+    pub send_extended: bool,
     /// 每前缀宣告或撤回之间的最短间隔。
     pub interval_ns: u64,
 }
@@ -683,7 +685,7 @@ impl AdjRibOut {
                 multiprotocol,
                 nlri_size + size,
             )?;
-            if length > packet_wire::bgp::STANDARD_LIMIT {
+            if length > packet_wire::bgp::message_limit(context.send_extended) {
                 if !prefixes.is_empty() {
                     break;
                 }

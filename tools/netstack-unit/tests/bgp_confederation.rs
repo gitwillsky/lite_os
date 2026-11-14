@@ -121,6 +121,7 @@ fn target(kind: PeerKind, width: AsnWidth) -> ExportContext {
         ipv6_unicast: false,
         ipv4_unicast: true,
         send_ipv4_via_ipv6: false,
+        send_extended: false,
         local_address: "192.0.2.1".parse().unwrap(),
         cluster_id: None,
         target: Peer {

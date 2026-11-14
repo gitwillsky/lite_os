@@ -262,6 +262,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
             route_reflector_client: false,
         },
         width: packet_wire::bgp::attributes::AsnWidth::Four,
+        send_extended: false,
         interval_ns: 0,
     };
     let mut output = ::bgp::AdjRibOut::default();
@@ -613,6 +614,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
             ..peer
         },
         width: AsnWidth::Four,
+        send_extended: negotiated.send_extended,
         interval_ns: 0,
     };
     output.changed(&routes, prefix, 0).unwrap();
@@ -876,6 +878,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
             route_reflector_client: false,
         },
         width: packet_wire::bgp::attributes::AsnWidth::Four,
+        send_extended: false,
         interval_ns: 0,
     };
     let policy = parameters

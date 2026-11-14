@@ -147,6 +147,18 @@ impl Session {
         self.negotiated
     }
 
+    /// 本 TCP 的 OPEN 已声明接收扩展消息。基本 OPEN 的重试仍保留标准长度。
+    pub fn accepts_extended(&self) -> bool {
+        self.negotiated.map_or_else(
+            || {
+                self.state == State::OpenSent
+                    && self.offer == OpenOffer::Capabilities
+                    && self.config.extended_messages
+            },
+            |peer| peer.receive_extended,
+        )
+    }
+
     /// 当前连接是否获准向对端发送指定单播族的基础刷新请求。
     /// 对端是否返回增强边界由双方的能力 70 协商决定。
     pub fn can_request_refresh(&self, family: packet_wire::bgp::nlri::Family) -> bool {
@@ -390,7 +402,7 @@ impl Session {
                 ) =>
             {
                 if frame.header().length() > packet_wire::bgp::STANDARD_LIMIT
-                    && !self.negotiated.is_some_and(|peer| peer.receive_extended)
+                    && !self.accepts_extended()
                 {
                     self.close(
                         now,

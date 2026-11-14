@@ -15,6 +15,7 @@ use packet_wire::{
 struct Attributes<'a, const WRITE: bool> {
     output: &'a mut [u8],
     at: usize,
+    limit: usize,
 }
 impl<const WRITE: bool> Attributes<'_, WRITE> {
     fn emit(&mut self, flags: u8, code: u8, data: &[u8]) -> Result<(), PacketError> {
@@ -47,8 +48,8 @@ impl<const WRITE: bool> Attributes<'_, WRITE> {
         if length == 0 {
             return Ok(());
         }
-        // 当前方向只允许标准消息，单个集合已超过上限时是逐目标不可发送，不是域格式损坏。
-        if length > bgp::STANDARD_LIMIT {
+        // 单个集合超过本方向上限是逐目标不可发送，不是域格式损坏。
+        if length > self.limit {
             return Err(PacketError::Capacity);
         }
         self.at += if WRITE {
@@ -109,7 +110,7 @@ pub(super) fn message(
         multiprotocol,
         size,
     )?;
-    if capacity > bgp::STANDARD_LIMIT {
+    if capacity > bgp::message_limit(context.send_extended) {
         return Err(PacketError::Capacity.into());
     }
     let mut encoded = Vec::new();
@@ -131,7 +132,7 @@ pub(super) fn message(
         } else {
             empty
         },
-        false,
+        context.send_extended,
         |output| {
             if !multiprotocol {
                 return route.map_or(Ok(0), |route| {
@@ -180,9 +181,14 @@ fn emit_attributes<const WRITE: bool>(
 ) -> Result<usize, PacketError> {
     let attributes = &route.attributes;
     let external = context.target.kind == crate::PeerKind::External;
-    let mut writer = Attributes::<WRITE> { output, at: 0 };
+    let limit = bgp::message_limit(context.send_extended);
+    let mut writer = Attributes::<WRITE> {
+        output,
+        at: 0,
+        limit,
+    };
     writer.emit(0x40, 1, &[attributes.origin()])?;
-    // 本方向只发送标准消息；先用 ASN 字节数下界排除巨型本地编辑，不能将 u16 容量限制升级为域损坏。
+    // 先用 ASN 字节数下界排除巨型本地编辑，不能将 u16 容量限制升级为域损坏。
     let asns = attributes
         .path()
         .segments()
@@ -206,7 +212,7 @@ fn emit_attributes<const WRITE: bool>(
     };
     if asns
         .checked_mul(width)
-        .is_none_or(|bytes| bytes > bgp::STANDARD_LIMIT)
+        .is_none_or(|bytes| bytes > limit)
     {
         return Err(PacketError::Capacity);
     }

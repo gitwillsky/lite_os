@@ -4,7 +4,7 @@ mod bgp_peer;
 mod add_path;
 #[path = "bgp_peer/routing.rs"]
 mod routing;
-use bgp::{AdjRibOut, ExportContext, Peer, PeerKind, RoutingDomain, SelectionContext, SourcePeer};
+use bgp::{AdjRibOut, Effect, ExportContext, Input, Peer, PeerKind, RoutingDomain, SelectionContext, SourcePeer};
 use bgp_peer::{attributes, base, receive, update};
 use core::num::NonZeroU32;
 use packet_wire::bgp::{
@@ -131,6 +131,23 @@ fn configured_export_reaches_a_real_peer_with_as4_boundary_and_attributes_preser
             data: &large,
         }],
     );
+    let extended = ExportContext {
+        send_extended: true,
+        ..context()
+    };
+    let mut extended_output = AdjRibOut::default();
+    extended_output.changed(&domain, prefix(), 31).unwrap();
+    let announced = extended_output
+        .prepare(&mut domain, Some(&configured), extended, 31)
+        .unwrap()
+        .unwrap();
+    use packet_wire::bgp::{Frame, HeaderError};
+    assert_eq!(Frame::parse(&announced, false), Err(HeaderError::Length));
+    let accepted = Frame::parse(&announced, true).unwrap();
+    let mut peer = receiver(extended);
+    assert!(peer.on(32, Input::Frame(accepted)).into_iter().any(
+        |effect| matches!(effect, Effect::Update(update) if update.changes().count() == 1)
+    ));
     outgoing.changed(&domain, prefix(), 31).unwrap();
     let withdrawn = outgoing
         .prepare(&mut domain, Some(&configured), context(), 31)

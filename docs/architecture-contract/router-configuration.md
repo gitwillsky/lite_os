@@ -157,7 +157,7 @@ RIB 主线程以一个 Port 等待 NET 关闭、路由输入变化、来源撤�
 
 router-protocol::tracking 拥有查询、状态、路由证明与立即出口和权重。resolution 复用其 Adjacency/Member。
 原生工厂 TRACK(7) 或已授权来源 TRACK(2) 派生同一默认实例两族的只读能力；不授予写入或其他实例，普通应用无入口。
-授权来源另提供 WATCH_ROUTES(3)：请求仅 u32 来源版本 3、无句柄，返回普通跟踪 channel 与 Event，初始查询为空。
+授权来源另提供 WATCH_ROUTES(3)：请求仅 u32 来源版本 3、无句柄，初始查询为空。跟踪能力的回复固定按 channel、Event 顺序交付各一个句柄。
 该登记不可变的 whole_graph 范围使每次已确认图发表均通知，不因立即出口相同而遗漏递归依赖变化；预备、激活和撤销不通知。
 SNAPSHOT/UPDATE 使用下述快照与查询正文，空查询返回只有头部的快照。更新查询不缩小完整图观察范围。
 Query 的 prefix_length=None 为同族单播地址 LPM，默认路由必须经 resolve_via_default 显式允许；拒绝 unspecified/multicast/limited-broadcast、mapped 和无 zone 的链路地址。
