@@ -27,6 +27,7 @@ class ApkPackageMetadata:
     arch: str
     provides: tuple[str, ...] = ()
     dependencies: tuple[str, ...] = ()
+    replaces: tuple[str, ...] = ()
 
 
 def _gzip(payload: bytes) -> bytes:
@@ -128,6 +129,7 @@ def _control_member(metadata: ApkPackageMetadata, installed_size: int, datahash:
         f"license = {metadata.license}",
         *(f"depend = {dependency}" for dependency in metadata.dependencies),
         *(f"provides = {provided}" for provided in metadata.provides),
+        *([f"replaces = {' '.join(metadata.replaces)}"] if metadata.replaces else ()),
         f"datahash = {datahash}",
     )
     content = ("\n".join(lines) + "\n").encode()

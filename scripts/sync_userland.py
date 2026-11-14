@@ -38,10 +38,16 @@ RETIRED_FILES = tuple(f"/bin/{name}" for name in (
 RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos", "/opt/wine",
                  "/usr/share/fontconfig", "/usr/share/X11/xkb")
 
+# These paths were once copied directly into development images. APK now owns their lifecycle,
+# so the base synchronizer must neither overwrite nor retire them.
+PACKAGE_PATHS = frozenset(("/bin/network-manager", "/usr/share/applications/network-manager.desktop"))
+
 
 def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
+        return False
+    if path in PACKAGE_PATHS:
         return False
     # Fontconfig 主配置与旧镜像中的配置片段由同步器拥有，撤销时仍需接受旧 stamp 路径。
     if path.startswith("/etc/fonts/"):
@@ -64,7 +70,7 @@ def managed_path(path: str) -> bool:
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/savedump", "/bin/session-launch",
         "/bin/resolvd", "/bin/ipconfig", "/bin/router-api", "/usr/sbin/sshd", "/usr/bin/ssh-keygen", "/usr/lib/ssh/sshd-auth",
         "/usr/lib/ssh/sshd-session", "/etc/init.d/sshd", "/etc/ssh/sshd_config",
-        "/bin/network-manager", "/usr/bin/iperf3", "/usr/share/licenses/iperf3/LICENSE",
+        "/usr/bin/iperf3", "/usr/share/licenses/iperf3/LICENSE",
         "/usr/bin/tcpdump", "/usr/share/licenses/tcpdump/LICENSE", "/usr/share/licenses/libpcap/LICENSE",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 

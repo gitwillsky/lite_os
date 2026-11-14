@@ -33,7 +33,10 @@ pub use router_protocol::firewall::{
     valid_name as valid_address_set_name, valid_prefix as valid_firewall_prefix,
 };
 pub use router_protocol::ospf;
-pub use router_protocol::policy::{Disposition as RouteDisposition, Prefix as RoutePolicyPrefix};
+pub use router_protocol::policy::{
+    Action as RouteAdmissionAction, Disposition as RouteDisposition, Policy as RouteAdmission,
+    Prefix as RoutePolicyPrefix, Rule as RouteAdmissionRule,
+};
 pub use router_protocol::policy_routing::{MAIN_PRIORITY as POLICY_MAIN_PRIORITY, alternate_table};
 pub use router_protocol::routing::{Attributes as RouteAttributes, Family as RoutingFamily};
 pub use router_protocol::switching::{valid_gateway_address, valid_gateway_name, valid_vid};

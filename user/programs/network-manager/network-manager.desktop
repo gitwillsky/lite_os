@@ -4,6 +4,6 @@ Name=Network Manager
 Name[zh_CN]=网络管理器
 Exec=/bin/network-manager
 Icon=network-connections
-Categories=Settings;Network;
+Categories=Network;X-LiteOS-Desktop;
 StartupWMClass=org.liteos.network-manager
 Terminal=false

@@ -1,4 +1,4 @@
-//! 桌面图标：系统图标加 `~/Desktop` 里的条目；按网格摆放，可拖动，位置按用户持久化。
+//! 桌面图标：系统位置、已安装应用的快捷方式和用户文件；位置按用户持久化。
 use crate::start::Place;
 use crate::{Drag, Rename, icons, popups, start};
 use canvas::Rect;
@@ -76,6 +76,7 @@ fn compare(arrange: Arrange, a: &Entry, b: &Entry) -> std::cmp::Ordering {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Place(Place),
+    Application(String),
     Path(PathBuf),
 }
 
@@ -84,7 +85,7 @@ pub struct Icon {
     /// 32 × 32 位图的名称（不含扩展名）。
     pub art: String,
     pub target: Target,
-    /// 持久化位置时的键：系统图标是固定名，其余是文件名。
+    /// 持久化位置时的键：系统位置名、应用 ID 或用户文件名。
     key: String,
 }
 
@@ -106,6 +107,8 @@ pub struct Icons {
     layout_file: PathBuf,
     arrange_file: PathBuf,
     stamp: Option<SystemTime>,
+    // 应用目录变动可能发生在图标拖动或菜单期间，保留到下一次能安全刷新图标时。
+    applications_changed: bool,
     home: PathBuf,
     // Bound the mount-table scan independently of pointer and frame activity.
     next_trash_check: Instant,
@@ -175,7 +178,7 @@ fn parse_layout(text: &str) -> HashMap<String, (i32, i32)> {
 
 impl Icons {
     /// 读取桌面文件夹（不存在则创建）与保存的位置。
-    pub fn load(home: &Path, cell: (i32, i32)) -> Self {
+    pub fn load(home: &Path, cell: (i32, i32), apps: &[desktop_entry::Entry]) -> Self {
         let directory = home.join("Desktop");
         let _ = fs::create_dir_all(&directory);
         let layout_file = home.join(".config/liteos/desktop-icons");
@@ -203,11 +206,12 @@ impl Icons {
             layout_file,
             arrange_file,
             stamp: None,
+            applications_changed: false,
             home: home.to_owned(),
             next_trash_check: Instant::now(),
             trash_full: false,
         };
-        icons.refresh();
+        icons.refresh(apps);
         icons.poll_trash();
         icons
     }
@@ -220,7 +224,11 @@ impl Icons {
 
     /// 桌面文件夹自上次读取后是否变化。
     pub fn changed(&self) -> bool {
-        self.modified() != self.stamp
+        self.applications_changed || self.modified() != self.stamp
+    }
+
+    pub(super) fn applications_changed(&mut self) {
+        self.applications_changed = true;
     }
 
     /// 回收站满/空状态变化时返回 true；目录不存在的账户使用空图标。
@@ -237,10 +245,24 @@ impl Icons {
     }
 
     /// 重新读取桌面文件夹并重新分配位置：保存过且仍空闲的用保存位置，其余按列顺序填空格。
-    pub fn refresh(&mut self) {
+    pub fn refresh(&mut self, apps: &[desktop_entry::Entry]) {
         self.stamp = self.modified();
+        self.applications_changed = false;
         let associations = desktop_entry::Associations::load();
         let mut items = system_icons();
+        items.extend(
+            apps.iter()
+                .filter(|app| app.in_category("X-LiteOS-Desktop"))
+                .map(|app| Icon {
+                    label: app.name.clone(),
+                    art: app
+                        .icon
+                        .as_deref()
+                        .map_or_else(|| "file-app-32".to_owned(), |icon| format!("{icon}-32")),
+                    target: Target::Application(app.id().to_owned()),
+                    key: format!("::application:{}", app.id()),
+                }),
+        );
         // 每个条目只读一次元数据（跟随符号链接，与打开时看到的目标一致），排序比较不再访问文件系统。
         let mut entries: Vec<Entry> = fs::read_dir(&self.directory)
             .into_iter()
@@ -533,6 +555,7 @@ impl Icons {
         &mut self,
         draft: &desktop_entry::fileops::Rename,
         name: &str,
+        apps: &[desktop_entry::Entry],
     ) -> io::Result<PathBuf> {
         let path = draft.path();
         let target = draft.commit(name)?;
@@ -552,7 +575,7 @@ impl Icons {
             self.saved.remove(old);
             self.saved.insert(name.to_owned(), cell);
         }
-        self.refresh();
+        self.refresh(apps);
         if let Err(error) = self.save() {
             eprintln!("desktop: cannot persist renamed icon position: {error}");
         }
@@ -678,7 +701,7 @@ impl crate::Desktop {
             .iter()
             .filter_map(|index| match &self.icons.items[*index].target {
                 icons::Target::Path(path) => Some(path.clone()),
-                icons::Target::Place(_) => None,
+                icons::Target::Place(_) | icons::Target::Application(_) => None,
             })
             .collect()
     }
@@ -739,7 +762,7 @@ impl crate::Desktop {
             .selection_anchor
             .and_then(|index| self.icons.items.get(index))
             .map(|icon| icon.target.clone());
-        self.icons.refresh();
+        self.icons.refresh(&self.apps);
         self.focused = selected.and_then(|target| {
             self.icons
                 .items
@@ -784,7 +807,10 @@ impl crate::Desktop {
         let Some(rename) = self.rename.take() else {
             return;
         };
-        match self.icons.rename(&rename.operation, rename.edit.text()) {
+        match self
+            .icons
+            .rename(&rename.operation, rename.edit.text(), &self.apps)
+        {
             Ok(path) => {
                 self.message.clear();
                 if let Some(index) = self.icons.items.iter().position(

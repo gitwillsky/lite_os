@@ -185,11 +185,12 @@ class CacheRetentionTests(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return build_cache.prune_rootfs_images(directory, **kwargs)
-        def create_image(_binary, _musl, _openssl, destination):
+        def create_image(_binary, _musl, _openssl, destination, _network_manager):
             destination.write_bytes(b"new rootfs")
         with (
             patch.object(userland_image, "WORK", work),
             patch.object(userland_image, "base_userland", return_value=()),
+            patch.object(userland_image, "network_manager_package", return_value=artifact),
             patch.object(userland_image, "build_stress_tools", return_value=artifact),
             patch.object(userland_image, "cached_apk_bootstrap", return_value=bootstrap),
             patch.object(userland_image, "target_runtime_artifacts", return_value=()),

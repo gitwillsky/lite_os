@@ -13,8 +13,8 @@ mod traffic;
 
 use liteos_ui::{
     Application, Column, ControlFlow, Dialogs, EventKind, FileDialogFuture, FileDialogMode,
-    FileFilter, Layout, ListOptions, ListStyle, Task, Widget, WidgetKind, WidgetSpec, Window,
-    WindowOptions, state,
+    FileFilter, Layout, ListOptions, ListStyle, Task, TreeRow, Widget, WidgetKind, WidgetSpec,
+    Window, WindowOptions, state,
 };
 use probe::{Cancel, Kind, Probe};
 use std::{num::NonZeroU16, path::PathBuf, process::ExitCode};
@@ -85,7 +85,7 @@ fn child(
 
 fn run() -> liteos_ui::Result<()> {
     let mut app = Application::new()?;
-    let window = app.window(WindowOptions::new("网络管理器", APP_ID, 690, 440))?;
+    let window = app.window(WindowOptions::new("网络管理器", APP_ID, 860, 488))?;
     let grow = Layout {
         grow: 1,
         ..Layout::default()
@@ -106,13 +106,23 @@ fn run() -> liteos_ui::Result<()> {
     let background = app.background()?;
     let mut routing_domains =
         observation::RoutingDomains::new(&content, background.clone(), button)?;
-    let tabs = child(&content, WidgetKind::Tabs, "", grow)?;
+    let body = child(&content, WidgetKind::Row, "", grow)?;
+    let navigation = child(
+        &body,
+        WidgetKind::Tree,
+        "",
+        Layout {
+            width: 146,
+            ..Layout::default()
+        },
+    )?;
+    let workspace = child(&body, WidgetKind::Group, "接口", grow)?;
     let page = Layout {
         padding: 8,
         gap: 8,
         ..grow
     };
-    let root = child(&tabs, WidgetKind::Column, "网络诊断", page)?;
+    let root = child(&workspace, WidgetKind::Column, "", page)?;
     let bar = child(
         &root,
         WidgetKind::Row,
@@ -170,25 +180,108 @@ fn run() -> liteos_ui::Result<()> {
         width: 630,
     }])?;
     controls.running(false)?;
-    controls.target.focus()?;
-    let backup_root = child(&tabs, WidgetKind::Column, "配置备份", page)?;
+    let backup_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut backups = backup::Page::new(&backup_root, app.dialogs(), background.clone(), button)?;
-    let config_root = child(&tabs, WidgetKind::Column, "路由配置", page)?;
+    let config_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut settings =
         configuration::Page::new(&config_root, app.dialogs(), background.clone(), button)?;
-    let connections_root = child(&tabs, WidgetKind::Column, "转发连接", page)?;
+    let connections_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut connections =
         connections::Page::new(&mut app, &connections_root, background.clone(), button)?;
-    let firewall_root = child(&tabs, WidgetKind::Column, "防火墙计数", page)?;
+    let firewall_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut firewall = firewall::Page::new(&app, &firewall_root, background.clone(), button)?;
-    let neighbors_root = child(&tabs, WidgetKind::Column, "邻居", page)?;
+    let neighbors_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut neighbors = neighbors::Page::new(&app, &neighbors_root, background.clone(), button)?;
-    let routes_root = child(&tabs, WidgetKind::Column, "路由表", page)?;
+    let routes_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut routes = routes::Page::new(&app, &routes_root, background.clone(), button)?;
-    let traffic_root = child(&tabs, WidgetKind::Column, "接口流量", page)?;
+    let traffic_root = child(&workspace, WidgetKind::Column, "", page)?;
     let mut traffic = traffic::Page::new(&app, &traffic_root, background.clone(), button)?;
+    use routes::{Dialog, Section};
+    // 描述导航与其关联的真实入口。子项打开所属工作区，或进入同一份事务草稿的指定设置。
+    let entries = [
+        (0, "接口", Some(&traffic_root), None),
+        (
+            0,
+            "网桥",
+            None,
+            Some(Dialog::Settings(Some(Section::Bridges))),
+        ),
+        (0, "IP", None, None),
+        (3, "邻居", Some(&neighbors_root), None),
+        (3, "防火墙计数", Some(&firewall_root), None),
+        (
+            3,
+            "防火墙与 NAT",
+            None,
+            Some(Dialog::Settings(Some(Section::Firewall))),
+        ),
+        (3, "转发连接", Some(&connections_root), None),
+        (
+            3,
+            "地址分发与 DNS",
+            None,
+            Some(Dialog::Settings(Some(Section::AddressServices))),
+        ),
+        (
+            3,
+            "接口地址",
+            None,
+            Some(Dialog::Settings(Some(Section::Interfaces))),
+        ),
+        (0, "路由", None, None),
+        (10, "路由表", Some(&routes_root), None),
+        (10, "路由域与选路", None, Some(Dialog::Settings(None))),
+        (
+            10,
+            "路由准入",
+            None,
+            Some(Dialog::Settings(Some(Section::Admission))),
+        ),
+        (10, "OSPF 邻居", None, Some(Dialog::Ospf)),
+        (
+            10,
+            "OSPF 设置",
+            None,
+            Some(Dialog::Settings(Some(Section::Ospf))),
+        ),
+        (10, "BGP 会话", None, Some(Dialog::Bgp)),
+        (
+            10,
+            "BGP 设置",
+            None,
+            Some(Dialog::Settings(Some(Section::Bgp))),
+        ),
+        (0, "系统", None, None),
+        (18, "路由配置", Some(&config_root), None),
+        (18, "配置备份", Some(&backup_root), None),
+        (0, "工具", None, None),
+        (21, "网络诊断", Some(&root), None),
+    ];
+    navigation.set_tree_rows(
+        &entries
+            .iter()
+            .enumerate()
+            .map(|(index, &(parent, text, view, dialog))| TreeRow {
+                id: index as u64 + 1,
+                parent,
+                text,
+                expanded: false,
+                has_children: view.is_none() && dialog.is_none(),
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    navigation.select(Some(1))?;
+    let mut visible = &traffic_root;
+    for (_, _, view, _) in entries {
+        if let Some(view) = view
+            && view.id() != visible.id()
+        {
+            view.set_state(state::HIDDEN)?;
+        }
+    }
     let mut active: Option<(Cancel, Task<()>)> = None;
     routing_domains.selected_tab(&mut app, &window, true)?;
+    traffic.selected_tab(&mut app, &window, true)?;
     app.run(|app, event| {
         if event.window != window.id() {
             return Ok(ControlFlow::Continue);
@@ -208,11 +301,30 @@ fn run() -> liteos_ui::Result<()> {
             }
             return Ok(ControlFlow::Exit);
         }
-        let opened = if event.node == tabs.id() && matches!(event.kind, EventKind::Select { .. }) {
-            tabs.selection()?
-        } else {
-            None
-        };
+        let mut opened = None;
+        if event.node == navigation.id()
+            && matches!(
+                event.kind,
+                EventKind::Select { .. } | EventKind::Activate { .. }
+            )
+            && let Some(id) = navigation.selection()?
+            && let Some((_, title, view, dialog)) = entries.get((id - 1) as usize)
+        {
+            if let Some(view) = view
+                && view.id() != visible.id()
+            {
+                visible.set_state(state::HIDDEN)?;
+                view.set_state(0)?;
+                workspace.set_text(title)?;
+                visible = view;
+                opened = Some(view.id());
+            }
+            if let Some(dialog) = dialog
+                && matches!(event.kind, EventKind::Activate { .. })
+            {
+                routes.open(app, &window, *dialog)?;
+            }
+        }
         backups.handle(app, &window, &event, opened == Some(backup_root.id()))?;
         settings.handle(app, &window, &event, opened == Some(config_root.id()))?;
         if let Some(page) = opened {

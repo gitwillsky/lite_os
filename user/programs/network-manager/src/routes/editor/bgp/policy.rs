@@ -1,7 +1,10 @@
 //! 入口和出口规则共用顺序编辑器，分别保存到邻居的原生策略。
 
 use super::{PAGE_SIZE, button, disabled, field, form, form_buttons, grow, row, selection, words};
-use crate::{child, routes::editor::choice};
+use crate::{
+    child,
+    routes::editor::{choice, optional},
+};
 use liteos_ui::{
     Column, Dialogs, EventKind, Layout, ListOptions, ListStyle, WidgetKind, Window, state,
 };
@@ -9,7 +12,6 @@ use network_config::configuration::{
     RouteDisposition,
     bgp::{ExportPolicy, ImportPolicy, Neighbor, Origin, RouteAction},
 };
-use std::str::FromStr;
 
 mod action;
 mod communities;
@@ -243,11 +245,6 @@ pub(super) async fn edit(
             }
         }
     }
-}
-
-fn optional<T: FromStr>(text: &str) -> Result<Option<T>, T::Err> {
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.parse()).transpose()
 }
 
 fn origin_index(value: Option<Origin>) -> u64 {

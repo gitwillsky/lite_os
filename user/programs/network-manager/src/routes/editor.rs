@@ -9,12 +9,13 @@ use liteos_ui::{
 use network_config::{
     ManagementClient,
     configuration::{
-        ConfigurationName, Firewall, PolicyRouting, RouterConfiguration, StaticAction, StaticRoute,
-        StaticTable, bgp as bgp_config, forwarding_cpu_mask,
+        ConfigurationName, Firewall, PolicyRouting, RouteAdmission, RouterConfiguration,
+        StaticAction, StaticRoute, StaticTable, bgp as bgp_config, forwarding_cpu_mask,
     },
 };
 use std::{io, mem};
 
+mod admission;
 mod bgp;
 mod entries;
 mod firewall;
@@ -29,11 +30,23 @@ mod switching;
 
 const ROWS: usize = 64;
 
+#[derive(Clone, Copy)]
+pub(crate) enum Section {
+    Interfaces,
+    Bridges,
+    AddressServices,
+    Firewall,
+    Ospf,
+    Bgp,
+    Admission,
+}
+
 pub(super) async fn run(
     dialogs: &Dialogs,
     parent: &Window,
     background: &Background,
     domain: Option<&str>,
+    section: Option<Section>,
 ) -> Result<Option<String>, Error> {
     let (revision, mut config) = background
         .run(|| {
@@ -108,8 +121,25 @@ pub(super) async fn run(
             ..button()
         },
     )?;
-    let ospf = child(&network, WidgetKind::Button, "OSPF…", button())?;
-    let bgp = child(&network, WidgetKind::Button, "BGP…", button())?;
+    let protocol = Layout {
+        width: 64,
+        ..button()
+    };
+    let ospf = child(&network, WidgetKind::Button, "OSPF…", protocol)?;
+    let bgp = child(&network, WidgetKind::Button, "BGP…", protocol)?;
+    let admission = child(&network, WidgetKind::Button, "路由准入…", button())?;
+    let mut initial_action = section.map(|section| {
+        match section {
+            Section::Interfaces => &edit_interfaces,
+            Section::Bridges => &bridges,
+            Section::AddressServices => &address_services,
+            Section::Firewall => &filtering,
+            Section::Ospf => &ospf,
+            Section::Bgp => &bgp,
+            Section::Admission => &admission,
+        }
+        .id()
+    });
     let selectors = child(&root, WidgetKind::Row, "", row())?;
     let _table_label = child(&selectors, WidgetKind::Label, "路由表", Layout::default())?;
     let table = choice(&selectors, std::iter::empty(), 148)?;
@@ -202,72 +232,77 @@ pub(super) async fn run(
         ))?;
 
         loop {
-            let Some(event) = events.next().await? else {
-                return Ok(None);
-            };
-            let closing = matches!(
-                event.kind,
-                EventKind::Close
-                    | EventKind::Key {
-                        code: 1,
-                        pressed: true,
-                        ..
-                    }
-            ) || (event.node == cancel.id()
-                && matches!(event.kind, EventKind::Activate { .. }));
-            if closing {
-                if !dirty
-                    || dialogs
-                        .message(
-                            &window,
-                            "路由设置",
-                            "是否放弃尚未提交的路由修改？",
-                            MessageButtons::YesNo,
-                            MessageIcon::Warning,
-                        )?
-                        .await?
-                        == MessageResult::Yes
-                {
+            let node = if let Some(node) = initial_action.take() {
+                node
+            } else {
+                let Some(event) = events.next().await? else {
                     return Ok(None);
-                }
-                continue;
-            }
-            if matches!(event.kind, EventKind::Select { .. }) {
-                if event.node == list.id() {
-                    selected = selection(&list)?;
-                    edit.set_state(disabled(selected.is_none()))?;
-                    remove.set_state(disabled(selected.is_none()))?;
-                } else if event.node == domain.id() {
-                    let chosen = selection(&domain)?
-                        .and_then(|index| index.checked_sub(1))
-                        .and_then(|index| config.routing_domains.keys().nth(index))
-                        .cloned();
-                    if chosen != selected_domain {
-                        selected_domain = chosen;
-                        interfaces = interface_names(&config, selected_domain.as_ref());
-                        selected_table = 0;
-                        let draft = Draft::new(&mut config, selected_domain.as_ref());
-                        set_tables(&table, &draft.policy.tables, 0)?;
-                        first = 0;
-                        selected = None;
-                        status.set_text("")?;
-                        break;
+                };
+                let closing = matches!(
+                    event.kind,
+                    EventKind::Close
+                        | EventKind::Key {
+                            code: 1,
+                            pressed: true,
+                            ..
+                        }
+                ) || (event.node == cancel.id()
+                    && matches!(event.kind, EventKind::Activate { .. }));
+                if closing {
+                    if !dirty
+                        || dialogs
+                            .message(
+                                &window,
+                                "路由设置",
+                                "是否放弃尚未提交的路由修改？",
+                                MessageButtons::YesNo,
+                                MessageIcon::Warning,
+                            )?
+                            .await?
+                            == MessageResult::Yes
+                    {
+                        return Ok(None);
                     }
-                } else if event.node == table.id() {
-                    let chosen = selection(&table)?.unwrap_or(0);
-                    if chosen != selected_table {
-                        selected_table = chosen;
-                        first = 0;
-                        selected = None;
-                        break;
-                    }
+                    continue;
                 }
-                continue;
-            }
-            if !matches!(event.kind, EventKind::Activate { .. }) {
-                continue;
-            }
-            if event.node == create_domain.id() {
+                if matches!(event.kind, EventKind::Select { .. }) {
+                    if event.node == list.id() {
+                        selected = selection(&list)?;
+                        edit.set_state(disabled(selected.is_none()))?;
+                        remove.set_state(disabled(selected.is_none()))?;
+                    } else if event.node == domain.id() {
+                        let chosen = selection(&domain)?
+                            .and_then(|index| index.checked_sub(1))
+                            .and_then(|index| config.routing_domains.keys().nth(index))
+                            .cloned();
+                        if chosen != selected_domain {
+                            selected_domain = chosen;
+                            interfaces = interface_names(&config, selected_domain.as_ref());
+                            selected_table = 0;
+                            let draft = Draft::new(&mut config, selected_domain.as_ref());
+                            set_tables(&table, &draft.policy.tables, 0)?;
+                            first = 0;
+                            selected = None;
+                            status.set_text("")?;
+                            break;
+                        }
+                    } else if event.node == table.id() {
+                        let chosen = selection(&table)?.unwrap_or(0);
+                        if chosen != selected_table {
+                            selected_table = chosen;
+                            first = 0;
+                            selected = None;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if !matches!(event.kind, EventKind::Activate { .. }) {
+                    continue;
+                }
+                event.node
+            };
+            if node == create_domain.id() {
                 let Some(name) = routing_domains::create(dialogs, &window, &config).await? else {
                     continue;
                 };
@@ -275,7 +310,7 @@ pub(super) async fn run(
                     .routing_domains
                     .insert(name.clone(), Default::default());
                 selected_domain = Some(name);
-            } else if event.node == delete_domain.id()
+            } else if node == delete_domain.id()
                 && let Some(name) = &selected_domain
             {
                 if !routing_domains::confirm_delete(
@@ -292,7 +327,7 @@ pub(super) async fn run(
                 // 整域删除可能释放大量路由和规则，沿用路由表删除的后台释放方式。
                 background.run(move || drop(removed))?.await;
                 selected_domain = None;
-            } else if event.node == assign.id() {
+            } else if node == assign.id() {
                 match background
                     .run(|| ManagementClient::local().snapshot())?
                     .await
@@ -315,7 +350,7 @@ pub(super) async fn run(
                     Err(error) => status.set_text(&format!("无法读取当前接口。{error}"))?,
                 }
                 break;
-            } else if event.node == forwarding_cpu.id() {
+            } else if node == forwarding_cpu.id() {
                 if let Some(cpus) =
                     edit_forwarding_cpus(dialogs, &window, &config.forwarding_cpus).await?
                     && config.forwarding_cpus != cpus
@@ -324,7 +359,7 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == create_table.id() {
+            } else if node == create_table.id() {
                 let policy = Draft::new(&mut config, selected_domain.as_ref()).policy;
                 if let Some(id) = policy::table_id(dialogs, &window, &policy.tables).await? {
                     policy.tables.push(StaticTable {
@@ -338,7 +373,7 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == delete_table.id() && selected_table != 0 {
+            } else if node == delete_table.id() && selected_table != 0 {
                 let policy = Draft::new(&mut config, selected_domain.as_ref()).policy;
                 let id = policy.tables[selected_table - 1].id;
                 if policy.rules.iter().any(|rule| rule.table == id) {
@@ -368,7 +403,7 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == edit_interfaces.id() {
+            } else if node == edit_interfaces.id() {
                 let changed = if let Some(name) = &selected_domain {
                     let domain = config
                         .routing_domains
@@ -403,12 +438,12 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == address_services.id() {
+            } else if node == address_services.id() {
                 if services::edit(dialogs, &window, &mut config, selected_domain.as_ref()).await? {
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == bridges.id() {
+            } else if node == bridges.id() {
                 let (profiles, topology) = match selected_domain.as_ref() {
                     Some(name) => {
                         let domain = config
@@ -424,13 +459,13 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == filtering.id() {
+            } else if node == filtering.id() {
                 let draft = Draft::new(&mut config, selected_domain.as_ref());
                 if firewall::edit(dialogs, &window, &interfaces, draft.firewall).await? {
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == ospf.id() {
+            } else if node == ospf.id() {
                 let (configuration, bridges) = match selected_domain.as_ref() {
                     Some(name) => {
                         let domain = config
@@ -453,23 +488,29 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == bgp.id() {
+            } else if node == bgp.id() {
                 let draft = Draft::new(&mut config, selected_domain.as_ref());
                 if bgp::edit(dialogs, &window, draft.bgp).await? {
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == rules.id() {
+            } else if node == rules.id() {
                 let draft = Draft::new(&mut config, selected_domain.as_ref());
                 if policy::edit_rules(dialogs, &window, &interfaces, draft.policy).await? {
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == previous.id() {
+            } else if node == admission.id() {
+                let draft = Draft::new(&mut config, selected_domain.as_ref());
+                if admission::edit(dialogs, &window, draft.admission).await? {
+                    dirty = true;
+                    status.set_text("")?;
+                }
+            } else if node == previous.id() {
                 first = first.saturating_sub(ROWS);
-            } else if event.node == next.id() && end < count {
+            } else if node == next.id() && end < count {
                 first = end;
-            } else if event.node == find.id() {
+            } else if node == find.id() {
                 let Some(prefix) = prefix(&query.text()?) else {
                     status.set_text("请输入规范网段，例如 192.0.2.0/24 或 2001:db8::/32。")?;
                     query.focus()?;
@@ -497,7 +538,7 @@ pub(super) async fn run(
                 selected = Some(index);
                 first = index;
                 status.set_text("")?;
-            } else if event.node == add.id() {
+            } else if node == add.id() {
                 if let Some(value) = route::edit(dialogs, &window, &interfaces, None).await? {
                     let routes =
                         Draft::new(&mut config, selected_domain.as_ref()).routes(selected_table);
@@ -506,7 +547,7 @@ pub(super) async fn run(
                     routes.push(value);
                     dirty = true;
                 }
-            } else if event.node == edit.id() {
+            } else if node == edit.id() {
                 let routes =
                     Draft::new(&mut config, selected_domain.as_ref()).routes(selected_table);
                 if let Some(index) = selected
@@ -517,7 +558,7 @@ pub(super) async fn run(
                     routes[index] = value;
                     dirty = true;
                 }
-            } else if event.node == remove.id() {
+            } else if node == remove.id() {
                 if let Some(index) = selected {
                     Draft::new(&mut config, selected_domain.as_ref())
                         .routes(selected_table)
@@ -525,7 +566,7 @@ pub(super) async fn run(
                     selected = None;
                     dirty = true;
                 }
-            } else if event.node == review.id() && dirty {
+            } else if node == review.id() && dirty {
                 // 移交模型给后台编码，避免为百万条路由保留一份克隆。取消审阅时继续使用原草稿。
                 let model = mem::take(&mut config);
                 let (model, candidate) = background
@@ -562,7 +603,7 @@ pub(super) async fn run(
             } else {
                 continue;
             }
-            if event.node == create_domain.id() || event.node == delete_domain.id() {
+            if node == create_domain.id() || node == delete_domain.id() {
                 routing_domains::set_choices(&domain, &config, selected_domain.as_ref())?;
                 interfaces = interface_names(&config, selected_domain.as_ref());
                 selected_table = 0;
@@ -653,6 +694,7 @@ fn interface_names(
 struct Draft<'a> {
     main_routes: &'a mut Vec<StaticRoute>,
     policy: &'a mut PolicyRouting,
+    admission: &'a mut RouteAdmission,
     firewall: &'a mut Firewall,
     bgp: &'a mut Option<bgp_config::Configuration>,
 }
@@ -667,6 +709,7 @@ impl<'a> Draft<'a> {
             Self {
                 main_routes: &mut domain.routes,
                 policy: &mut domain.policy_routing,
+                admission: &mut domain.route_policy,
                 firewall: &mut domain.firewall,
                 bgp: &mut domain.bgp,
             }
@@ -674,6 +717,7 @@ impl<'a> Draft<'a> {
             Self {
                 main_routes: &mut config.routes,
                 policy: &mut config.policy_routing,
+                admission: &mut config.route_policy,
                 firewall: &mut config.firewall,
                 bgp: &mut config.bgp,
             }
@@ -801,6 +845,11 @@ fn optional_word(text: &str) -> Result<Option<u32>, std::num::ParseIntError> {
         None => text.parse(),
     }?;
     Ok(Some(value))
+}
+
+fn optional<T: std::str::FromStr>(text: &str) -> Result<Option<T>, T::Err> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.parse()).transpose()
 }
 
 fn row() -> Layout {

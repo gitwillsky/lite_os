@@ -188,6 +188,7 @@ impl Desktop {
             .inspect_err(|error| eprintln!("desktop: application notifications: {error}"))
             .ok();
         let apps = installed_programs(application_changes.as_mut());
+        let icons = icons::Icons::load(&home, icon_cell, &apps);
         Ok(Self {
             background,
             taskbar,
@@ -206,7 +207,7 @@ impl Desktop {
             focused: None,
             selection: Vec::new(),
             selection_anchor: None,
-            icons: icons::Icons::load(&home, icon_cell),
+            icons,
             drag: None,
             rename: None,
             paste: None,
@@ -318,6 +319,11 @@ impl Desktop {
         };
         match icon.target.clone() {
             icons::Target::Place(place) => self.open_place(place),
+            icons::Target::Application(id) => {
+                if let Some(entry) = self.apps.iter().find(|entry| entry.id() == id) {
+                    self.launch(entry.command());
+                }
+            }
             icons::Target::Path(path) if path.is_dir() => self.files(path),
             icons::Target::Path(path) => match desktop_entry::open(&path) {
                 Ok(command) => self.launch(command),
@@ -1345,9 +1351,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let apps = installed_programs(Some(changes));
                     if apps != state.apps {
                         state.apps = apps;
-                        if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
-                            state.refresh_icons();
-                        }
+                        state.icons.applications_changed();
                         state.apps_changed = true;
                     }
                 }

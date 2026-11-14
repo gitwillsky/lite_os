@@ -17,6 +17,15 @@ mod bgp;
 mod editor;
 mod ospf;
 
+pub(super) use editor::Section;
+
+#[derive(Clone, Copy)]
+pub(super) enum Dialog {
+    Settings(Option<Section>),
+    Ospf,
+    Bgp,
+}
+
 type Error = Box<dyn std::error::Error>;
 
 pub(super) struct Page {
@@ -222,49 +231,14 @@ impl Page {
         if !matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(());
         }
-        let configure = event.node == self.view.configure.id();
-        let ospf = event.node == self.view.ospf.id();
-        if configure || ospf || event.node == self.view.bgp.id() {
-            if self.dialog.as_ref().is_some_and(|task| !task.is_finished()) {
-                return Ok(());
-            }
-            let dialogs = app.dialogs();
-            let parent = window.clone();
-            let background = self.view.background.clone();
-            let domain = self.domain.clone();
-            self.dialog = Some(app.spawn_local(window, async move {
-                let (title, result) = if configure {
-                    (
-                        "路由设置",
-                        editor::run(&dialogs, &parent, &background, domain.as_deref()).await,
-                    )
-                } else if ospf {
-                    (
-                        "OSPF 邻居",
-                        ospf::show(&dialogs, &parent, &background, domain)
-                            .await
-                            .map(|()| None),
-                    )
-                } else {
-                    (
-                        "BGP",
-                        bgp::show(&dialogs, &parent, &background, domain)
-                            .await
-                            .map(|()| None),
-                    )
-                };
-                let (message, icon) = match result {
-                    Ok(Some(message)) => (message, MessageIcon::Information),
-                    Ok(None) => return,
-                    Err(error) => (error.to_string(), MessageIcon::Error),
-                };
-                if let Ok(message) =
-                    dialogs.message(&parent, title, &message, MessageButtons::Ok, icon)
-                {
-                    let _ = message.await;
-                }
-            })?);
-            return Ok(());
+        if event.node == self.view.configure.id() {
+            return self.open(app, window, Dialog::Settings(None));
+        }
+        if event.node == self.view.ospf.id() {
+            return self.open(app, window, Dialog::Ospf);
+        }
+        if event.node == self.view.bgp.id() {
+            return self.open(app, window, Dialog::Bgp);
         }
         let family = if event.node == self.view.ipv4.id() {
             Some(Family::Ipv4)
@@ -302,7 +276,11 @@ impl Page {
                     (Family::Ipv4, &self.view.ipv4),
                     (Family::Ipv6, &self.view.ipv6),
                 ] {
-                    button.set_state(if family == self.family { state::CHECKED } else { 0 })?;
+                    button.set_state(if family == self.family {
+                        state::CHECKED
+                    } else {
+                        0
+                    })?;
                 }
             }
             self.filter = filter;
@@ -330,6 +308,51 @@ impl Page {
             return Ok(());
         }
         self.subscribe(app, window)
+    }
+
+    pub(super) fn open(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        dialog: Dialog,
+    ) -> liteos_ui::Result<()> {
+        if self.dialog.as_ref().is_some_and(|task| !task.is_finished()) {
+            return Ok(());
+        }
+        let dialogs = app.dialogs();
+        let parent = window.clone();
+        let background = self.view.background.clone();
+        let domain = self.domain.clone();
+        self.dialog = Some(app.spawn_local(window, async move {
+            let (title, result) = match dialog {
+                Dialog::Settings(section) => (
+                    "路由设置",
+                    editor::run(&dialogs, &parent, &background, domain.as_deref(), section).await,
+                ),
+                Dialog::Ospf => (
+                    "OSPF 邻居",
+                    ospf::show(&dialogs, &parent, &background, domain)
+                        .await
+                        .map(|()| None),
+                ),
+                Dialog::Bgp => (
+                    "BGP",
+                    bgp::show(&dialogs, &parent, &background, domain)
+                        .await
+                        .map(|()| None),
+                ),
+            };
+            let (message, icon) = match result {
+                Ok(Some(message)) => (message, MessageIcon::Information),
+                Ok(None) => return,
+                Err(error) => (error.to_string(), MessageIcon::Error),
+            };
+            if let Ok(message) = dialogs.message(&parent, title, &message, MessageButtons::Ok, icon)
+            {
+                let _ = message.await;
+            }
+        })?);
+        Ok(())
     }
 
     fn subscribe(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
@@ -367,6 +390,19 @@ impl Page {
 
 fn prefix(text: &str) -> Option<IpPrefix> {
     text.parse().ok()
+}
+
+fn protocol_label(protocol: u8) -> String {
+    match protocol {
+        2 => "系统".into(),
+        3 => "启动配置".into(),
+        4 => "静态".into(),
+        9 => "路由器通告".into(),
+        16 => "DHCP".into(),
+        network_config::configuration::bgp::ROUTE_PROTOCOL => "BGP".into(),
+        network_config::configuration::ospf::ROUTE_PROTOCOL => "OSPF".into(),
+        number => number.to_string(),
+    }
 }
 
 fn form(
@@ -473,16 +509,7 @@ impl View {
             .preferred_source
             .map_or_else(|| "自动".into(), |ip| ip.to_string());
         let gateway = next_hop(row);
-        let protocol = match row.protocol {
-            2 => "系统".into(),
-            3 => "启动配置".into(),
-            4 => "静态".into(),
-            9 => "路由器通告".into(),
-            16 => "DHCP".into(),
-            186 => "BGP".into(),
-            188 => "OSPF".into(),
-            number => number.to_string(),
-        };
+        let protocol = protocol_label(row.protocol);
         let scope = match row.scope {
             0 => "全局".into(),
             253 => "链路".into(),

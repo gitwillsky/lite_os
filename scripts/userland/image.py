@@ -24,7 +24,7 @@ from classic_assets import boot_scene
 from ext4_image import debugfs_path, find_debugfs, find_mke2fs, verify_root_owned_files
 from openssl_cache import OpenSslPaths
 from pathlib import Path
-from userland.artifacts import base_userland
+from userland.artifacts import base_userland, network_manager_package
 from userland.busybox import BUSYBOX_LINKS, FORBIDDEN_BOOT_MARKERS
 from toolchain.musl import MuslCachePaths, run
 
@@ -134,11 +134,12 @@ def create_image(
     musl: MuslCachePaths,
     openssl: OpenSslPaths,
     image: Path,
+    network_manager: Path,
 ) -> Path:
     """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
     userland = base_userland(musl)
     stress_tools = build_stress_tools(musl)
-    payload_bytes = sum(artifact.source.stat().st_size for artifact in userland)
+    payload_bytes = sum(artifact.source.stat().st_size for artifact in userland) + network_manager.stat().st_size
     payload_bytes += sum(path.stat().st_size for path in (binary, openssl.binary, stress_tools))
     payload_bytes += sum(path.stat().st_size for path in (musl.install / "usr").rglob("*") if path.is_file())
     # 1. 现有树与压缩包同时存在；2. apk 在原文件旁创建替换文件；3. 另留元数据和块对齐空间。
@@ -242,7 +243,7 @@ def create_image(
             BUSYBOX_LINKS,
             STRESS_LINKS,
             FORBIDDEN_BOOT_MARKERS,
-            (),
+            (network_manager,),
         )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
@@ -353,6 +354,7 @@ def create_published_image(
         OSError: cache publication 或 output copy 失败。
     """
     userland = base_userland(musl)
+    network_manager = network_manager_package(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -382,6 +384,7 @@ def create_published_image(
         ROOT / "user/diagnostics/liteos-stress.c",
         boot_scene(),
         ROOT / "user/base/shutdown",
+        network_manager,
         ROOT / "scripts/create_fs.py",
         *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "iperf.py", "rust.py")),
         ROOT / "scripts/apk_cache.py",
@@ -409,7 +412,7 @@ def create_published_image(
         else:
             temporary = temporary_directory(WORK / "rootfs-images", "rootfs")
             try:
-                create_image(binary, musl, openssl, temporary / "fs.img")
+                create_image(binary, musl, openssl, temporary / "fs.img", network_manager)
                 write_manifest(temporary, payload)
                 publish_directory(temporary, cache)
             finally:

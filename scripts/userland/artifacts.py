@@ -12,9 +12,13 @@ from classic_assets import (
 )
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
+from apk_cache import cached_apk_bootstrap
 from apk_elf_closure import extract_closure
+from apk_package import ApkPackageMetadata, build_signed_apk
+from apk_rootfs import BASE_PACKAGE_NAME, PROJECT_URL
 from build_cache import cache_lock, fingerprint, manifest_matches, publish_directory, sha256, temporary_directory, write_manifest
 from userland import UserlandArtifact
 from userland.iperf import iperf_userland
@@ -23,6 +27,7 @@ from userland.rust import (
     SYSTEM_LIBRARY_DIRECTORY,
     _RustUserTarget,
     _build_rust_user_targets,
+    build_rust_user_program,
 )
 from toolchain.musl import MuslCachePaths
 
@@ -47,7 +52,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"),
                               ("linux-uapi", "session-launch"), ("terminal", "terminal"),
                               ("resolvd", "resolvd"), ("network-config", "ipconfig"),
-                              ("network-config", "router-api"), ("network-manager", "network-manager"))
+                              ("network-config", "router-api"))
     )
     library_targets = tuple(
         _RustUserTarget(package, name, f"system-library-{name}", 1, True)
@@ -87,6 +92,52 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
+
+
+def network_manager_package(musl: MuslCachePaths) -> Path:
+    """构建可由 APK 独立安装和删除的桌面网络管理器。"""
+    binary = build_rust_user_program(musl, "network-manager", "network-manager", "network-manager", 1)
+    entry = ROOT / "user/programs/network-manager/network-manager.desktop"
+    bootstrap = cached_apk_bootstrap()
+    version = "0.1.0-r0"
+    metadata = ApkPackageMetadata(
+        name="liteos-network-manager",
+        version=version,
+        description="LiteOS desktop router management",
+        url=PROJECT_URL,
+        license="MIT",
+        arch=TARGET.alpine_arch,
+        dependencies=(BASE_PACKAGE_NAME,),
+        # APK 将旧版基础包的应用文件移交给独立包，后续删除由同一包负责。
+        replaces=(BASE_PACKAGE_NAME,),
+    )
+    inputs = (binary, entry, bootstrap.public_key, Path(__file__), ROOT / "scripts/apk_package.py",
+              ROOT / "scripts/apk_rootfs.py")
+    payload = {
+        "arch": TARGET.arch,
+        "inputs": {path.name: sha256(path) for path in inputs},
+    }
+    packages = ROOT / "target/packages" / TARGET.arch
+    directory = packages / fingerprint(payload)
+    package = f"{metadata.name}-{version}.apk"
+    # 根镜像的指纹与打包共用不可变产物，否则并行构建会替换另一个读者的输入。
+    with cache_lock(packages / ".build.lock"):
+        if not manifest_matches(directory, payload, (package,)):
+            work = temporary_directory(packages, metadata.name)
+            try:
+                with tempfile.TemporaryDirectory(prefix="liteos-network-manager-") as temp:
+                    stage = Path(temp)
+                    (stage / "bin").mkdir()
+                    (stage / "usr/share/applications").mkdir(parents=True)
+                    shutil.copyfile(binary, stage / "bin/network-manager")
+                    (stage / "bin/network-manager").chmod(0o755)
+                    shutil.copyfile(entry, stage / "usr/share/applications" / entry.name)
+                    build_signed_apk(stage, work / package, metadata, bootstrap.private_key, bootstrap.public_key)
+                write_manifest(work, payload)
+                publish_directory(work, directory)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+    return directory / package
 
 
 USERLAND_PACKAGES = {
