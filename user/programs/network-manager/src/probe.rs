@@ -101,6 +101,7 @@ impl Probe {
         background: &Background,
         kind: Kind,
         target: &str,
+        domain: Option<&str>,
     ) -> Result<Self, Error> {
         let target = target.trim();
         if target.is_empty()
@@ -111,7 +112,15 @@ impl Probe {
         {
             return Err("请输入一个主机名或 IP 地址。".into());
         }
-        let (program, arguments, timeout) = kind.command(target);
+        let (mut program, mut arguments, timeout) = kind.command(target);
+        if let Some(domain) = domain {
+            // 只让受监督的子进程加入具名域。授权与 exec 沿用 ipconfig 的标准入口。
+            arguments.splice(
+                0..0,
+                ["/domain", domain, "/exec", program].map(OsString::from),
+            );
+            program = "/bin/ipconfig";
+        }
         let (reader, writer) = io::pipe()?;
         let (cancelled, cancel) = io::pipe()?;
         set_nonblocking(reader.as_fd(), true)?;

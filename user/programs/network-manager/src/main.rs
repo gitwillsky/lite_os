@@ -188,6 +188,7 @@ fn run() -> liteos_ui::Result<()> {
     let traffic_root = child(&tabs, WidgetKind::Column, "接口流量", page)?;
     let mut traffic = traffic::Page::new(&app, &traffic_root, background.clone(), button)?;
     let mut active: Option<(Cancel, Task<()>)> = None;
+    routing_domains.selected_tab(&mut app, &window, true)?;
     app.run(|app, event| {
         if event.window != window.id() {
             return Ok(ControlFlow::Continue);
@@ -219,6 +220,7 @@ fn run() -> liteos_ui::Result<()> {
                 app,
                 &window,
                 [
+                    root.id(),
                     connections_root.id(),
                     firewall_root.id(),
                     neighbors_root.id(),
@@ -273,17 +275,25 @@ fn run() -> liteos_ui::Result<()> {
         } else {
             return Ok(ControlFlow::Continue);
         };
-        match Probe::start(app, &background, kind, &controls.target.text()?) {
+        let domain = routing_domains.selected();
+        match Probe::start(
+            app,
+            &background,
+            kind,
+            &controls.target.text()?,
+            domain.as_deref(),
+        ) {
             Ok(probe) => {
                 controls.output.set_rows(&[])?;
                 controls.running(true)?;
-                controls
-                    .status
-                    .set_text(if matches!(kind, Kind::Bandwidth { .. }) {
-                        "正在测量带宽…"
-                    } else {
-                        "正在探测…"
-                    })?;
+                let scope =
+                    domain.map_or_else(|| "默认路由域".to_owned(), |name| format!("「{name}」"));
+                let running = if matches!(kind, Kind::Bandwidth { .. }) {
+                    "正在测量带宽…"
+                } else {
+                    "正在探测…"
+                };
+                controls.status.set_text(&format!("{scope}　{running}"))?;
                 let cancel = probe.cancellation();
                 let controls = controls.clone();
                 let task = app.spawn_local(&window, async move {
@@ -291,7 +301,7 @@ fn run() -> liteos_ui::Result<()> {
                         .display(&controls.output)
                         .await
                         .unwrap_or_else(|error| error.to_string());
-                    let _ = controls.status.set_text(&text);
+                    let _ = controls.status.set_text(&format!("{scope}　{text}"));
                     let _ = controls.running(false);
                 })?;
                 active = Some((cancel, task));

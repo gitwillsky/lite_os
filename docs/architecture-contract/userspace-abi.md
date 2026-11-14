@@ -249,6 +249,7 @@ TLS 1.3 握手后才处理 HTTP Basic 认证，客户端核对信任链和主机
 远程命令重连后查询当前状态，修改结果不明确时按提交编号查询。来宾互通待系统验收。
 
 桌面网络管理器复用本机 BusyBox 及 iperf3，通过标准 socket UAPI 执行，继承当前账户的权限。每窗口同时运行一项诊断，UI 就绪循环逐行消费输出。
+具名域由受监督的子进程通过 `ipconfig /domain … /exec` 加入，复用原有域授权和 [setns](https://man7.org/linux/man-pages/man2/setns.2.html)。加入失败则本次探测结束。主机名仍使用系统解析器配置。
 Ping 和逐跳探测的输出上限 16 KiB。TCP 带宽测试持续 10 秒，每秒读取结构化结果，输出上限 64 KiB，进程总时限 20 秒。以接收端平均速率为最终结果。
 后台沿同一 SessionChild 监督命令，使用 pidfd 等待退出。关闭取消管道或到达截止时清理进程组并回收，意外退出由原有 parent-death 语义终止探测。[网络管理器](../../user/programs/network-manager/README.md)
 
