@@ -252,7 +252,7 @@ fn unknown_peer_resolves_from_tlla_and_does_not_learn_from_data_or_unrequested_n
 fn na_without_slla_first_resolves_neighbor_instead_of_guessing_l2_return_address() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     let mut solicitation = vec![0; 78];
     NdMessage::NeighborSolicitation { target: LOCAL }
@@ -281,7 +281,7 @@ fn na_without_slla_first_resolves_neighbor_instead_of_guessing_l2_return_address
 fn reachable_expires_to_stale_and_usage_delays_bounded_unicast_nud_with_tx_backpressure() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     enqueue(&device, echo(PEER, LOCAL, b"start"));
     poll(&net, 2002);
@@ -453,7 +453,7 @@ fn unresolved_queue_has_a_hard_budget_flushes_in_slices_and_is_cleared_on_link_d
 fn every_neighbor_admission_allocation_can_fail_without_publishing_half_indexes_or_waiters() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     // 依次拒绝载荷、等待节点、时钟存储和邻居节点；报文在故障注入前放入 NIC，避免测试边界分配干扰。
     for fault in 0..4 {
@@ -518,7 +518,7 @@ fn every_neighbor_admission_allocation_can_fail_without_publishing_half_indexes_
 fn cached_echo_and_stale_to_delay_timer_rearm_do_not_allocate_payload_or_index_nodes() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     learn_peer(&net, &device);
     enqueue(&device, advertisement(PEER, Some(MAC), 0x6000_0000));

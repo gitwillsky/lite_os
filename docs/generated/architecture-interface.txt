@@ -2197,6 +2197,7 @@ system/component-manager/src/drivers.rs :: pub (super) fn connect (connection : 
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: async fn supervise (mut self , executor : & 'static Executor) -> i64
 system/component-manager/src/drivers.rs :: pub (super) impl Drivers :: fn start (root : & Job , resource : & Resource , bootfs : & Bootfs , device_tree : Handle , publisher : Channel ,) -> Result < Self , Status >
 system/component-manager/src/drivers.rs :: pub (super) struct Drivers
+system/component-manager/src/on_demand.rs :: pub (super) fn router_connector (executor : & 'static Executor , root : Job , bootfs : & 'static Bootfs ,) -> impl Fn (& [u8] , Channel) -> Result < () , Status > + Clone + Send + Sync + 'static
 system/driver-host/src/boot_screen.rs :: pub (crate) FallbackScene :: <tuple> : & 'static [u8]
 system/driver-host/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn advance (& mut self , milestone : Milestone)
 system/driver-host/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn shown (& self) -> bool
@@ -12198,6 +12199,7 @@ system/netstack/src/server.rs :: pub (crate) NamespaceServer :: <tuple> : Arc < 
 system/netstack/src/server.rs :: pub (crate) fn publish (socket : ServedSocket , readiness : & Event ,) -> Result < SocketEndpoint , SocketError >
 system/netstack/src/server.rs :: pub (crate) fn readiness () -> Result < Arc < Event > , SocketError >
 system/netstack/src/server.rs :: pub (crate) fn serve_control (network : Arc < Network > , control : Channel) -> Result < () , Status >
+system/netstack/src/server.rs :: pub (crate) fn serve_device_installer (network : Arc < Network > , channel : Channel ,) -> Result < () , Status >
 system/netstack/src/server.rs :: pub (crate) fn serve_installer (network : Arc < Network > , channel : Channel) -> Result < () , Status >
 system/netstack/src/server.rs :: pub (crate) fn start (forwarding : crate :: worker :: ForwardingWorker) -> Result < Arc < Network > , Status >
 system/netstack/src/server.rs :: pub (crate) struct NamespaceServer

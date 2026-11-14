@@ -220,7 +220,12 @@ fn decode_legacy(bytes: &[u8]) -> Result<Configuration, Invalid> {
     if count > bytes.len() / 16 {
         return Err(Invalid);
     }
-    let mut settings = Configuration::default();
+    // 旧版格式没有独立的转发字段，曾按两族均启用执行。
+    let mut settings = Configuration {
+        ipv4_forwarding: true,
+        ipv6_forwarding: true,
+        ..Configuration::default()
+    };
     for _ in 0..count {
         let name = decoder.bytes()?;
         let config = legacy_config(&mut decoder, version >= 3)?;

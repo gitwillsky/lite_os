@@ -84,6 +84,31 @@ pub(crate) fn serve_installer(network: Arc<Network>, channel: Channel) -> Result
     Installer { network, scope }.serve(channel)
 }
 
+/// 把根网卡装配能力交给配置服务。创建端点失败时返回原生状态码。
+pub(crate) fn serve_device_installer(
+    network: Arc<Network>,
+    channel: Channel,
+) -> Result<(), Status> {
+    let handler = Arc::try_new(
+        move |ordinal: u32,
+              request: &mut network_protocol::Reader<'_>,
+              handles: Vec<Handle>,
+              reply: &mut network_protocol::Writer| {
+            network_protocol::device_installer::dispatch_install_device(
+                ordinal,
+                request,
+                handles,
+                reply,
+                |id, domain, description, directory| {
+                    network.install_device(id, domain, description, directory)
+                },
+            )
+        },
+    )
+    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    service_rpc::serve(channel, 1, b"netstack-device", handler)
+}
+
 struct Installer {
     network: Arc<Network>,
     scope: Arc<Namespace>,
@@ -244,34 +269,30 @@ impl InstallerService for Installer {
         dispatcher::serve(server, Served::Configuration(configuration))?;
         Ok(client)
     }
+}
 
+impl Network {
     fn install_device(
         &self,
         device_id: u64,
         domain: Option<Name>,
         description: Vec<u8>,
-        mut handles: Vec<Handle>,
+        directory: Channel,
     ) -> Result<(u32, Channel, native_runtime::Event), Status> {
-        if !Arc::ptr_eq(&self.scope, &self.network.default) {
-            return Err(native_abi::ERR_ACCESS_DENIED);
-        }
-        if device_id == 0 || handles.len() != 1 {
+        if device_id == 0 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let scope = match domain {
             Some(name) => self
-                .network
                 .managed
                 .lock()
                 .get(&name)
                 .and_then(Weak::upgrade)
                 .ok_or(native_abi::ERR_BAD_STATE)?,
-            None => self.scope.clone(),
+            None => self.default.clone(),
         };
-        let directory = device_protocol::directory::DirectoryClient::new(Channel::from_handle(
-            service_rpc::take_handle(&mut handles, 0)?,
-        ));
-        let mut installed = self.network.installed.lock();
+        let directory = device_protocol::directory::DirectoryClient::new(directory);
+        let mut installed = self.installed.lock();
         // 寿命来自实际 NET 接口；关闭立即使旧登记不可复用。只在安装时退休，不添加空闲轮询或设备状态副本。
         installed.retain(|interface| {
             interface.lifetime.wait_one(signals::PEER_CLOSED, 0) == Err(native_abi::ERR_TIMED_OUT)
@@ -328,7 +349,7 @@ impl InstallerService for Installer {
                 ),
                 transmit_bytes: transmit.maximum_frame_length,
             },
-            &self.network.hub,
+            &self.hub,
         )?;
         // 多队列使用同一租约内固定的表和密钥，流量入队后不因运行时 CPU 调整重新散列。
         if let Some(cap) = device.receive_scaling()

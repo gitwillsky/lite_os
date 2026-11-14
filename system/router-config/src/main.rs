@@ -39,8 +39,8 @@ use filesystem_protocol::{Storage, StorageService};
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status, packet, signals};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Port, Startup, Vmo};
-use network_protocol::routing::RoutingConfigurator;
 use network_protocol::{NetworkClient, PreparedConfiguration, RemoteNamespace, SocketError};
+use network_protocol::{device_installer::DeviceInstaller, routing::RoutingConfigurator};
 use router_protocol::Revision;
 use router_protocol::administration::CommitId;
 use router_protocol::configuration::Configuration;
@@ -79,6 +79,7 @@ const RTPROT_BOOT: u8 = 3;
 
 /// 到 netstack 当前实例的连接。
 struct Link {
+    devices: DeviceInstaller,
     installer: RoutingConfigurator,
     network: RemoteNamespace,
     dns_changed: Event,
@@ -503,6 +504,10 @@ impl RouterConfig {
     }
 
     fn open_link(&self) -> Result<Link, Status> {
+        let devices = DeviceInstaller::new(
+            self.services
+                .connect(service_directory::NETWORK_DEVICE_INSTALLER)?,
+        );
         let installer = RoutingConfigurator::new(
             self.services
                 .connect(service_directory::ROUTING_CONFIGURATOR)?,
@@ -518,6 +523,7 @@ impl RouterConfig {
             .channel()
             .wait_async(&self.port, KEY_ROUTING, signals::PEER_CLOSED)?;
         Ok(Link {
+            devices,
             installer,
             network,
             dns_changed,
@@ -661,17 +667,15 @@ impl RouterConfig {
         let mut name = Vec::new();
         name.try_reserve_exact(router_protocol::NAME_MAX)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let mut delegated = Vec::new();
-        delegated
-            .try_reserve_exact(1)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        delegated.push(self.directory.duplicate()?.into_handle());
         let Some(link) = inner.link.as_ref() else {
             return Err(native_abi::ERR_PEER_CLOSED);
         };
-        let (index, lifetime, link_changed) =
-            link.installer
-                .install_device(entry.id, None, &entry.description, delegated)?;
+        let (index, lifetime, link_changed) = link.devices.install_device(
+            entry.id,
+            None,
+            &entry.description,
+            self.directory.duplicate()?,
+        )?;
         if inner
             .interfaces
             .iter()

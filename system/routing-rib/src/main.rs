@@ -11,7 +11,7 @@ use alloc::{
     vec::Vec,
 };
 use native_runtime::{
-    Channel, Event, Handle, Port, Startup,
+    Channel, Event, Port, Startup,
     native_abi::{self, Status, signals},
     sync::Mutex,
 };
@@ -304,20 +304,6 @@ impl network_protocol::routing::RoutingConfigurationService for Controller {
             .channel()
             .duplicate(native_abi::rights::SAME)?;
         Ok((self.0.open_source(grant)?, network))
-    }
-    fn install_device(
-        &self,
-        id: u64,
-        domain: Option<Name>,
-        description: Vec<u8>,
-        handles: Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
-        if self.1.is_none() {
-            return Err(native_abi::ERR_ACCESS_DENIED);
-        }
-        self.0
-            .installer
-            .install_device(id, domain.as_ref(), &description, handles)
     }
     fn prepare_configuration(
         &self,

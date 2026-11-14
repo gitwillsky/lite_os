@@ -1,4 +1,4 @@
-//! 网卡/FIB 执行协议（`service_directory::NETWORK_INSTALLER`，只路由给原生 RIB）。
+//! NET 的 FIB 执行协议，只授予 RIB。
 
 use alloc::{string::String, vec::Vec};
 
@@ -10,8 +10,6 @@ use router_protocol::firewall::counters;
 use service_rpc::{Reader, Writer, call};
 pub(crate) mod bridge;
 
-pub(super) const INSTALL_DEVICE: u32 = 1;
-const INSTALL_DEVICE_VERSION: u32 = 3;
 pub(super) const PREPARE_CONFIGURATION: u32 = 2;
 const PREPARE_NEXT_HOP: u32 = 4;
 const WATCH_ROUTING_INPUTS: u32 = 5;
@@ -92,24 +90,6 @@ pub trait InstallerService: Send + Sync {
         batch: Option<super::ConfigurationBatch<'_>>,
         forwarding: Option<crate::Forwarding>,
     ) -> Result<Channel, Status>;
-
-    /// 以根安装能力将授权目录中的设备放入选定域。`None` 表示默认域，`handles` 只携带目录能力。
-    ///
-    /// # Returns
-    ///
-    /// 接口序号，以及接口的 lifetime channel：接口移除（网卡会话关闭）时服务端关闭对端，
-    /// 独立 Event 以 USER_0 通知此网卡链路变化。使用者在寿命通道观察到 `PEER_CLOSED`（同 Fuchsia `interfaces.admin.Control` 的移除终止）。
-    ///
-    /// # Errors
-    ///
-    /// 权限不足、描述或句柄不完整、目标域不存在、旧域有在途事务、连接失败或资源不足。
-    fn install_device(
-        &self,
-        device_id: u64,
-        domain: Option<Name>,
-        description: Vec<u8>,
-        handles: Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status>;
 }
 
 /// 分派安装 channel 的一条请求；签名与 `service_rpc::Handler` 一致。
@@ -210,14 +190,6 @@ pub fn dispatch_installer(
             );
             Ok(returned)
         }
-        INSTALL_DEVICE => dispatch_install_device(
-            request,
-            handles,
-            reply,
-            |id, domain, description, handles| {
-                service.install_device(id, domain, description, handles)
-            },
-        ),
         _ => Err(native_abi::ERR_NOT_SUPPORTED),
     }
 }
@@ -256,7 +228,7 @@ pub(super) fn dispatch_open_routing_domain(
     Ok(returned)
 }
 
-fn routing_domain_name(bytes: &[u8]) -> Result<Name, Status> {
+pub(super) fn routing_domain_name(bytes: &[u8]) -> Result<Name, Status> {
     let name = core::str::from_utf8(bytes).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let mut owned = String::new();
     owned
@@ -359,45 +331,7 @@ pub(super) fn dispatch_clear_connection(
     Ok(Vec::new())
 }
 
-pub(super) fn dispatch_install_device(
-    request: &mut Reader<'_>,
-    handles: Vec<Handle>,
-    reply: &mut Writer,
-    install: impl FnOnce(
-        u64,
-        Option<Name>,
-        Vec<u8>,
-        Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status>,
-) -> Result<Vec<Handle>, Status> {
-    if request.u32()? != INSTALL_DEVICE_VERSION {
-        return Err(native_abi::ERR_INVALID_ARGS);
-    }
-    let device_id = request.u64()?;
-    let name = request.bytes()?;
-    let domain = (!name.is_empty())
-        .then(|| routing_domain_name(name))
-        .transpose()?;
-    let description = request.bytes()?;
-    request.finish()?;
-    // 安装之后不能再因回复扩容失败而丢失刚创建的接口身份/寿命能力。
-    reply.try_reserve(4)?;
-    let mut returned = Vec::new();
-    returned
-        .try_reserve_exact(2)
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    let mut copy = Vec::new();
-    copy.try_reserve_exact(description.len())
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    copy.extend_from_slice(description);
-    let (index, lifetime, link_changed) = install(device_id, domain, copy, handles)?;
-    reply.u32(index);
-    returned.push(lifetime.into_handle());
-    returned.push(link_changed.into_handle());
-    Ok(returned)
-}
-
-/// 使用者端：网卡安装。
+/// 供 RIB 使用的 FIB 执行客户端。
 pub struct NetworkInstaller {
     channel: Channel,
 }
@@ -614,43 +548,5 @@ impl NetworkInstaller {
     ) -> Result<super::PreparedConfiguration, Status> {
         let (request, handles) = super::configuration::prepare_request(encoded, policy)?;
         self.call_prepared(&request, handles)
-    }
-
-    /// 把网卡装入 `domain`，缺席表示默认域。返回接口序号、寿命通道与链路事件。
-    ///
-    /// # Errors
-    ///
-    /// 服务拒绝该设备或已终止。
-    pub fn install_device(
-        &self,
-        device_id: u64,
-        domain: Option<&Name>,
-        description: &[u8],
-        handles: Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
-        let name = domain.map_or(&[][..], |name| name.as_str().as_bytes());
-        let mut writer = Writer::request(INSTALL_DEVICE);
-        writer.try_reserve(
-            20usize
-                .checked_add(description.len())
-                .and_then(|size| size.checked_add(name.len()))
-                .ok_or(native_abi::ERR_OUT_OF_RANGE)?,
-        )?;
-        writer
-            .u32(INSTALL_DEVICE_VERSION)
-            .u64(device_id)
-            .bytes(name)
-            .bytes(description);
-        let mut reply = call(&self.channel, &writer, handles)?;
-        if reply.handles.len() != 2 {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        let (mut reader, handles) = reply.split();
-        let index = reader.u32()?;
-        reader.finish()?;
-        let link_changed =
-            native_runtime::Event::from_handle(service_rpc::take_handle(handles, 1)?);
-        let lifetime = Channel::from_handle(service_rpc::take_handle(handles, 0)?);
-        Ok((index, lifetime, link_changed))
     }
 }

@@ -6,7 +6,7 @@ fn downstream_router_advertises_static_prefixes_and_withdraws_default_on_disable
 
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     let addresses = [
         definition(GLOBAL_PEER, 64, true),
@@ -231,7 +231,7 @@ fn delegated_prefix_route_and_advertisement_expire_together() {
 
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     ready(&net, &device);
     frames(&device);
     let prefix: Ipv6Addr = "2001:db8:ab:cd::".parse().unwrap();
@@ -348,7 +348,7 @@ fn vlan_prefix_delegation_announces_and_retires_distinct_subnets() {
 
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, device) = domain();
+    let (net, device) = router_domain();
     let config = Configuration::decode(br#"{
         "version":1,
         "interfaces":{

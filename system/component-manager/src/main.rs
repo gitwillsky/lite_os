@@ -11,10 +11,11 @@
 //!    routing-rib、router_config、audio-core 与 linuxd；
 //!    每个消费者拿到只含它声明协议的路由目录（[`ROUTES`] 与各 `*_USES`），连接转发给提供者的当前实例
 //!    （能力路由，对应 Fuchsia component_manager）；router_config 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
-//! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job）。崩溃循环时动态路由进程延迟重启，其余服务关机；
-//!    driver-manager、fshost 终止时记录退出状态并关机。
+//! 5. 必需服务终止后重启（linuxd 先终止整个 Linux Job）。崩溃循环时关机；driver-manager 和 fshost 终止即关机。
+//!    BGP、OSPF、下游 DHCP 和 DNS 服务由能力请求启动，退出后由下一次请求重建。
 
 mod drivers;
+mod on_demand;
 
 extern crate alloc;
 
@@ -24,13 +25,12 @@ use alloc::vec::Vec;
 
 use device_protocol::directory::{ALL_CLASSES, Class, Directory, DirectoryClient};
 use launch_protocol::{
-    audio_core, bgp, dhcp_client, dhcp_server, dns_cache, ext4, fshost, linuxd, netstack, ospf,
-    router_config, routing_rib,
+    audio_core, dhcp_client, ext4, fshost, linuxd, netstack, router_config, routing_rib,
 };
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
 use native_runtime::sync::{Mutex, Once};
-use native_runtime::task::{CRASH_LIMIT, CRASH_WINDOW, CrashLoop};
+use native_runtime::task::{CRASH_LIMIT, CrashLoop};
 use native_runtime::{
     Channel, Event, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info, warn,
 };
@@ -44,7 +44,6 @@ const FSHOST_STACK_SIZE: usize = 128 * 1024;
 const ROUTER_CONFIG_STACK_SIZE: usize = 128 * 1024;
 const RIB_STACK_SIZE: usize = 128 * 1024;
 const DHCP_STACK_SIZE: usize = 128 * 1024;
-const ROUTING_PROTOCOL_STACK_SIZE: usize = 128 * 1024;
 const AUDIO_STACK_SIZE: usize = 128 * 1024;
 
 // OWNER: bootfs 映射永不解除；监督任务重启服务时重复从中取映像。
@@ -67,7 +66,8 @@ impl Supervised {
     }
 
     fn install(&self, outgoing: ServiceDirectory) {
-        *self.outgoing.lock() = Some(Arc::new(outgoing));
+        let mut current = self.outgoing.lock();
+        *current = Some(Arc::new(outgoing));
         let _ = self.available.signal(0, signals::USER_0);
     }
 
@@ -83,8 +83,8 @@ impl Supervised {
         }
     }
 
-    /// 把连接转发给当前实例。能独立重试的路由配置不能在监督退避时阻塞其他服务的配置。
-    fn forward(&self, protocol: &[u8], server: Channel, wait: bool) -> Result<(), Status> {
+    /// 把连接转发给当前实例，等待必需服务在重启后重新发布。
+    fn forward(&self, protocol: &[u8], server: Channel) -> Result<(), Status> {
         loop {
             let current = self.outgoing.lock().clone();
             if let Some(instance) = current {
@@ -92,9 +92,6 @@ impl Supervised {
                     Err(native_abi::ERR_TIMED_OUT) => return instance.forward(protocol, server),
                     _ => self.retire(&instance),
                 }
-            }
-            if !wait {
-                return Err(native_abi::ERR_SHOULD_WAIT);
             }
             self.available
                 .wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE)?;
@@ -110,10 +107,6 @@ enum Provider {
     Fshost,
     RouterConfig,
     Dhcp,
-    DhcpServer,
-    DnsCache,
-    Bgp,
-    Ospf,
     AudioCore,
 }
 
@@ -124,22 +117,10 @@ static ROUTING_RIB: Once<Supervised> = Once::new();
 static FSHOST: Once<Supervised> = Once::new();
 static ROUTER_CONFIG: Once<Supervised> = Once::new();
 static DHCP: Once<Supervised> = Once::new();
-// OWNER: 下游 DHCP 执行服务的唯一当前实例，租约仅由执行服务持有。
-static DHCP_SERVER: Once<Supervised> = Once::new();
-// OWNER: 发布当前 DNS 执行工厂。缓存、查询和监听器只归该服务。
-static DNS_CACHE: Once<Supervised> = Once::new();
-// OWNER: BGP 提供者的唯一当前实例，只保存服务路由寿命；邻居/路由状态在实际 bgp 进程。
-static BGP: Once<Supervised> = Once::new();
-// OWNER: 只保存当前 OSPF 工厂的实例寿命；链路状态始终由 OSPF 进程持有。
-static OSPF: Once<Supervised> = Once::new();
 // OWNER: audio-core 的实例状态；linuxd 的音频连接经它转发给当前实例。
 static AUDIO_CORE: Once<Supervised> = Once::new();
 
 impl Provider {
-    fn dynamic_routing(self) -> bool {
-        matches!(self, Self::Bgp | Self::Ospf)
-    }
-
     fn instance(self) -> &'static Supervised {
         let slot = match self {
             Self::Netstack => &NETSTACK,
@@ -147,10 +128,6 @@ impl Provider {
             Self::Fshost => &FSHOST,
             Self::RouterConfig => &ROUTER_CONFIG,
             Self::Dhcp => &DHCP,
-            Self::DhcpServer => &DHCP_SERVER,
-            Self::DnsCache => &DNS_CACHE,
-            Self::Bgp => &BGP,
-            Self::Ospf => &OSPF,
             Self::AudioCore => &AUDIO_CORE,
         };
         slot.call_once(Supervised::new)
@@ -162,6 +139,10 @@ const ROUTES: &[(&[u8], Provider)] = &[
     (service_directory::NETWORK, Provider::Netstack),
     (service_directory::NETWORK_INSTALLER, Provider::Netstack),
     (
+        service_directory::NETWORK_DEVICE_INSTALLER,
+        Provider::Netstack,
+    ),
+    (
         service_directory::ROUTING_CONFIGURATOR,
         Provider::RoutingRib,
     ),
@@ -170,10 +151,6 @@ const ROUTES: &[(&[u8], Provider)] = &[
     (service_directory::STORAGE_ADMIN, Provider::Fshost),
     (service_directory::NETWORK_SETTINGS, Provider::RouterConfig),
     (service_directory::DHCP, Provider::Dhcp),
-    (service_directory::DHCP_SERVER, Provider::DhcpServer),
-    (service_directory::DNS_CACHE, Provider::DnsCache),
-    (service_directory::BGP_CONFIGURATOR, Provider::Bgp),
-    (service_directory::OSPF_CONFIGURATOR, Provider::Ospf),
     (service_directory::AUDIO, Provider::AudioCore),
 ];
 
@@ -188,6 +165,7 @@ const LINUXD_USES: &[&[u8]] = &[
 ];
 const ROUTER_CONFIG_USES: &[&[u8]] = &[
     service_directory::NETWORK,
+    service_directory::NETWORK_DEVICE_INSTALLER,
     service_directory::ROUTING_CONFIGURATOR,
     service_directory::DHCP,
     service_directory::DHCP_SERVER,
@@ -238,32 +216,6 @@ const DHCP_SPEC: ServiceSpec = ServiceSpec {
     image: dhcp_client::IMAGE,
     stack_size: DHCP_STACK_SIZE,
 };
-const DHCP_SERVER_SPEC: ServiceSpec = ServiceSpec {
-    name: b"dhcp-server",
-    label: "dhcp-server",
-    image: dhcp_server::IMAGE,
-    stack_size: DHCP_STACK_SIZE,
-};
-
-const DNS_CACHE_SPEC: ServiceSpec = ServiceSpec {
-    name: b"dns-cache",
-    label: "dns-cache",
-    image: dns_cache::IMAGE,
-    stack_size: DHCP_STACK_SIZE,
-};
-const BGP_SPEC: ServiceSpec = ServiceSpec {
-    name: b"bgp",
-    label: "bgp",
-    image: bgp::IMAGE,
-    stack_size: ROUTING_PROTOCOL_STACK_SIZE,
-};
-const OSPF_SPEC: ServiceSpec = ServiceSpec {
-    name: b"ospf",
-    label: "ospf",
-    image: ospf::IMAGE,
-    stack_size: ROUTING_PROTOCOL_STACK_SIZE,
-};
-
 fn main(mut startup: Startup) -> i64 {
     let job = Job::from_handle(startup.take(startup::root::JOB));
     let resource =
@@ -316,7 +268,8 @@ fn main(mut startup: Startup) -> i64 {
             ext4_image.into_handle(),
         ],
         FSHOST_STACK_SIZE,
-    );
+    )
+    .expect("fshost launch");
     Provider::Fshost
         .instance()
         .install(ServiceDirectory::new(storage));
@@ -360,31 +313,7 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &RIB_SPEC,
             Provider::RoutingRib,
-            || vec![services(ROUTING_RIB_USES).into_handle()],
-        )
-        .await;
-    });
-    let bgp_job = job.duplicate(rights::SAME).expect("root job duplicate");
-    executor.spawn(async move {
-        supervise(
-            executor,
-            &bgp_job,
-            bootfs,
-            &BGP_SPEC,
-            Provider::Bgp,
-            Vec::new,
-        )
-        .await;
-    });
-    let ospf_job = job.duplicate(rights::SAME).expect("root job duplicate");
-    executor.spawn(async move {
-        supervise(
-            executor,
-            &ospf_job,
-            bootfs,
-            &OSPF_SPEC,
-            Provider::Ospf,
-            Vec::new,
+            || vec![services(ROUTING_RIB_USES, route).into_handle()],
         )
         .await;
     });
@@ -396,30 +325,6 @@ fn main(mut startup: Startup) -> i64 {
             bootfs,
             &DHCP_SPEC,
             Provider::Dhcp,
-            alloc::vec::Vec::new,
-        )
-        .await;
-    });
-    let dhcp_server_job = job.duplicate(rights::SAME).expect("root job duplicate");
-    executor.spawn(async move {
-        supervise(
-            executor,
-            &dhcp_server_job,
-            bootfs,
-            &DHCP_SERVER_SPEC,
-            Provider::DhcpServer,
-            alloc::vec::Vec::new,
-        )
-        .await;
-    });
-    let dns_cache_job = job.duplicate(rights::SAME).expect("root job duplicate");
-    executor.spawn(async move {
-        supervise(
-            executor,
-            &dns_cache_job,
-            bootfs,
-            &DNS_CACHE_SPEC,
-            Provider::DnsCache,
             alloc::vec::Vec::new,
         )
         .await;
@@ -457,6 +362,11 @@ fn main(mut startup: Startup) -> i64 {
         .await;
     });
     let router_config_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    let route_router = on_demand::router_connector(
+        executor,
+        job.duplicate(rights::SAME).expect("routing services job"),
+        bootfs,
+    );
     executor.spawn(async move {
         supervise(
             executor,
@@ -466,7 +376,7 @@ fn main(mut startup: Startup) -> i64 {
             Provider::RouterConfig,
             || {
                 vec![
-                    services(ROUTER_CONFIG_USES).into_handle(),
+                    services(ROUTER_CONFIG_USES, route_router.clone()).into_handle(),
                     router_config_devices
                         .scope(Class::Network.bit())
                         .expect("router-config device scope")
@@ -537,10 +447,7 @@ fn main(mut startup: Startup) -> i64 {
 }
 
 /// 服务路由（对应 Fuchsia component_manager 的能力路由）：把消费者的连接转发给提供该协议的当前实例。
-fn route(uses: &[&[u8]], protocol: &[u8], server: Channel) -> Result<(), Status> {
-    if !uses.contains(&protocol) {
-        return Err(native_abi::ERR_ACCESS_DENIED);
-    }
+fn route(protocol: &[u8], server: Channel) -> Result<(), Status> {
     if protocol == service_directory::DRIVER_UPDATE {
         return drivers::connect(server);
     }
@@ -548,18 +455,24 @@ fn route(uses: &[&[u8]], protocol: &[u8], server: Channel) -> Result<(), Status>
         .iter()
         .find(|(name, _)| *name == protocol)
         .ok_or(native_abi::ERR_NOT_FOUND)?;
-    provider
-        .instance()
-        .forward(protocol, server, !provider.dynamic_routing())
+    provider.instance().forward(protocol, server)
 }
 
 /// 为一个消费者实例服务新的路由目录（只含它声明使用的协议），返回交给它的一端。
-fn services(uses: &'static [&'static [u8]]) -> Channel {
+fn services(
+    uses: &'static [&'static [u8]],
+    forward: impl Fn(&[u8], Channel) -> Result<(), Status> + Send + Sync + 'static,
+) -> Channel {
     let (client, server) = Channel::create().expect("service directory channel");
     service_directory::serve_directory(
         server,
         b"root-services",
-        Arc::new(move |protocol: &[u8], channel: Channel| route(uses, protocol, channel)),
+        Arc::new(move |protocol: &[u8], channel: Channel| {
+            if !uses.contains(&protocol) {
+                return Err(native_abi::ERR_ACCESS_DENIED);
+            }
+            forward(protocol, channel)
+        }),
     )
     .expect("service directory");
     client
@@ -570,7 +483,7 @@ fn private_storage(name: &[u8]) -> Channel {
     let (admin, server) = Channel::create().expect("storage admin channel");
     Provider::Fshost
         .instance()
-        .forward(service_directory::STORAGE_ADMIN, server, true)
+        .forward(service_directory::STORAGE_ADMIN, server)
         .expect("storage admin connection");
     filesystem_protocol::StorageAdmin::new(admin)
         .open(name)
@@ -612,7 +525,7 @@ async fn supervise_linux(
                 )
                 .expect("linuxd device scope")
                 .into_channel(),
-            services(LINUXD_USES),
+            services(LINUXD_USES, route),
             command_line,
         );
         let _ = executor.on_signals(&linux, signals::TERMINATED).await;
@@ -628,7 +541,7 @@ async fn supervise_linux(
 }
 
 /// 运行并监督一个可重启的原生服务：每个实例拿到新的 outgoing（第一个角色句柄）与 `handles` 组装的其余
-/// 角色句柄；终止后撤下实例并重启。动态路由崩溃循环只暂停相应协议。
+/// 角色句柄；终止后撤下实例并重启。
 async fn supervise(
     executor: &'static Executor,
     job: &Job,
@@ -643,10 +556,12 @@ async fn supervise(
         let (outgoing, outgoing_server) = Channel::create().expect("outgoing channel");
         let mut role = vec![outgoing_server.into_handle()];
         role.extend(handles());
-        let process = start_service(job, bootfs, spec.image, spec.name, role, spec.stack_size);
+        let process = start_service(job, bootfs, spec.image, spec.name, role, spec.stack_size)
+            .unwrap_or_else(|status| panic!("{} launch: {status}", spec.label));
         supervised.install(ServiceDirectory::new(outgoing));
         let _ = executor.on_signals(&process, signals::TERMINATED).await;
-        if let Some(instance) = supervised.outgoing.lock().clone() {
+        let instance = supervised.outgoing.lock().clone();
+        if let Some(instance) = instance {
             supervised.retire(&instance);
         }
         let status = process.basic().map_or(-1, |basic| basic.return_code);
@@ -655,13 +570,7 @@ async fn supervise(
                 "{} terminated {CRASH_LIMIT} times within 10 s (last status {status})",
                 spec.label
             );
-            if !provider.dynamic_routing() {
-                native_runtime::task::exit_process(power_off(&process, spec.label));
-            }
-            // 跨过整个统计窗口后再启动，避免持续故障占满 CPU，保留其他协议和现有转发。
-            let deadline = native_runtime::system::monotonic().saturating_add(CRASH_WINDOW);
-            executor.sleep_until(deadline).await;
-            crashes = CrashLoop::new();
+            native_runtime::task::exit_process(power_off(&process, spec.label));
         }
         error!("{} terminated with status {status}; restarting", spec.label);
     }
@@ -769,28 +678,37 @@ fn start_service(
     name: &[u8],
     handles: alloc::vec::Vec<Handle>,
     stack_size: usize,
-) -> Process {
+) -> Result<Process, Status> {
+    let image = bootfs.image(image)?;
+    let job = Job::create(root)?;
+    launch_service(&job, &image, name, handles, stack_size)
+}
+
+fn launch_service(
+    job: &Job,
+    image: &native_runtime::elf::Image,
+    name: &[u8],
+    handles: Vec<Handle>,
+    stack_size: usize,
+) -> Result<Process, Status> {
     let label = core::str::from_utf8(name).unwrap_or("");
-    let image = bootfs
-        .image(image)
-        .unwrap_or_else(|status| panic!("{label} ELF: {status}"));
-    let job = Job::create(root).unwrap_or_else(|status| panic!("{label} job: {status}"));
-    let (process, vmar) =
-        Process::create(&job, name, 0).unwrap_or_else(|status| panic!("{label} process: {status}"));
-    let runtime_vmar: Vmar = vmar
-        .duplicate(rights::SAME)
-        .unwrap_or_else(|status| panic!("{label} vmar duplicate: {status}"));
-    native_runtime::launch::launch(native_runtime::launch::Launch {
-        process: &process,
-        image_vmar: &vmar,
-        runtime_vmar,
-        name,
-        image: &image,
-        arguments: &[],
-        handles,
-        stack_size,
-    })
-    .unwrap_or_else(|status| panic!("{label} launch: {status}"));
+    let (process, vmar) = Process::create(job, name, 0)?;
+    let result = (|| {
+        native_runtime::launch::launch(native_runtime::launch::Launch {
+            process: &process,
+            image_vmar: &vmar,
+            runtime_vmar: vmar.duplicate(rights::SAME)?,
+            name,
+            image,
+            arguments: &[],
+            handles,
+            stack_size,
+        })
+    })();
+    if let Err(status) = result {
+        let _ = native_runtime::task::kill(&process);
+        return Err(status);
+    }
     info!("{label} started");
-    process
+    Ok(process)
 }

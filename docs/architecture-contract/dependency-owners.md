@@ -95,14 +95,18 @@ service-rpc::Writer 的 from_bytes/into_bytes 仅转移编码存储所有权，�
    outgoing 的客户端，并为每个消费者服务一条路由目录：只转发该消费者声明使用的协议（component-manager 的 `ROUTES` 与各
    `*_USES` 表，对应 Fuchsia 的 `expose`/`use`），未声明的协议返回 `ERR_ACCESS_DENIED`。
 2. 路由给 linuxd 的协议：`liteos.network.Control`、`liteos.storage.Blocks`、`liteos.filesystem.Ext4`、
-   `liteos.network.Settings`、`liteos.audio.Core`、`liteos.driver.Update`；给 router-config：`liteos.network.Control`、`liteos.routing.Configuration`、
+   `liteos.network.Settings`、`liteos.audio.Core`、`liteos.driver.Update`；给 router-config：`liteos.network.Control`、`liteos.network.DeviceInstaller`、`liteos.routing.Configuration`、
    `liteos.network.Dhcp`、`liteos.network.DhcpServer`、`liteos.network.DnsCache`、`liteos.bgp.Configuration`、`liteos.ospf.Configuration`；
    给 routing-rib：`liteos.network.Control`、`liteos.network.Installer`；给 BGP 和 OSPF：`liteos.network.Control`。DHCP 客户端、服务端和 dns-cache 从配置服务取得各会话的网络域能力。
    `liteos.storage.Admin` 只供 component-manager 派生私有目录；配置来源能力不能直接提交 FIB、下一跳更新或任意来源身份。
 3. 设备目录按类派生：Network → router-config，Block → fshost，Pcm → audio-core，其余 → linuxd；派生目录不能扩大范围。
-4. 监督：netstack、routing-rib、bgp、ospf、dhcp-client、dhcp-server、dns-cache、router-config、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束）。
-   10 秒内 5 次判定为崩溃循环（`native_runtime::task::CrashLoop`）。bgp 和 ospf 等一个统计窗口后再次启动，重启期间连接请求返回 `ERR_SHOULD_WAIT` 供配置服务重试。
-   其他受监督服务进入崩溃循环时关机，重启期间新的连接等待实例就绪。driver-manager、fshost 当前实例意外终止即关机。
+   router-config 持目录经 `DeviceInstaller` 直接交付网卡；NET 的 `serve_device_installer` 只接收装配请求。RIB 独占 FIB 执行能力。
+4. 监督：netstack、routing-rib、dhcp-client、router-config、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束）。
+   10 秒内 5 次判定为崩溃循环（`native_runtime::task::CrashLoop`）。上述服务进入崩溃循环时关机，重启期间新的连接等待实例就绪。
+   BGP、OSPF、下游 DHCPv4 和 DNS 缓存各在配置服务首次打开其能力时启动，以后由配置服务重连触发重建。映像缺失返回 `ERR_NOT_FOUND`；
+   崩溃循环退避一个统计窗口，期间打开返回 `ERR_SHOULD_WAIT`。故障只影响该功能。详见 [Fuchsia 组件生命周期](https://fuchsia.dev/fuchsia-src/concepts/components/v2/lifecycle#bind)。
+   component-manager 装配时通过 `on_demand::router_connector` 制备这一目录路由。各工厂由根服务启动并持有独立 Job，确认其终止后才接纳替代实例。
+   driver-manager、fshost 当前实例意外终止即关机。
    driver-manager 以同一判定监督各驱动宿主，fshost 监督 ext4 实例（见 6、7）。
 5. 重启后的状态恢复由各使用者负责：NET 退出时 RIB 同时丢弃旧接口来源，router-config 重新安装网卡并重新配置；单独 RIB 退出只重放持久决定，不重复安装存活网卡。linuxd 为存活网络域重建协议实例，旧 socket
    以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 重连新实例：

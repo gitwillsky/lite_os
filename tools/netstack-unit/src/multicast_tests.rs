@@ -37,6 +37,7 @@ mod multicast_contract {
             )
             .unwrap(),
         );
+        enable_forwarding(&net);
         for index in 2..=4 {
             configure_up(&net, index, true).unwrap();
         }
@@ -724,8 +725,12 @@ mod multicast_contract {
             poll(&net, ms);
         }
         let output = core::mem::take(&mut device.wire.lock().unwrap().1);
-        assert_eq!(output.len(), 1);
-        let ethernet = EthernetFrame::parse(&output[0]).unwrap();
+        let mut ipv4 = output.iter().filter(|frame| {
+            EthernetFrame::parse(frame).is_ok_and(|frame| frame.type_or_length() == 0x0800)
+        });
+        let frame = ipv4.next().unwrap();
+        assert!(ipv4.next().is_none());
+        let ethernet = EthernetFrame::parse(frame).unwrap();
         assert_eq!(ethernet.destination(), [1, 0, 0x5e, 1, 1, 1]);
         let ip = Ipv4Packet::parse(ethernet.payload()).unwrap();
         assert_eq!(ip.hop_limit(), 1);

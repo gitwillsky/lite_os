@@ -543,7 +543,7 @@ fn router_advertisement_policy_is_per_interface_and_rolls_back_with_forwarding()
 
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let (net, uplink) = domain();
+    let (net, uplink) = router_domain();
     let downstream = Arc::new(WireDevice::new());
     let other = install_interface(&net, downstream.clone(), crate::Channel, crate::Event::default()).unwrap();
     configure_up(&net, other, true).unwrap();
@@ -686,7 +686,10 @@ fn router_advertisement_installs_slaac_and_live_paths_with_independent_lifetimes
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, device) = domain();
-    ready(&net, &device);
+    for time in [0, 1000, 2000, 2001] {
+        poll(&net, time);
+    }
+    assert_eq!(state(&net).unwrap().state, State::Preferred);
     let prefix: Ipv6Addr = "2001:db8:1234::".parse().unwrap();
     let automatic = Ipv6Addr::from(u128::from(prefix) | (u128::from(LOCAL) & u128::from(u64::MAX)));
     let capture = |now| {
@@ -716,21 +719,18 @@ fn router_advertisement_installs_slaac_and_live_paths_with_independent_lifetimes
         envelope(&mut frame, PEER, all_nodes, false, hops);
         frame
     };
-    enqueue(&device, advertisement(255, 6, 10, 4));
-    poll(&net, 2002);
-    assert!(automatic_row(&capture(2002)).is_none());
-
-    let configuration = prepare_configuration(
-        &net,
-        core::iter::empty(),
-        Some(network_protocol::Forwarding { ipv4: true, ipv6: false }),
-    ).unwrap();
-    configuration.activate().unwrap();
-    configuration.confirm().unwrap();
+    assert_eq!(
+        stack(&net).unwrap().lock().unwrap().forwarding_enabled,
+        network_protocol::Forwarding { ipv4: false, ipv6: false },
+    );
     poll(&net, 2003);
     poll(&net, 3003);
     let output = frames(&device);
     assert!(output.iter().any(|frame| {
+        let ethernet = EthernetFrame::parse(frame).unwrap();
+        if ethernet.type_or_length() != 0x86dd {
+            return false;
+        }
         let (ip, icmp) = parse(frame);
         ip.hop_limit() == 255
             && NdPacket::parse(icmp).is_ok_and(|nd| nd.message() == NdMessage::RouterSolicitation)

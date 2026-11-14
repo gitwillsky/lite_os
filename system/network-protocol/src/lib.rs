@@ -60,10 +60,10 @@ pub const TRANSFER_LIMIT: usize = 256 * 1024;
 
 mod interface;
 use interface::{get_interface, put_interface};
-
 mod namespace;
 pub use namespace::{NamespaceService, NetworkService, dispatch_control, dispatch_namespace};
 
+pub mod device_installer;
 mod installer;
 pub use installer::{InstallerService, NetworkInstaller, dispatch_installer};
 mod configuration;

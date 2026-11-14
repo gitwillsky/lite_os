@@ -11,7 +11,7 @@ pub fn valid_routing_domain_name(name: &str) -> bool {
 }
 
 /// 独立管理的双栈路由域。接口、路由表和规则引用都在本域内解析。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingDomain {
     /// 按配置名称索引的接口，使用 MAC 确定物理归属。
@@ -49,30 +49,11 @@ pub struct RoutingDomain {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ospf: Option<crate::ospf::Configuration>,
     /// 本域是否允许 IPv4 转发。
-    #[serde(default = "forwarding_default")]
+    #[serde(default = "version_one_forwarding_default")]
     pub ipv4_forwarding: bool,
     /// 本域是否允许 IPv6 转发。
-    #[serde(default = "forwarding_default")]
+    #[serde(default = "version_one_forwarding_default")]
     pub ipv6_forwarding: bool,
-}
-
-impl Default for RoutingDomain {
-    fn default() -> Self {
-        Self {
-            interfaces: Default::default(),
-            bridges: Default::default(),
-            routes: Vec::new(),
-            policy_routing: Default::default(),
-            firewall: Default::default(),
-            route_policy: Default::default(),
-            dns_forwarding: None,
-            prefix_delegation: None,
-            bgp: None,
-            ospf: None,
-            ipv4_forwarding: forwarding_default(),
-            ipv6_forwarding: forwarding_default(),
-        }
-    }
 }
 
 impl RoutingDomain {

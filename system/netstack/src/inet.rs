@@ -242,10 +242,7 @@ pub(crate) fn prepare_network(
         route_replies: route_reply::RouteReplies::new(),
         forwarding: forward::Forwarding::new(),
         multicast_routes: Default::default(),
-        forwarding_enabled: network_protocol::Forwarding {
-            ipv4: router_protocol::configuration::forwarding_default(),
-            ipv6: router_protocol::configuration::forwarding_default(),
-        },
+        forwarding_enabled: network_protocol::Forwarding::default(),
         identification: identification::Identification::new(),
         interface_cursor: 0,
         interface_rotation: 0,

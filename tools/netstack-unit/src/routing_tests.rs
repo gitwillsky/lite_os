@@ -32,7 +32,23 @@ fn routing_domain_with_queues(
         configure_netmask(&net, index, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
         configure_up(&net, index, true).unwrap();
     }
+    // 路由器用例显式启用两族；生产创建路径从主机状态开始。
+    enable_forwarding(&net);
     (net, a, b)
+}
+
+fn enable_forwarding(net: &Arc<crate::namespace::Namespace>) {
+    let router = prepare_configuration(
+        net,
+        core::iter::empty(),
+        Some(network_protocol::Forwarding {
+            ipv4: true,
+            ipv6: true,
+        }),
+    )
+    .unwrap();
+    router.activate().unwrap();
+    router.confirm().unwrap();
 }
 
 #[test]

@@ -54,6 +54,8 @@ fn main(mut startup: Startup) -> i64 {
                 server::serve_control(network.clone(), channel)
             } else if protocol == service_directory::NETWORK_INSTALLER {
                 server::serve_installer(network.clone(), channel)
+            } else if protocol == service_directory::NETWORK_DEVICE_INSTALLER {
+                server::serve_device_installer(network.clone(), channel)
             } else {
                 Err(native_runtime::native_abi::ERR_NOT_FOUND)
             }

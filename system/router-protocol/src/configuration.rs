@@ -355,14 +355,14 @@ pub struct Configuration {
     )]
     pub bridges: BTreeMap<Name, Bridge>,
     /// 是否启用 IPv4 单播及已配置的组播转发。
-    #[serde(default = "forwarding_default")]
+    #[serde(default = "version_one_forwarding_default")]
     #[schemars(
         title = "IPv4 转发",
         description = "允许在接口之间转发 IPv4 单播和已配置的组播。"
     )]
     pub ipv4_forwarding: bool,
     /// 是否启用 IPv6 单播及已配置的组播转发。
-    #[serde(default = "forwarding_default")]
+    #[serde(default = "version_one_forwarding_default")]
     #[schemars(
         title = "IPv6 转发",
         description = "允许在接口之间转发 IPv6 单播和已配置的组播。"
@@ -408,8 +408,8 @@ pub struct Configuration {
     pub backup: Option<crate::backup::Policy>,
 }
 
-/// 返回路由器的缺省单播转发策略；配置缺省与原生域初始值共用此定义，不分配。
-pub const fn forwarding_default() -> bool {
+// 版本 1 文档省略转发字段时表示启用。新配置会显式写出两族设置。
+fn version_one_forwarding_default() -> bool {
     true
 }
 
@@ -427,8 +427,8 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             version: VERSION,
-            ipv4_forwarding: forwarding_default(),
-            ipv6_forwarding: forwarding_default(),
+            ipv4_forwarding: false,
+            ipv6_forwarding: false,
             forwarding_cpus: Vec::new(),
             prefix_delegation: None,
             route_policy: crate::policy::Policy::default(),

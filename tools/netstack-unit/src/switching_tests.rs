@@ -371,6 +371,7 @@ fn bridge_vlan_gateways_route_both_families_and_rollback_interface_removal() {
     let net = crate::namespace::Namespace::create().unwrap();
     let [access, trunk] = core::array::from_fn(|_| Arc::new(WireDevice::new()));
     net.install_protocol(prepare_network(&net, &[access.clone(), trunk.clone()], true).unwrap());
+    enable_forwarding(&net);
     for index in [2, 3] {
         configure_up(&net, index, true).unwrap();
     }

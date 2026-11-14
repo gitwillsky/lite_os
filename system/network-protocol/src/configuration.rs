@@ -16,7 +16,7 @@ mod batch;
 pub use batch::ConfigurationBatch;
 
 /// 一次配置事务中的双栈转发策略；None 保持整组，Some 原子替换两族，不复制接口/FIB。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Forwarding {
     /// 是否启用 IPv4 单播和已配置的组播转发。
     pub ipv4: bool,

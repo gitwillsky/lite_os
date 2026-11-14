@@ -28,12 +28,12 @@ IPv6 主表的执行准入与路径共享见[链路网络契约](ipv6-link.md#�
 
 ## 双栈转发开关
 
-配置树 ipv4_forwarding/ipv6_forwarding 独立控制两族单播和静态组播转发，缺省开启；Configuration 与 NET 初始值共用 forwarding_default，不复制默认策略。
+配置树 ipv4_forwarding/ipv6_forwarding 独立控制两族单播和静态组播转发。全新配置与新建域均默认关闭，保存时写出两个开关；旧 v1 JSON 的缺省字段和早期二进制配置仍按开启读取。
 导出、Schema、审阅、差异、导入、备份与恢复沿同一模型。[桌面路由接口与转发](../../user/programs/network-manager/README.md#路由接口与双栈转发)可与路由设置一起按预期代际提交。
 
 1. router-config 的 routing::changed 包括开关；sources_changed 仅判断实际静态声明/策略/设备绑定，二者不另持运行副本。
    静态来源未变且无待重放工作时，单改转发开关或预路由链均由 RIB 移交 NET 的同一执行租约，无需重新选路。
-   未知结果、重连及多项变更仍重放完整持久决定；DHCP 和动态来源的预备未携带开关时保持当前值，不能重置为缺省开启。
+   未知结果、重连及多项变更仍重放完整持久决定；DHCP 和动态来源的预备未携带开关时保持当前值。
 2. NET 的唯一运行值属于 NetworkStack；ConfigurationSession 在激活时与可选目标交换为前像，接口/FIB/开关在同一 NET guard 下发布。
    单独标量事务 routes=None，无全表前像；确认/回滚复用原写租约，不添加第二个事务 owner、锁或广播状态。
 3. 激活关闭时只暂停所属族待发及其 deadline；收到的该族新转发包丢弃，本机 UDP/TCP/RAW、ARP/ND 与路由学习仍可用，NA Router 位跟随实际 IPv6 策略。
@@ -42,14 +42,13 @@ IPv6 主表的执行准入与路径共享见[链路网络契约](ipv6-link.md#�
 4. 接口 apply_state 比较协议引擎的实际地址集合，地址确实变化才调用会清除邻居的 update_ip_addrs；MTU、重复应用或无关策略不刷新有效 ARP。
    不增加“已应用地址”缓存；变更地址/UP 状态时仍走原地址发布和清理。
 
-单独切换的工作与 FIB 规模无关；确认清理至多 64 包/256 KiB，冷配置不新增报文路径分配或锁。
-既有双 NIC fixture 覆盖关闭/恢复、原写租约排斥、未知接口失败、原包回滚/确认释放及本机 UDP；控制帧与完整配置往返用例保护版本/能力和序列化。
+切换无需重算 FIB 或新增热路径锁与分配，确认清理上限为 64 包/256 KiB。双 NIC 用例覆盖转发切换、事务排斥、回滚及本机 UDP；配套用例检查协议与配置往返。
 这些宿主结果不能代替来宾、文件/通道故障及完整系统验收。转发数据面范围见[转发契约](ip-forwarding.md)。
 
 ## 原生 RIB 配置来源
 
-`routing-rib` 已有原生 bin、bootfs 成员、启动角色及 component-manager 监督；配置 owner 只获 `liteos.routing.Configuration`，NET Installer 只授予 RIB。
-`network-protocol::routing` 的配置来源能力复用设备安装、复合正文与事务 codec：操作 1 安装，2 接受接口与可选静态来源意图，6 创建可委托的独立来源能力，7 派生只读跟踪能力；接口重选不经配置来源转发。
+`routing-rib` 已有原生 bin、bootfs 成员、启动角色及 component-manager 监督。配置 owner 经 `liteos.routing.Configuration` 提交路由来源；NET 的 FIB Installer 只授予 RIB。
+`network-protocol::routing` 复用复合正文与事务 codec：操作 2 接受接口与可选静态来源意图，6 创建可委托的独立来源能力，7 派生只读跟踪能力。
 直接 FIB 段、独立下一跳操作与正文指定来源身份均拒绝；没有给 Linux 域新增接口，也未把工厂能力授予普通应用或协议生产者。
 
 sources::Routes 唯一拥有两族接口/静态/协议声明及身份水位；SourceUpdate 以（身份、族）替换，同一来源更新 IPv4 不能撤回 IPv6。身份不复用，不按类别编码。
@@ -106,9 +105,10 @@ IPv6 定义与 AddressState 同次冻结；新物理地址保持 Tentative，相
 
 锁顺序为配置 owner → RIB 状态 → NET；NET 不反向同步调用前两者。RIB 单事务锁只接管自己的能力，不被 RIB 状态锁反向获取，分配失败的 guard 不在状态锁内析构。
 NET 退出会结束对应 RIB 实例，配置 owner 丢弃旧 ifindex 并重装网卡；单独 RIB 退出只重连/重放配置，不重复打开存活设备。
-NET 的 `INSTALL_DEVICE(1)` 使用 u32 版本 3、u64 目录 ID、长度前缀域名和设备描述，随一个目录能力传输；空域名指默认域。根 RIB 连接独占放置权限，目标具名域须已打开。
-同域重试重交原接口。改绑前核对目录与设备描述，依据登记的弱域引用、ifindex 与实际 lifetime 撤回旧接口，再打开新会话；旧域事务在途返回 ShouldWait，目录独占保护队列寿命。NET/设备事件不反向获取登记锁。
-`routing_domains` 与根配置同一次持久决定。改绑时重扫，各域独立确认接口、路由、选路规则和防火墙。重试期间报告 Applying。
+NET 的 `liteos.network.DeviceInstaller` 只交给配置服务。其 `INSTALL_DEVICE(1)` 使用 u32 版本 3、u64 目录 ID、长度前缀域名和设备描述，随一个目录能力传输；空域名指默认域，具名域须已打开。
+客户端 `DeviceInstaller` 和服务端 `dispatch_install_device` 共用同一格式。回复为 u32 接口序号及两个句柄，接口移除关闭寿命通道，链路变化设置独立事件的 USER_0。
+同域重试重交原接口。改绑前核对目录与设备描述，撤回旧接口，再打开新会话。旧域事务在途返回 ShouldWait，目录独占保护队列寿命。NET/设备事件不反向获取登记锁。
+`routing_domains` 与根配置同次持久决定。改绑重扫后，域重放先确认接口寿命再提交，迟到的关闭通知可以忽略。各域独立确认执行，重试期间报告 Applying。
 各域共用地址池、DNS 和 DHCP 执行状态，独立持有租约。IPv6 委派租约通过 `Delegation` 接收、分配，随下游接口事务确认后再切换上联。失败通过本域重试，DNS 观察本域地址变化。
 NET 在发布 NIC 前装配 WATCH_ROUTING_INPUTS(5) 的合并 Event，USER_0 表示拓扑变化，USER_1 表示双栈网关可达性变化。RIB 清除并重武装信号后重新捕获输入。预备与纯 FIB 发布不通知。
 RIB 主线程以一个 Port 等待 NET 关闭、路由输入变化、来源撤回和租约释放。持久提交期间保留 WaitingForLease 工作，释放后重取快照并求解。

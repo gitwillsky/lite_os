@@ -1,4 +1,4 @@
-//! 接口配置 owner 到原生 RIB 的能力；复用安装/复合正文与事务传输，不开放执行 FIB 或独立下一跳写入。
+//! 接口配置 owner 到原生 RIB 的能力；复用复合正文与事务传输，不开放执行 FIB 或独立下一跳写入。
 use crate::{ExecutionPolicy, NetworkInstaller, PreparedConfiguration};
 use alloc::vec::Vec;
 use native_runtime::{
@@ -80,16 +80,6 @@ pub trait RoutingConfigurationService: Send + Sync {
         queries: Vec<router_protocol::tracking::Query>,
     ) -> Result<(Channel, native_runtime::Event), Status>;
 
-    /// 根配置能力把授权网卡交给 NET 的指定域；`None` 表示默认域。
-    /// # Errors
-    /// 描述/能力非法、资源不足或服务失效。
-    fn install_device(
-        &self,
-        id: u64,
-        domain: Option<Name>,
-        description: Vec<u8>,
-        handles: Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status>;
     /// 预备接口、静态来源与可选转发策略；configuration=None 只改变执行策略，不接受执行 FIB。
     /// # Errors
     /// 格式/来源非法、资源不足、并发租约或服务失败。
@@ -162,15 +152,6 @@ pub fn dispatch_routing_configuration(
         returned.push(source.into_handle());
         returned.push(network.into_handle());
         Ok(returned)
-    } else if ordinal == crate::installer::INSTALL_DEVICE {
-        crate::installer::dispatch_install_device(
-            request,
-            handles,
-            reply,
-            |id, domain, description, handles| {
-                service.install_device(id, domain, description, handles)
-            },
-        )
     } else if ordinal == crate::installer::PREPARE_CONFIGURATION {
         let captured = super::configuration::capture_prepare(request, handles)?;
         let configuration = captured
@@ -303,18 +284,6 @@ impl RoutingConfigurator {
     /// 提供者退出时置 PEER_CLOSED，用于重新连接并重放已持久决定的配置。
     pub fn channel(&self) -> &Channel {
         self.0.channel()
-    }
-    /// 经根 RIB 将授权网卡装入 `domain`，缺席时装入默认域，返回实际接口及寿命能力。
-    /// # Errors
-    /// 设备/能力非法、资源不足或服务失效。
-    pub fn install_device(
-        &self,
-        id: u64,
-        domain: Option<&Name>,
-        description: &[u8],
-        handles: Vec<Handle>,
-    ) -> Result<(u32, Channel, native_runtime::Event), Status> {
-        self.0.install_device(id, domain, description, handles)
     }
     /// 冻结接口配置与可选转发意图，返回同一激活/确认/回滚能力；有路由变化时由 RIB 选路。
     /// routes 按 IPv4/IPv6 排列，None 保持、显式空 Batch 撤回；只设置执行策略时不重编译 FIB。

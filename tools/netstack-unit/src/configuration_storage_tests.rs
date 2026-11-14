@@ -117,7 +117,13 @@ fn configuration_file_first_creation_rollback_restores_absence_even_if_delete_re
 
 #[test]
 fn configuration_file_failed_compensation_retains_before_image_and_durable_success_never_reverts() {
-    let old = Configuration::default();
+    let old = Configuration::decode(br#"{"version":1,"routing_domains":{"isolated":{}}}"#).unwrap();
+    assert!(old.ipv4_forwarding && old.ipv6_forwarding);
+    assert!(
+        old.routing_domains
+            .values()
+            .all(|domain| domain.ipv4_forwarding && domain.ipv6_forwarding)
+    );
     let old_id = CommitId::from_random_bytes([1; 16]);
     let candidate_id = CommitId::from_random_bytes([2; 16]);
     let candidate = Configuration {
@@ -126,6 +132,7 @@ fn configuration_file_failed_compensation_retains_before_image_and_durable_succe
     };
     let before = Some(encode_settings(&old, &[old_id]).unwrap());
     let next = encode_settings(&candidate, &[old_id, candidate_id]).unwrap();
+    assert!(!candidate.ipv4_forwarding && !candidate.ipv6_forwarding);
     let store = Store::new(before.clone(), vec![(0, true), (1, false)]);
     let failure = persist(&store, SETTINGS_FILE, before.clone(), &next)
         .err()

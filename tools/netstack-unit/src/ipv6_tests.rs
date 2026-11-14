@@ -27,6 +27,11 @@ mod ipv6_link {
         configure_up(&net, 2, true).unwrap();
         (net, device)
     }
+    fn router_domain() -> (Arc<crate::namespace::Namespace>, Arc<WireDevice>) {
+        let (net, device) = domain();
+        enable_forwarding(&net);
+        (net, device)
+    }
     fn poll(net: &crate::namespace::Namespace, ms: i64) {
         stack(net)
             .unwrap()
@@ -422,7 +427,7 @@ mod ipv6_link {
     fn dad_reports_then_probes_and_only_assigns_after_successful_transmission_and_wait() {
         let _serial = SERIAL.lock().unwrap();
         initialize();
-        let (net, device) = domain();
+        let (net, device) = router_domain();
         device
             .transmit_available
             .store(false, core::sync::atomic::Ordering::Relaxed);
@@ -590,7 +595,7 @@ mod ipv6_link {
     fn tentative_ignores_address_resolution_and_preferred_answers_only_valid_nd() {
         let _serial = SERIAL.lock().unwrap();
         initialize();
-        let (net, device) = domain();
+        let (net, device) = router_domain();
         poll(&net, 0);
         poll(&net, 1000);
         frames(&device);
@@ -662,7 +667,7 @@ mod ipv6_link {
     fn mld_query_merges_bounded_sources_splits_reports_and_interoperates_with_v1() {
         let _serial = SERIAL.lock().unwrap();
         initialize();
-        let (net, device) = domain();
+        let (net, device) = router_domain();
         ready(&net, &device);
         let sources: Vec<Ipv6Addr> = (1..=128)
             .map(|last| Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, last))

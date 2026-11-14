@@ -246,16 +246,7 @@ impl Domains {
                 .iter()
                 .position(|port| port.lifetime.0 == key)
             {
-                let removed = scope.interfaces.remove(position);
-                scope.delegation.remove_interface(removed.index);
-                scope.pools.remove_interface(removed.index);
-                scope.pending = true;
-                if !scope.retired {
-                    scope.bgp_port_changed(
-                        configuration.and_then(|config| config.routing_domains.get(&scope.name)),
-                        removed.mac,
-                    );
-                }
+                scope.remove_interface(position, configuration);
                 return true;
             }
         }
@@ -306,17 +297,12 @@ impl RouterConfig {
         name: &Name,
         mac: [u8; 6],
     ) -> Result<(), Status> {
-        let root = &inner
-            .link
-            .as_ref()
-            .ok_or(native_abi::ERR_PEER_CLOSED)?
-            .installer;
-        let scope = inner.domains.open(root, name)?;
-        for port in &scope.interfaces {
-            if port.mac == mac
-                && port.lifetime.1.wait_one(signals::PEER_CLOSED, 0)
-                    == Err(native_abi::ERR_TIMED_OUT)
-            {
+        let root = &inner.link.as_ref().ok_or(native_abi::ERR_PEER_CLOSED)?;
+        let scope = inner.domains.open(&root.installer, name)?;
+        let previous = scope.interfaces.iter().position(|port| port.mac == mac);
+        if let Some(position) = previous {
+            let port = &scope.interfaces[position];
+            if port.lifetime.1.wait_one(signals::PEER_CLOSED, 0) == Err(native_abi::ERR_TIMED_OUT) {
                 return if port.id == entry.id {
                     Ok(())
                 } else {
@@ -330,19 +316,16 @@ impl RouterConfig {
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let key = inner.next_key;
         inner.next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
-        let mut delegated = Vec::new();
-        delegated
-            .try_reserve_exact(1)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        delegated.push(self.directory.duplicate()?.into_handle());
-        let (index, lifetime, link_changed) = root.install_device(
+        let (index, lifetime, link_changed) = root.devices.install_device(
             entry.id,
             Some(&scope.instance_name),
             &entry.description,
-            delegated,
+            self.directory.duplicate()?,
         )?;
         lifetime.wait_async(&self.port, key, signals::PEER_CLOSED)?;
-        scope.interfaces.retain(|port| port.mac != mac);
+        if let Some(position) = previous {
+            scope.remove_interface(position, inner.saved.as_deref());
+        }
         scope.interfaces.push(Attached {
             id: entry.id,
             mac,
@@ -429,12 +412,15 @@ impl RouterConfig {
                 }
             }
         }
-        let retired = RoutingDomain {
-            ipv4_forwarding: false,
-            ipv6_forwarding: false,
-            ..RoutingDomain::default()
-        };
+        let retired = RoutingDomain::default();
         for scope in &mut inner.domains.scopes {
+            // 迁移撤下接口后，重放可能早于寿命通知。先清理已关闭的登记，迟到通知会自然忽略。
+            for position in (0..scope.interfaces.len()).rev() {
+                let (_, lifetime) = &scope.interfaces[position].lifetime;
+                if lifetime.wait_one(signals::PEER_CLOSED, 0).is_ok() {
+                    scope.remove_interface(position, inner.saved.as_deref());
+                }
+            }
             if !scope.pending
                 && scope.pools.retry_at.is_none()
                 && scope.dns.retry_at.is_none()
@@ -566,6 +552,19 @@ fn domain_default_route(
 }
 
 impl Scope {
+    fn remove_interface(&mut self, position: usize, configuration: Option<&Configuration>) {
+        let removed = self.interfaces.remove(position);
+        self.delegation.remove_interface(removed.index);
+        self.pools.remove_interface(removed.index);
+        self.pending = true;
+        if !self.retired {
+            self.bgp_port_changed(
+                configuration.and_then(|config| config.routing_domains.get(&self.name)),
+                removed.mac,
+            );
+        }
+    }
+
     fn reconnect(&mut self, root: &RoutingConfigurator) -> Result<(), Status> {
         if self
             .controller
