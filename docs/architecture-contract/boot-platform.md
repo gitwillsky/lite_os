@@ -12,6 +12,7 @@
 ## 启动所有权
 
 1. 内核 `main` 在发布 secondary-ready 前完成全局对象和 component-manager 装配；secondary 只消费已发布状态。
+   AArch64 的 PSCI `CPU_ON` 每次从 x3 提交 DTB context，目标 CPU 从 x0 接收。HVC 声明 x1–x3 可被返回覆盖，避免连续启动时复用旧寄存器。[Arm PSCI DEN0022E](https://documentation-service.arm.com/static/640f584656ea36189d4e94a4)
 2. kernel bootstrap loader 只载入 component-manager；component-manager 唯一装配系统服务连接和初始 capability。
 3. driver-manager 独占设备根权限，驱动宿主只持有所属节点的资源；linuxd 通过设备/文件系统/网络/音频服务初始化 Linux 环境
    并执行 init。服务间不共享 Rust 全局状态。

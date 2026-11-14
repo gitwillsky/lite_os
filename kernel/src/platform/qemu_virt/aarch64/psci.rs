@@ -78,15 +78,16 @@ fn result(value: i32) -> Result<(), FirmwareError> {
 #[inline]
 fn call(function: u32, arguments: [usize; 3]) -> i32 {
     let mut result = function as usize;
-    // SAFETY: DTB 已验证 PSCI `method = "hvc"`；PSCI 使用 x0..x3 传参且允许覆盖
-    // AAPCS64 caller-saved x0..x17。调用不暴露指针，firmware 返回值只从 x0 解码。
+    // SAFETY: DTB 已验证 PSCI `method = "hvc"`；返回寄存器 x1..x3 也作为输入，
+    // 必须向编译器声明可被覆盖。否则循环中的 CPU_ON 可能复用上一次调用后失效的 x3。
+    // firmware 返回值只从 x0 解码，x4..x17 保守地声明为 clobber。
     unsafe {
         asm!(
             "hvc #0",
             inout("x0") result,
-            in("x1") arguments[0],
-            in("x2") arguments[1],
-            in("x3") arguments[2],
+            inlateout("x1") arguments[0] => _,
+            inlateout("x2") arguments[1] => _,
+            inlateout("x3") arguments[2] => _,
             lateout("x4") _,
             lateout("x5") _,
             lateout("x6") _,
