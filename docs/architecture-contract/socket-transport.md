@@ -6,7 +6,7 @@ Linux sockaddr/cmsg/errno 只由 linuxd 编解码，native-abi 不增加应用�
 ## 共享队列与所有权
 
 - `network-protocol` 控制 channel 只承载低频配置、创建、关闭和一次 QUEUE 协商；send/receive/poll 的旧 RPC codec 已删除。
-  数据面版本 `LSOCK004`：固定 8 槽 SQ/CQ、128 字节记录与每槽最多 256 KiB 载荷，两个 Event 合并请求和完成通知。
+  数据面版本 `LSOCK006`：固定 8 槽 SQ/CQ、128 字节记录与每槽最多 256 KiB 载荷，两个 Event 合并请求和完成通知。
   AF_PACKET CQ 的 word 8 保存 checksum-state(bits 0..1，0 未验证/1 待补全/2 已验证，3 非法) 与 network-offset(bits 16..31)，其余位及 words 9..15 为零；
   帧入队即冻结，PEEK/短读取保持原信息。Linuxd 仅在 OFD 启用标准 PACKET_AUXDATA 时输出 cmsg，不改变捕获队列。
   VMO 非 RESIZABLE，metadata/载荷偏移固定且校验长度；双方只作同宽对齐原子访问。记录小端、字节载荷保留原序；
@@ -26,6 +26,14 @@ Linux sockaddr/cmsg/errno 只由 linuxd 编解码，native-abi 不增加应用�
 - 两端映射复用同一 VMO，不预提交载荷；每 socket 载荷提交上限 2 MiB，发送暂存上限 256 KiB，均随连接退休。
   控制/数据并发调用仅保证各自发布顺序与同 socket 串行执行，不另创跨来源的先后承诺；已完成调用的后继操作保持顺序。
   共享服务传输不新增应用 ABI、syscall 或内核 Linux 概念；适用于 linuxd 和现有原生 DHCP 客户端。
+
+### 定长帧接收环
+
+Packet endpoint 控制操作 23 接收版本 1、是否启用和启用时的布局及一个 VMO 句柄。Linuxd 分配定长匿名 VMO，拥有 Linux 选项、槽布局和 VMA 租约。
+netstack 校验大小及对齐、提交物理页并建立本地映射，成功后用环替换队列，旧队列内容和卸下的环在 registry 锁外释放。
+每槽的对齐所有权字为零时可写。生产者先写入长度、偏移、时间、地址和载荷，Release 发布所有权。消费者 Acquire 读取后以 Release 归还。
+写入位置由已验证布局与服务端游标决定。消费端可写的数据只用所有权字判断槽是否空闲。成功发布后沿用 endpoint 就绪通知，读取不经过 SQ/CQ。
+环映射保留真实 socket 和缓冲租约。活动环不能替换，最后一份映射及其继承释放后可撤销，随后恢复普通接收队列。
 
 ## Internet endpoint 与格式版本
 
@@ -47,10 +55,9 @@ Linux sockaddr/cmsg/errno 只由 linuxd 编解码，native-abi 不增加应用�
 - RECEIVE 的 words 8..11 是请求的接收信息：tag 0 无信息（余字段全零）、1 IPv4、2 IPv6、3 双栈 IPv4。
   word 9 是非零 u32 ingress 接口；IPv4 的 words 10/11 是 specific/destination 两个 u32，IPv6 为目的的两个网络序半部；
   双栈只存一次 IPv4 事实，投影得到 mapped IPv6 目的。接口及目的在 ingress 冻结，返回哪些投影由 receive/PEEK 时的真实选项决定。
-- AF_PACKET 保持既有地址与附加信息布局，SEND 不允许 Internet 控制项，不能借 word 12 携带 flowinfo。
+- AF_PACKET RECEIVE 在 word 9 携带镜像点冻结的 UTC 纳秒。地址和校验状态字段保持原布局。SEND 不允许 Internet 控制项，不能借 word 12 携带 flowinfo。
   SEND 不能带 peek；RECEIVE 不能偷带目的地址/发送元数据；POLL 只能带操作和 ticket。未知 tag、超宽或保留字段均拒绝。
-- 版本 4（LSOCK004）替换版本 3，两端同步构建/升级，不接受旧 VMO 标识或保留第二种 codec。
-  控制和数据使用同一地址值；新增 AddressFamilyNotSupported 位于错误码表末尾，原有错误编号不变。
+- 版本 6（LSOCK006）替换版本 5。两端同步构建和升级，只接受当前 VMO 标识。控制和数据继续使用同一地址值和错误码表。
 
 ## 本地端口与地址空间
 
@@ -66,6 +73,8 @@ PortLease 是一份精确 capability。connect 精确化地址、accepted child 
 port 0 不扫描 endpoint；分别投影 IPv4、IPv6 与两族并集的空闲端口，每次最多读取 257 个 bitmap word。
 隐式分配选择对应族在全部地址/设备均空闲的端口；指定端口的准入才按地址与设备复用，不宣称按接口穷尽所有可共享的 ephemeral tuple。
 一族耗尽不能阻止另一族申请端口；精确化释放的一族以及最后一次 close 都必须更新对应投影。
+TCP 主动打开及 UDP 关联和发送在选定实际源地址后与 [转发 NAT](ip-forwarding.md#自动源地址转换) 协调。隐式绑定在空闲位图内跳过已被同一远端转换占用的元组。
+显式绑定的端口若与已确认转换产生相同的线上连接，连接或发送返回 EADDRINUSE。仅 bind 仍使用原地址空间准入。
 
 AF_INET6 UDP 已使用同一地址冲突 owner；双栈 :: 同时占用两族，V6ONLY 的 :: 允许独立 IPv4 绑定，具体 IPv6 绑定同时固定 V6ONLY。
 IPV6_V6ONLY 只能在端口尚未绑定时修改；mapped 绑定与该选项冲突返回 EINVAL。IPv6 TCP 已接通，RAW 仍未开放。
@@ -83,24 +92,37 @@ AF_INET6 的 SOCK_STREAM/IPPROTO_TCP（含 protocol 0）与 IPv4 使用同一原
 :: 监听可接入 IPv4，接受的本地/远端地址按创建族输出映射形式；V6ONLY 排除 IPv4，绑定端口后不可修改。scope 的实际设备归同一连接与租约，getter 仅对链路地址返回它。
 IPV6_UNICAST_HOPS 支持 -1/0..255，IPV6_MTU 查询当前路径及设置发送上限；TCP 不提供 UDP 的 IPV6_RECVPKTINFO。其余未列选项仍明确拒绝。
 IPv6 经现有本机/直连/静态或 BGP 路由收发；ND、路径 MTU 与 UDP 共用 IP owner。完整机制、scope 与 PTB 验证边界见 [TCP 装配](ipv4-transports.md#双栈-tcp-装配)。
-BGP 已接入双栈邻居及 [MD5 认证配置](tcp-authentication.md)；发送侧 SACK 恢复见 [TCP 恢复契约](ipv4-transports.md#tcp-选择确认与丢包恢复)。TCP-AO、其他 ICMP 错误仍待补齐，成熟系统互通仍待验收。
+BGP 已接入双栈邻居和 MD5 认证。原生与 Linux TCP 的密钥管理及 BGP 认证范围见 [TCP 认证](tcp-authentication.md)。发送侧 SACK 恢复见 [TCP 恢复契约](ipv4-transports.md#tcp-选择确认与丢包恢复)。其余 TCP ICMP 错误处理仍待补齐，成熟系统互通仍待验收。
+
+### TCP 发送统计
+
+- 原生 INET socket 操作码 25 读取版本 1 的运行时事实，无句柄。成功后返回阶段、连续超时次数、SACK、时间戳、两向窗口移位各一个字节，再返回十个 u32 字段。窗口缩放缺席用两个 255 表示。
+- 状态来自连接、RTT 估计器和 Reno 的现有 owner。监听器只读取等待接收的连接数和上限。累计重传按成功提交的重传段计数，在连接重建时清零，包含超时、快速重传和 MTU 变化后的重分段。
+- 查询在原 operation 与 NET guard 冻结字段，不推进计时器、消耗错误或读写队列。Linux 投影及未提供字段见 [TCP_INFO](../syscall-support/socket.md#tcp_info)。
+- 成本沿既有 `tcp-lifecycle-bench` 与整机 TCP 吞吐验收。查询无逐包 IPC，发送只在已成功提交的占用序号段上比较旧 SND.NXT，实际重传时增加本连接计数。
 
 ## 数据报错误队列
 
 - UDP/RAW 的 `inet::error_queue` 拥有错误记录及待消费的普通错误值。ICMP 入站先检查外层 checksum、原 IP 头和实际发送端点。
   UDP 使用引用中的地址与端口，RAW 使用协议、地址及接口。IPv4 还按当前 socket 标记和设备绑定核对出接口。错误引用不携带发送时的标记，标记更改后沿用当前路径核对。IPv6 首片的截断引用可交付已见的上层前缀。
 - 选择 `IP_RECVERR(11)` 或 `IPV6_RECVERR(25)` 后，相关 ICMP 不可达、超时、参数错误及 MTU 反馈可排队。同步本机超 MTU 也记录 LOCAL 与发送上限。
+  已入队报文因当前路由失效、分片失败或 ARP/ND 探测耗尽而被退休时，交付原目的和本机错误。存在备用路径时，等待报文可沿当前路由重试。
   每端点最多八条、64 KiB 引用容量。只在启用并收到错误时分配，满队列保留先到记录。关闭选项清空队列，关闭端点释放其所有状态。
 - `SO_ERROR`、普通收发只消费普通错误值。错误记录仍由 `recvmsg(MSG_ERRQUEUE)` 或 `recvfrom(MSG_ERRQUEUE)` 消费。
   读出 ICMP 记录后由下一条 ICMP 恢复普通错误值。记录存在时持续报告 POLLERR，空队列立即返回 EAGAIN。
 - UDP 的数据部分是实际引用中的 UDP 载荷。RAW 返回上层前缀，启用 HDRINCL 时包含原 IP 头。
   `msg_name` 给出原目的。控制消息携带 `sock_extended_err` 和报告方地址，本机错误的报告方为 AF_UNSPEC。
   短 iovec 和控制缓冲分别标记 MSG_TRUNC 与 MSG_CTRUNC。带 MSG_ERRQUEUE 时仍按实际复制字节数返回，MSG_PEEK 不保留记录。
-- INET 数据环追加操作 4，复用同一 payload window 和响应长度。原目的用现有地址槽，错误来源、类型、代码、信息、报告方及 zone 只在该操作解码。
-  SET_OPTION kind 25 的附加字段选择地址族，查询编号为 32/33。原生传输使用领域错误，Linux 层编码 errno 与 cmsg。
-- benchmark 决策：普通数据无队列分配或额外 IPC。启用后只复制实际引用，有固定错误记录与字节预算。
-  宿主验证双栈顺序、截断、SO_ERROR 重置、RAW 引用、首片 PTB、LOCAL 错误与原生编码。Linux 来宾 copyout 与互通待系统验收。
-- 仍需补齐错误记录上的附带 packet info、RFC 4884 扩展对象输出和其余本机失败类型。TCP 继续通过现有流错误和路径 MTU 处理反馈。
+- ICMP 错误在入站时冻结外层报文的接收接口和目的地址，读取时按当前 `IP_PKTINFO`、`IPV6_RECVPKTINFO` 投影，可同时返回 IPv4 和映射后的 IPv6 信息。
+  本机错误的控制消息只包含发送失败信息。提交时的帧超长返回 EMSGSIZE，其余设备提交失败由设备计数反映。TCP 继续通过流错误和路径 MTU 处理反馈。
+- 具有明确边界的 [RFC 4884](https://www.rfc-editor.org/rfc/rfc4884.html) 扩展随引用及填充原样交付。
+  启用同族 `IP_RECVERR_RFC4884(26)` 或 `IPV6_RECVERR_RFC4884(31)` 后，新错误在 `sock_extended_err.ee_rfc4884` 给出相对数据起点的扩展位置。
+  扩展格式或校验无效时置 `SO_EE_RFC4884_FLAG_INVALID`，仍交付原错误。引用长度字段为零时按普通引用处理，位置以完整数据计算，短缓冲仍可报告截断。
+  Linux 结构和语义基线见 [v6.12 UAPI](https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/errqueue.h) 和 [ICMP 错误投影](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/icmp.c#L1271-L1293)。
+- INET 数据环操作 4 复用 payload window 和响应长度。原目的及 flowinfo 用现有地址槽。word 8 高位携带扩展位置和标志，words 13..15 存接收信息，首 word 的低/高 32 位分别是 tag 和接口。
+  SET_OPTION kind 25/27 设置同族错误队列及扩展选项，查询编号分别为 32/33 和 35/36。原生传输使用领域错误，Linux 层编码 errno 与 cmsg。
+- benchmark 决策：普通数据无额外分配、锁或 IPC。扩展仅在 ICMP 错误路径按报文大小校验和复制。ARP/ND 失败每批扫描一次待发队列，错误存储沿用固定记录与字节预算。
+  宿主验证双栈队列、截断、SO_ERROR、RAW 引用、首片 PTB、扩展校验、邻居失败及原生编码。Linux 来宾 copyout 与互通待系统验收。
 
 ## Linux 边界与当前限制
 

@@ -46,6 +46,8 @@ pub struct ConfigurationBatch<'a> {
     probes: &'a [[u8; PROBE_BYTES]],
     rules: Option<Rules<'a>>,
     prerouting: Option<router_protocol::firewall::Prerouting<'a>>,
+    bridges: Option<router_protocol::switching::Ports<'a>>,
+    multicast: Option<&'a [u8]>,
 }
 impl<'a> ConfigurationBatch<'a> {
     /// 编码只含接口的变更，保持受管路由；所有正文仍由唯一 encoder 生成。
@@ -240,6 +242,8 @@ impl<'a> ConfigurationBatch<'a> {
             probes,
             rules,
             prerouting: None,
+            bridges: None,
+            multicast: None,
         })
     }
     /// 合并预备帧携带的预路由链，和同批接口与路由一起发布。
@@ -251,6 +255,28 @@ impl<'a> ConfigurationBatch<'a> {
     /// 借用同批预路由规则；缺席保持。
     pub fn prerouting(self) -> Option<router_protocol::firewall::Prerouting<'a>> {
         self.prerouting
+    }
+
+    /// 合并同批完整二层成员配置。缺席时维持当前网桥。
+    pub fn with_bridges(mut self, bridges: router_protocol::switching::Ports<'a>) -> Self {
+        self.bridges = Some(bridges);
+        self
+    }
+
+    /// 借用本次事务的二层成员配置。
+    pub fn bridges(self) -> Option<router_protocol::switching::Ports<'a>> {
+        self.bridges
+    }
+
+    /// 携带同一租约中的组播转发表，业务校验由 NET 执行。
+    pub fn with_multicast(mut self, multicast: &'a [u8]) -> Self {
+        self.multicast = Some(multicast);
+        self
+    }
+
+    /// 读取该事务的完整组播正文，缺席时保持活动表。
+    pub fn multicast(self) -> Option<&'a [u8]> {
+        self.multicast
     }
 
     /// 无分配借用接口计划；没有接口变更时迭代器为空。

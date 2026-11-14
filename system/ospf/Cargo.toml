@@ -1,0 +1,29 @@
+[package]
+name = "ospf"
+version = "0.1.0"
+edition = "2024"
+description = "原生 OSPF 协议服务"
+
+[[bin]]
+name = "ospf"
+test = false
+bench = false
+
+[dependencies]
+fallible-tree = { path = "../../libraries/fallible-tree" }
+hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
+sha2 = { version = "=0.11.1", default-features = false, features = ["zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false }
+packet-wire = { path = "../../libraries/packet-wire" }
+router-protocol = { path = "../router-protocol" }
+native-runtime = { path = "../native-runtime" }
+network-protocol = { path = "../network-protocol" }
+launch-protocol = { path = "../launch-protocol" }
+service-directory = { path = "../service-directory" }
+service-rpc = { path = "../service-rpc" }
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }
+
+[lints]
+workspace = true

@@ -24,6 +24,18 @@ pub const NOT_FOUND: i32 = -2;
 pub const FAILED: i32 = -3;
 /// 输出缓冲太小；长度输出包含所需字节数。
 pub const TOO_SMALL: i32 = -4;
+/// 单次 UI 文本交换上限；读写双方共用，应用可在读取文件前限制大小。
+pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// 用于文件对话框入口的路径选择模式。
+pub mod file_mode {
+    /// 选择已有普通文件。
+    pub const OPEN: u32 = 0;
+    /// 选择保存路径，可确认覆盖已有文件。
+    pub const SAVE: u32 = 1;
+    /// 选择尚不存在的路径。调用方仍须独占创建文件。
+    pub const SAVE_NEW: u32 = 2;
+}
 
 /// 调用期间借用的 UTF-8 字节；len=0 允许 data=null。
 #[repr(C)]
@@ -169,6 +181,8 @@ pub mod state {
     pub const TRACK_BOTH: u32 = 32768;
     /// Column 的纵向滚动视口；内容超过可见高度才显示滚动条，避免展开项被永久裁掉。
     pub const VSCROLL: u32 = 65536;
+    /// 多行编辑控件保留导航、选择和复制，禁止用户修改。程序仍可替换全文。
+    pub const READ_ONLY: u32 = 131072;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {

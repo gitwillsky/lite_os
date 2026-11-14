@@ -378,28 +378,35 @@ impl Thread {
         check(unsafe { invoke(call::THREAD_SET_AFFINITY, &[self.raw() as usize, mask]) })
     }
 
-    /// 为已启动系统 worker 设置独占逻辑 CPU；None 归还并恢复全部 CPU 的普通 affinity。
+    /// 为一组已启动系统线程一次设置独占逻辑 CPU。
     ///
     /// # Parameters
-    /// resource 必须覆盖 system::SCHEDULE，cpu 是逻辑 CPU 编号。
+    /// `resource` 须覆盖 system::SCHEDULE，`changes` 的每项包含一个 MANAGE 线程及其目标逻辑 CPU。
+    /// `None` 归还对应线程的独占 CPU，并恢复共享 affinity。未列出的线程保留原设置。
     /// # Returns
-    /// 旧普通线程已撤离目标核后返回 Ok；线程退出自动归还独占核。
+    /// 旧执行体已撤离所有目标 CPU 后返回 `Ok`。线程退出自动归还独占 CPU。
     /// # Errors
-    /// 无授权、CPU 非 active、分区/截止预算冲突、未启动/退出或并发替换。
-    /// 独占期间普通 set_affinity 被拒绝；设备中断仍须单独设置亲和。
+    /// 无授权、重复线程或 CPU、编号无效、分区或截止预算冲突、执行体未启动或退出、并发替换及内存不足。
+    /// 准入失败保留旧配置。设备中断继续按其自身的路由投递。
     pub fn set_isolation(
-        &self,
         resource: &crate::Resource,
-        cpu: Option<u32>,
+        changes: &[(&Self, Option<u32>)],
     ) -> Result<(), Status> {
-        // SAFETY: 无指针参数，resource 和线程句柄由借用 owner 保活。
+        if changes.len() > usize::BITS as usize {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let mut entries = [[0u32; 2]; usize::BITS as usize];
+        for ((thread, cpu), entry) in changes.iter().zip(&mut entries) {
+            *entry = [thread.raw(), cpu.unwrap_or(u32::MAX)];
+        }
+        // SAFETY: 数组在调用返回前可读。resource 与线程句柄由借用 owner 保活。
         check(unsafe {
             invoke(
                 call::THREAD_SET_ISOLATION,
                 &[
                     resource.raw() as usize,
-                    self.raw() as usize,
-                    cpu.map_or(usize::MAX, |cpu| cpu as usize),
+                    entries.as_ptr() as usize,
+                    changes.len(),
                 ],
             )
         })

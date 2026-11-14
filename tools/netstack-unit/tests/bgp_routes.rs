@@ -22,6 +22,122 @@ fn prefix(address: &str, length: u8) -> Prefix {
 }
 
 #[test]
+fn add_path_withdraws_only_the_named_path_and_reselects() {
+    let config = ::bgp::Config {
+        receive_add_path: true,
+        ..bgp_peer::config(false)
+    };
+    let mut session =
+        bgp_peer::established_with_capabilities(config, true, &[69, 8, 0, 1, 1, 2, 0, 2, 1, 3]);
+    assert_eq!(session.negotiated().unwrap().receive_add_path, [true; 2]);
+    let peer = Peer {
+        id: 1,
+        asn: config.peer_as,
+        kind: PeerKind::External,
+        address: "192.0.2.2".parse().unwrap(),
+        identifier: "192.0.2.2".parse().unwrap(),
+        route_reflector_client: false,
+    };
+    let context = SelectionContext::new(config.local_as, config.identifier, None, None).unwrap();
+    let mut domain = RoutingDomain::try_new(context, [false; 2]).unwrap();
+    domain
+        .add_peer(
+            peer,
+            SourcePeer {
+                preference: NonZeroU32::new(20).unwrap(),
+                next_hop_interface: None,
+            },
+        )
+        .unwrap();
+    let target = prefix("203.0.113.0", 24);
+    let primary = [0, 0, 0, 0, 24, 203, 0, 113];
+    let alternate = [0, 0, 0, 1, 24, 203, 0, 113];
+    let mut fields = base(false, true);
+    let first = update(&[], &attributes(&fields), &primary);
+    fields
+        .iter_mut()
+        .find(|attribute| attribute.code == 3)
+        .unwrap()
+        .data = &[192, 0, 2, 3];
+    let second = update(&[], &attributes(&fields), &alternate);
+    for frame in [&first, &second] {
+        domain
+            .receive(peer.id, &receive(&mut session, frame))
+            .unwrap();
+    }
+    let choose = |domain: &mut RoutingDomain| {
+        domain
+            .prepare(Family::Ipv4, |_, _, _, route| {
+                let primary = route.next_hop().address == core::net::Ipv4Addr::new(192, 0, 2, 2);
+                Ok((
+                    route.next_hop(),
+                    Some(100),
+                    Reachability::Resolved {
+                        interior_cost: Some(if primary { 10 } else { 20 }),
+                    },
+                    route.attributes(),
+                ))
+            })
+            .unwrap()
+            .commit()
+    };
+    let paths = |domain: &RoutingDomain| {
+        domain
+            .peer_routes(peer.id)
+            .unwrap()
+            .paths(target)
+            .map(|(id, route)| (id, route.decision()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(choose(&mut domain), [target]);
+    assert_eq!(
+        paths(&domain),
+        [
+            (Some(0), RouteDecision::Selected),
+            (Some(1), RouteDecision::NotBest),
+        ]
+    );
+    let unknown = update(&[0, 0, 0, 2, 24, 203, 0, 113], &[], &[]);
+    domain
+        .receive(peer.id, &receive(&mut session, &unknown))
+        .unwrap();
+    assert!(domain.pending().is_empty());
+    let withdrawal = update(&primary, &[], &[]);
+    domain
+        .receive(peer.id, &receive(&mut session, &withdrawal))
+        .unwrap();
+    assert_eq!(choose(&mut domain), [target]);
+    assert_eq!(
+        domain.selected().get(target).unwrap().next_hop().address,
+        "192.0.2.3".parse::<IpAddr>().unwrap()
+    );
+    assert_eq!(paths(&domain), [(Some(1), RouteDecision::Selected)]);
+
+    // 独立的 IPv6 MP 属性向量也携带编号 0；撤回只消费对应的路径。
+    let reach = [
+        0, 2, 1, 16, 0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 32,
+        0x20, 1, 0x0d, 0xb8,
+    ];
+    let unreach = [0, 2, 1, 0, 0, 0, 0, 32, 0x20, 1, 0x0d, 0xb8];
+    let target = prefix("2001:db8::", 32);
+    fields.truncate(2);
+    for (code, data) in [(14, reach.as_slice()), (15, unreach.as_slice())] {
+        fields.push(Attribute {
+            flags: 0x80,
+            code,
+            data,
+        });
+        let frame = update(&[], &attributes(&fields), &[]);
+        domain
+            .receive(peer.id, &receive(&mut session, &frame))
+            .unwrap();
+        let table = domain.peer_routes(peer.id).unwrap();
+        assert_eq!(table.get(target, Some(0)).is_some(), code == 14);
+        fields.clear();
+    }
+}
+
+#[test]
 fn dual_stack_batches_share_attributes_deduplicate_prefixes_and_report_only_effective_changes() {
     let mut pool = AttributePool::try_new().unwrap();
     let mut rib = AdjRibIn::new();
@@ -80,18 +196,18 @@ fn dual_stack_batches_share_attributes_deduplicate_prefixes_and_report_only_effe
     assert_eq!(rib.len(), 4);
     assert_eq!(pool.len(), 1);
     assert_eq!(pool.path_count(), 1);
-    assert!(rib.iter().map(|(prefix, _)| prefix).eq(expected));
+    assert!(rib.iter().map(|(prefix, _, _)| prefix).eq(expected));
     assert_eq!(
-        rib.get(expected[0]).unwrap().next_hop().address,
+        rib.get(expected[0], None).unwrap().next_hop().address,
         "192.0.2.2".parse::<IpAddr>().unwrap()
     );
     assert_eq!(
-        rib.get(expected[2]).unwrap().next_hop().address,
+        rib.get(expected[2], None).unwrap().next_hop().address,
         "2001:db8::1".parse::<IpAddr>().unwrap()
     );
     assert!(
         rib.iter()
-            .all(|(_, route)| route.attributes().path().contains(65001))
+            .all(|(_, _, route)| route.attributes().path().contains(65001))
     );
     // 通过真实接收/驻留属性执行入口策略，保护三类团体、AS4 条件、first-match、degree 0 和原始表不变。
     let configured = router_protocol::bgp::Configuration::parse(br#"{
@@ -119,7 +235,7 @@ fn dual_stack_batches_share_attributes_deduplicate_prefixes_and_report_only_effe
         asn: 65001,
         kind: PeerKind::External,
     };
-    let route = rib.get(expected[0]).unwrap();
+    let route = rib.get(expected[0], None).unwrap();
     assert_eq!(::bgp::import_route(None, expected[0], &peer, route), None);
     let classified = ::bgp::import_route(Some(&policy), expected[0], &peer, route).unwrap();
     assert_eq!(
@@ -131,7 +247,7 @@ fn dual_stack_batches_share_attributes_deduplicate_prefixes_and_report_only_effe
             Some(&policy),
             expected[1],
             &peer,
-            rib.get(expected[1]).unwrap()
+            rib.get(expected[1], None).unwrap()
         )
         .is_none()
     );
@@ -170,8 +286,8 @@ fn dual_stack_batches_share_attributes_deduplicate_prefixes_and_report_only_effe
         [expected[1], expected[2]]
     );
     assert_eq!(rib.len(), 2);
-    assert!(rib.get(expected[1]).is_none());
-    assert!(rib.get(expected[3]).is_some());
+    assert!(rib.get(expected[1], None).is_none());
+    assert!(rib.get(expected[3], None).is_some());
     let bytes = update(&[], &[], &[]);
     assert!(
         rib.apply(&mut pool, &receive(&mut session, &bytes))
@@ -211,14 +327,14 @@ fn replacement_wins_over_same_message_withdrawal_and_treat_as_withdraw_removes_p
         [prefix("203.0.113.0", 24)]
     );
     assert_eq!(rib.len(), 2);
-    let changed = rib.get(prefix("203.0.113.0", 24)).unwrap();
+    let changed = rib.get(prefix("203.0.113.0", 24), None).unwrap();
     assert_eq!(changed.attributes().med(), Some(7));
     assert_eq!(
         changed.next_hop().address,
         "192.0.2.9".parse::<IpAddr>().unwrap()
     );
     assert_eq!(
-        rib.get(prefix("198.51.100.0", 24))
+        rib.get(prefix("198.51.100.0", 24), None)
             .unwrap()
             .attributes()
             .med(),
@@ -290,18 +406,20 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
                 context,
                 &[
                     Candidate {
+                        path_id: None,
                         peer: &a_peer,
-                        next_hop: first.get(prefix("0.0.0.0", 0)).unwrap().next_hop(),
-                        attributes: first.get(prefix("0.0.0.0", 0)).unwrap().attributes(),
-                        received_path: first.get(prefix("0.0.0.0", 0)).unwrap().attributes().path(),
+                        next_hop: first.get(prefix("0.0.0.0", 0), None).unwrap().next_hop(),
+                        attributes: first.get(prefix("0.0.0.0", 0), None).unwrap().attributes(),
+                        received_path: first.get(prefix("0.0.0.0", 0), None).unwrap().attributes().path(),
                         preference: Some(100),
                         reachability
                     },
                     Candidate {
+                        path_id: None,
                         peer: &b_peer,
-                        next_hop: second.get(prefix("0.0.0.0", 0)).unwrap().next_hop(),
-                        attributes: second.get(prefix("0.0.0.0", 0)).unwrap().attributes(),
-                        received_path: second.get(prefix("0.0.0.0", 0)).unwrap().attributes().path(),
+                        next_hop: second.get(prefix("0.0.0.0", 0), None).unwrap().next_hop(),
+                        attributes: second.get(prefix("0.0.0.0", 0), None).unwrap().attributes(),
+                        received_path: second.get(prefix("0.0.0.0", 0), None).unwrap().attributes().path(),
                         preference: Some(100),
                         reachability
                     },
@@ -326,10 +444,11 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
             .select(
                 context,
                 &[Candidate {
+                    path_id: None,
                     peer: &b_peer,
-                    next_hop: second.get(prefix("0.0.0.0", 0)).unwrap().next_hop(),
-                    attributes: second.get(prefix("0.0.0.0", 0)).unwrap().attributes(),
-                    received_path: second.get(prefix("0.0.0.0", 0)).unwrap().attributes().path(),
+                    next_hop: second.get(prefix("0.0.0.0", 0), None).unwrap().next_hop(),
+                    attributes: second.get(prefix("0.0.0.0", 0), None).unwrap().attributes(),
+                    received_path: second.get(prefix("0.0.0.0", 0), None).unwrap().attributes().path(),
                     preference: Some(100),
                     reachability,
                 }]
@@ -338,14 +457,14 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
         Some(0)
     );
     assert_eq!(retired.len(), 2);
-    assert!(retired.get(prefix("0.0.0.0", 0)).is_some());
-    assert!(retired.get(prefix("0.0.0.0", 32)).is_some());
+    assert!(retired.get(prefix("0.0.0.0", 0), None).is_some());
+    assert!(retired.get(prefix("0.0.0.0", 32), None).is_some());
     drop(retired);
     assert_eq!(second.len(), 2);
     assert_eq!(pool.len(), 1);
     let retired = second.retire();
     assert_eq!(selector.select(context, &[]).unwrap(), None);
-    let retained = retired.iter().next().unwrap().1.attributes().clone();
+    let retained = retired.iter().next().unwrap().2.attributes().clone();
     drop(retired);
     assert!(second.is_empty());
     assert_eq!(pool.len(), 1);
@@ -356,7 +475,7 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
     // 域 owner 须持有取消/失败后的工作，并自动完成跨邻居重选；单独接收表/选择器无法保护该次序。
     let mut a = established(false, true);
     let mut b = established(false, true);
-    let mut domain = RoutingDomain::try_new(context).unwrap();
+    let mut domain = RoutingDomain::try_new(context, [false; 2]).unwrap();
     let minimum = NonZeroU32::new(20).unwrap();
     for peer in [a_peer, b_peer] {
         domain
@@ -398,7 +517,7 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
         Ok(())
     );
     domain.remove_peer(3).unwrap();
-    fn classify<'a>(_: Prefix, _: &Peer, received: &'a ::bgp::ReceivedRoute) -> Result<(NextHop, Option<u32>, Reachability, &'a ::bgp::RouteAttributes), OutOfMemory> {
+    fn classify<'a>(_: Prefix, _: &Peer, _: Option<u32>, received: &'a ::bgp::ReceivedRoute) -> Result<(NextHop, Option<u32>, Reachability, &'a ::bgp::RouteAttributes), OutOfMemory> {
         Ok((received.next_hop(), Some(100), Reachability::Resolved { interior_cost: Some(0) }, received.attributes()))
     }
     let prepared = domain.prepare(Family::Ipv4, classify).unwrap();
@@ -407,9 +526,9 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
     assert_eq!(domain.pending().len(), 2);
     assert!(domain.selected().is_empty());
     // 取消/资源失败不能提前发布判定；来源确认前，原始候选仍为 Pending。
-    assert!(domain.peers().all(|(_, routes)| routes.iter().all(|(_, route)| route.decision() == RouteDecision::Pending)));
+    assert!(domain.peers().all(|(_, routes)| routes.iter().all(|(_, _, route)| route.decision() == RouteDecision::Pending)));
     assert!(matches!(
-        domain.prepare(Family::Ipv4, |_, _, _| Err(OutOfMemory)),
+        domain.prepare(Family::Ipv4, |_, _, _, _| Err(OutOfMemory)),
         Err(RoutingError::NoMemory)
     ));
     assert_eq!(domain.pending().len(), 2);
@@ -427,8 +546,8 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
         domain.selected().get(prefix("0.0.0.0", 0)).unwrap().peer(),
         a_peer.id
     );
-    assert!(domain.peer_routes(a_peer.id).unwrap().iter().all(|(_, route)| route.decision() == RouteDecision::Selected));
-    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, route)| route.decision() == RouteDecision::NotBest));
+    assert!(domain.peer_routes(a_peer.id).unwrap().iter().all(|(_, _, route)| route.decision() == RouteDecision::Selected));
+    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, _, route)| route.decision() == RouteDecision::NotBest));
     domain.receive(b_peer.id, &receive(&mut b, &bytes)).unwrap();
     assert!(domain.pending().is_empty(), "identical UPDATE must ignore observational metadata");
     let unchanged = domain.prepare(Family::Ipv4, classify).unwrap();
@@ -464,7 +583,7 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
     assert!(domain.pending().is_empty());
     domain.reconsider(prefixes).unwrap();
     let rejected = domain
-        .prepare(Family::Ipv4, |_, _, received| {
+        .prepare(Family::Ipv4, |_, _, _, received| {
             Ok((received.next_hop(), None, Reachability::Unresolved, received.attributes()))
         })
         .unwrap();
@@ -478,10 +597,10 @@ fn neighbor_retirement_is_isolated_and_keeps_shared_attributes_until_last_owner_
     );
     rejected.commit();
     assert!(domain.selected().is_empty());
-    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, route)| route.decision() == RouteDecision::ImportPolicy));
+    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, _, route)| route.decision() == RouteDecision::ImportPolicy));
     domain.reconsider(prefixes).unwrap();
-    domain.prepare(Family::Ipv4, |_, _, received| Ok((received.next_hop(), Some(100), Reachability::Unresolved, received.attributes()))).unwrap().commit();
-    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, route)| route.decision() == RouteDecision::Unresolved));
+    domain.prepare(Family::Ipv4, |_, _, _, received| Ok((received.next_hop(), Some(100), Reachability::Unresolved, received.attributes()))).unwrap().commit();
+    assert!(domain.peer_routes(b_peer.id).unwrap().iter().all(|(_, _, route)| route.decision() == RouteDecision::Unresolved));
 
     assert_eq!(
         domain.peers().next().unwrap().1.len(),
@@ -578,8 +697,9 @@ fn loc_rib_owns_selected_routes_and_prepares_whole_batch_before_commit_or_cancel
     let second_prefix = prefix("203.0.113.0", 24);
     let ipv6_prefix = prefix("2001:db8::", 32);
     let default = prefix("0.0.0.0", 0);
-    let received = adj.get(first_prefix).unwrap();
+    let received = adj.get(first_prefix, None).unwrap();
     let candidate = Candidate {
+        path_id: None,
         peer: &peer,
         attributes: received.attributes(),
         received_path: received.attributes().path(),
@@ -597,6 +717,7 @@ fn loc_rib_owns_selected_routes_and_prepares_whole_batch_before_commit_or_cancel
         &mut selector,
         context,
         &[Candidate {
+            path_id: None,
             peer: &backup,
             ..candidate
         }],

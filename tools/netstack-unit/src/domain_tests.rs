@@ -3,14 +3,26 @@
 fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let first =
-        crate::namespace::Namespace::create().unwrap();
-    let second =
-        crate::namespace::Namespace::create().unwrap();
+    let first = crate::namespace::Namespace::create().unwrap();
+    let second = crate::namespace::Namespace::create().unwrap();
     let a = Arc::new(WireDevice::new());
     let b = Arc::new(WireDevice::new());
-    first.install_protocol(prepare_network(&first, &[a.clone() as Arc<dyn device_model::network::NetworkDevice>], false).unwrap());
-    second.install_protocol(prepare_network(&second, &[b.clone() as Arc<dyn device_model::network::NetworkDevice>], false).unwrap());
+    first.install_protocol(
+        prepare_network(
+            &first,
+            &[a.clone() as Arc<dyn device_model::network::NetworkDevice>],
+            false,
+        )
+        .unwrap(),
+    );
+    second.install_protocol(
+        prepare_network(
+            &second,
+            &[b.clone() as Arc<dyn device_model::network::NetworkDevice>],
+            false,
+        )
+        .unwrap(),
+    );
     for net in [&first, &second] {
         configure_address(net, 2, Ipv4Addr::new(10, 0, 2, 15)).unwrap();
         configure_netmask(net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
@@ -18,18 +30,49 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
     }
     let gateway = Ipv4Addr::new(10, 0, 2, 2);
     let default = network_protocol::Ipv4RouteRequest {
-        destination: Ipv4Addr::UNSPECIFIED, prefix_length: 0, table: 254, metric: 0,
-        scope: 0, protocol: 3, kind: network_protocol::RouteKind::Unicast,
-        interface_index: Some(2), gateway: Some(gateway.into()), preferred_source: None, metrics: network_protocol::RouteMetrics::default(), on_link: false,
+        destination: Ipv4Addr::UNSPECIFIED,
+        prefix_length: 0,
+        table: 254,
+        metric: 0,
+        scope: 0,
+        protocol: 3,
+        kind: network_protocol::RouteKind::Unicast,
+        interface_index: Some(2),
+        gateway: Some(gateway.into()),
+        preferred_source: None,
+        metrics: network_protocol::RouteMetrics::default(),
+        on_link: false,
     };
-    configure_route(&first, default, network_protocol::RouteChange { delete: false, replace: false, create: true, exclusive: false, append: false }).unwrap();
-    assert!(route_snapshot::<Ipv4Addr>(&first).unwrap().iter().any(|snapshot| snapshot.single_path() == Some(default)));
-    assert!(!route_snapshot::<Ipv4Addr>(&second).unwrap().iter().any(|snapshot| snapshot.single_path().unwrap().gateway.is_some()));
+    configure_route(
+        &first,
+        default,
+        network_protocol::RouteChange {
+            delete: false,
+            replace: false,
+            create: true,
+            exclusive: false,
+            append: false,
+        },
+    )
+    .unwrap();
+    assert!(
+        route_snapshot::<Ipv4Addr>(&first)
+            .unwrap()
+            .iter()
+            .any(|snapshot| snapshot.single_path() == Some(default))
+    );
+    assert!(
+        !route_snapshot::<Ipv4Addr>(&second)
+            .unwrap()
+            .iter()
+            .any(|snapshot| snapshot.single_path().unwrap().gateway.is_some())
+    );
     let endpoint = |net: &Arc<crate::namespace::Namespace>, kind| {
         InetSocket::new(
-        network_protocol::InetFamily::Ipv4,
+            network_protocol::InetFamily::Ipv4,
             kind,
-            Arc::new(crate::Event::default()), net.clone(),
+            Arc::new(crate::Event::default()),
+            net.clone(),
         )
         .unwrap()
     };
@@ -57,17 +100,23 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
         .0
         .push_back(peer_udp_frame(udp_peer(44000), 43200, b"second"));
     // 使用实际目录/deferred，而非直接调用测试域的poll绕过生产推进。
+    let mut scan = crate::namespace::DomainScan::new(0, 1);
     for _ in 0..4 {
-        dispatch_network_work();
+        dispatch_network_work(&mut scan, u64::MAX);
     }
     assert_eq!(udp_read(&udp_a, false).unwrap().0, b"first");
     assert_eq!(udp_read(&udp_b, false).unwrap().0, b"second");
     assert!(!boot.poll_state().readable);
     a.error.store(true, core::sync::atomic::Ordering::Relaxed);
+    let mut scan = crate::namespace::DomainScan::new(0, 1);
     for _ in 0..4 {
-        dispatch_network_work();
+        dispatch_network_work(&mut scan, u64::MAX);
     }
-    assert_eq!(udp_a.take_error(), None, "adapter RX failure is device-owned, not an arbitrary UDP SO_ERROR");
+    assert_eq!(
+        udp_a.take_error(),
+        None,
+        "adapter RX failure is device-owned, not an arbitrary UDP SO_ERROR"
+    );
     assert_eq!(udp_a.take_error(), None);
     assert_eq!(udp_b.take_error(), None);
     let listener_a = endpoint(&first, InetProtocol::Tcp);
@@ -79,8 +128,9 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
     let guard = first.protocol().unwrap().lock().unwrap();
     udp_a.close_description();
     drop(guard);
+    let mut scan = crate::namespace::DomainScan::new(0, 1);
     for _ in 0..4 {
-        dispatch_network_work();
+        dispatch_network_work(&mut scan, u64::MAX);
     }
     let rebound = endpoint(&first, InetProtocol::Udp);
     rebound.bind(address(43200)).unwrap();
@@ -109,6 +159,8 @@ fn actual_protocol_preparation_oom_does_not_publish_or_copy_an_owner() {
     initialize();
     let net = crate::namespace::Namespace::create().unwrap();
     let nic = Arc::new(WireDevice::new());
+    // macOS 的宿主互斥锁首次加锁会分配，先完成夹具初始化再注入生产分配失败。
+    device_model::network::NetworkDevice::link(nic.as_ref()).unwrap();
     for boundary in 0..16 {
         let device = nic.clone();
         crate::allocation_failure::fail_after(boundary);
@@ -123,15 +175,17 @@ fn actual_protocol_preparation_oom_does_not_publish_or_copy_an_owner() {
     let socket = InetSocket::new(
         network_protocol::InetFamily::Ipv4,
         InetProtocol::Udp,
-        Arc::new(crate::Event::default()), net,
+        Arc::new(crate::Event::default()),
+        net,
     )
     .unwrap();
     socket.close_description();
 }
 
 fn advance_actual_domains() {
+    let mut scan = crate::namespace::DomainScan::new(0, 1);
     for _ in 0..16 {
-        dispatch_network_work();
+        dispatch_network_work(&mut scan, u64::MAX);
     }
 }
 
@@ -169,39 +223,43 @@ fn actual_ip_loopback_starts_down_then_delivers_udp_and_tcp_without_a_nic() {
     advance_actual_domains();
     assert_eq!(udp_read(&udp_server, false).unwrap().0, b"loop");
     // 127/8由同一实际LOCAL route进入IP-medium，不能经eth0或伪Ethernet/ARP绕行。
-    udp_server
-        .bind_to_device(b"lo", true)
-        .unwrap();
+    udp_server.bind_to_device(b"lo", true).unwrap();
     udp_client
         .send_to(
             b"prefix",
-            Some(InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), target.port()))), &[],
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(
+                Ipv4Addr::new(127, 0, 0, 2),
+                target.port(),
+            ))),
+            &[],
         )
         .unwrap();
     advance_actual_domains();
     assert_eq!(udp_read(&udp_server, false).unwrap().0, b"prefix");
     let listener = scoped_endpoint(&net, InetProtocol::Tcp);
     listener
-        .bind(InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43211)))
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            43211,
+        )))
         .unwrap();
     listener.listen(1).unwrap();
     let client = scoped_endpoint(&net, InetProtocol::Tcp);
     assert_eq!(
-        client.connect(InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43211))),
+        client.connect(InetAddress::V4(core::net::SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            43211
+        ))),
         Err(SocketError::InProgress)
     );
     advance_actual_domains();
     assert_eq!(client.connection_result(), Ok(()));
-    let accepted = listener
-        .accept(Arc::new(crate::Event::default()))
-        .unwrap();
+    let accepted = listener.accept(Arc::new(crate::Event::default())).unwrap();
     assert_eq!(accepted.namespace.id(), net.id());
     client.send_to(b"actual TCP", None, &[]).unwrap();
     advance_actual_domains();
     let mut output = [0u8; 32];
-    let count = receive(&accepted, &mut output, false)
-        .unwrap()
-        .0;
+    let count = receive(&accepted, &mut output, false).unwrap().0;
     assert_eq!(&output[..count], b"actual TCP");
     for endpoint in [&accepted, &client, &listener, &udp_client, &udp_server] {
         endpoint.close_description();
@@ -228,7 +286,10 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
     assert_eq!(interface_index(&net, b"eth0"), Ok(2));
     assert_eq!(interface_index(&net, b"eth1"), Ok(3));
     assert_eq!(interface_snapshots(&net).unwrap().len(), 3);
-    let peer_b = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 3, 16), 44000));
+    let peer_b = InetAddress::V4(core::net::SocketAddrV4::new(
+        Ipv4Addr::new(10, 0, 3, 16),
+        44000,
+    ));
     b.wire
         .lock()
         .unwrap()
@@ -239,9 +300,7 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
     b.wire.lock().unwrap().1.clear();
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
     sender.send_to(b"frozen-oif", Some(peer_b), &[]).unwrap();
-    sender
-        .bind_to_device(b"eth0", true)
-        .unwrap();
+    sender.bind_to_device(b"eth0", true).unwrap();
     // native explicit oif没有matching route时直接on-link；保留原队首冻结oif，
     // 新发送可在eth0发ARP/UDP，不能把这一标准fallback误判为ENETUNREACH。
     advance_actual_domains();
@@ -263,23 +322,30 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
             && ip.dst_addr() == ipv4_address(peer_b)
             && udp.payload() == b"frozen-oif"
     }));
-    a.wire.lock().unwrap().0.push_back(peer_arp_frame_for(local_a, ipv4_address(peer_b)));
+    a.wire
+        .lock()
+        .unwrap()
+        .0
+        .push_back(peer_arp_frame_for(local_a, ipv4_address(peer_b)));
     advance_actual_domains();
     a.wire.lock().unwrap().1.clear();
-    sender.send_to(b"native-on-link", Some(peer_b), &[]).unwrap();
+    sender
+        .send_to(b"native-on-link", Some(peer_b), &[])
+        .unwrap();
     advance_actual_domains();
     assert!(a.wire.lock().unwrap().1.iter().any(|frame| {
         let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
-        if ethernet.ethertype() != EthernetProtocol::Ipv4 { return false; }
+        if ethernet.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
         let ip = Ipv4Packet::new_checked(ethernet.payload()).unwrap();
-        ip.src_addr() == local_a && ip.dst_addr() == ipv4_address(peer_b)
+        ip.src_addr() == local_a
+            && ip.dst_addr() == ipv4_address(peer_b)
             && UdpPacket::new_checked(ip.payload()).unwrap().payload() == b"native-on-link"
     }));
     let receiver = scoped_endpoint(&net, InetProtocol::Udp);
     receiver.bind(address(43212)).unwrap();
-    receiver
-        .bind_to_device(b"eth0", true)
-        .unwrap();
+    receiver.bind_to_device(b"eth0", true).unwrap();
     for _ in 0..16 {
         b.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
             peer_b,
@@ -293,7 +359,10 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
         "wrong iface必须在receive enqueue前拒绝"
     );
     a.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
-        InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44000)),
+        InetAddress::V4(core::net::SocketAddrV4::new(
+            Ipv4Addr::new(10, 0, 2, 16),
+            44000,
+        )),
         InetAddress::V4(core::net::SocketAddrV4::new(local_a, 43212)),
         b"right",
     ));
@@ -302,13 +371,18 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
     // 同一实际LOCAL route使本域物理地址进入lo，source tuple不从lo地址改写。
     let local_receiver = scoped_endpoint(&net, InetProtocol::Udp);
     local_receiver
-        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 43213)))
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(
+            local_a, 43213,
+        )))
         .unwrap();
     let local_sender = scoped_endpoint(&net, InetProtocol::Udp);
     local_sender
         .send_to(
             b"local-address",
-            Some(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 43213))), &[],
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(
+                local_a, 43213,
+            ))),
+            &[],
         )
         .unwrap();
     advance_actual_domains();
@@ -317,7 +391,9 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
     assert_eq!(ipv4_address(source.unwrap()), local_a);
     // IPv4 weak-host source在A，实际出口在B；错误iface不得在dispatch时reset TCP。
     let tcp = scoped_endpoint(&net, InetProtocol::Tcp);
-    tcp.bind(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 43214)))
+    tcp.bind(InetAddress::V4(core::net::SocketAddrV4::new(
+        local_a, 43214,
+    )))
     .unwrap();
     assert_eq!(tcp.connect(peer_b), Err(SocketError::InProgress));
     advance_actual_domains();
@@ -355,7 +431,10 @@ fn actual_pktinfo_keeps_ingress_facts_and_overrides_only_one_transmit() {
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
-    let peer_b = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 3, 16), 44000));
+    let peer_b = InetAddress::V4(core::net::SocketAddrV4::new(
+        Ipv4Addr::new(10, 0, 3, 16),
+        44000,
+    ));
     for (index, address) in [(2, local_a), (3, local_b)] {
         configure_address(&net, index, address).unwrap();
         configure_netmask(&net, index, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
@@ -387,24 +466,27 @@ fn actual_pktinfo_keeps_ingress_facts_and_overrides_only_one_transmit() {
         destination: local_b,
     });
     for peek in [true, false] {
-        let received = receive(&receiver, &mut output, peek)
-            .unwrap();
+        let received = receive(&receiver, &mut output, peek).unwrap();
         assert_eq!(received.3, expected);
         assert_eq!(&output[..received.0], b"metadata");
     }
     configure_address(&net, 3, local_b).unwrap();
     // 地址变化撤销旧 neighbor cache；重新交付真实 ARP，不假定配置恢复会恢复邻居。
-    b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(local_b, ipv4_address(peer_b)));
+    b.wire
+        .lock()
+        .unwrap()
+        .0
+        .push_back(peer_arp_frame_for(local_b, ipv4_address(peer_b)));
     advance_actual_domains();
     a.wire.lock().unwrap().1.clear();
     b.wire.lock().unwrap().1.clear();
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
     sender
-        .bind(InetAddress::V4(core::net::SocketAddrV4::new(local_a, 43216)))
+        .bind(InetAddress::V4(core::net::SocketAddrV4::new(
+            local_a, 43216,
+        )))
         .unwrap();
-    sender
-        .bind_to_device(b"eth0", true)
-        .unwrap();
+    sender.bind_to_device(b"eth0", true).unwrap();
     let override_route = [InternetSendPacketInfo::Ipv4 {
         interface_index: Some(3),
         source_address: local_b,
@@ -412,36 +494,48 @@ fn actual_pktinfo_keeps_ingress_facts_and_overrides_only_one_transmit() {
     sender
         .send_to(b"one-request", Some(peer_b), &override_route)
         .unwrap();
-    assert_eq!(
-        sender.option(InternetOption::BoundToDevice),
-        Ok(2)
-    );
+    assert_eq!(sender.option(InternetOption::BoundToDevice), Ok(2));
     assert_eq!(ipv4_address(sender.address().unwrap()), local_a);
-    assert_eq!(sender.send_to(b"original-binding", Some(peer_b), &[]), Ok(16));
+    assert_eq!(
+        sender.send_to(b"original-binding", Some(peer_b), &[]),
+        Ok(16)
+    );
     assert_eq!(
         sender.send_to(
             b"unknown-interface",
-            Some(peer_b), &[InternetSendPacketInfo::Ipv4 {
+            Some(peer_b),
+            &[InternetSendPacketInfo::Ipv4 {
                 interface_index: Some(99),
                 source_address: Ipv4Addr::UNSPECIFIED
-            }]),
+            }]
+        ),
         Err(SocketError::NoDevice)
     );
     assert_eq!(
         sender.send_to(
             b"nonlocal-source",
-            Some(peer_b), &[InternetSendPacketInfo::Ipv4 {
+            Some(peer_b),
+            &[InternetSendPacketInfo::Ipv4 {
                 interface_index: Some(3),
                 source_address: Ipv4Addr::new(192, 0, 2, 1)
-            }]),
+            }]
+        ),
         Err(SocketError::NetworkUnreachable)
     );
     advance_actual_domains();
-    assert!(a.wire.lock().unwrap().1.iter().any(|frame| {
-        let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
-        ethernet.ethertype() == EthernetProtocol::Arp
-            && ArpPacket::new_checked(ethernet.payload()).unwrap().target_protocol_addr() == ipv4_address(peer_b).octets()
-    }), "a wire={:?}; b wire={:?}", a.wire.lock().unwrap().1, b.wire.lock().unwrap().1);
+    assert!(
+        a.wire.lock().unwrap().1.iter().any(|frame| {
+            let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
+            ethernet.ethertype() == EthernetProtocol::Arp
+                && ArpPacket::new_checked(ethernet.payload())
+                    .unwrap()
+                    .target_protocol_addr()
+                    == ipv4_address(peer_b).octets()
+        }),
+        "a wire={:?}; b wire={:?}",
+        a.wire.lock().unwrap().1,
+        b.wire.lock().unwrap().1
+    );
     assert!(b.wire.lock().unwrap().1.iter().any(|frame| {
         let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
         if ethernet.ethertype() != EthernetProtocol::Ipv4 {
@@ -507,11 +601,13 @@ fn actual_raw_local_filter_precedes_queue_and_pktinfo_survives_reconfiguration()
     });
     let mut output = [0u8; 64];
     for peek in [true, false] {
-        let received = receive(&receiver, &mut output, peek)
-            .unwrap();
+        let received = receive(&receiver, &mut output, peek).unwrap();
         assert_eq!(received.3, expected);
         assert_eq!(&output[16..20], &local_b.octets());
-        assert_eq!(ipv4_address(received.2.unwrap()), Ipv4Addr::new(10, 0, 3, 16));
+        assert_eq!(
+            ipv4_address(received.2.unwrap()),
+            Ipv4Addr::new(10, 0, 3, 16)
+        );
     }
     assert!(!receiver.poll_state().readable);
     receiver.close_description();
@@ -520,24 +616,25 @@ fn actual_raw_local_filter_precedes_queue_and_pktinfo_survives_reconfiguration()
 
 #[test]
 fn actual_raw_loopback_header_survives_the_single_ip_medium_queue() {
-    use network_protocol::PacketKind as SocketType;
     use crate::packet;
+    use network_protocol::PacketKind as SocketType;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    packet::init();
     let net = crate::namespace::Namespace::create().unwrap();
     net.install_protocol(prepare_network(&net, &[], true).unwrap());
     let sender = packet::PacketSocket::new(
         SocketType::Raw,
         0x0806u16.to_be(),
-        Arc::new(crate::Event::default()), net.clone(),
+        Arc::new(crate::Event::default()),
+        net.clone(),
     )
     .unwrap();
     sender.bind(packet_address(1, 0x0806)).unwrap();
     let observer = packet::PacketSocket::new(
         SocketType::Raw,
         0x0003u16.to_be(),
-        Arc::new(crate::Event::default()), net.clone(),
+        Arc::new(crate::Event::default()),
+        net.clone(),
     )
     .unwrap();
     observer.bind(packet_address(1, 0x0003)).unwrap();
@@ -547,16 +644,14 @@ fn actual_raw_loopback_header_survives_the_single_ip_medium_queue() {
     frame.extend_from_slice(b"native-lo-header");
     assert_eq!(sender.send_to(&frame, None), Ok(frame.len()));
     let mut output = [0u8; 64];
-    let outgoing = receive(&observer, &mut output, false)
-        .unwrap();
+    let outgoing = receive(&observer, &mut output, false).unwrap();
     assert_eq!(&output[..outgoing.0], frame.as_slice());
     assert_eq!(outgoing.2.packet_type, 4);
     assert_eq!(outgoing.2.hardware_type, 772);
     assert!(!sender.poll_state().readable);
     advance_actual_domains();
     for endpoint in [&observer, &sender] {
-        let incoming = receive(endpoint, &mut output, false)
-            .unwrap();
+        let incoming = receive(endpoint, &mut output, false).unwrap();
         assert_eq!(&output[..incoming.0], frame.as_slice());
         assert_eq!(incoming.2.packet_type, 0);
         assert_eq!(incoming.2.hardware_type, 772);
@@ -573,7 +668,14 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
     initialize();
     let net = crate::namespace::Namespace::create().unwrap();
     let nic = Arc::new(WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
+    net.install_protocol(
+        prepare_network(
+            &net,
+            &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>],
+            true,
+        )
+        .unwrap(),
+    );
     let local = Ipv4Addr::new(10, 0, 2, 15);
     configure_address(&net, 2, local).unwrap();
     configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
@@ -582,7 +684,10 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
     receiver.bind(address(43218)).unwrap();
     nic.transmit_available
         .store(false, core::sync::atomic::Ordering::Relaxed);
-    let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44000));
+    let peer = InetAddress::V4(core::net::SocketAddrV4::new(
+        Ipv4Addr::new(10, 0, 2, 16),
+        44000,
+    ));
     nic.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
         peer,
         InetAddress::V4(core::net::SocketAddrV4::new(local, 43218)),
@@ -657,9 +762,7 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
         .0
         .push_back(peer_tcp_frame(43219, TcpControl::None, Some(ack)));
     advance_actual_domains();
-    let child = listener
-        .accept(Arc::new(crate::Event::default()))
-        .unwrap();
+    let child = listener.accept(Arc::new(crate::Event::default())).unwrap();
     assert_eq!(
         child.connection_result(),
         Ok(()),
@@ -677,18 +780,11 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
 fn actual_network_snapshot_contains_every_link_and_keeps_domains_separate() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let first =
-        crate::namespace::Namespace::create().unwrap();
-    let second =
-        crate::namespace::Namespace::create().unwrap();
+    let first = crate::namespace::Namespace::create().unwrap();
+    let second = crate::namespace::Namespace::create().unwrap();
     let nic = Arc::new(WireDevice::new());
     first.install_protocol(
-        prepare_network(
-            &first,
-            &[nic.clone(), Arc::new(WireDevice::new())],
-            true,
-        )
-        .unwrap(),
+        prepare_network(&first, &[nic.clone(), Arc::new(WireDevice::new())], true).unwrap(),
     );
     second.install_protocol(prepare_network(&second, &[], false).unwrap());
     configure_address(&first, 3, Ipv4Addr::new(10, 8, 0, 15)).unwrap();
@@ -724,7 +820,14 @@ fn actual_ipv4_address_record_uses_native_classful_mask_and_explicit_broadcast()
     initialize();
     let net = crate::namespace::Namespace::create().unwrap();
     let nic = Arc::new(WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
+    net.install_protocol(
+        prepare_network(
+            &net,
+            &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>],
+            true,
+        )
+        .unwrap(),
+    );
     assert_eq!(
         configure_netmask(&net, 2, Ipv4Addr::new(255, 0, 0, 0)),
         Err(SocketError::AddressNotAvailable)
@@ -781,7 +884,10 @@ fn actual_ipv4_address_record_uses_native_classful_mask_and_explicit_broadcast()
     receiver
         .bind(InetAddress::V4(core::net::SocketAddrV4::new(local, 43221)))
         .unwrap();
-    let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 8, 3, 16), 44000));
+    let peer = InetAddress::V4(core::net::SocketAddrV4::new(
+        Ipv4Addr::new(10, 8, 3, 16),
+        44000,
+    ));
     nic.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
         peer,
         InetAddress::V4(core::net::SocketAddrV4::new(explicit, 43221)),
@@ -789,22 +895,27 @@ fn actual_ipv4_address_record_uses_native_classful_mask_and_explicit_broadcast()
     ));
     advance_actual_domains();
     let mut bytes = [0; 64];
-    let count = receive(&receiver, &mut bytes, false)
-        .unwrap()
-        .0;
+    let count = receive(&receiver, &mut bytes, false).unwrap().0;
     assert_eq!(&bytes[..count], b"native configured broadcast");
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
     assert_eq!(
         sender.send_to(
             b"x",
-            Some(InetAddress::V4(core::net::SocketAddrV4::new(explicit, 43221))), &[]),
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(
+                explicit, 43221
+            ))),
+            &[]
+        ),
         Err(SocketError::PermissionDenied)
     );
     sender.set_broadcast(true).unwrap();
     sender
         .send_to(
             b"x",
-            Some(InetAddress::V4(core::net::SocketAddrV4::new(explicit, 43221))), &[],
+            Some(InetAddress::V4(core::net::SocketAddrV4::new(
+                explicit, 43221,
+            ))),
+            &[],
         )
         .unwrap();
     advance_actual_domains();
@@ -838,7 +949,9 @@ fn new_domain_prepares_empty_stack_and_oom_never_publishes_partial_protocol() {
         crate::allocation_failure::fail_after(boundary);
         let prepared = prepare_network(&scope, &[], false);
         let failed = crate::allocation_failure::was_consumed();
-        if failed { assert!(prepared.is_err()); }
+        if failed {
+            assert!(prepared.is_err());
+        }
         drop(prepared);
         assert!(scope.protocol().is_none());
     }
@@ -855,14 +968,13 @@ fn new_domain_prepares_empty_stack_and_oom_never_publishes_partial_protocol() {
     client
         .send_to(
             b"native empty domain becomes actual loopback",
-            Some(address), &[],
+            Some(address),
+            &[],
         )
         .unwrap();
     advance_actual_domains();
     let mut bytes = [0; 64];
-    let count = receive(&server, &mut bytes, false)
-        .unwrap()
-        .0;
+    let count = receive(&server, &mut bytes, false).unwrap().0;
     assert_eq!(
         &bytes[..count],
         b"native empty domain becomes actual loopback"
@@ -873,12 +985,10 @@ fn new_domain_prepares_empty_stack_and_oom_never_publishes_partial_protocol() {
 
 #[test]
 fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism() {
-    use smoltcp::wire::{EthernetFrame, EthernetProtocol, Ipv4Packet, IpProtocol};
     use crate::packet;
-    use smoltcp::phy::Device;
+    use smoltcp::wire::{EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet};
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    packet::init();
     let net = crate::namespace::Namespace::create().unwrap();
     let first = Arc::new(WireDevice::new());
     let second = Arc::new(WireDevice::new());
@@ -902,10 +1012,10 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
     let stack = net.protocol().unwrap().lock().unwrap();
     for (index, mtu) in [(2, 256), (3, 1000)] {
         let interface = stack.interface(index).unwrap();
-        assert_eq!(interface.device.capabilities().ip_mtu(), mtu);
+        assert_eq!(interface.device.ip_mtu(), mtu);
     }
     drop(stack);
-    // 从真实SYN的MSS观察cached协议caps，而非增加只供测试读取的library getter。
+    // 从真实SYN的MSS观察当前接口 MTU 对真实连接的影响。
     for (device, local, peer, mss) in [
         (
             &first,
@@ -947,8 +1057,8 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
             tcp.syn()
                 && smoltcp::wire::TcpRepr::parse(
                     &tcp,
-                    &ipv4(local),
-                    &ipv4(peer),
+                    &smoltcp::wire::IpAddress::Ipv4(local),
+                    &smoltcp::wire::IpAddress::Ipv4(peer),
                     &smoltcp::phy::ChecksumCapabilities::default(),
                 )
                 .unwrap()
@@ -966,7 +1076,10 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
         Err(SocketError::MessageTooLarge)
     );
     assert!(first.wire.lock().unwrap().1.is_empty());
-    assert_eq!(sender.send_to(&[0x42; 256], Some(packet_address(2, 0x0806))), Ok(256));
+    assert_eq!(
+        sender.send_to(&[0x42; 256], Some(packet_address(2, 0x0806))),
+        Ok(256)
+    );
     assert_eq!(first.wire.lock().unwrap().1.last().unwrap().len(), 270);
     configure_mtu(&net, 2, 128).unwrap();
     assert_eq!(
@@ -980,9 +1093,7 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
     assert_eq!(second.wire.lock().unwrap().1.last().unwrap().len(), 914);
     sender.close_description();
     assert_eq!(
-        interface_snapshot(&namespace().clone(), 2)
-            .unwrap()
-            .mtu,
+        interface_snapshot(&namespace().clone(), 2).unwrap().mtu,
         1500
     );
 }
@@ -1045,15 +1156,34 @@ fn actual_nic_failure_does_not_poison_socket_errors_or_erase_other_link_completi
     b.transmit_ready.store(true, Relaxed);
     for _ in 0..=NETWORK_RX_BUDGET {
         b.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
-            InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 41, 0, 16), 44000)),
-            InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 41, 0, 15), 43288)), b"b",
+            InetAddress::V4(core::net::SocketAddrV4::new(
+                Ipv4Addr::new(10, 41, 0, 16),
+                44000,
+            )),
+            InetAddress::V4(core::net::SocketAddrV4::new(
+                Ipv4Addr::new(10, 41, 0, 15),
+                43288,
+            )),
+            b"b",
         ));
     }
     let outcome = net.protocol().unwrap().lock().unwrap().poll();
-    assert_eq!(outcome.device_failures.into_iter().flatten().collect::<Vec<_>>(),
-        [(2, device_model::network::NetworkError::Device)]);
-    assert!(outcome.packet_transmit_ready.contains(&Some(3)), "NIC A error must not erase NIC B completion");
-    assert!(outcome.backlog, "NIC A error must not discard exhausted RX budget");
+    assert_eq!(
+        outcome
+            .device_failures
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        [(2, device_model::network::NetworkError::Device)]
+    );
+    assert!(
+        outcome.packet_transmit_ready.contains(&Some(3)),
+        "NIC A error must not erase NIC B completion"
+    );
+    assert!(
+        outcome.backlog,
+        "NIC A error must not discard exhausted RX budget"
+    );
     assert_eq!(b.wire.lock().unwrap().0.len(), 1);
     assert_eq!(receiver.take_error(), None);
     assert_eq!(idle.take_error(), None);
@@ -1063,8 +1193,15 @@ fn actual_nic_failure_does_not_poison_socket_errors_or_erase_other_link_completi
     assert_eq!(snapshots[1].statistics.received_errors, 1);
     assert_eq!(snapshots[2].statistics.received_errors, 0);
     let outcome = net.protocol().unwrap().lock().unwrap().poll();
-    assert!(outcome.device_failures.into_iter().all(|failure| failure.is_none()), "actual diagnostic is consumed once per error event");
-    receiver.close_description(); idle.close_description();
+    assert!(
+        outcome
+            .device_failures
+            .into_iter()
+            .all(|failure| failure.is_none()),
+        "actual diagnostic is consumed once per error event"
+    );
+    receiver.close_description();
+    idle.close_description();
 }
 
 #[test]
@@ -1081,11 +1218,15 @@ fn actual_raw255_header_codec_preserves_wire_and_send_only_admission() {
         let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 123));
         assert_eq!(sender.option(InternetOption::HeaderIncluded), Ok(1));
         assert_eq!(receiver.option(InternetOption::HeaderIncluded), Ok(0));
-        let mut packet = [0x45, 0x10, 0xff, 0xff, 0x12, 0x34, 0, 0, 37, 1, 0xa5, 0xa5,
-            0, 0, 0, 0, 127, 0, 0, 1, 8, 0, 0xf7, 0xff, 0, 0, 0, 0];
+        let mut packet = [
+            0x45, 0x10, 0xff, 0xff, 0x12, 0x34, 0, 0, 37, 1, 0xa5, 0xa5, 0, 0, 0, 0, 127, 0, 0, 1,
+            8, 0, 0xf7, 0xff, 0, 0, 0, 0,
+        ];
         packet[9] = protocol;
         for generated in [false, true] {
-            if generated { packet[4..6].fill(0); }
+            if generated {
+                packet[4..6].fill(0);
+            }
             let original = packet;
             assert_eq!(sender.send_to(&packet, Some(peer), &[]), Ok(packet.len()));
             // 冻结后的队列包含真实完整 header；后续 option 不得改变旧 packet。
@@ -1102,10 +1243,19 @@ fn actual_raw255_header_codec_preserves_wire_and_send_only_admission() {
             assert_eq!(&output[6..10], &packet[6..10]);
             assert_eq!(&output[12..16], &Ipv4Addr::LOCALHOST.octets());
             assert_eq!(&output[16..28], &packet[16..]);
-            if generated { assert_ne!(&output[4..6], &[0, 0]); }
-            else { assert_eq!(&output[4..6], &packet[4..6]); }
-            assert!(!other.poll_state().readable, "RAW 接收按实际协议隔离，已处理协议不能再回复 ICMP 不可达");
-            assert!(!sender.poll_state().readable, "RAW255 不以 wildcard RX 冒充 send-only");
+            if generated {
+                assert_ne!(&output[4..6], &[0, 0]);
+            } else {
+                assert_eq!(&output[4..6], &packet[4..6]);
+            }
+            assert!(
+                !other.poll_state().readable,
+                "RAW 接收按实际协议隔离，已处理协议不能再回复 ICMP 不可达"
+            );
+            assert!(
+                !sender.poll_state().readable,
+                "RAW255 不以 wildcard RX 冒充 send-only"
+            );
             // ICMP echo reply 可能也在队列中；读取完毕再发布下一次请求。
             while receiver.poll_state().readable {
                 receive(&receiver, &mut output, false).unwrap();
@@ -1113,16 +1263,24 @@ fn actual_raw255_header_codec_preserves_wire_and_send_only_admission() {
             sender.set_header_included(true).unwrap();
         }
         // 准入失败既不修改输入，也不污染实际 transport queue。
-        for (offset, value, error) in [(0, 0x46, SocketError::Invalid),
+        for (offset, value, error) in [
+            (0, 0x46, SocketError::Invalid),
             (0, 0x65, SocketError::Invalid),
-            (19, 2, SocketError::OperationNotSupported)] {
-            let mut invalid = packet; invalid[offset] = value;
+            (19, 2, SocketError::OperationNotSupported),
+        ] {
+            let mut invalid = packet;
+            invalid[offset] = value;
             assert_eq!(sender.send_to(&invalid, Some(peer), &[]), Err(error));
         }
-        assert_eq!(sender.send_to(&packet[..19], Some(peer), &[]), Err(SocketError::Invalid));
+        assert_eq!(
+            sender.send_to(&packet[..19], Some(peer), &[]),
+            Err(SocketError::Invalid)
+        );
         advance_actual_domains();
         assert!(!receiver.poll_state().readable);
-        sender.close_description(); receiver.close_description(); other.close_description();
+        sender.close_description();
+        receiver.close_description();
+        other.close_description();
         advance_actual_domains();
     }
 }
@@ -1134,27 +1292,44 @@ fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     let mut hardware = WireDevice::new();
     hardware.checksum = true;
     let nic = Arc::new(hardware);
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
+    net.install_protocol(
+        prepare_network(
+            &net,
+            &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>],
+            true,
+        )
+        .unwrap(),
+    );
     let local = Ipv4Addr::new(10, 0, 2, 15);
     let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 0));
     configure_address(&net, 2, local).unwrap();
     configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
     configure_up(&net, 2, true).unwrap();
-    nic.wire.lock().unwrap().0.push_back(peer_arp_frame_for(local, ipv4_address(peer)));
+    nic.wire
+        .lock()
+        .unwrap()
+        .0
+        .push_back(peer_arp_frame_for(local, ipv4_address(peer)));
     advance_actual_domains();
     nic.wire.lock().unwrap().1.clear();
     let sender = scoped_endpoint(&net, InetProtocol::Raw(89));
     sender.set_header_included(true).unwrap();
-    let mut packet = [0x45, 0x14, 0, 0, 0xab, 0xcd, 0x40, 0, 19, 17, 0, 0,
-        192, 0, 2, 1, 10, 0, 2, 16, 1, 2, 3, 4, 0, 8, 0x12, 0x34];
+    let mut packet = [
+        0x45, 0x14, 0, 0, 0xab, 0xcd, 0x40, 0, 19, 17, 0, 0, 192, 0, 2, 1, 10, 0, 2, 16, 1, 2, 3,
+        4, 0, 8, 0x12, 0x34,
+    ];
     assert_eq!(sender.send_to(&packet, Some(peer), &[]), Ok(28));
     sender.set_header_included(false).unwrap();
     advance_actual_domains();
     let frames = nic.wire.lock().unwrap();
-    let wire = frames.1.iter().find_map(|bytes| {
-        let eth = smoltcp::wire::EthernetFrame::new_checked(bytes.as_slice()).ok()?;
-        (eth.ethertype() == smoltcp::wire::EthernetProtocol::Ipv4).then_some(bytes)
-    }).unwrap();
+    let wire = frames
+        .1
+        .iter()
+        .find_map(|bytes| {
+            let eth = smoltcp::wire::EthernetFrame::new_checked(bytes.as_slice()).ok()?;
+            (eth.ethertype() == smoltcp::wire::EthernetProtocol::Ipv4).then_some(bytes)
+        })
+        .unwrap();
     let eth = smoltcp::wire::EthernetFrame::new_checked(wire.as_slice()).unwrap();
     let ip = smoltcp::wire::Ipv4Packet::new_checked(eth.payload()).unwrap();
     assert!(ip.verify_checksum());
@@ -1163,13 +1338,21 @@ fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     assert_eq!(&eth.payload()[..28], &packet);
     drop(frames);
     // 普通 codec 使用 endpoint 的 protocol，不从上一条用户 header 继承。
-    assert_eq!(sender.send_to(&[8, 0, 0xf7, 0xff, 0, 0, 0, 0], Some(peer), &[]), Ok(8));
+    assert_eq!(
+        sender.send_to(&[8, 0, 0xf7, 0xff, 0, 0, 0, 0], Some(peer), &[]),
+        Ok(8)
+    );
     advance_actual_domains();
     assert!(nic.wire.lock().unwrap().1.iter().any(|frame| {
         let eth = smoltcp::wire::EthernetFrame::new_checked(frame.as_slice()).unwrap();
-        if eth.ethertype() != smoltcp::wire::EthernetProtocol::Ipv4 { return false; }
+        if eth.ethertype() != smoltcp::wire::EthernetProtocol::Ipv4 {
+            return false;
+        }
         let ip = smoltcp::wire::Ipv4Packet::new_checked(eth.payload()).unwrap();
-        ip.next_header() == smoltcp::wire::IpProtocol::from(89) && ip.src_addr() == local && ip.verify_checksum()
+        ip.next_header() == smoltcp::wire::IpProtocol::from(89)
+            && ip.src_addr() == local
+            && ip.verify_checksum()
     }));
-    sender.close_description(); advance_actual_domains();
+    sender.close_description();
+    advance_actual_domains();
 }

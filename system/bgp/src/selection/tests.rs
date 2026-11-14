@@ -136,6 +136,8 @@ fn attributes(
         ipv4_unicast: true,
         ipv6_unicast: true,
         route_refresh: false,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     };
     let negotiated = Negotiated {
@@ -146,6 +148,8 @@ fn attributes(
         ipv6_unicast: true,
         send_ipv4_via_ipv6: false,
         receive_ipv4_via_ipv6: true,
+        receive_add_path: [false; 2],
+        send_add_path: [false; 2],
         four_octet_asn: true,
         send_extended: false,
         receive_extended: false,
@@ -162,6 +166,7 @@ fn candidate<'a>(
     cost: Option<u32>,
 ) -> Candidate<'a> {
     Candidate {
+        path_id: None,
         peer,
         attributes,
         received_path: attributes.path(),
@@ -610,6 +615,7 @@ fn loops_and_ineligible_routes_are_excluded_before_any_preference_comparison() {
         ),
         (
             Candidate {
+                path_id: None,
                 peer: &invalid_peer,
                 ..eligible
             },

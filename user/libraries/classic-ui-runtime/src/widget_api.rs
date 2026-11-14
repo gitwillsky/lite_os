@@ -152,7 +152,6 @@ pub(super) unsafe extern "C" fn state(
     // SAFETY: context 独占，状态标签在使用前验证。
     unsafe {
         invoke(pointer, |context| {
-            widgets::validate_state(value)?;
             let host = context.host_mut(window)?;
             let old = host
                 .controls()?
@@ -162,9 +161,7 @@ pub(super) unsafe extern "C" fn state(
             if old.state == value {
                 return Ok(());
             }
-            if value & abi::state::VSCROLL != 0 && old.kind != abi::widget::COLUMN {
-                return Err(invalid("vertical viewport requires a column"));
-            }
+            widgets::validate_state(old.kind, value)?;
             // 布局还会修复不可用的焦点，因此 DISABLED 变化也必须重新布局。
             let geometry = abi::state::HIDDEN
                 | abi::state::DISABLED
@@ -190,6 +187,9 @@ pub(super) unsafe extern "C" fn state(
             }
             host.controls_mut()?.layout_dirty |= layout_changed;
             host.frame.invalidate();
+            if value & abi::state::READ_ONLY != 0 {
+                context.cancel_pastes(|paste| paste.window == window && paste.node == id);
+            }
             Ok(())
         })
     }

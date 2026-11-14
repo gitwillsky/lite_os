@@ -1,5 +1,7 @@
 //! 沿生产 Session/接收表/选路和出口 codec 检查真正发送的报文；不增加独立网络或生产测试入口。
 mod bgp_peer;
+#[path = "bgp_exports/add_path.rs"]
+mod add_path;
 #[path = "bgp_peer/routing.rs"]
 mod routing;
 use bgp::{AdjRibOut, ExportContext, Peer, PeerKind, RoutingDomain, SelectionContext, SourcePeer};
@@ -53,8 +55,8 @@ fn configured_export_reaches_a_real_peer_with_as4_boundary_and_attributes_preser
         .unwrap();
     for width in [AsnWidth::Two, AsnWidth::Four] {
         let context = ExportContext { width, ..context() };
-        let mut outgoing = AdjRibOut::new();
-        outgoing.changed(prefix(), 10).unwrap();
+        let mut outgoing = AdjRibOut::default();
+        outgoing.changed(&domain, prefix(), 10).unwrap();
         let message = outgoing
             .prepare(&mut domain, Some(&configured), context, 10)
             .unwrap()
@@ -102,7 +104,7 @@ fn configured_export_reaches_a_real_peer_with_as4_boundary_and_attributes_preser
         );
         outgoing.sent(11);
         assert_eq!(outgoing.len(), 1);
-        outgoing.changed(prefix(), 12).unwrap();
+        outgoing.changed(&domain, prefix(), 12).unwrap();
         assert!(
             outgoing
                 .prepare(&mut domain, Some(&configured), context, 12)
@@ -112,8 +114,8 @@ fn configured_export_reaches_a_real_peer_with_as4_boundary_and_attributes_preser
         assert_eq!(outgoing.next_deadline(), None);
     }
     // 原始消息仍合法，但加本地 AS 后超过对端上限：只撤回此目标，不终止域或发超长帧。
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 0).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
     outgoing
         .prepare(&mut domain, Some(&configured), context(), 0)
         .unwrap()
@@ -129,7 +131,7 @@ fn configured_export_reaches_a_real_peer_with_as4_boundary_and_attributes_preser
             data: &large,
         }],
     );
-    outgoing.changed(prefix(), 31).unwrap();
+    outgoing.changed(&domain, prefix(), 31).unwrap();
     let withdrawn = outgoing
         .prepare(&mut domain, Some(&configured), context(), 31)
         .unwrap()
@@ -159,8 +161,8 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
  {
     let (mut domain, mut session) = domain();
     learn(&mut domain, &mut session, &[]);
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 10).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 10).unwrap();
     outgoing.finish_initial(packet_wire::bgp::nlri::Family::Ipv4);
     let first = outgoing
         .prepare(&mut domain, Some(&policy()), context(), 10)
@@ -172,7 +174,7 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
         .receive(1, &receive(&mut session, &withdrawn))
         .unwrap();
     choose(&mut domain);
-    outgoing.changed(prefix(), 11).unwrap();
+    outgoing.changed(&domain, prefix(), 11).unwrap();
     assert!(
         outgoing
             .prepare(&mut domain, Some(&policy()), context(), 11)
@@ -200,7 +202,7 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
     outgoing.sent(43);
     assert!(outgoing.is_empty());
     learn(&mut domain, &mut session, &[]);
-    outgoing.changed(prefix(), 44).unwrap();
+    outgoing.changed(&domain, prefix(), 44).unwrap();
     assert!(
         outgoing
             .prepare(&mut domain, Some(&policy()), context(), 44)
@@ -301,15 +303,15 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
     batch_domain.receive(1, &receive(&mut batch_session, &bytes)).unwrap();
     choose(&mut batch_domain);
     let targets = batch_domain.selected().iter().map(|(prefix, _)| prefix).collect::<Vec<_>>();
-    let mut output = AdjRibOut::new();
-    for target in &targets { output.changed(*target, 0).unwrap(); }
+    let mut output = AdjRibOut::default();
+    for target in &targets { output.changed(&batch_domain, *target, 0).unwrap(); }
     let first = output.prepare(&mut batch_domain, Some(&policy()), context(), 0).unwrap().unwrap();
     assert_eq!(Update::parse(&first[19..]).unwrap().announced().unwrap().prefixes().count(), 2);
     assert!(output.is_empty());
     let withdrawn = update(&nlri[..5], &[], &[]);
     batch_domain.receive(1, &receive(&mut batch_session, &withdrawn)).unwrap();
     choose(&mut batch_domain);
-    output.changed(targets[0], 1).unwrap();
+    output.changed(&batch_domain, targets[0], 1).unwrap();
     assert!(output.prepare(&mut batch_domain, Some(&policy()), context(), 1).unwrap().is_none());
     output.sent(2);
     assert_eq!(output.len(), 2);
@@ -320,7 +322,7 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
     output.sent(33);
     assert_eq!(output.len(), 1);
     // 剩余目标始终真实已宣告；变更登记仍能正确去重。
-    output.changed(targets[1], 34).unwrap();
+    output.changed(&batch_domain, targets[1], 34).unwrap();
     assert!(output.prepare(&mut batch_domain, Some(&policy()), context(), 34).unwrap().is_none());
     assert_eq!(output.len(), 1);
 
@@ -329,8 +331,8 @@ fn queued_changes_preserve_partial_frames_obey_per_destination_interval_and_with
 fn explicit_policy_cannot_bypass_well_known_communities_or_internal_split_horizon() {
     let (mut domain, mut session) = domain();
     learn(&mut domain, &mut session, &[]);
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 0).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
     assert!(
         outgoing
             .prepare(&mut domain, None, context(), 0)
@@ -347,7 +349,7 @@ fn explicit_policy_cannot_bypass_well_known_communities_or_internal_split_horizo
                 data: &community.to_be_bytes(),
             }],
         );
-        outgoing.changed(prefix(), 1).unwrap();
+        outgoing.changed(&domain, prefix(), 1).unwrap();
         assert!(
             outgoing
                 .prepare(&mut domain, Some(&policy()), context(), 1)
@@ -359,7 +361,7 @@ fn explicit_policy_cannot_bypass_well_known_communities_or_internal_split_horizo
     let mut internal = context();
     internal.target.asn = 65000;
     internal.target.kind = PeerKind::Internal;
-    outgoing.changed(prefix(), 2).unwrap();
+    outgoing.changed(&domain, prefix(), 2).unwrap();
     let message = outgoing
         .prepare(&mut domain, Some(&policy()), internal, 2)
         .unwrap()
@@ -381,7 +383,7 @@ fn explicit_policy_cannot_bypass_well_known_communities_or_internal_split_horizo
         large_communities: vec![],
         action: RouteAction::Deny,
     });
-    outgoing.changed(prefix(), 34).unwrap();
+    outgoing.changed(&domain, prefix(), 34).unwrap();
     let message = outgoing
         .prepare(&mut domain, Some(&denied), internal, 34)
         .unwrap()
@@ -432,15 +434,15 @@ fn internal_routes_are_not_reflected_without_an_explicit_reflector_role() {
     domain.receive(3, &receive(&mut session, &message)).unwrap();
     choose(&mut domain);
     assert_eq!(domain.selected().len(), 1);
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 0).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
     assert!(
         outgoing
             .prepare(&mut domain, Some(&policy()), internal, 0)
             .unwrap()
             .is_none()
     );
-    outgoing.changed(prefix(), 1).unwrap();
+    outgoing.changed(&domain, prefix(), 1).unwrap();
     assert!(
         outgoing
             .prepare(&mut domain, Some(&policy()), context(), 1)
@@ -486,8 +488,7 @@ fn reflector_configuration_controls_propagation_and_wire_attributes_reject_retur
                         configured.identifier,
                         configured.reflection_cluster(),
                     None,)
-                    .unwrap(),
-                )
+                    .unwrap(), [false; 2])
                 .unwrap();
                 let source = Peer {
                     id: 3,
@@ -534,8 +535,8 @@ fn reflector_configuration_controls_propagation_and_wire_attributes_reject_retur
                 choose(&mut domain);
                 assert_eq!(domain.selected().len(), 1);
                 context.target.route_reflector_client = target_client;
-                let mut outgoing = AdjRibOut::new();
-                outgoing.changed(prefix(), 0).unwrap();
+                let mut outgoing = AdjRibOut::default();
+                outgoing.changed(&domain, prefix(), 0).unwrap();
                 let message = outgoing
                     .prepare(
                         &mut domain,
@@ -586,8 +587,8 @@ fn reflector_configuration_controls_propagation_and_wire_attributes_reject_retur
                     },
                     ..context
                 };
-                let mut origin_output = AdjRibOut::new();
-                origin_output.changed(prefix(), 2).unwrap();
+                let mut origin_output = AdjRibOut::default();
+                origin_output.changed(&domain, prefix(), 2).unwrap();
                 assert!(
                     origin_output
                         .prepare(&mut domain, Some(&policy()), returned_to_origin, 2)
@@ -600,7 +601,7 @@ fn reflector_configuration_controls_propagation_and_wire_attributes_reject_retur
                     .unwrap();
                 choose(&mut domain);
                 assert!(domain.selected().is_empty());
-                outgoing.changed(prefix(), 2).unwrap();
+                outgoing.changed(&domain, prefix(), 2).unwrap();
                 let withdrawn = outgoing
                     .prepare(&mut domain, Some(&policy()), context, 2)
                     .unwrap()
@@ -646,9 +647,9 @@ fn route_refresh_replays_a_complete_table_in_bounded_steps_and_coalesces_followu
         interval_ns: 0,
         ..context()
     };
-    let mut output = AdjRibOut::new();
+    let mut output = AdjRibOut::default();
     for (prefix, _) in domain.selected().iter() {
-        output.changed(prefix, 0).unwrap();
+        output.changed(&domain, prefix, 0).unwrap();
     }
     let mut initial_frames = 0;
     let mut initial_seen = std::collections::BTreeSet::new();
@@ -687,7 +688,7 @@ fn route_refresh_replays_a_complete_table_in_bounded_steps_and_coalesces_followu
     choose(&mut domain);
     // 普通工作已超过批量额度时，显式刷新仍须推进，不能等普通队列永远排空。
     for (prefix, _) in domain.selected().iter() {
-        output.changed(prefix, 1).unwrap();
+        output.changed(&domain, prefix, 1).unwrap();
     }
     // 经实际 Session 的方向授权和族过滤生成刷新副作用；reserved 按 RFC 2918 忽略。
     let mut request = [0; 23];
@@ -741,7 +742,7 @@ fn route_refresh_replays_a_complete_table_in_bounded_steps_and_coalesces_followu
     assert!(frames > 1 && frames < seen.len());
     assert!(announcements > seen.len()); // 新请求触发重发，普通属性去重不能吞掉它。
     assert_eq!(output.len(), 300);
-    let mut empty = AdjRibOut::new();
+    let mut empty = AdjRibOut::default();
     empty.refresh(packet_wire::bgp::nlri::Family::Ipv4, false);
     assert!(
         empty
@@ -761,8 +762,8 @@ fn enhanced_refresh_preserves_replayed_routes_and_withdraws_omissions_after_eorr
     let (mut source, mut neighbor) = domain();
     assert!(!neighbor.can_request_refresh(Family::Ipv4));
     learn(&mut source, &mut neighbor, &[]);
-    let mut advertised = AdjRibOut::new();
-    advertised.changed(prefix(), 0).unwrap();
+    let mut advertised = AdjRibOut::default();
+    advertised.changed(&source, prefix(), 0).unwrap();
     let context = context();
     let policy = policy();
     let initial = advertised
@@ -774,8 +775,7 @@ fn enhanced_refresh_preserves_replayed_routes_and_withdraws_omissions_after_eorr
     let mut peer = receiver(context);
     assert!(peer.negotiated().unwrap().enhanced_refresh);
     let mut target = RoutingDomain::try_new(
-        SelectionContext::new(context.target.asn, context.target.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(context.target.asn, context.target.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     target
         .add_peer(
@@ -827,7 +827,7 @@ fn enhanced_refresh_preserves_replayed_routes_and_withdraws_omissions_after_eorr
 
     assert!(peer.can_request_refresh(Family::Ipv4));
     assert!(!peer.can_request_refresh(Family::Ipv6));
-    let mut requester = AdjRibOut::new();
+    let mut requester = AdjRibOut::default();
     requester.request_refresh(Family::Ipv4);
     assert_eq!(requester.next_deadline(), Some(0));
     let request = requester.prepare(&mut target, None, context, 0).unwrap().unwrap();
@@ -918,10 +918,10 @@ fn configured_networks_follow_exact_rib_routes_and_use_the_normal_export_pipelin
     }"#).unwrap();
     assert_eq!(configuration.networks.len(), 3);
     assert_eq!(router_protocol::bgp::Configuration::parse(&configuration.encode().unwrap()).unwrap(), configuration);
-    let mut domain = RoutingDomain::try_new(SelectionContext::new(65000, configuration.identifier, None, None).unwrap()).unwrap();
+    let mut domain = RoutingDomain::try_new(SelectionContext::new(65000, configuration.identifier, None, None).unwrap(), [false; 2]).unwrap();
     let queries = domain.configure_networks(configuration.networks.clone()).unwrap();
     assert_eq!(domain.originated_len(), 0);
-    assert!(domain.announcement_prefixes().next().is_none());
+    assert!(domain.export_route(prefix()).is_none());
     // 同一生产 RIB 的精确观察：父/子网段不能冒充 network 声明，默认网段也必须真实存在。
     let compile = |rows: &[rib::Route]| {
         let immediate = [rib::Member { target: rib::Target::Direct { interface_index: 2, gateway: None, on_link: false }, weight: 1 }];
@@ -947,8 +947,8 @@ fn configured_networks_follow_exact_rib_routes_and_use_the_normal_export_pipelin
     assert_eq!(domain.originated_len(), 2, "invalid batch must retain all prior qualification");
     let policy = configuration.neighbors.values().next().unwrap().export.as_ref().unwrap();
     let target = ExportContext { local_as: 65000, interval_ns: 0, ..context() };
-    let mut outgoing = AdjRibOut::new();
-    for prefix in &changed { outgoing.changed(*prefix, 0).unwrap(); }
+    let mut outgoing = AdjRibOut::default();
+    for prefix in &changed { outgoing.changed(&domain, *prefix, 0).unwrap(); }
     let bytes = outgoing.prepare(&mut domain, Some(policy), target, 0).unwrap().unwrap();
     let mut remote = receiver(target);
     let received = receive(&mut remote, &bytes);
@@ -956,12 +956,12 @@ fn configured_networks_follow_exact_rib_routes_and_use_the_normal_export_pipelin
     let decoded = Update::parse(&bytes[19..]).unwrap();
     assert_eq!(decoded.announced().unwrap().prefixes().count(), 2);
     assert!(decoded.attributes().unwrap().any(|attribute| attribute.code == 3 && attribute.data == match target.local_address { core::net::IpAddr::V4(address)=>address.octets(),_=>unreachable!("IPv4 fixture") }));
-    assert!(outgoing.is_empty()); assert!(!outgoing.is_advertised(prefix()));
-    outgoing.sent(1); assert_eq!(outgoing.len(), 2); assert!(outgoing.is_advertised(prefix()));
+    assert!(outgoing.is_empty()); assert!(!outgoing.advertised_paths(prefix()).next().is_some());
+    outgoing.sent(1); assert_eq!(outgoing.len(), 2); assert!(outgoing.advertised_paths(prefix()).next().is_some());
     // iBGP 本机宣告也用实际本机地址，不触发分割水平或伪造反射属性。
     let internal = ExportContext { target: Peer { kind: PeerKind::Internal, asn: 65000, ..target.target }, ..target };
-    let mut internal_output = AdjRibOut::new();
-    for prefix in domain.announcement_prefixes() { internal_output.changed(prefix, 0).unwrap(); }
+    let mut internal_output = AdjRibOut::default();
+    internal_output.reconsider(packet_wire::bgp::nlri::Family::Ipv4);
     let bytes = internal_output.prepare(&mut domain, Some(policy), internal, 0).unwrap().unwrap();
     let mut internal_remote = receiver(internal);
     let received = receive(&mut internal_remote, &bytes);
@@ -974,25 +974,24 @@ fn configured_networks_follow_exact_rib_routes_and_use_the_normal_export_pipelin
     let missing = compile(&[row("198.51.0.0", 16, 0), row("198.51.100.0", 25, 0), row("198.51.100.128", 25, 0), row("203.0.113.0", 25, 0)]);
     let changed = domain.update_networks(snapshot(&missing, &queries).view()).unwrap();
     assert_eq!(domain.originated_len(), 0);
-    for prefix in changed { outgoing.changed(prefix, 2).unwrap(); }
+    for prefix in changed { outgoing.changed(&domain, prefix, 2).unwrap(); }
     let bytes = outgoing.prepare(&mut domain, Some(policy), target, 2).unwrap().unwrap();
     let decoded = Update::parse(&bytes[19..]).unwrap();
     assert_eq!(decoded.withdrawn().unwrap().prefixes().count(), 2);
     assert_eq!(decoded.announced().unwrap().prefixes().count(), 0);
-    outgoing.sent(3); assert!(outgoing.is_empty()); assert!(!outgoing.is_advertised(prefix()));
+    outgoing.sent(3); assert!(outgoing.is_empty()); assert!(!outgoing.advertised_paths(prefix()).next().is_some());
     // 显式 discard 汇总路由有意承载 network 宣告，不要求为它伪造立即出口。
     let discard = compile(&[row("198.51.100.0", 24, 1)]);
     let changed = domain.update_networks(snapshot(&discard, &queries).view()).unwrap();
-    for prefix in changed { outgoing.changed(prefix, 4).unwrap(); }
+    for prefix in changed { outgoing.changed(&domain, prefix, 4).unwrap(); }
     assert!(outgoing.prepare(&mut domain, Some(policy), target, 4).unwrap().is_some()); outgoing.sent(5);
     // 同前缀仍可保留真实学习路径；本机资格消失时回到该路径，而非撤销仍可发布的目标。
     domain.add_peer(Peer { id: 1, address: "192.0.2.2".parse().unwrap(), identifier: "192.0.2.2".parse().unwrap(), asn: 65001, kind: PeerKind::External, route_reflector_client: false }, SourcePeer { preference: NonZeroU32::new(20).unwrap(), next_hop_interface: None }).unwrap();
     let mut upstream = bgp_peer::established(false, true);
     learn(&mut domain, &mut upstream, &[]);
     assert!(domain.export_route(prefix()).unwrap().peer.is_none());
-    assert_eq!(domain.announcement_prefixes().filter(|candidate| *candidate == prefix()).count(), 1);
     let changed = domain.update_networks(snapshot(&missing, &queries).view()).unwrap();
-    for prefix in changed { outgoing.changed(prefix, 6).unwrap(); }
+    for prefix in changed { outgoing.changed(&domain, prefix, 6).unwrap(); }
     let bytes = outgoing.prepare(&mut domain, Some(policy), target, 6).unwrap().unwrap();
     let received = receive(&mut remote, &bytes);
     assert!(received.path().unwrap().segments().flat_map(|segment| segment.asns()).eq([65000, 65001]));

@@ -330,6 +330,7 @@ pub(super) fn serve_device(
         server,
         WORKERS,
         b"block-server",
+        None,
         handler,
         alloc::vec![ready, hardware],
         activity,

@@ -249,6 +249,18 @@ impl VirtIODevice {
         }
     }
 
+    /// 功能协商通过后、第一次配置队列前准备 transport 的通知位置。
+    ///
+    /// # Returns
+    ///
+    /// PCI 队列数无效或通知位置分配失败时返回 None。MMIO 可直接通知队列。
+    pub(super) fn prepare_queues(&mut self) -> Option<()> {
+        match &mut self.transport {
+            Transport::Pci(pci) => pci.prepare_queues(),
+            Transport::Mmio(_) => Some(()),
+        }
+    }
+
     /// 读取一个尚未发布 queue 的最大长度。
     ///
     /// # Parameters

@@ -72,9 +72,11 @@ class BuildTarget:
         self.qemu_cpu(checked)
         if self.arch == "aarch64":
             # 原生消息中断通过 ITS/LPI 分配；关闭 ITS 会使 PCI msi-map 消失并丢失每队列路由。
+            # HVF 硬件 vGIC 无法挂接 ITS。CPU 保持 HVF 加速，GICv3 和 ITS 由 QEMU 共同模拟。
+            irqchip = ",kernel-irqchip=off" if checked == "hvf" else ""
             return (
                 f"virt,accel={checked},gic-version=3,its=on,secure=off,"
-                "virtualization=off,acpi=off"
+                f"virtualization=off,acpi=off{irqchip}"
             )
         # 唯一 RISC-V 外部中断后端为 APLIC/IMSIC；PLIC 不提供每队列 MSI-X。
         return "virt,accel=tcg,aia=aplic-imsic"

@@ -286,8 +286,15 @@ fn both_families_exchange_real_segments_recover_loss_and_close_with_native_defau
         assert_eq!(client.max_segment_size(), default_mss);
         assert_eq!(server.max_segment_size(), default_mss);
         assert_eq!(client.local_endpoint(), Some(Endpoint::new(local, 40000)));
+        assert_eq!(client.output_interest(), PollAt::Ingress);
+        client.set_keep_alive(Some(time::Duration::from_millis(10_000)));
+        assert!(
+            matches!(client.output_interest(), PollAt::Time(deadline) if deadline > outgoing.now())
+        );
+        client.set_keep_alive(None);
         let data: Vec<_> = (0..4096).map(|index| (index % 251) as u8).collect();
         assert_eq!(client.send_slice(&data), Ok(data.len()));
+        assert_eq!(client.output_interest(), PollAt::Now);
         let mut not_committed = None;
         let failure = client.dispatch(&mut outgoing, |_, (_, segment)| {
             assert!(!segment.payload.is_empty());

@@ -1,38 +1,52 @@
 //! 设备 RX 的固定批借用；协议状态仍按帧推进，未消费前缀/后缀在错误或退出时恰好归还一次。
-use super::ingress::IngressFacts;
 use super::{
-    EthernetDevice, EthernetRxToken, EthernetTxToken, NetworkError, NetworkReceiveFrame,
-    ProtocolRxToken, ProtocolTxToken, device_error, loopback::LoopbackDevice,
+    EthernetDevice, EthernetReceive, EthernetReservation, EthernetRxToken, EthernetTxToken,
+    NetworkError, NetworkReceiveFrame, ProtocolRxToken, ProtocolTxToken, VlanLink,
+    loopback::LoopbackDevice,
 };
 use device_model::network::RECEIVE_BATCH_CAPACITY;
-use packet_wire::{
-    PacketError,
-    batch::{FrameError, parse_ethernet},
-};
+use packet_wire::batch::IngressIp;
 
 pub(in crate::inet) enum ProtocolReceiveBatch<'a, 'b> {
     Ethernet(EthernetReceiveBatch<'a, 'b>),
+    Vlan {
+        device: &'a EthernetDevice,
+        link: &'a VlanLink,
+        remaining: usize,
+    },
     Loopback {
         device: &'a LoopbackDevice,
         remaining: usize,
     },
 }
 impl<'a> Iterator for ProtocolReceiveBatch<'a, '_> {
-    type Item = Result<(ProtocolRxToken<'a>, ProtocolTxToken<'a>), NetworkError>;
+    type Item = (ProtocolRxToken<'a>, ProtocolTxToken<'a>);
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Ethernet(batch) => batch.next().map(|result| {
-                result
+            Self::Ethernet(batch) => batch
+                .next()
+                .map(|(rx, tx)| (ProtocolRxToken::Ethernet(rx), ProtocolTxToken::Ethernet(tx))),
+            Self::Vlan {
+                device,
+                link,
+                remaining,
+            } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining -= 1;
+                device
+                    .receive_vlan(link)
                     .map(|(rx, tx)| (ProtocolRxToken::Ethernet(rx), ProtocolTxToken::Ethernet(tx)))
-            }),
+            }
             Self::Loopback { device, remaining } => {
                 if *remaining == 0 {
                     return None;
                 }
                 *remaining -= 1;
-                device.receive_one().map(|(rx, tx)| {
-                    Ok((ProtocolRxToken::Loopback(rx), ProtocolTxToken::Loopback(tx)))
-                })
+                device
+                    .receive_one()
+                    .map(|(rx, tx)| (ProtocolRxToken::Loopback(rx), ProtocolTxToken::Loopback(tx)))
             }
         }
     }
@@ -40,75 +54,71 @@ impl<'a> Iterator for ProtocolReceiveBatch<'a, '_> {
 
 pub(in crate::inet) struct EthernetReceiveBatch<'a, 'b> {
     device: &'a EthernetDevice,
-    queue: u16,
     // OWNER: 本批唯一持有的 CPU RX token；不复制帧、不分配堆、不增加逐帧 Arc 引用。
     frames: &'b mut [Option<NetworkReceiveFrame<'a>>],
-    // OWNER: 仅在本批存续的格式事实，来自仍被 CPU 独占的帧；不跨批缓存或持有额外帧引用。
-    facts: &'b [Option<IngressFacts>],
     next: usize,
     count: usize,
+    // 只有主机入口需要配对回包窗口。二层端口不预约入口 TX。
+    host_ingress: bool,
 }
 impl EthernetDevice {
+    pub(super) fn receive_vlan<'a>(
+        &'a self,
+        link: &'a VlanLink,
+    ) -> Option<(EthernetRxToken<'a>, EthernetTxToken<'a>)> {
+        let queue = link.receive()?;
+        let ip = IngressIp::from_ethernet(queue.front()?);
+        Some((
+            EthernetRxToken {
+                packets: &self.packets,
+                interface_index: self.interface_index,
+                mac: self.mac_address(),
+                frame: EthernetReceive::Vlan { queue, ip },
+                received_errors: &self.received_errors,
+                pending_error: &self.pending_error,
+            },
+            self.transmit_token(Some(EthernetReservation::Reply(self, 0))),
+        ))
+    }
+
     pub(super) fn receive_batch<'a, 'b>(
         &'a self,
         frames: &'b mut [Option<NetworkReceiveFrame<'a>>],
-        facts: &'b mut [Option<IngressFacts>],
+        host_ingress: bool,
     ) -> Option<EthernetReceiveBatch<'a, 'b>> {
         let limit = frames.len().min(RECEIVE_BATCH_CAPACITY);
+        let nic = self.nic()?;
         if limit == 0 {
             return None;
         }
-        assert!(
-            facts.len() >= limit,
-            "batch header storage must cover the receive window"
-        );
-        for _ in 0..self.device.queue_count() {
-            let queue = self.receive_queue.get();
-            self.receive_queue
-                .set((queue + 1) % self.device.queue_count());
-            let count = match self.device.receive_batch(queue, &mut frames[..limit]) {
-                Ok(count) => count,
-                Err(error) => {
-                    self.record_receive_error(error);
-                    self.discard_received(frames);
-                    return None;
-                }
-            };
-            if count > limit
-                || frames[..count].iter().any(Option::is_none)
-                || frames[count..].iter().any(Option::is_some)
+        let slots = &mut frames[..limit];
+        let queues = nic.queue_count();
+        // 一个批次只借一个真实队列。设备错误或坏前缀不能留下已领取的票据。
+        let error = match nic.receive_batch(self.receive_queue.get(), slots) {
+            Ok(Some((queue, count)))
+                if queue < queues
+                    && (1..=limit).contains(&count)
+                    && slots[..count].iter().all(Option::is_some)
+                    && slots[count..].iter().all(Option::is_none) =>
             {
-                self.record_receive_error(NetworkError::Device);
-                self.discard_received(frames);
-                return None;
-            }
-            if count != 0 {
-                {
-                    let mut parsed =
-                        [Err(FrameError::Packet(PacketError::Truncated)); RECEIVE_BATCH_CAPACITY];
-                    parse_ethernet(
-                        frames[..count]
-                            .iter()
-                            .map(|frame| &**frame.as_ref().expect("validated batch prefix")),
-                        &mut parsed[..count],
-                    )
-                    .expect("header output uses the same batch length");
-                    for (fact, parsed) in facts.iter_mut().zip(parsed[..count].iter()) {
-                        *fact = parsed.ok().and_then(IngressFacts::from_frame);
-                    }
-                }
+                self.receive_queue.set((queue + 1) % queues);
                 return Some(EthernetReceiveBatch {
                     device: self,
-                    queue,
                     frames,
-                    facts,
                     next: 0,
                     count,
+                    host_ingress,
                 });
             }
-        }
+            Ok(None) if slots.iter().all(Option::is_none) => return None,
+            Ok(_) => NetworkError::Device,
+            Err(error) => error,
+        };
+        self.record_receive_error(error);
+        self.discard_received(slots);
         None
     }
+
     fn discard_received(&self, frames: &mut [Option<NetworkReceiveFrame<'_>>]) {
         for frame in frames.iter_mut().filter_map(Option::take) {
             if let Err(error) = frame.release() {
@@ -120,7 +130,7 @@ impl EthernetDevice {
     }
 }
 impl<'a> Iterator for EthernetReceiveBatch<'a, '_> {
-    type Item = Result<(EthernetRxToken<'a>, EthernetTxToken<'a>), NetworkError>;
+    type Item = (EthernetRxToken<'a>, EthernetTxToken<'a>);
     fn next(&mut self) -> Option<Self::Item> {
         if self.next == self.count {
             return None;
@@ -128,48 +138,22 @@ impl<'a> Iterator for EthernetReceiveBatch<'a, '_> {
         let frame = self.frames[self.next]
             .take()
             .expect("validated batch prefix");
-        let facts = self.facts[self.next];
         self.next += 1;
         let device = self.device;
-        let reservation = match device_error::classify_optional(
-            device.device.reserve_transmit(self.queue),
-            |error| *error == NetworkError::WouldBlock,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                device.record_transmit_error(error);
-                // 出错后不继续消费该批；已领取帧与剩余帧的归还都发生在设备短锁之外。
-                self.next = self.count;
-                if let Err(error) = frame.release() {
-                    device.record_receive_error(error);
-                }
-                device
-                    .received_dropped
-                    .set(device.received_dropped.get().saturating_add(1));
-                return Some(Err(error));
-            }
-        };
-        Some(Ok((
+        let reply = self
+            .host_ingress
+            .then(|| EthernetReservation::Reply(device, frame.queue()));
+        Some((
             EthernetRxToken {
-                net_id: device.net_id,
+                packets: &device.packets,
                 interface_index: device.interface_index,
-                mac: device.device.mac_address(),
-                frame,
-                facts,
+                mac: device.mac_address(),
+                frame: EthernetReceive::Physical(frame),
                 received_errors: &device.received_errors,
                 pending_error: &device.pending_error,
             },
-            EthernetTxToken {
-                net_id: device.net_id,
-                interface_index: device.interface_index,
-                reservation,
-                checksum: false,
-                maximum_frame_length: device.mtu + 14,
-                dropped_transmits: &device.dropped_transmits,
-                transmitted_errors: &device.transmitted_errors,
-                pending_error: &device.pending_error,
-            },
-        )))
+            device.transmit_token(reply),
+        ))
     }
 }
 impl Drop for EthernetReceiveBatch<'_, '_> {

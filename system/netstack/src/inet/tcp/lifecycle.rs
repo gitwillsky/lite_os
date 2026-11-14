@@ -10,7 +10,7 @@ pub(super) fn prepare_closed_transport(
         TcpMode::Closed { .. }
     ));
     let send_mss = network.tcp_endpoints[&id].handles[0].transport.send_mss();
-    network.queue_tcp_resets(super::super::now());
+    network.queue_tcp_resets(id, super::super::now());
     let state = network
         .tcp_endpoints
         .get_mut(&id)
@@ -88,6 +88,8 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
         } else if !retained {
             *tcp = placeholder_socket();
             tcp.set_send_mss(send_mss);
+            entry.ao = None;
+            entry.md5 = None;
             retained = true;
             true
         } else {
@@ -114,7 +116,7 @@ pub(super) fn disconnect_locked(network: &mut NetworkStack, id: usize) {
         bound,
         shutdown_read: false,
     };
-    network.queue_tcp_resets(super::super::now());
+    network.queue_tcp_resets(id, super::super::now());
     // reset 字节已独立移交或按预算丢弃；关闭的监听槽不应继续占用连接容量和流缓冲。
     network
         .tcp_endpoints
@@ -133,7 +135,7 @@ pub(in crate::inet) fn disconnect(socket: &InetSocket) -> Result<(), SocketError
     }
     disconnect_locked(&mut network, id);
     drop(network);
-    crate::worker::request_poll();
+    crate::worker::request_poll(socket.namespace.id());
     Ok(())
 }
 
@@ -153,12 +155,14 @@ pub(in crate::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize) {
             if entry.transport.can_recv() {
                 entry.transport.abort();
             } else {
-                entry.transport.close_orphan(at(super::super::now()));
+                entry.transport.close_orphan(super::super::now());
             }
         }
-        network.queue_tcp_resets(super::super::now());
-        super::io::reap_orphans(network);
-        crate::worker::request_poll();
+        network.queue_tcp_resets(id, super::super::now());
+        if network.tcp_endpoints[&id].orphan_finished() {
+            network.retire_tcp_orphan(id);
+        }
+        crate::worker::request_poll(network.domain);
         return;
     }
     disconnect_locked(network, id);

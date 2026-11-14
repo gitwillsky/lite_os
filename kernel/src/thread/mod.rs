@@ -24,7 +24,7 @@ use spin::{Mutex, Once};
 mod context_switch;
 mod processor;
 mod scheduler;
-pub(crate) use processor::{DeadlineError, IsolationError};
+pub(crate) use processor::{DeadlineError, IsolationError, replace_isolation};
 pub(crate) use scheduler::deadline::Parameters as DeadlineParameters;
 mod scheduling;
 mod timer_queue;
@@ -348,16 +348,6 @@ impl Thread {
         parameters: Option<scheduler::deadline::Parameters>,
     ) -> Result<(), DeadlineError> {
         processor::replace_deadline(self, parameters)
-    }
-
-    /// 授权 worker 的独占核配置；退出自动归还，None 恢复共享 affinity。
-    /// # Errors
-    /// 分区/预算冲突或线程已经退出。
-    pub(crate) fn set_isolation(
-        self: &Arc<Self>,
-        cpu: Option<crate::execution::cpu::CpuId>,
-    ) -> Result<(), processor::IsolationError> {
-        processor::replace_isolation(self, cpu)
     }
 
     /// CPU 时间与上下文切换计数。

@@ -40,18 +40,26 @@ impl DnsForwarding {
             ));
         }
         for (index, listener) in self.listen.iter().enumerate() {
-            let profile = configuration
-                .interfaces
-                .get(&listener.interface)
-                .ok_or_else(|| invalid(path, "listener interface does not exist"))?;
-            let configured = match listener.address {
-                IpAddr::V4(address) => profile.ipv4.as_ref().is_some_and(|ipv4| {
-                    ipv4.assignment == Assignment::Static && ipv4.address == address
-                }),
-                IpAddr::V6(address) => profile.ipv6.as_ref().is_some_and(|ipv6| {
-                    ipv6.addresses.iter().any(|entry| entry.address == address)
-                }),
-            };
+            let configured =
+                if let Some(profile) = configuration.interfaces.get(&listener.interface) {
+                    match listener.address {
+                        IpAddr::V4(address) => profile.ipv4.as_ref().is_some_and(|ipv4| {
+                            ipv4.assignment == Assignment::Static && ipv4.address == address
+                        }),
+                        IpAddr::V6(address) => profile.ipv6.as_ref().is_some_and(|ipv6| {
+                            ipv6.addresses.iter().any(|entry| entry.address == address)
+                        }),
+                    }
+                } else if let Some(gateway) = configuration.vlan_gateway(&listener.interface) {
+                    match listener.address {
+                        IpAddr::V4(address) => gateway.address == Some(address),
+                        IpAddr::V6(address) => {
+                            gateway.ipv6.iter().any(|entry| entry.address == address)
+                        }
+                    }
+                } else {
+                    return Err(invalid(path, "listener interface does not exist"));
+                };
             if !configured || self.listen[..index].contains(listener) {
                 return Err(invalid(
                     path,
@@ -77,7 +85,7 @@ impl DnsForwarding {
                 || upstream
                     .interface
                     .as_ref()
-                    .is_some_and(|name| !configuration.interfaces.contains_key(name))
+                    .is_some_and(|name| configuration.interface_reference(name).is_none())
                 || self.upstream[..index].contains(upstream)
                 || self.listen.iter().any(|listener| {
                     listener.address == upstream.address

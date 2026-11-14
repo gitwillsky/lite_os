@@ -260,7 +260,6 @@ mod ipv6_link {
         }
         let network = stack(&net).unwrap().lock().unwrap();
         assert!(network.udp_endpoints.is_empty());
-        assert_eq!(network.sockets.iter().count(), 0);
     }
     #[test]
     fn udp6_link_scope_checksum_neighbor_and_frozen_hop_limit_are_actual_wire_facts() {
@@ -447,7 +446,7 @@ mod ipv6_link {
         poll(&net, 1000);
         assert!(frames(&device).is_empty());
         assert!(
-            !stack(&net)
+            stack(&net)
                 .unwrap()
                 .lock()
                 .unwrap()
@@ -456,7 +455,7 @@ mod ipv6_link {
                 .ipv6
                 .as_ref()
                 .unwrap()
-                .due(1000),
+                .next_deadline(1000).is_none_or(|at| at > 1000),
             "capacity wait must not spin timer"
         );
         poll(&net, 10000);

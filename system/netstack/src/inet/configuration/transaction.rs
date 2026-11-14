@@ -8,14 +8,28 @@ use core::net::IpAddr;
 
 use super::{InterfaceChange, InterfaceState, SocketError, prefix_mask, stack};
 use crate::inet::route::PreparedRouteChange;
+use crate::inet::{
+    firewall::Firewall,
+    forward::{PolicySlot, RetainedPolicies},
+};
 use crate::namespace::Namespace;
 use crate::sync::{Mutex, TaskMutexWaitPreparation};
 use router_protocol::configuration::RouterAdvertisements;
 use router_protocol::interface::InterfaceConfiguration;
 
+mod gateways;
+use gateways::Gateways;
+
 enum Phase {
     Prepared,
     Applied,
+}
+
+struct FirewallChange {
+    firewall: Firewall,
+    // 保留模式发布前预留一个连接区间，实际边界取激活瞬间的连接身份。
+    retention: Option<PolicySlot>,
+    boundary: Option<u64>,
 }
 /// 在 NET owner 内唯一持有的事务；Box 只在准备阶段分配，空闲域不预留变更数组。
 pub(in crate::inet) struct Transaction {
@@ -30,21 +44,42 @@ pub(in crate::inet) struct Transaction {
     // OWNER: 与两族 FIB 同批发布；激活后保存前像，用于无分配撤销。
     selection_rules: Option<crate::inet::route::SelectionRules>,
     // OWNER: 预备完成的链与活动链交换，撤销无需编译或重新分配。
-    firewall: Option<crate::inet::firewall::Firewall>,
+    firewall: Option<FirewallChange>,
+    // 已完整准备的二层端口与 FDB，激活后保存前像。
+    switching: Option<crate::inet::switching::Switching>,
+    multicast: Option<crate::inet::forward::multicast::Table>,
+    gateways: Gateways,
     // OWNER: 准备时为目标值，激活时与 NET 唯一运行值交换为前像；确认丢弃、撤销换回，不保留第二份常驻状态。
     forwarding: Option<network_protocol::Forwarding>,
 }
 
 impl Transaction {
+    pub(super) fn pending_gateway_slots(&self) -> usize {
+        self.gateways.added.len()
+    }
+
+    pub(in crate::inet) fn reserves_gateway_name(&self, name: [u8; 16]) -> bool {
+        self.gateways
+            .added
+            .iter()
+            .any(|interface| interface.name == name)
+    }
+
+    pub(in crate::inet) fn forget_switching_port(&mut self, index: u32) {
+        if let Some(switching) = &mut self.switching {
+            switching.forget(index);
+        }
+    }
+
     /// 热插入先准备未发布侧的 IPv6 根；当前侧由同一次安装准备，任一 OOM 均不发布新接口。
     /// Prepared 时保存新意图，Applied 时保存逆向意图；地址交换保证两者使用同一个候选构造器。
     pub(super) fn include_interface<'a>(
-        &mut self,
+        &'a mut self,
         interfaces: impl Iterator<Item = &'a crate::inet::NetworkInterface> + Clone,
     ) -> Result<(), SocketError> {
         if self.ipv6_routes.is_some() {
             let routes = crate::inet::route::Ipv6Routes::prepare(
-                interfaces,
+                interfaces.chain(self.gateways.added.iter()),
                 &self.interfaces,
                 self.ipv6_routes.as_ref(),
                 None,
@@ -65,6 +100,18 @@ pub(crate) struct ConfigurationSession {
     wait: Mutex<TaskMutexWaitPreparation>,
 }
 
+/// 在活动 NET 中解析候选 VLAN 接口。实际发布仍由配置租约验证并执行。
+pub(crate) fn project_bridges(
+    scope: &Namespace,
+    ports: router_protocol::switching::Ports<'_>,
+    plans: router_protocol::interface::InterfaceConfigurationBatch<'_>,
+) -> Result<Vec<u8>, SocketError> {
+    let owner = stack(scope)?;
+    let network = owner.lock()?;
+    network.configuration_writable()?;
+    gateways::project(&network, ports, plans)
+}
+
 /// 在现有网络未改动时准备接口及可选转发策略；空接口只允许显式策略，None 保持运行值。
 /// 字段、冲突、设备、网关和全部内存先校验/准备；单独开关不构建 FIB 前像。
 ///
@@ -79,16 +126,26 @@ pub(crate) fn prepare_configuration(
     let ipv4 = batch.and_then(|batch| batch.forwarding());
     let ipv6 = batch.and_then(|batch| batch.ipv6_forwarding());
     let prerouting = batch.and_then(|batch| batch.prerouting());
+    let bridges = batch.and_then(|batch| batch.bridges());
+    let multicast = batch.and_then(|batch| batch.multicast());
     if plans.iter().len() == 0
         && ipv4.is_none()
         && ipv6.is_none()
         && forwarding.is_none()
         && prerouting.is_none()
+        && bridges.is_none()
+        && multicast.is_none()
     {
         return Err(SocketError::Invalid);
     }
     let owner = stack(scope)?;
-    let mut firewall = if let Some(chain) = prerouting {
+    let mut switching = bridges
+        .map(crate::inet::switching::Switching::prepare)
+        .transpose()?;
+    let multicast = multicast
+        .map(crate::inet::forward::multicast::Table::prepare)
+        .transpose()?;
+    let firewall = if let Some(chain) = prerouting {
         let inherited = owner.lock()?.firewall.classification();
         Some(crate::inet::firewall::Firewall::compile(chain, inherited)?)
     } else {
@@ -97,9 +154,75 @@ pub(crate) fn prepare_configuration(
     let mut wait = TaskMutexWaitPreparation::prepare().map_err(|_| SocketError::NoMemory)?;
     let mut network = owner.lock_prepared(&mut wait);
     network.configuration_writable()?;
+    let (mut gateways, gateway_plans) = if let Some((input, next)) = bridges.zip(switching.as_mut())
+    {
+        Gateways::prepare(&network, scope, input, plans, next)?
+    } else {
+        (Gateways::default(), Vec::new())
+    };
+    // 仅在同一 NET guard 内借用候选接口准备 FIB。成功或失败均先恢复活动接口表。
+    let original = network.interfaces.len();
+    network
+        .interfaces
+        .try_reserve(gateways.added.len())
+        .map_err(|_| SocketError::NoMemory)?;
+    network.interfaces.append(&mut gateways.added);
+    let prepared = prepare_locked(
+        &mut network,
+        batch,
+        forwarding,
+        &gateway_plans,
+        switching,
+        firewall,
+        multicast,
+    );
+    gateways.added.extend(network.interfaces.drain(original..));
+    let next_index = gateways.indices.end.max(network.next_ethernet_index);
+    let mut transaction = prepared?;
+    transaction.gateways = gateways;
+    let session = stage(scope, wait, &mut network, transaction)?;
+    network.next_ethernet_index = next_index;
+    Ok(session)
+}
+
+fn prepare_locked(
+    network: &mut crate::inet::NetworkStack,
+    batch: Option<network_protocol::ConfigurationBatch<'_>>,
+    forwarding: Option<network_protocol::Forwarding>,
+    gateway_plans: &[InterfaceConfiguration<'_>],
+    mut switching: Option<crate::inet::switching::Switching>,
+    mut firewall: Option<Firewall>,
+    multicast: Option<crate::inet::forward::multicast::Table>,
+) -> Result<Transaction, SocketError> {
+    let plans = batch.map(|batch| batch.interfaces()).unwrap_or_default();
+    let ipv4 = batch.and_then(|batch| batch.forwarding());
+    let ipv6 = batch.and_then(|batch| batch.ipv6_forwarding());
+    let prerouting = batch.and_then(|batch| batch.prerouting());
+    let bridges = batch.and_then(|batch| batch.bridges());
     // 等价候选留在 guard 之前声明的变量内，释放 NET 锁后再回收它的索引。
-    let replace_firewall = firewall.as_ref().is_some_and(|candidate| !network.firewall.same_program(candidate));
-    let changes = prepare_interfaces(&mut network, plans.iter())?;
+    let replace_firewall = firewall
+        .as_ref()
+        .is_some_and(|candidate| !network.firewall.same_program(candidate));
+    let changes = prepare_interfaces(network, plans.iter(), gateway_plans)?;
+    let candidate_switching = switching.as_ref().unwrap_or(&network.switching);
+    if let Some(multicast) = multicast
+        .as_ref()
+        .or_else(|| switching.as_ref().map(|_| &network.multicast_routes))
+    {
+        multicast.validate_interfaces(&network.interfaces, candidate_switching)?;
+    }
+    for interface in &network.interfaces {
+        if candidate_switching.contains(interface.index)
+            && changes
+                .iter()
+                .find(|change| change.index == interface.index)
+                .map_or(interface.state, |change| change.next)
+                .address
+                .is_some()
+        {
+            return Err(SocketError::Invalid);
+        }
+    }
     let (routes, mut dependencies) = if let Some(batch) = ipv4 {
         let (routes, dependencies) = network.routing.prepare_routes(
             batch.next_hops(),
@@ -233,35 +356,73 @@ pub(crate) fn prepare_configuration(
             }
         }
     }
-    stage(
-        scope,
-        wait,
-        &mut network,
-        Transaction {
-            id: crate::identity::next(),
-            phase: Phase::Prepared,
-            interfaces: changes,
-            dependencies,
-            routes,
-            ipv6_routes,
-            probes,
-            selection_rules,
-            firewall: if replace_firewall { firewall.take() } else { None },
-            forwarding,
+    if let Some(bridges) = bridges {
+        dependencies
+            .try_reserve_exact(network.interfaces.len().saturating_sub(dependencies.len()))
+            .map_err(|_| SocketError::NoMemory)?;
+        for port in bridges.iter() {
+            if network.interface(port.index)?.device.vlan().is_some() {
+                return Err(SocketError::Invalid);
+            }
+            if !dependencies.contains(&port.index) {
+                dependencies.push(port.index);
+            }
+        }
+    }
+    let replace_switching = switching
+        .as_ref()
+        .is_some_and(|next| !network.switching.same_ports(next));
+    let retention = if replace_firewall
+        && firewall
+            .as_ref()
+            .is_some_and(Firewall::preserves_connections)
+    {
+        Some(RetainedPolicies::try_reserve_node().map_err(|_| SocketError::NoMemory)?)
+    } else {
+        None
+    };
+    Ok(Transaction {
+        id: crate::identity::next(),
+        phase: Phase::Prepared,
+        interfaces: changes,
+        dependencies,
+        routes,
+        ipv6_routes,
+        probes,
+        selection_rules,
+        firewall: if replace_firewall {
+            firewall.take().map(|firewall| FirewallChange {
+                firewall,
+                retention,
+                boundary: None,
+            })
+        } else {
+            None
         },
-    )
+        switching: if replace_switching {
+            switching.take()
+        } else {
+            None
+        },
+        multicast,
+        gateways: Gateways::default(),
+        forwarding,
+    })
 }
 
 /// 只捕获候选接口与逆向状态，不申请第二份写租约或发布设备变化。
 fn prepare_interfaces<'a>(
     network: &mut crate::inet::NetworkStack,
     plans: impl ExactSizeIterator<Item = InterfaceConfiguration<'a>>,
+    gateway_plans: &[InterfaceConfiguration<'a>],
 ) -> Result<Vec<InterfaceChange>, SocketError> {
     let mut changes: Vec<InterfaceChange> = Vec::new();
     changes
-        .try_reserve_exact(plans.len())
+        .try_reserve_exact(plans.len() + gateway_plans.len())
         .map_err(|_| SocketError::NoMemory)?;
-    for plan in plans {
+    // Gateways::prepare 已校验并合并同一接口的委派行，每个接口只执行一次。
+    let ordinary = plans.filter(|plan| !gateway_plans.iter().any(|vlan| vlan.index == plan.index));
+    for plan in ordinary.chain(gateway_plans.iter().copied()) {
         plan.validate().map_err(|_| SocketError::Invalid)?;
         // 默认路由来自 RIB 已选集合；执行层不能再从接口描述另造一个路由 owner。
         if plan.route.is_some() {
@@ -404,7 +565,10 @@ pub(crate) fn prepare_next_hop(
             probes: None,
             selection_rules: None,
             firewall: None,
+            switching: None,
+            gateways: Gateways::default(),
             forwarding: None,
+            multicast: None,
         },
     )
 }
@@ -447,12 +611,15 @@ impl ConfigurationSession {
             .map(|change| change.index)
             .chain(transaction.dependencies.iter().copied())
         {
-            network.interface(index)?;
+            if !transaction.gateways.indices.contains(&index) {
+                network.interface(index)?;
+            }
         }
         let mut transaction = network
             .configuration
             .take()
             .expect("configuration identity checked");
+        transaction.gateways.publish(&mut network);
         let interfaces_changed = transaction.interfaces.iter().any(|change| {
             change.previous != change.next
                 || change.previous_mtu != change.next_mtu()
@@ -515,7 +682,16 @@ impl ConfigurationSession {
                     .expect("prepared IPv6 owner")
                     .exchange_addresses(addresses, crate::inet::now().total_millis().max(0) as u64);
             }
-            interface.apply_state();
+            interface.apply_state(change.previous);
+            if change.previous.up != change.next.up {
+                network.switching.forget(change.index);
+                if !change.next.up {
+                    network.retire_disabled_fragments(change.index);
+                }
+                if let Some(switching) = &mut transaction.switching {
+                    switching.forget(change.index);
+                }
+            }
         }
         if let Some(routes) = &mut transaction.ipv6_routes {
             routes.retain_interfaces(&network.interfaces);
@@ -527,25 +703,43 @@ impl ConfigurationSession {
         if let Some(rules) = &mut transaction.selection_rules {
             core::mem::swap(&mut network.selection_rules, rules);
         }
-        if let Some(firewall) = &mut transaction.firewall {
-            network.firewall.exchange(firewall);
+        if let Some(switching) = &mut transaction.switching {
+            network.exchange_switching(switching);
+        }
+        if let Some(multicast) = &mut transaction.multicast {
+            core::mem::swap(&mut network.multicast_routes, multicast);
+        }
+        if let Some(change) = &mut transaction.firewall {
+            if let Some(slot) = change.retention.take() {
+                let snapshot = network.firewall.snapshot();
+                change.boundary = network.forwarding.preserve_policy(snapshot, slot);
+            }
+            network.firewall.exchange(&mut change.firewall);
+        }
+        if transaction.forwarding.is_some() || transaction.firewall.is_some() {
+            // 未完成的包还没有通过入站规则。跨越关闭期间不能再把新片拼进旧包。
+            let policy = network.forwarding_enabled;
+            let tracking = (
+                network.firewall.inspection(false).required(),
+                network.firewall.inspection(true).required(),
+            );
+            network.forwarding.retain_fragments(policy, tracking);
         }
         // 路由与接口均已交换后提前重试；待发送报文使用当前根，不保留旧下一跳决定。
-        if transaction.routes.is_some() || transaction.ipv6_routes.is_some() || interfaces_changed {
-            network.retry_udp(crate::inet::now());
-            network.retry_raw(crate::inet::now());
-            network.retry_tcp(crate::inet::now());
+        let topology_changed = interfaces_changed || transaction.switching.is_some();
+        let paths_changed = transaction.routes.is_some()
+            || transaction.ipv6_routes.is_some()
+            || transaction.selection_rules.is_some()
+            || topology_changed;
+        if paths_changed {
+            network.publish_output_change();
+        } else if transaction.forwarding.is_some() || ra_changed {
             network.forwarding.retry(crate::inet::now());
-        }
-        if transaction.forwarding.is_some() {
-            network.forwarding.retry(crate::inet::now());
-        }
-        if transaction.forwarding.is_some() || ra_changed || interfaces_changed {
-            crate::worker::request_poll();
+            crate::worker::request_poll(self.scope.id());
         }
         transaction.phase = Phase::Applied;
         network.configuration = Some(transaction);
-        if interfaces_changed {
+        if topology_changed {
             network.notify_interfaces();
         }
         Ok(())
@@ -565,10 +759,25 @@ impl ConfigurationSession {
             return Err(SocketError::Invalid);
         }
         let retired = network.configuration.take();
+        if let Some(transaction) = &retired {
+            for &index in &transaction.gateways.retired {
+                network.remove_interface(index);
+            }
+        }
+        let retired_policies = if retired
+            .as_ref()
+            .is_some_and(|value| value.firewall.is_some())
+            && !network.firewall.preserves_connections()
+        {
+            Some(network.forwarding.take_policies())
+        } else {
+            None
+        };
         // 持久决定确认关闭后才清理转发待办；激活阶段必须保留以支持完整回滚。
         let policy = network.forwarding_enabled;
         network.forwarding.retain(policy);
         drop(network);
+        drop(retired_policies);
         drop(retired);
         Ok(())
     }
@@ -604,7 +813,7 @@ impl ConfigurationSession {
                             .as_mut()
                             .expect("prepared IPv6 owner")
                             .exchange_accept_ra(policy);
-                        crate::worker::request_poll();
+                        crate::worker::request_poll(self.scope.id());
                     }
                     if let Some(policy) = &mut change.advertise {
                         interface
@@ -612,7 +821,7 @@ impl ConfigurationSession {
                             .as_mut()
                             .expect("prepared IPv6 owner")
                             .exchange_advertisements(policy);
-                        crate::worker::request_poll();
+                        crate::worker::request_poll(self.scope.id());
                     }
                     if let Some(prefixes) = &mut change.delegated {
                         interface
@@ -620,7 +829,7 @@ impl ConfigurationSession {
                             .as_mut()
                             .expect("prepared IPv6 owner")
                             .exchange_delegated(prefixes);
-                        crate::worker::request_poll();
+                        crate::worker::request_poll(self.scope.id());
                     }
                     if let Some(addresses) = &mut change.ipv6 {
                         interface
@@ -632,7 +841,13 @@ impl ConfigurationSession {
                                 crate::inet::now().total_millis().max(0) as u64,
                             );
                     }
-                    interface.apply_state();
+                    interface.apply_state(change.next);
+                    if change.previous.up != change.next.up {
+                        network.switching.forget(change.index);
+                        if !change.previous.up {
+                            network.retire_disabled_fragments(change.index);
+                        }
+                    }
                 } else {
                     result = Err(SocketError::NoDevice);
                 }
@@ -652,8 +867,17 @@ impl ConfigurationSession {
             if let Some(rules) = &mut transaction.selection_rules {
                 core::mem::swap(&mut network.selection_rules, rules);
             }
-            if let Some(firewall) = &mut transaction.firewall {
-                network.firewall.exchange(firewall);
+            if let Some(switching) = &mut transaction.switching {
+                network.exchange_switching(switching);
+            }
+            if let Some(multicast) = &mut transaction.multicast {
+                core::mem::swap(&mut network.multicast_routes, multicast);
+            }
+            if let Some(change) = &mut transaction.firewall {
+                network.firewall.exchange(&mut change.firewall);
+                if let Some(boundary) = change.boundary.take() {
+                    network.forwarding.forget_policy(boundary);
+                }
             }
             if transaction
                 .dependencies
@@ -672,24 +896,34 @@ impl ConfigurationSession {
             {
                 result = Err(error);
             }
+            for index in transaction.gateways.indices.clone() {
+                network.remove_interface(index);
+            }
             if let Some(value) = &mut transaction.forwarding {
                 core::mem::swap(&mut network.forwarding_enabled, value);
-                crate::worker::request_poll();
             }
             let policy = network.forwarding_enabled;
+            if transaction.forwarding.is_some() || transaction.firewall.is_some() {
+                let tracking = (
+                    network.firewall.inspection(false).required(),
+                    network.firewall.inspection(true).required(),
+                );
+                network.forwarding.retain_fragments(policy, tracking);
+            }
             network.forwarding.retain(policy);
-            network.forwarding.retry(crate::inet::now());
             if transaction.routes.is_some()
                 || transaction.ipv6_routes.is_some()
+                || transaction.selection_rules.is_some()
+                || transaction.switching.is_some()
                 || !transaction.interfaces.is_empty()
             {
-                network.retry_udp(crate::inet::now());
-                network.retry_raw(crate::inet::now());
-                network.retry_tcp(crate::inet::now());
+                network.publish_output_change();
+            } else if transaction.forwarding.is_some() {
+                network.forwarding.retry(crate::inet::now());
+                crate::worker::request_poll(self.scope.id());
             }
-            if !transaction.interfaces.is_empty() {
+            if !transaction.interfaces.is_empty() || transaction.switching.is_some() {
                 network.notify_interfaces();
-                crate::worker::request_poll();
             }
         }
         drop(network);

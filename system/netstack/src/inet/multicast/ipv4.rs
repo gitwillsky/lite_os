@@ -99,12 +99,12 @@ impl Groups {
             }
         }
     }
-    pub(in crate::inet) fn due(&self, now: u64) -> bool {
+    pub(in crate::inet) fn next_deadline(&self) -> Option<u64> {
         [self.v1_until, self.v2_until]
             .into_iter()
             .flatten()
-            .any(|at| at <= now)
-            || self.groups.iter().any(|listener| listener.due(now))
+            .chain(self.groups.iter().filter_map(Listener::next_deadline))
+            .min()
     }
     fn version(&self, now: u64) -> u8 {
         if self.v1_until.is_some_and(|at| at > now) {
@@ -310,7 +310,6 @@ pub(in crate::inet) fn send(
     source: Ipv4Addr,
     report: Report<'_, Ipv4Addr>,
     version: u8,
-    timestamp: smoltcp::time::Instant,
 ) -> bool {
     let (destination, length) = match &report {
         Report::Legacy { group, leave } => (if *leave { ALL_ROUTERS } else { *group }, 32),
@@ -320,10 +319,10 @@ pub(in crate::inet) fn send(
         device.record_transmit_drop();
         return false;
     }
-    let Some(token) = device.transmit_shared(timestamp) else {
+    let Ok(token) = device.reserve(|_| 0) else {
         return false;
     };
-    let (_, failure) = token.consume_committed(length + 14, 0x0800, |frame| {
+    let submitted = token.consume_committed(length + 14, 0x0800, |frame| {
         let address = destination.octets();
         packet_wire::ethernet::EthernetHeader {
             source: device.mac_address(),
@@ -379,9 +378,10 @@ pub(in crate::inet) fn send(
         }
         .emit(packet)
         .expect("admitted IGMP size");
+        true
     });
-    if failure.is_some() {
+    if submitted.is_err() {
         device.record_transmit_drop();
     }
-    failure.is_none()
+    submitted.is_ok()
 }

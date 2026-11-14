@@ -33,8 +33,7 @@ struct SessionQueue {
     ring: Queue,
     ready: Event,
     progress: Event,
-    // OWNER: 每队列唯一 consumer；锁保护四条环的本端、ticket 和滞留 TX 前缀。
-    // 没有它，弹性服务线程会重复领取 used 或同时推进同一 SPSC 位置。
+    // OWNER: 每队列唯一 consumer；队列分派与控制开放/故障关闭用同一锁交接四条环及票据。
     consumer: Mutex<Consumer>,
 }
 struct NetworkSession {
@@ -210,7 +209,10 @@ impl NetworkSession {
                 }
                 let handles = alloc::vec![
                     state.ring.vmo().duplicate(rights::SAME)?.into_handle(),
-                    state.ready.duplicate(rights::SAME)?.into_handle(),
+                    state
+                        .ready
+                        .duplicate(rights::SIGNAL | rights::TRANSFER)?
+                        .into_handle(),
                     state.progress.duplicate(rights::SAME)?.into_handle()
                 ];
                 let mut consumer = state.consumer.lock();
@@ -265,7 +267,7 @@ impl SessionQueue {
         let mut produced = completed.completed;
         let mut again = completed.backlog && limit != 0;
         let count = self.ring.pop(Ring::Fill, &mut records)?;
-        for [slot, ticket, reserved, extra, last] in &records[..count] {
+        for (position, [slot, ticket, reserved, extra, last]) in records[..count].iter().enumerate() {
             let slot = u16::try_from(*slot).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             let held = state
                 .received
@@ -274,11 +276,13 @@ impl SessionQueue {
             if *ticket == 0 || *held != *ticket || *reserved != 0 || *extra != 0 || *last != 0 {
                 return Err(native_abi::ERR_BAD_STATE);
             }
-            device.release_receive(queue, slot).map_err(encode_error)?;
+            slots[position] = slot;
             *held = 0;
         }
         if count != 0 {
-            device.finish_receive_batch(queue).map_err(encode_error)?;
+            device
+                .release_receive_batch(queue, &slots[..count])
+                .map_err(encode_error)?;
         }
         again |= count == MAX_BATCH;
         if state.first == state.count {
@@ -443,20 +447,25 @@ impl Drop for NetworkSession {
             if stopped {
                 break;
             }
-            for (slot, ticket) in state.received.iter_mut().enumerate() {
-                if *ticket != 0
+            let mut slots = [0; MAX_BATCH];
+            for (batch, tickets) in state.received.chunks_mut(MAX_BATCH).enumerate() {
+                let mut count = 0;
+                for (position, ticket) in tickets.iter_mut().enumerate() {
+                    if *ticket != 0 {
+                        slots[count] = (batch * MAX_BATCH + position) as u16;
+                        count += 1;
+                        *ticket = 0;
+                    }
+                }
+                if count != 0
                     && self
                         .device
-                        .release_receive(index as u16, slot as u16)
+                        .release_receive_batch(index as u16, &slots[..count])
                         .is_err()
                 {
                     stopped = true;
                     break;
                 }
-                *ticket = 0;
-            }
-            if !stopped && self.device.finish_receive_batch(index as u16).is_err() {
-                stopped = true;
             }
         }
         // 会话拥有本次硬件配置；即使正常 drain 完毕也撤销 RX DMA，下一次 OPEN 重新配置。
@@ -510,24 +519,6 @@ pub fn publish(
                     .clone()
                     .open(configuration)
                     .map_err(encode_error)?;
-                let mut hardware = Vec::new();
-                hardware
-                    .try_reserve_exact(device.queue_count() as usize)
-                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                for queue in 0..device.queue_count() {
-                    let event =
-                        Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                    let notify = event.clone();
-                    device.bind_activity(
-                        queue,
-                        Arc::try_new(move || {
-                            let _ = notify.signal(0, signals::SIGNALED);
-                        })
-                        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-                    );
-                    hardware.push(event);
-                }
-
                 let session = Arc::try_new(SessionState::new(
                     NetworkSession::new(device.clone(), rss)?,
                     end,
@@ -548,14 +539,23 @@ pub fn publish(
                 let watch = server.duplicate(rights::SAME)?;
                 let mut events = Vec::new();
                 events
-                    .try_reserve_exact(hardware.len() * 2)
+                    .try_reserve_exact(session.get().queues.len())
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                for (queue, event) in session.get().queues.iter().zip(&hardware) {
+                for (index, queue) in session.get().queues.iter().enumerate() {
+                    // 客户端 kick、设备进展和预算耗尽都是同一独占队列的待办。
+                    // 这里只共享唤醒提示，环与票据仍由实际生产者发表。
+                    let notify = queue.ready.duplicate(rights::SIGNAL)?;
+                    device.bind_activity(
+                        index as u16,
+                        Arc::try_new(move || {
+                            let _ = notify.signal(0, signals::SIGNALED);
+                        })
+                        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                    );
                     events.push(queue.ready.duplicate(rights::SAME)?);
-                    events.push(event.duplicate(rights::SAME)?);
                 }
                 let active = session.clone();
-                let activity = Arc::try_new(move |source: usize| active.get().dispatch(source / 2))
+                let activity = Arc::try_new(move |source: usize| active.get().dispatch(source))
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 let handler = Arc::try_new(
                     move |ordinal: u32, request: &mut Reader<'_>, handles, reply: &mut Writer| {
@@ -567,6 +567,7 @@ pub fn publish(
                     server,
                     usize::from(device.queue_count()) + 1,
                     b"net-server",
+                    Some(super::FORWARDING_WORKER_PRIORITY),
                     handler,
                     events,
                     activity,

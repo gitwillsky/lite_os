@@ -4,12 +4,14 @@ use crate::namespace::{NamespaceAuthority, NamespaceError, UserNamespace};
 use crate::sync::{Mutex, Once};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::num::NonZeroU128;
 use core::sync::atomic::{AtomicU32, Ordering};
 use network_protocol::RemoteNamespace;
 
 /// 网络域 owning UserNS 与 optmem policy；initial owner 在用户 Task 构造前装配。
 pub(crate) struct NetNamespace {
     id: u64,
+    managed_instance: Option<NonZeroU128>,
     user: Arc<UserNamespace>,
     // OWNER: Linux net.core.sysctl_optmem_max 的唯一 scalar；不复制到各个 socket。
     optmem_max: AtomicU32,
@@ -37,6 +39,7 @@ impl NetNamespace {
         )?;
         let namespace = Arc::try_new(Self {
             id: crate::namespace::next_namespace_id(),
+            managed_instance: None,
             user,
             optmem_max: AtomicU32::new(128 * 1024),
             protocol: Mutex::new(None),
@@ -49,6 +52,36 @@ impl NetNamespace {
         })?;
         namespace.install_protocol(protocol)?;
         register(&namespace)?;
+        Ok(namespace)
+    }
+
+    /// Adopt the configured router instance. Concurrent opens reuse one Linux namespace owner.
+    /// # Errors
+    /// A new owner or its weak registration could not be allocated.
+    pub(crate) fn adopt_managed(
+        instance: NonZeroU128,
+        protocol: RemoteNamespace,
+    ) -> Result<Arc<Self>, NamespaceError> {
+        let mut namespaces = NAMESPACES.lock();
+        if let Some(existing) = namespaces
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|namespace| namespace.managed_instance == Some(instance))
+        {
+            return Ok(existing);
+        }
+        reserve_registration(&mut namespaces)?;
+        let protocol = Arc::try_new(protocol).map_err(|_| NamespaceError::OutOfMemory)?;
+        let namespace = Arc::try_new(Self {
+            id: crate::namespace::next_namespace_id(),
+            managed_instance: Some(instance),
+            user: crate::namespace::initial_user(),
+            optmem_max: AtomicU32::new(128 * 1024),
+            protocol: Mutex::new(Some(protocol)),
+            _charge: None,
+        })
+        .map_err(|_| NamespaceError::OutOfMemory)?;
+        namespaces.push(Arc::downgrade(&namespace));
         Ok(namespace)
     }
     pub(crate) fn id(&self) -> u64 {
@@ -73,6 +106,10 @@ impl NetNamespace {
     }
     pub(crate) fn is_initial(&self) -> bool {
         self.id == 6
+    }
+    /// 路由器管理的接口和路由仅向 Linux 投影，配置归原生配置 owner。
+    pub(crate) fn is_managed(&self) -> bool {
+        self.is_initial() || self.managed_instance.is_some()
     }
     pub(crate) fn user_namespace(&self) -> Arc<UserNamespace> {
         self.user.clone()
@@ -110,6 +147,7 @@ pub(crate) fn initialize_net() -> Result<(), NamespaceError> {
         .try_call_once(|| {
             Arc::try_new(NetNamespace {
                 id: 6,
+                managed_instance: None,
                 user: crate::namespace::initial_user(),
                 optmem_max: AtomicU32::new(128 * 1024),
                 protocol: Mutex::new(None),
@@ -150,15 +188,19 @@ static NAMESPACES: Mutex<Vec<Weak<NetNamespace>>> = Mutex::new(Vec::new());
 
 fn register(namespace: &Arc<NetNamespace>) -> Result<(), NamespaceError> {
     let mut namespaces = NAMESPACES.lock();
-    namespaces.retain(|namespace| namespace.strong_count() != 0);
-    namespaces
-        .try_reserve(1)
-        .map_err(|_| NamespaceError::OutOfMemory)?;
+    reserve_registration(&mut namespaces)?;
     namespaces.push(Arc::downgrade(namespace));
     Ok(())
 }
 
-/// 当前存活的非初始网络域（初始域另由 [`initial_net`] 取得）。
+fn reserve_registration(namespaces: &mut Vec<Weak<NetNamespace>>) -> Result<(), NamespaceError> {
+    namespaces.retain(|namespace| namespace.strong_count() != 0);
+    namespaces
+        .try_reserve(1)
+        .map_err(|_| NamespaceError::OutOfMemory)
+}
+
+/// 需要 linuxd 在 netstack 重启后重建的独立域。受管域留在旧实例，直到旧成员退出。
 ///
 /// # Errors
 ///
@@ -168,6 +210,11 @@ pub(in crate::net) fn live_namespaces() -> Result<Vec<Arc<NetNamespace>>, Namesp
     let mut live = Vec::new();
     live.try_reserve_exact(namespaces.len())
         .map_err(|_| NamespaceError::OutOfMemory)?;
-    live.extend(namespaces.iter().filter_map(Weak::upgrade));
+    live.extend(
+        namespaces
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|namespace| namespace.managed_instance.is_none()),
+    );
     Ok(live)
 }

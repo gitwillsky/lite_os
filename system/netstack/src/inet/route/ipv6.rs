@@ -1,6 +1,6 @@
 //! IPv6 的单一执行索引；自动地址与受管路由同根发布，不复制 DAD/邻居或按前缀复制路径。
 use super::super::{NetworkInterface, configuration::InterfaceChange};
-use super::{TABLE_LOCAL, TABLE_MAIN, group, nexthop};
+use super::{Ipv6Interfaces, TABLE_LOCAL, TABLE_MAIN, group, nexthop};
 use alloc::{sync::Arc, vec::Vec};
 use core::net::Ipv6Addr;
 use network_protocol::{
@@ -9,6 +9,7 @@ use network_protocol::{
 };
 use prefix_index::{Address, Poptrie};
 mod admission;
+mod observation;
 pub(super) use admission::member as admit_member;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Path {
@@ -24,6 +25,7 @@ struct Entry {
     // 受管路由在同一前缀内按下发顺序选路。原始 metric 只用于查询，不代表管理距离。
     order: u32,
 }
+
 impl Entry {
     fn managed(&self) -> bool {
         matches!(self.path, Path::Managed(_) | Path::Reject)
@@ -47,7 +49,7 @@ enum GatewayChoice {
 
 enum RouteLookup {
     Output(Option<u32>),
-    Input(Option<u32>),
+    Input(Option<u32>, u64),
 }
 
 struct ManagedPaths {
@@ -104,6 +106,7 @@ pub(in crate::inet) struct Ipv6Selection {
 pub(in crate::inet) struct Ipv6InterfaceFacts<'a> {
     pub(in crate::inet) index: u32,
     pub(in crate::inet) up: bool,
+    pub(in crate::inet) carrier: bool,
     pub(in crate::inet) mtu: usize,
     pub(in crate::inet) addresses: Option<&'a super::super::ipv6::InterfaceAddresses>,
 }
@@ -112,12 +115,14 @@ impl<'a> Ipv6InterfaceFacts<'a> {
         Self {
             index: interface.index,
             up: interface.state.up,
+            carrier: interface.has_carrier(),
             mtu: interface.device.ip_mtu(),
             addresses: interface.ipv6.as_ref(),
         }
     }
     fn usable(self) -> bool {
         self.up
+            && self.carrier
             && self.mtu >= 1280
             && self
                 .addresses
@@ -129,7 +134,7 @@ pub(in crate::inet) fn default_multicast_interface<'a>(
     interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>>,
 ) -> Option<u32> {
     interfaces
-        .filter(|entry| entry.up && entry.mtu >= 1280 && entry.addresses.is_some())
+        .filter(|entry| entry.up && entry.carrier && entry.mtu >= 1280 && entry.addresses.is_some())
         .min_by_key(|entry| (entry.index == 1, entry.index))
         .map(|entry| entry.index)
 }
@@ -180,6 +185,10 @@ fn automatic(
     }
 }
 impl Ipv6Routes {
+    pub(in crate::inet) fn prefix_index(&self) -> &Poptrie<u128> {
+        &self.index
+    }
+
     /// 候选先于发布准备；base 保留未替换的受管声明，显式空 forwarding 撤回全部受管声明。
     pub(in crate::inet) fn prepare<'a>(
         interfaces: impl Iterator<Item = &'a NetworkInterface> + Clone,
@@ -242,12 +251,16 @@ impl Ipv6Routes {
             )
         });
         entries.dedup();
-        let index =
-            Poptrie::build(entries.iter().map(Entry::prefix)).map_err(|error| match error {
-                prefix_index::Error::NoMemory => SocketError::NoMemory,
-                prefix_index::Error::NoSpace => SocketError::NoSpace,
-                prefix_index::Error::Invalid => SocketError::Invalid,
-            })?;
+        let prefixes = entries.iter().map(Entry::prefix);
+        let index = match base {
+            Some(base) => base.index.rebuild(prefixes),
+            None => Poptrie::build(prefixes),
+        }
+        .map_err(|error| match error {
+            prefix_index::Error::NoMemory => SocketError::NoMemory,
+            prefix_index::Error::NoSpace => SocketError::NoSpace,
+            prefix_index::Error::Invalid => SocketError::Invalid,
+        })?;
         let count = groups
             .as_ref()
             .map_or(0, |paths| paths.groups.slot_count())
@@ -265,201 +278,6 @@ impl Ipv6Routes {
         };
         routes.refresh_active();
         Ok(routes)
-    }
-    /// 捕获当前根及完整路径组；热拔出后只投影仍存在的成员，不复制逐前缀路径或暴露槽身份。
-    pub(in crate::inet) fn snapshot_bytes(
-        &self,
-        interfaces: &[NetworkInterface],
-    ) -> Result<Vec<u8>, SocketError> {
-        use network_protocol::routes::{NextHopConfiguration, NextHopMember};
-        let mut automatic = Vec::new();
-        automatic
-            .try_reserve_exact(interfaces.len())
-            .map_err(|_| SocketError::NoMemory)?;
-        automatic.resize(interfaces.len(), u32::MAX);
-        let mut managed = Vec::new();
-        managed
-            .try_reserve_exact(
-                self.groups
-                    .as_ref()
-                    .map_or(0, |paths| paths.groups.slot_count()),
-            )
-            .map_err(|_| SocketError::NoMemory)?;
-        managed.resize(
-            self.groups
-                .as_ref()
-                .map_or(0, |paths| paths.groups.slot_count()),
-            u32::MAX,
-        );
-        let position = |index| {
-            interfaces
-                .binary_search_by_key(&index, |interface| interface.index)
-                .expect("live IPv6 route interface")
-        };
-        for entry in &self.entries {
-            match entry.path {
-                Path::Local(index) | Path::Direct(index) => automatic[position(index)] = 0,
-                Path::Managed(id) => managed[id.get() as usize - 1] = 0,
-                Path::Reject => {}
-            }
-        }
-        let present = |index| {
-            interfaces
-                .binary_search_by_key(&index, |interface| interface.index)
-                .is_ok()
-        };
-        let automatic_count = automatic.iter().filter(|index| **index == 0).count();
-        let member_count = self
-            .groups
-            .iter()
-            .flat_map(|paths| paths.groups.active_groups())
-            .filter(|(id, _)| managed[id.get() as usize - 1] == 0)
-            .try_fold(automatic_count, |count, (_, members)| {
-                count
-                    .checked_add(
-                        members
-                            .iter()
-                            .filter(|member| present(member.interface_index))
-                            .count(),
-                    )
-                    .ok_or(SocketError::NoSpace)
-            })?;
-        // 临时连续成员只按路径组捕获；不可变字典仍可含已退出成员，不能把它们写进新快照。
-        let mut members = Vec::new();
-        members
-            .try_reserve_exact(member_count)
-            .map_err(|_| SocketError::NoMemory)?;
-        let mut ranges = Vec::new();
-        ranges
-            .try_reserve_exact(
-                automatic_count
-                    .checked_add(managed.iter().filter(|index| **index == 0).count())
-                    .ok_or(SocketError::NoSpace)?,
-            )
-            .map_err(|_| SocketError::NoMemory)?;
-        for (ordinal, index) in automatic
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, index)| **index == 0)
-        {
-            *index = u32::try_from(ranges.len()).map_err(|_| SocketError::NoSpace)?;
-            let start = members.len();
-            members.push(NextHopMember {
-                interface_index: interfaces[ordinal].index,
-                gateway: None,
-                on_link: false,
-                weight: 1,
-            });
-            ranges.push(start..members.len());
-        }
-        for (id, paths) in self
-            .groups
-            .iter()
-            .flat_map(|paths| paths.groups.active_groups())
-        {
-            let index = &mut managed[id.get() as usize - 1];
-            if *index != 0 {
-                continue;
-            }
-            *index = u32::try_from(ranges.len()).map_err(|_| SocketError::NoSpace)?;
-            let start = members.len();
-            members.extend(
-                paths
-                    .iter()
-                    .filter(|member| present(member.interface_index))
-                    .copied(),
-            );
-            assert!(
-                members.len() > start,
-                "live IPv6 route has no remaining path"
-            );
-            ranges.push(start..members.len());
-        }
-        // 通告候选归接口的寿命状态，快照在同一 guard 中捕获其当前路径。
-        let now = crate::inet::now().total_millis().max(0) as u64;
-        let learned = interfaces.iter().flat_map(|interface| {
-            let usable = Ipv6InterfaceFacts::capture(interface).usable();
-            interface.ipv6.iter().flat_map(move |owner| {
-                owner
-                    .learned_routes(now)
-                    .filter(move |route| route.protocol != 16 || usable)
-                    .map(move |route| (interface.index, route))
-            })
-        });
-        let count = learned.clone().count();
-        u32::try_from(ranges.len().saturating_add(count)).map_err(|_| SocketError::NoSpace)?;
-        let first_learned_group = ranges.len();
-        members
-            .try_reserve_exact(count)
-            .map_err(|_| SocketError::NoMemory)?;
-        ranges
-            .try_reserve_exact(count)
-            .map_err(|_| SocketError::NoMemory)?;
-        for (interface_index, route) in learned.clone() {
-            let start = members.len();
-            members.push(NextHopMember {
-                interface_index,
-                gateway: route.gateway,
-                on_link: false,
-                weight: 1,
-            });
-            ranges.push(start..members.len());
-        }
-        let learned_rows = learned.enumerate().map(|(offset, (_, route))| {
-            (
-                RouteAttributes {
-                    destination: route.network,
-                    prefix_length: route.length,
-                    table: if route.local { TABLE_LOCAL } else { TABLE_MAIN },
-                    metric: route.metric,
-                    scope: if route.local {
-                        254
-                    } else if route.gateway.is_none() {
-                        253
-                    } else {
-                        0
-                    },
-                    protocol: route.protocol,
-                    kind: if route.local {
-                        RouteKind::Local
-                    } else {
-                        RouteKind::Unicast
-                    },
-                    preferred_source: None,
-                    metrics: RouteMetrics::default(),
-                },
-                Some((first_learned_group + offset) as u32),
-                false,
-            )
-        });
-        network_protocol::RoutingSnapshot::encode(
-            interfaces
-                .iter()
-                .map(|interface| (interface.index, interface.name)),
-            ranges.iter().enumerate().map(|(index, range)| {
-                NextHopConfiguration::new(index as u64 + 1, &members[range.clone()])
-            }),
-            self.entries
-                .iter()
-                .map(|entry| {
-                    let group = match entry.path {
-                        Path::Local(index) | Path::Direct(index) => {
-                            Some(automatic[position(index)])
-                        }
-                        Path::Managed(id) => Some(managed[id.get() as usize - 1]),
-                        Path::Reject => None,
-                    };
-                    (entry.route, group, false)
-                })
-                .chain(learned_rows),
-        )
-        .map_err(|error| {
-            if error == native_runtime::native_abi::ERR_NO_MEMORY {
-                SocketError::NoMemory
-            } else {
-                SocketError::Invalid
-            }
-        })
     }
     pub(in crate::inet) fn remove_interface(&mut self, interfaces: &[NetworkInterface]) {
         self.retain_interfaces(interfaces);
@@ -538,7 +356,7 @@ impl Ipv6Routes {
             destination,
             outgoing,
             now,
-            interfaces.iter().map(Ipv6InterfaceFacts::capture),
+            Ipv6Interfaces::live(interfaces),
         )
     }
     fn preferred_recovery(
@@ -558,7 +376,7 @@ impl Ipv6Routes {
         destination: Ipv6Addr,
         outgoing: Option<u32>,
         now: u64,
-        interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>> + Clone,
+        interfaces: Ipv6Interfaces<'a>,
     ) -> Result<Ipv6Selection, SocketError> {
         self.select_table(
             source,
@@ -574,10 +392,10 @@ impl Ipv6Routes {
     pub(in crate::inet) fn select_transit<'a>(
         &self,
         source: Ipv6Addr,
-        destination: Ipv6Addr,
+        (destination, probe): (Ipv6Addr, u64),
         (ingress, mark, rules): (u32, u32, &[router_protocol::policy_routing::Rule]),
         now: u64,
-        interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>> + Clone,
+        interfaces: Ipv6Interfaces<'a>,
     ) -> Result<Ipv6Selection, SocketError> {
         let outgoing = destination.is_unicast_link_local().then_some(ingress);
         self.select_with_policy(
@@ -585,7 +403,7 @@ impl Ipv6Routes {
             now,
             interfaces,
             (ingress, mark, rules),
-            RouteLookup::Input,
+            |table| RouteLookup::Input(table, probe),
         )
     }
 
@@ -597,7 +415,7 @@ impl Ipv6Routes {
         outgoing: Option<u32>,
         now: u64,
         (mark, rules): (u32, &[router_protocol::policy_routing::Rule]),
-        interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>> + Clone,
+        interfaces: Ipv6Interfaces<'a>,
     ) -> Result<Ipv6Selection, SocketError> {
         if rules.is_empty() || destination.is_multicast() {
             return self.select_facts(source, destination, outgoing, now, interfaces);
@@ -615,19 +433,17 @@ impl Ipv6Routes {
         &self,
         (source, destination, outgoing): (Ipv6Addr, Ipv6Addr, Option<u32>),
         now: u64,
-        interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>> + Clone,
+        interfaces: Ipv6Interfaces<'a>,
         (ingress, mark, rules): (u32, u32, &[router_protocol::policy_routing::Rule]),
         lookup: impl Fn(Option<u32>) -> RouteLookup,
     ) -> Result<Ipv6Selection, SocketError> {
-        let has_source = !source.is_unspecified();
-        let mut matching = rules.iter().filter(|rule| {
-            (has_source || rule.prefix_length == 0) && rule.matches(source.into(), ingress, mark)
-        });
+        let mut matching = rules
+            .iter()
+            .filter(|rule| super::policy::matches_source(rule, source.into(), ingress, mark));
         if let Some(first) = matching.next()
             // 本机地址在选表规则之前处理。转发报文排队期间也可能新配置本机地址。
-            && !interfaces.clone().any(|interface| {
-                outgoing.is_none_or(|index| index == interface.index)
-                    && interface.usable()
+            && !interfaces.scoped(outgoing).any(|interface| {
+                interface.usable()
                     && interface.addresses.is_some_and(|owner| owner.has_address(destination))
             })
         {
@@ -637,7 +453,7 @@ impl Ipv6Routes {
                     destination,
                     outgoing,
                     now,
-                    interfaces.clone(),
+                    interfaces,
                     lookup(Some(rule.table)),
                 );
                 if !matches!(result, Err(SocketError::NetworkUnreachable)) {
@@ -654,22 +470,23 @@ impl Ipv6Routes {
         destination: Ipv6Addr,
         outgoing: Option<u32>,
         now: u64,
-        interfaces: impl Iterator<Item = Ipv6InterfaceFacts<'a>> + Clone,
+        interfaces: Ipv6Interfaces<'a>,
         lookup: RouteLookup,
     ) -> Result<Ipv6Selection, SocketError> {
-        let table = match lookup {
-            RouteLookup::Output(table) | RouteLookup::Input(table) => table,
+        let (table, probe) = match lookup {
+            RouteLookup::Output(table) => (table, 0),
+            RouteLookup::Input(table, probe) => (table, probe),
         };
         if table.is_none() && destination.is_multicast() {
             if matches!(destination.octets()[1] & 15, 0 | 15) {
                 return Err(SocketError::Invalid);
             }
             let index = outgoing
-                .or_else(|| default_multicast_interface(interfaces.clone()))
+                .or_else(|| default_multicast_interface(interfaces.iter()))
                 .ok_or(SocketError::NetworkUnreachable)?;
             if !interfaces
-                .clone()
-                .any(|entry| entry.index == index && entry.usable())
+                .get(index)
+                .is_some_and(Ipv6InterfaceFacts::usable)
             {
                 return Err(SocketError::NetworkUnreachable);
             }
@@ -691,9 +508,10 @@ impl Ipv6Routes {
         let mut failed = None;
         let mut retry = None;
         if table.is_none() {
-            for interface in interfaces.clone().filter(|interface| {
-                outgoing.is_none_or(|index| index == interface.index) && interface.usable()
-            }) {
+            for interface in interfaces
+                .scoped(outgoing)
+                .filter(|interface| interface.usable())
+            {
                 let owner = interface.addresses.expect("usable IPv6 interface");
                 if source.is_unicast_link_local() && !owner.has_address(source) {
                     continue;
@@ -765,7 +583,7 @@ impl Ipv6Routes {
         let mut managed_probe = None;
         let mut managed_failed = None;
         let mut managed_retry = None;
-        for prefix in self.index.matching(u128::from(destination)) {
+        for prefix in self.index.matching_from(u128::from(destination), probe) {
             if let Some(candidate) = live
                 && (candidate.2.length > prefix.length
                     || candidate.2.local && candidate.2.length == prefix.length)
@@ -799,10 +617,7 @@ impl Ipv6Routes {
                         if outgoing.is_some_and(|bound| bound != index) {
                             continue;
                         }
-                        let Some(interface) = interfaces
-                            .clone()
-                            .find(|interface| interface.index == index)
-                        else {
+                        let Some(interface) = interfaces.get(index) else {
                             continue;
                         };
                         if !interface.usable() {
@@ -836,8 +651,8 @@ impl Ipv6Routes {
                                 return None;
                             }
                             let interface = interfaces
-                                .clone()
-                                .find(|interface| interface.index == index && interface.usable())?;
+                                .get(index)
+                                .filter(|interface| interface.usable())?;
                             let owner = interface.addresses?;
                             (!source.is_unicast_link_local() || owner.has_address(source))
                                 .then_some(owner)
@@ -846,20 +661,15 @@ impl Ipv6Routes {
                             group::select_members(
                                 members,
                                 || group::hash_ipv6(source, destination, seed),
-                                |path| {
-                                    let Some(owner) = owner(path.interface_index, bound, source)
-                                    else {
-                                        return false;
-                                    };
-                                    match mode {
-                                        GatewayChoice::Configured => true,
-                                        GatewayChoice::Available => path
-                                            .gateway
-                                            .is_none_or(|gateway| owner.router_rank(gateway).0),
-                                        GatewayChoice::Due => path.gateway.is_some_and(|gateway| {
-                                            owner.router_probe_due(gateway, now)
-                                        }),
-                                    }
+                                |index| owner(index, bound, source),
+                                |path, owner| match mode {
+                                    GatewayChoice::Configured => true,
+                                    GatewayChoice::Available => path
+                                        .gateway
+                                        .is_none_or(|gateway| owner.router_rank(gateway).0),
+                                    GatewayChoice::Due => path.gateway.is_some_and(|gateway| {
+                                        owner.router_probe_due(gateway, now)
+                                    }),
                                 },
                             )
                         };

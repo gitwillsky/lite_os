@@ -85,29 +85,45 @@ pub(crate) fn transport_checksum_parts<'a>(
     length: usize,
     parts: impl Iterator<Item = &'a [u8]>,
 ) -> Result<u16, crate::PacketError> {
-    use core::net::IpAddr;
     let mut state = InternetChecksum::new();
-    match (source, destination) {
-        (IpAddr::V4(source), IpAddr::V4(destination)) => {
-            let length = u16::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
-            state.add(&source.octets());
-            state.add(&destination.octets());
-            state.add(&[0, protocol]);
-            state.add(&length.to_be_bytes());
-        }
-        (IpAddr::V6(source), IpAddr::V6(destination)) => {
-            let length = u32::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
-            state.add(&source.octets());
-            state.add(&destination.octets());
-            state.add(&length.to_be_bytes());
-            state.add(&[0, 0, 0, protocol]);
-        }
-        _ => return Err(crate::PacketError::Malformed),
-    }
+    transport_pseudo_header(source, destination, protocol, length, |bytes| {
+        state.add(bytes)
+    })?;
     for bytes in parts {
         state.add(bytes);
     }
     Ok(state.checksum())
+}
+
+/// 按线路顺序把传输层伪头片段送入 `add`。checksum 和认证共用同一地址及长度编码。
+/// # Errors
+/// 地址族不一致或长度超出伪头字段时返回 Malformed，且不调用 `add`。
+pub fn transport_pseudo_header(
+    source: core::net::IpAddr,
+    destination: core::net::IpAddr,
+    protocol: u8,
+    length: usize,
+    mut add: impl FnMut(&[u8]),
+) -> Result<(), crate::PacketError> {
+    use core::net::IpAddr;
+    match (source, destination) {
+        (IpAddr::V4(source), IpAddr::V4(destination)) => {
+            let length = u16::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
+            add(&source.octets());
+            add(&destination.octets());
+            add(&[0, protocol]);
+            add(&length.to_be_bytes());
+        }
+        (IpAddr::V6(source), IpAddr::V6(destination)) => {
+            let length = u32::try_from(length).map_err(|_| crate::PacketError::Malformed)?;
+            add(&source.octets());
+            add(&destination.octets());
+            add(&length.to_be_bytes());
+            add(&[0, 0, 0, protocol]);
+        }
+        _ => return Err(crate::PacketError::Malformed),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

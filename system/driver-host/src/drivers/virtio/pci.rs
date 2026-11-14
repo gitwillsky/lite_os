@@ -53,8 +53,7 @@ impl PciTransport {
     ///
     /// # Returns
     ///
-    /// A transport whose accesses stay inside capability windows; None if the queue count
-    /// cannot be read, is zero, or notification storage cannot be allocated.
+    /// A transport whose accesses stay inside capability windows.
     pub(in crate::drivers::virtio) fn new(
         common: MmioBus,
         notify: MmioBus,
@@ -62,23 +61,33 @@ impl PciTransport {
         device: Option<MmioBus>,
         notify_multiplier: u32,
         msix: Option<Msix>,
-    ) -> Option<Self> {
-        let queues = usize::from(common.read_u16(NUM_QUEUES).ok()?);
-        if queues == 0 {
-            return None;
-        }
-        let mut queue_notifications = Vec::new();
-        queue_notifications.try_reserve_exact(queues).ok()?;
-        queue_notifications.resize_with(queues, || AtomicUsize::new(usize::MAX));
-        Some(Self {
+    ) -> Self {
+        Self {
             common,
             notify,
             isr,
             device,
             notify_multiplier,
             msix,
-            queue_notifications,
-        })
+            queue_notifications: Vec::new(),
+        }
+    }
+
+    /// 在 FEATURES_OK 之后且 transport 仍独占时，按协商结果分配各队列的通知位置。
+    /// 例如 virtio-net 可在启用 MQ/RSS 后才公布额外的队列。
+    ///
+    /// # Returns
+    ///
+    /// 队列数不可读、为零或无法分配通知位置时返回 None。
+    pub(super) fn prepare_queues(&mut self) -> Option<()> {
+        let queues = usize::from(self.common.read_u16(NUM_QUEUES).ok()?);
+        if queues == 0 {
+            return None;
+        }
+        self.queue_notifications.try_reserve_exact(queues).ok()?;
+        self.queue_notifications
+            .resize_with(queues, || AtomicUsize::new(usize::MAX));
+        Some(())
     }
 
     pub(crate) fn initialize(&self) -> Result<(), BusError> {
@@ -282,9 +291,12 @@ mod tests {
         )
         .unwrap();
         let isr = MmioBus::new(&raw mut isr_byte as usize, 1).unwrap();
-        common.write_u16(NUM_QUEUES, 2).unwrap();
-        let device = PciTransport::new(common, notify, isr, None, 2, None).unwrap();
+        common.write_u16(NUM_QUEUES, 1).unwrap();
+        let mut device = PciTransport::new(common, notify, isr, None, 2, None);
         device.initialize().unwrap();
+        // 功能协商使设备公布第二个队列，通知位置必须覆盖协商后的所有队列。
+        common.write_u16(NUM_QUEUES, 2).unwrap();
+        device.prepare_queues().unwrap();
         assert_eq!(device.notify_queue(0), Err(BusError::InvalidAddress));
         for queue in 0..2 {
             // 用 RAM 寄存器窗口提供设备事实：每次切换到尚未启用的 queue bank。

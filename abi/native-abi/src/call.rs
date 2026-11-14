@@ -377,10 +377,11 @@ pub const THREAD_SET_DEADLINE: usize = 83;
 /// `ERR_NO_MEMORY`/`ERR_NO_RESOURCES`（目标准备失败，不改变旧路由和确认状态）。
 pub const INTERRUPT_SET_AFFINITY: usize = 84;
 
-/// 将已启动的系统线程设为指定逻辑 CPU 的唯一调度 owner；不是 Linux 应用 ABI。
-/// 参数：`resource`（system::SCHEDULE）、`thread`（MANAGE）、`cpu`（usize::MAX 归还并恢复共享 affinity）。
-/// 返回前等待旧普通线程撤离；退出自动归还。不隔离设备中断，IRQ 路由另行配置。
-/// 错误：`ERR_INVALID_ARGS`（CPU 不存在）、`ERR_NO_RESOURCES`（分区/预算冲突）、`ERR_BAD_STATE`（退出/被替换）、`ERR_NO_MEMORY`（快照分配失败）。
+/// 一次替换一组已启动系统线程的独占 CPU 配置。
+/// 参数：`resource`（system::SCHEDULE）、`entries`（连续的 `[u32; 2]`，每项为 MANAGE 线程句柄和逻辑 CPU 编号）、`count`（项数，至多系统 CPU 数）。
+/// CPU 编号 `u32::MAX` 归还该线程的独占 CPU 并恢复共享 affinity。准入失败保留原配置。
+/// 返回前等待新目标 CPU 上的旧执行体撤离。线程退出自动归还，设备中断继续按 IRQ 路由投递。
+/// 错误：`ERR_INVALID_ARGS`（重复线程或目标、编号越界）、`ERR_INVALID_POINTER`（数组不可读）、`ERR_NO_RESOURCES`（分区/预算冲突）、`ERR_BAD_STATE`（执行体退出或配置被替换）、`ERR_NO_MEMORY`（事务内存不足）。
 pub const THREAD_SET_ISOLATION: usize = 85;
 
 /// 分配消息中断组；不是应用 ABI。参数：MSI resource、BTI、device ID、count、out handle。

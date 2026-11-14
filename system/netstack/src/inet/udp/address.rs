@@ -10,6 +10,27 @@ pub(super) fn wire_ip(address: InetAddress) -> IpAddr {
 pub(super) fn wire_address(address: InetAddress) -> InetAddress {
     InetAddress::new(wire_ip(address), address.port())
 }
+
+pub(super) fn present_address(
+    ipv6: bool,
+    address: InetAddress,
+    interface: Option<u32>,
+) -> InetAddress {
+    if !ipv6 {
+        return wire_address(address);
+    }
+    let ip = match address.ip() {
+        IpAddr::V4(ip) => ip.to_ipv6_mapped(),
+        IpAddr::V6(ip) => ip,
+    };
+    let scope = if ip.is_unicast_link_local() || ip.is_multicast() && ip.octets()[1] & 15 <= 2 {
+        interface.unwrap_or(0)
+    } else {
+        0
+    };
+    InetAddress::V6(SocketAddrV6::new(ip, address.port(), 0, scope))
+}
+
 impl EndpointState {
     pub(super) fn binding(
         &self,
@@ -46,23 +67,7 @@ impl EndpointState {
         Ok(self.present(InetAddress::new(ip, address.port()), None))
     }
     pub(super) fn present(&self, address: InetAddress, interface: Option<u32>) -> InetAddress {
-        if self.local.is_ipv4() {
-            return wire_address(address);
-        }
-        let ip = match address.ip() {
-            IpAddr::V4(ip) => ip.to_ipv6_mapped(),
-            IpAddr::V6(ip) => ip,
-        };
-        InetAddress::V6(SocketAddrV6::new(
-            ip,
-            address.port(),
-            0,
-            if ip.is_unicast_link_local() || ip.is_multicast() && ip.octets()[1] & 15 <= 2 {
-                interface.unwrap_or(0)
-            } else {
-                0
-            },
-        ))
+        present_address(self.local.is_ipv6(), address, interface)
     }
     pub(super) fn destination_interface(
         &self,

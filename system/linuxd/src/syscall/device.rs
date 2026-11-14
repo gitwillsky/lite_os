@@ -43,35 +43,8 @@ impl UserMemory for TaskUserMemory<'_> {
             .0
             .fd_prepare_open(true)
             .map_err(|error| DeviceError::Errno(-super::file_descriptor_error(error)))?;
-        let prepared = crate::file::PreparedFileDescription::try_new()
+        let ofd = OpenFileDescription::open_namespace(namespace)
             .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
-        let opened = crate::fs::namespace_opened(namespace)
-            .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
-        let prepared = prepared
-            .prepare_named(opened.clone(), crate::fs::O_RDONLY)
-            .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
-        let backend = opened
-            .inode()
-            .open_backend(
-                crate::fs::O_RDONLY,
-                &self.0.access_identity(true),
-                &self.0.namespace_authority(),
-            )
-            .map_err(|error| match error {
-                crate::fs::InodeOpenError::Filesystem(error) => {
-                    DeviceError::Errno(-super::fs::filesystem_error(error))
-                }
-                crate::fs::InodeOpenError::Interrupted => DeviceError::Restart,
-            })?;
-        let ofd = match backend {
-            crate::fs::InodeOpen::Device(file) => {
-                prepared.finish(crate::fs::InodeOpen::Device(file))
-            }
-            crate::fs::InodeOpen::Storage(_) => {
-                return Err(DeviceError::Errno(linux_abi::errno::EINVAL));
-            }
-        };
-        ofd.notify(crate::fs::IN_OPEN);
         Ok(reservation.publish(ofd) as isize)
     }
 

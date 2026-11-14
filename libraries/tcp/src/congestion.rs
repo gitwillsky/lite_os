@@ -38,6 +38,13 @@ impl Reno {
     pub(super) fn window(&self) -> usize {
         self.cwnd
     }
+    pub(super) fn windows(&self) -> (u32, Option<u32>) {
+        let segments = |bytes: usize| (bytes / self.mss).min(u32::MAX as usize) as u32;
+        (
+            segments(self.cwnd),
+            (self.ssthresh != usize::MAX).then(|| segments(self.ssthresh)),
+        )
+    }
     pub(super) fn set_mss(&mut self, mss: usize) {
         let mss = mss.max(1);
         let initial = self.ssthresh == usize::MAX && self.cwnd == initial_window(self.mss);

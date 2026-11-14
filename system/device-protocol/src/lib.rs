@@ -72,6 +72,21 @@ enum Source {
     Closed(Channel, Weak<Source>),
 }
 
+impl Source {
+    fn notify_activity(&self) {
+        let Self::Activity(_, state) = self else {
+            unreachable!("activity binding kind");
+        };
+        let callback = match &*state.lock() {
+            ActivityState::Live { callback, .. } => callback.clone(),
+            ActivityState::Retired => None,
+        };
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+}
+
 /// 使用者端的事件分派：一个线程在 port 上等待全部活动 Event 与事件 channel。
 ///
 /// 登记项以表中位置为 port key；[`EventHub::retire`] 摘除的位置由之后的登记复用。迟到的 packet 可能
@@ -82,20 +97,23 @@ pub struct EventHub {
 }
 
 impl EventHub {
-    /// 创建分派线程。
+    /// 创建分派线程。调用者可在启动前指定公平调度等级，None 使用系统默认。
     ///
     /// # Errors
     ///
-    /// port 或线程创建失败。
-    pub fn start() -> Result<Arc<Self>, Status> {
+    /// port、线程或调度设置失败。
+    pub fn start(worker_priority: Option<u32>) -> Result<Arc<Self>, Status> {
         let hub = Arc::try_new(Self {
             port: Port::create()?,
             sources: Mutex::new(Vec::new()),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let worker = hub.clone();
-        let thread = native_runtime::thread::spawn(b"device-events", move || worker.run())?;
-        drop(thread);
+        let thread = native_runtime::thread::prepare(b"device-events", move || worker.run())?;
+        if let Some(priority) = worker_priority {
+            thread.descriptor().handle().set_priority(priority)?;
+        }
+        drop(thread.start()?);
         Ok(hub)
     }
 
@@ -283,19 +301,13 @@ impl EventHub {
                 continue;
             };
             match &*source {
-                Source::Activity(event, activity) => {
+                Source::Activity(event, _) => {
                     // 先清除再通知：通知之后置位的活动重新触发下一轮，不会丢失。
                     let _ = event.signal(signals::USER_0, 0);
                     if self.arm(&source, packet.key).is_err() {
                         continue;
                     }
-                    let callback = match &*activity.lock() {
-                        ActivityState::Live { callback, .. } => callback.clone(),
-                        ActivityState::Retired => None,
-                    };
-                    if let Some(callback) = callback {
-                        callback();
-                    }
+                    source.notify_activity();
                 }
                 Source::Events(channel, handler) => {
                     let mut closed = false;
@@ -375,6 +387,20 @@ impl Drop for ActivityRegistration {
 }
 
 impl ActivityBinding {
+    fn retire(&self) {
+        if let Some(hub) = self.registration.hub.upgrade() {
+            hub.retire_activity(&self.registration);
+        }
+    }
+
+    /// 已绑定的本地工作需要再次派发。与设备通知共用回调，并在释放登记锁后调用。
+    fn notify(&self) {
+        let Some(source) = self.registration.source.upgrade() else {
+            return;
+        };
+        source.notify_activity();
+    }
+
     /// 已确认关联会话关闭或登记退休。只读取事件 owner 的事实，不在数据热路径查询内核。
     pub fn disconnected(&self) -> bool {
         let Some(source) = self.registration.source.upgrade() else {

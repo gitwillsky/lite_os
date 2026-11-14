@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::{VIRTQ_DESC_F_NEXT, VirtQueue, VirtqUsedElem};
 
@@ -21,15 +21,21 @@ fn available_batch_preserves_order_and_publishes_one_final_index() {
     let first = queue.free_head;
     let second = queue.desc_shadow[first as usize].next;
 
+    queue.avail_idx = u16::MAX;
     queue.add_batch_to_avail(&[first, second]);
 
-    assert_eq!(queue.avail_idx, 2);
-    // SAFETY: the test queue owns a four-entry available ring and reads the two slots just
-    // initialized by add_batch_to_avail.
+    assert_eq!(queue.avail_idx, 1);
+    // SAFETY: the queue owns four available slots and the two-byte event word after its used ring.
     unsafe {
         let ring = (queue.avail as *const u16).add(2);
-        assert_eq!((*ring, *ring.add(1)), (first, second));
-        assert_eq!((*queue.avail).idx.load(Ordering::Acquire), 2);
+        assert_eq!((*ring.add(3), *ring), (first, second));
+        assert_eq!((*queue.avail).idx.load(Ordering::Acquire), 1);
+        let event = &*queue.used.cast::<u8>().add(4 + 4 * 8).cast::<AtomicU16>();
+        event.store(u16::MAX, Ordering::Relaxed);
+        assert!(queue.needs_available_notification(2, true));
+        event.store(1, Ordering::Relaxed);
+        assert!(!queue.needs_available_notification(2, true));
+        assert!(queue.needs_available_notification(2, false));
     }
 }
 
@@ -66,6 +72,10 @@ fn used_does_not_recycle_before_adapter_owner_claim() {
     );
     queue.recycle_used(completion).unwrap();
     assert_eq!(queue.free_descriptor_count(), 4);
+    queue.arm_used_notification();
+    // SAFETY: the event word follows the four available slots in this test queue.
+    let event = unsafe { &*queue.avail.cast::<AtomicU16>().add(2 + 4) };
+    assert_eq!(event.load(Ordering::Relaxed), 1);
 }
 
 #[test]

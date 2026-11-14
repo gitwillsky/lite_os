@@ -5,7 +5,7 @@ use packet_wire::{
     ethernet::{EthernetFrame, EthernetHeader},
     icmpv6,
     ipv6::{
-        Ipv6Header, Ipv6Packet,
+        Ipv6Datagram, Ipv6Header, Ipv6Packet,
         options::{self, OptionData},
     },
     mld,
@@ -441,12 +441,14 @@ impl Packet<'_> {
         Ok(destination_mac)
     }
 }
+/// 验证以太网 IPv6 的链路及地址准入。已有的 `prepared` 必须借用同一原帧。
 pub(in crate::inet) fn incoming<'a>(
     frame: &'a [u8],
     mac: [u8; 6],
     mtu: usize,
+    prepared: Option<Ipv6Datagram<'a>>,
     mut accepts: impl FnMut(Ipv6Addr) -> bool,
-) -> Option<packet_wire::ipv6::Ipv6Datagram<'a>> {
+) -> Option<Ipv6Datagram<'a>> {
     let ethernet = EthernetFrame::parse(frame).ok()?;
     if ethernet.type_or_length() != 0x86dd
         || ethernet.source()[0] & 1 != 0
@@ -454,7 +456,10 @@ pub(in crate::inet) fn incoming<'a>(
     {
         return None;
     }
-    let ip = packet_wire::ipv6::Ipv6Datagram::parse(ethernet.payload()).ok()?;
+    let ip = match prepared {
+        Some(ip) => ip,
+        None => Ipv6Datagram::parse(ethernet.payload()).ok()?,
+    };
     if mtu < 1280
         || ip.bytes().len() > mtu
         || ip.source().is_multicast()

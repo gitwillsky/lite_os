@@ -73,6 +73,8 @@ pub mod netstack {
     pub const BASE: usize = 0x40_0000;
     /// outgoing 服务目录的服务端：接受 `service_directory::NETWORK` 与 `NETWORK_INSTALLER` 连接。
     pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只覆盖 system::SCHEDULE，用于为转发 worker 分配独占核。
+    pub const SCHEDULER: usize = ROLE_HANDLES + 1;
 }
 
 /// 驱动管理：平台设备事实（DTB、PCI 枚举与 BAR 分配）、节点拓扑、驱动匹配与驱动宿主监督，
@@ -412,8 +414,17 @@ pub mod bgp {
     pub const BASE: usize = 0x40_0000;
     /// 只提供 BGP 配置工厂的 outgoing 目录。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 只包含网络控制协议的路由目录。
-    pub const SERVICES: usize = ROLE_HANDLES + 1;
+}
+
+/// 独立的 OSPF 协议服务，由组件管理器监督。
+pub mod ospf {
+    use super::ROLE_HANDLES;
+    /// bootfs 中的 OSPF 服务映像。
+    pub const IMAGE: &[u8] = b"bin/ospf";
+    /// 独立进程的静态链接基址。
+    pub const BASE: usize = 0x40_0000;
+    /// 仅发布 OSPF 实例工厂的目录。
+    pub const OUTGOING: usize = ROLE_HANDLES;
 }
 
 /// 原生 RIB：接管受授权配置来源，选择候选并委托 netstack 执行。

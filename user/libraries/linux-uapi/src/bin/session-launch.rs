@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 
-use linux_uapi::process::{Identity, Pid, exec_session_child};
+use linux_uapi::process::{Identity, Pid, SessionDiagnostics, exec_session_child};
 
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
@@ -38,8 +38,12 @@ fn main() {
     } else {
         None
     };
-    let pty = separator.as_deref() == Some(OsStr::new("--pty"));
-    if pty {
+    let diagnostics = match separator.as_deref().and_then(OsStr::to_str) {
+        Some("--pty") => SessionDiagnostics::Pty,
+        Some("--capture-stderr") => SessionDiagnostics::Captured,
+        _ => SessionDiagnostics::Console,
+    };
+    if diagnostics != SessionDiagnostics::Console {
         separator = arguments.next();
     }
     if separator.as_deref() != Some(OsStr::new("--")) {
@@ -47,12 +51,12 @@ fn main() {
     }
     let program = arguments.next().unwrap_or_else(|| usage());
     let target_arguments: Vec<OsString> = arguments.collect();
-    exec_session_child(parent, &program, &target_arguments, user, pty);
+    exec_session_child(parent, &program, &target_arguments, user, diagnostics);
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: session-launch <parent-pid> [--user uid gid groups] [--pty] -- <program> [argument ...]"
+        "usage: session-launch <parent-pid> [--user uid gid groups] [--pty|--capture-stderr] -- <program> [argument ...]"
     );
     std::process::exit(127);
 }

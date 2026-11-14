@@ -364,7 +364,7 @@ fn listener_read_shutdown_retires_children_and_relisten_uses_the_same_facade_slo
         .unwrap()
         .lock()
         .unwrap()
-        .poll_at(now() + smoltcp::time::Duration::from_millis(1000));
+        .poll_at(now() + ::tcp::time::Duration::from_millis(1000));
     assert_eq!(counts(), (3, 0, 1));
     listener.disconnect().unwrap();
     listener.close_description();
@@ -408,7 +408,7 @@ fn abortive_last_fput_releases_the_port_before_reset_delivery() {
         .unwrap()
         .lock()
         .unwrap()
-        .poll_at(now() + smoltcp::time::Duration::from_millis(1000));
+        .poll_at(now() + ::tcp::time::Duration::from_millis(1000));
     {
         use smoltcp::wire::*;
         let wire = WIRE.lock().unwrap();
@@ -751,7 +751,8 @@ fn reset_allocation_failure_and_missing_route_do_not_retain_closed_tcp_or_port()
 
 #[test]
 fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface() {
-    use ::tcp::State; use smoltcp::{time::Duration, wire::*};
+    use ::tcp::{State, time::Duration};
+    use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     for (ordinal, seconds) in [-1, 1, 0, 120].into_iter().enumerate() {
         initialize();
@@ -797,7 +798,7 @@ fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface
             let tcp = network.tcp_endpoints[&id].transport_for_test();
             assert_eq!(tcp.state(), State::FinWait2);
             assert_eq!(
-                tcp.maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros())),
+                tcp.maintenance_deadline(::tcp::time::Instant::ZERO),
                 None,
                 "live SHUT_WR cannot acquire orphan FIN deadline"
             );
@@ -814,7 +815,7 @@ fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface
             let deadline = {
                 let network = initial_stack().unwrap().lock().unwrap();
                 network.tcp_endpoints[&id].transport_for_test()
-                    .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
+                    .maintenance_deadline(::tcp::time::Instant::ZERO)
                     .unwrap()
             };
             let before = now();

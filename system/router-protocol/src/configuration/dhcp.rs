@@ -36,22 +36,7 @@ impl Interface {
         let Some((ipv4, options)) = self.dhcp_settings()? else {
             return Ok(None);
         };
-        let mut dns = Vec::new();
-        dns.try_reserve_exact(options.dns.len())
-            .map_err(|_| Invalid)?;
-        dns.extend_from_slice(&options.dns);
-        Ok(Some(Pool {
-            server: ipv4.address,
-            prefix_length: ipv4.prefix_length,
-            options: DhcpV4Pool {
-                first: options.first,
-                last: options.last,
-                router: options.router,
-                dns,
-                lease_seconds: options.lease_seconds,
-                probe_addresses: options.probe_addresses,
-            },
-        }))
+        options.project(ipv4.address, ipv4.prefix_length).map(Some)
     }
 
     pub(super) fn dhcp_settings(
@@ -71,5 +56,25 @@ impl Interface {
             return Err(Invalid);
         }
         Ok(Some((ipv4, options)))
+    }
+}
+
+impl DhcpV4Pool {
+    pub(super) fn project(&self, address: Ipv4Addr, prefix_length: u8) -> Result<Pool, Invalid> {
+        let mut dns = Vec::new();
+        dns.try_reserve_exact(self.dns.len()).map_err(|_| Invalid)?;
+        dns.extend_from_slice(&self.dns);
+        Ok(Pool {
+            server: address,
+            prefix_length,
+            options: DhcpV4Pool {
+                first: self.first,
+                last: self.last,
+                router: self.router,
+                dns,
+                lease_seconds: self.lease_seconds,
+                probe_addresses: self.probe_addresses,
+            },
+        })
     }
 }

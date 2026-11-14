@@ -19,8 +19,8 @@ pub(crate) fn start() {
 
 fn serve(socket: Arc<Socket>) {
     let mut storage = [0; 16];
-    while let Ok(mut message) = super::endpoint::receive_message(&socket, &mut storage, true) {
-        let source = message.source.take().expect("endpoint source");
+    while let Ok((message, source)) = super::endpoint::receive_message(&socket, &mut storage, true)
+    {
         let response = forward(&storage, message)
             .unwrap_or_else(|status| driver_update::reply(status, native_abi::OK));
         super::endpoint::reply(&socket, source, &response);

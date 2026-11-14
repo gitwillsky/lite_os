@@ -5,7 +5,6 @@ mod bitmap;
 mod occupancy;
 pub(super) use binding::PortBinding;
 use bitmap::EphemeralPorts;
-#[cfg(test)]
 pub(super) use bitmap::{EPHEMERAL_END, EPHEMERAL_START};
 use occupancy::{BindingStorage, Occupancy};
 
@@ -147,11 +146,31 @@ impl PortNamespace {
         binding: PortBinding,
         reuse_address: bool,
     ) -> Result<PortLease, PortError> {
+        self.acquire_ephemeral_matching(binding, reuse_address, |_| true)
+    }
+
+    /// 分配本地未占用且通过线上连接冲突检查的端口。
+    /// # Errors
+    /// 无可用端口返回 AddressInUse，租约存储不足返回 NoMemory。
+    pub(super) fn acquire_ephemeral_matching(
+        &mut self,
+        binding: PortBinding,
+        reuse_address: bool,
+        available: impl FnMut(u16) -> bool,
+    ) -> Result<PortLease, PortError> {
         let port = self
             .ephemeral
-            .next_candidate(binding.families)
+            .next_candidate(binding.families, available)
             .ok_or(PortError::AddressInUse)?;
         self.acquire(port, binding, reuse_address)
+    }
+
+    /// 返回已绑定 socket 是否覆盖该本机地址和端口，包括通配与任何接口作用域。
+    pub(super) fn covers(&self, address: core::net::IpAddr, port: u16) -> bool {
+        self.entries.get(&port).is_some_and(|occupancy| {
+            PortBinding::new(address, false)
+                .is_ok_and(|binding| occupancy.conflicts(binding, false))
+        })
     }
 
     /// 预留 accepted TCP child 的精确 membership；只在同一 NET guard 内准备和提交。

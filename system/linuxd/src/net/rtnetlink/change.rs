@@ -8,8 +8,8 @@ use core::net::Ipv4Addr;
 
 use super::codec::{self, NLM_F_APPEND, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE};
 use crate::net::{
-    InterfaceSnapshot, Ipv4RouteError, RouteKind, RouteMetrics, Ipv4RouteRequest,
-    NetNamespace, RouteChange, SocketError, configure_address, configure_broadcast, configure_mtu,
+    InterfaceSnapshot, Ipv4RouteError, Ipv4RouteRequest, NetNamespace, RouteChange, RouteKind,
+    RouteMetrics, SocketError, configure_address, configure_broadcast, configure_mtu,
     configure_netmask, configure_route, configure_up, interface_snapshot, interface_snapshots,
 };
 
@@ -66,6 +66,7 @@ fn socket_errno(error: SocketError) -> i32 {
         SocketError::NoBuffer => ENOBUFS,
         SocketError::AddressNotAvailable => EADDRNOTAVAIL,
         SocketError::NoDevice | SocketError::DeviceNotAvailable => ENODEV,
+        SocketError::OperationNotPermitted => EPERM,
         _ => EINVAL,
     }
 }

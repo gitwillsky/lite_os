@@ -1,10 +1,16 @@
 //! UDP 原子队列的实际 IP/邻居/DMA 提交；IPv4 分片只推进原队首，不另建载荷队列。
 use super::*;
 use core::net::IpAddr;
-use smoltcp::{
-    phy::{Device, Medium},
-    time::Duration,
-};
+use ::tcp::time::Duration;
+
+impl EndpointState {
+    fn report_transmit_failure(&mut self, metadata: Transmit, error: SocketError, info: u32) {
+        let destination = self.present(metadata.destination, Some(metadata.interface));
+        let connected = self.peer.map(wire_address) == Some(metadata.destination);
+        self.errors.local_error(destination, error, info, connected);
+    }
+}
+
 impl NetworkStack {
     pub(in crate::inet) fn retry_udp(&mut self, timestamp: Instant) {
         self.udp_endpoints.for_each_mut(|_, state| {
@@ -13,10 +19,12 @@ impl NetworkStack {
             }
         });
     }
-    pub(in crate::inet) fn udp_due(&self, timestamp: Instant) -> bool {
+    pub(in crate::inet) fn udp_deadline(&self) -> Option<Instant> {
         self.udp_endpoints
-            .iter()
-            .any(|(_, state)| !state.transmit.is_empty() && state.transmit_at <= timestamp)
+            .values()
+            .filter(|state| !state.transmit.is_empty())
+            .map(|state| state.transmit_at)
+            .min()
     }
     /// 每轮至多 64 次实际尝试；一份数据报可占多片，游标仅随真实成功提交推进。
     pub(in crate::inet) fn poll_udp(
@@ -25,6 +33,7 @@ impl NetworkStack {
         first: usize,
         end: usize,
         rotation: usize,
+        work_until: u64,
     ) -> bool {
         let mut budget = super::super::NETWORK_RX_BUDGET;
         for _ in 0..self.udp_endpoints.len() {
@@ -36,7 +45,6 @@ impl NetworkStack {
             else {
                 break;
             };
-            self.udp_cursor = id;
             loop {
                 let state = &self.udp_endpoints[&id];
                 if state.transmit_at > timestamp {
@@ -45,28 +53,38 @@ impl NetworkStack {
                 let Some((metadata, payload)) = state.transmit.peek() else {
                     break;
                 };
-                let route = self.ip_output(
-                    metadata.source.ip(),
-                    metadata.destination,
-                    (
-                        metadata.outgoing.map(core::num::NonZeroU32::get),
-                        metadata.mark,
-                    ),
+                let route = if self.forwarding.local_tuple_taken(
+                    InetProtocol::Udp,
+                    (metadata.source, metadata.destination),
                     timestamp,
-                );
-                let Ok(route) = route else {
-                    if budget == 0 {
-                        return true;
+                ) {
+                    Err(SocketError::AddressInUse)
+                } else {
+                    self.ip_output(
+                        metadata.source.ip(),
+                        metadata.destination,
+                        (
+                            metadata.outgoing.map(core::num::NonZeroU32::get),
+                            metadata.mark,
+                        ),
+                        timestamp,
+                    )
+                };
+                let route = match route {
+                    Ok(route) => route,
+                    Err(error) => {
+                        if !super::super::poll::spend_output_attempt(&mut budget, work_until) {
+                            return true;
+                        }
+                        self.udp_cursor = id;
+                        if let Ok(interface) = self.interface(metadata.interface) {
+                            interface.device.record_transmit_drop();
+                        }
+                        let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
+                        state.retire_transmit(&mut self.identification, timestamp);
+                        state.report_transmit_failure(metadata, error, 0);
+                        continue;
                     }
-                    budget -= 1;
-                    if let Ok(interface) = self.interface(metadata.interface) {
-                        interface.device.record_transmit_drop();
-                    }
-                    self.udp_endpoints
-                        .get_mut(&id)
-                        .expect("live UDP")
-                        .retire_transmit(&mut self.identification, timestamp);
-                    continue;
                 };
                 let count = self.interfaces.len();
                 let Some(position) = (first..end)
@@ -75,10 +93,10 @@ impl NetworkStack {
                 else {
                     break;
                 };
-                if budget == 0 {
+                if !super::super::poll::spend_output_attempt(&mut budget, work_until) {
                     return true;
                 }
-                budget -= 1;
+                self.udp_cursor = id;
                 let ipv4 = metadata.source.is_ipv4();
                 let ip_length = if ipv4 { 20 } else { 40 };
                 let mtu = if ipv4 && metadata.ipv4_mtu_discovery >= 3 {
@@ -101,12 +119,11 @@ impl NetworkStack {
                     self.interfaces[position].device.record_transmit_drop();
                     let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
                     state.retire_transmit(&mut self.identification, timestamp);
-                    let destination =
-                        state.present(metadata.destination, Some(route.logical_interface_index));
-                    state.errors.local_mtu(destination, mtu);
-                    if state.peer.is_some() {
-                        state.errors.pending = Some(SocketError::MessageTooLarge);
-                    }
+                    state.report_transmit_failure(
+                        metadata,
+                        SocketError::MessageTooLarge,
+                        mtu as u32,
+                    );
                     continue;
                 }
                 let (pending, payload) = self
@@ -133,11 +150,10 @@ impl NetworkStack {
                         Ok(lease) => pending.identification = Some(lease),
                         Err(error) => {
                             self.interfaces[position].device.record_transmit_drop();
+                            let metadata = *pending;
                             let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
                             state.retire_transmit(&mut self.identification, timestamp);
-                            if state.peer.is_some() {
-                                state.errors.pending = Some(error);
-                            }
+                            state.report_transmit_failure(metadata, error, 0);
                             continue;
                         }
                     }
@@ -154,7 +170,6 @@ impl NetworkStack {
                         route.logical_interface_index,
                         metadata.destination.ip(),
                         ip_length + 8 + payload.len(),
-                        timestamp,
                         |packet| metadata.emit(payload, packet, true),
                     );
                 }
@@ -189,9 +204,11 @@ impl NetworkStack {
                             self.interfaces[position].device.record_transmit_drop();
                             let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
                             state.retire_transmit(&mut self.identification, timestamp);
-                            if state.peer.is_some() {
-                                state.errors.pending = Some(SocketError::MessageTooLarge);
-                            }
+                            state.report_transmit_failure(
+                                metadata,
+                                SocketError::MessageTooLarge,
+                                mtu as u32,
+                            );
                             continue;
                         }
                     }
@@ -211,10 +228,13 @@ impl NetworkStack {
                         Ok(range) => range,
                         Err(_) => {
                             self.interfaces[position].device.record_transmit_drop();
-                            self.udp_endpoints
-                                .get_mut(&id)
-                                .expect("live UDP")
-                                .retire_transmit(&mut self.identification, timestamp);
+                            let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
+                            state.retire_transmit(&mut self.identification, timestamp);
+                            state.report_transmit_failure(
+                                metadata,
+                                SocketError::MessageTooLarge,
+                                mtu as u32,
+                            );
                             continue;
                         }
                     }
@@ -223,19 +243,17 @@ impl NetworkStack {
                     0..payload.len() + 8
                 };
                 let interface = &mut self.interfaces[position];
-                let caps = interface.device.capabilities();
-                let offload =
-                    !fragmented && caps.medium == Medium::Ethernet && !caps.checksum.udp.tx();
+                let offload = !fragmented && interface.device.transmit_checksum();
                 let emit =
                     |output: &mut [u8]| metadata.emit_body(payload, output, range.start, !offload);
                 let result = match (ip_length, route.neighbor) {
                     (20, neighbor) => interface.device.transmit_ipv4(
                         (&mut interface.arp, interface.state, &mut interface.ipv6),
                         &header[..20],
-                        (range.len(), emit),
+                        (range.len(), emit, None),
                         (neighbor, route.logical_interface_index),
                         timestamp,
-                        offload,
+                        (offload, |_| 0),
                     ),
                     (_, IpAddr::V6(neighbor)) if let Some(piece) = &ipv6_piece => {
                         interface.device.transmit_ipv6(
@@ -265,8 +283,16 @@ impl NetworkStack {
                             .transmit_at = timestamp + Duration::from_millis(1000);
                         break;
                     }
-                    Err(_) => {
+                    Err(error) => {
                         interface.device.record_transmit_drop();
+                        if error == device_model::network::NetworkError::FrameTooLarge {
+                            let state = self.udp_endpoints.get_mut(&id).expect("live UDP");
+                            state.report_transmit_failure(
+                                metadata,
+                                SocketError::MessageTooLarge,
+                                mtu as u32,
+                            );
+                        }
                     }
                     Ok(()) => {
                         super::super::route::probe_gateway(
@@ -292,8 +318,9 @@ impl NetworkStack {
                     .expect("live UDP")
                     .retire_transmit(&mut self.identification, timestamp);
             }
+            self.udp_cursor = id;
         }
-        budget == 0
+        false
     }
 }
 impl Transmit {

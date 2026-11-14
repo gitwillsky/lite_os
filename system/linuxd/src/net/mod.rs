@@ -91,6 +91,8 @@ pub(crate) fn socket_errno(error: SocketError) -> i32 {
         SocketError::TooManyReferences => errno::ETOOMANYREFS,
         SocketError::AddressFamilyNotSupported => errno::EAFNOSUPPORT,
         SocketError::NoEntry => errno::ENOENT,
+        SocketError::Busy => errno::EBUSY,
+        SocketError::KeyRejected => errno::EKEYREJECTED,
         SocketError::ProtocolError => errno::EPROTO,
         SocketError::ProtocolOptionUnavailable => errno::ENOPROTOOPT,
         SocketError::HostDown => errno::EHOSTDOWN,
@@ -145,7 +147,10 @@ pub(crate) enum SocketAddress {
 pub(crate) enum SocketSendDestination {
     Address(SocketAddress),
     UnixPath(UnixPathIdentity),
+    UnixReply(UnixReply),
 }
+
+pub(crate) use unix::UnixReply;
 
 enum SocketBackend {
     Unix(Arc<UnixSocket>),
@@ -389,7 +394,7 @@ impl Socket {
         if output.remaining() == 0 {
             return Ok(0);
         }
-        self.receive_request(output, false, unix::ReceiveMode::Read { nonblocking })
+        self.receive_request(output, false, unix::ReceiveMode::Read { nonblocking }, None)
             .map(|message| message.count)
     }
 
@@ -407,7 +412,34 @@ impl Socket {
                 rights: receive_rights,
                 nonblocking,
             },
+            None,
         )
+    }
+
+    /// 内部 Unix datagram 服务同时捕获请求者，回复不按当前任务的网络域重查名字。
+    /// # Errors
+    /// socket 类型不符、没有可读请求或资源不足。
+    pub(crate) fn receive_endpoint(
+        &self,
+        output: &mut ReceiveBuffer<'_>,
+        receive_rights: bool,
+    ) -> Result<(ReceivedMessage, Option<UnixReply>), SocketError> {
+        if self.socket_type != SocketType::Datagram
+            || !matches!(&self.backend, SocketBackend::Unix(_))
+        {
+            return Err(SocketError::WrongType);
+        }
+        let mut source = None;
+        let message = self.receive_request(
+            output,
+            false,
+            unix::ReceiveMode::Message {
+                rights: receive_rights,
+                nonblocking: true,
+            },
+            Some(&mut source),
+        )?;
+        Ok((message, source))
     }
 
     /// Consume one error queue record without waiting.
@@ -421,9 +453,14 @@ impl Socket {
         }
     }
 
-    pub(crate) fn set_receive_error(&self, ipv6: bool, enabled: bool) -> Result<(), SocketError> {
+    pub(crate) fn set_receive_error(
+        &self,
+        ipv6: bool,
+        extensions: bool,
+        enabled: bool,
+    ) -> Result<(), SocketError> {
         match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_receive_error(ipv6, enabled),
+            SocketBackend::Inet(socket) => socket.set_receive_error(ipv6, extensions, enabled),
             _ => Err(SocketError::OperationNotSupported),
         }
     }
@@ -433,9 +470,10 @@ impl Socket {
         output: &mut ReceiveBuffer<'_>,
         peek: bool,
         mode: unix::ReceiveMode,
+        reply_to: Option<&mut Option<UnixReply>>,
     ) -> Result<ReceivedMessage, SocketError> {
         match &self.backend {
-            SocketBackend::Unix(socket) => socket.receive(output, mode, peek).map(
+            SocketBackend::Unix(socket) => socket.receive(output, mode, peek, reply_to).map(
                 |(count, full_length, source, rights, credentials)| ReceivedMessage {
                     count,
                     full_length,
@@ -577,6 +615,9 @@ impl Socket {
             (SocketBackend::Unix(socket), Some(SocketSendDestination::UnixPath(identity))) => {
                 let target = UnixSocket::lookup_path(identity).map_err(SocketSendError::from)?;
                 socket.send_to_with_ancillary(input, Some(&target), rights, credentials)
+            }
+            (SocketBackend::Unix(socket), Some(SocketSendDestination::UnixReply(target))) => {
+                socket.send_to_with_ancillary(input, Some(&target.0), rights, credentials)
             }
             (
                 SocketBackend::Unix(socket),

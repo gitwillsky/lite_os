@@ -117,6 +117,20 @@ impl Drop for WritableInodeLease {
 }
 
 impl OpenFileDescription {
+    /// 为已获授权的 `namespace` 打开只读 nsfs 文件描述，交由调用者发布到 fd 表或 Unix 消息。
+    /// # Errors
+    /// 文件描述、nsfs inode 或设备后端准备失败时返回原错误。
+    pub(crate) fn open_namespace(
+        namespace: crate::namespace::NamespaceReference,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        let prepared = PreparedFileDescription::try_new()?;
+        let opened = crate::fs::namespace_opened(namespace.clone())?;
+        let backend = crate::fs::namespace_device(namespace)?;
+        let file = prepared.finish_backend(opened, backend, O_RDONLY);
+        file.notify(crate::fs::IN_OPEN);
+        Ok(file)
+    }
+
     /// 一个引用本 OFD 的 fd 被关闭（Linux `filp_close` 的 `f_op->flush`）；O_PATH 没有 file operations。
     ///
     /// # Errors

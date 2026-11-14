@@ -5,9 +5,13 @@ edition = "2024"
 license = "0BSD"
 
 [dependencies]
+aes = { version = "=0.9.3", default-features = false }
+cmac = { version = "=0.8.0", default-features = false, features = ["zeroize"] }
+hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
 packet-wire = { path = "../packet-wire" }
 managed = { version = "0.8", default-features = false, features = ["alloc"] }
 md-5 = { version = "=0.10.6", default-features = false, features = ["force-soft"] }
+sha1 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
 subtle = { version = "=2.6.1", default-features = false }
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 

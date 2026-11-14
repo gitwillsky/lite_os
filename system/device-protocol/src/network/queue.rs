@@ -152,6 +152,15 @@ impl RingView {
         self.positions(ring)
             .map(|(head, tail)| head.wrapping_sub(tail) as usize)
     }
+
+    /// 无锁的空队列探测。探测后到达的工作仍由原活动事件通知；非空时须在本端锁内重新校验并领取。
+    pub(super) fn appears_empty(&self, ring: Ring) -> bool {
+        let offset = ring as usize * 128;
+        // 先读 tail，使随后读到的 head 不早于已消费记录。不用这两次读判断容量或协议损坏。
+        let tail = self.counter(offset + 64).load(Ordering::Acquire);
+        let head = self.counter(offset).load(Ordering::Acquire);
+        head == tail
+    }
     pub(super) fn free(&self, ring: Ring) -> Result<usize, Status> {
         Ok(self.capacity - self.pending(ring)?)
     }
@@ -225,6 +234,8 @@ impl RingView {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use alloc::vec;
 
@@ -240,8 +251,10 @@ mod tests {
                 .store((u32::MAX - 4).to_le(), Ordering::Relaxed);
             ring.counter(offset + 64)
                 .store((u32::MAX - 4).to_le(), Ordering::Relaxed);
+            assert!(ring.appears_empty(kind));
             let input = [[7, 100, 1514, 0, 0]; MAX_BATCH];
             ring.push(kind, &input).unwrap();
+            assert!(!ring.appears_empty(kind));
             assert_eq!(ring.free(kind), Ok(0));
             assert_eq!(
                 ring.push(kind, &input[..1]),
@@ -251,9 +264,26 @@ mod tests {
             assert_eq!(ring.pop(kind, &mut output), Ok(MAX_BATCH));
             assert_eq!(input, output);
             assert_eq!(ring.pending(kind), Ok(0));
+            assert!(ring.appears_empty(kind));
         }
         assert!(ring.needs_kick());
         assert!(!ring.needs_kick());
+        ring.begin_dispatch();
+        // 客户端两个方向现在可以同时发表，同一代只有一个 producer 负责通知。
+        let gate = std::sync::Barrier::new(2);
+        let publish = |kind| {
+            gate.wait();
+            ring.push(kind, &[[1, 2, 0, 0, 0]]).unwrap();
+            ring.needs_kick()
+        };
+        let (fill, transmit) = std::thread::scope(|scope| {
+            let fill = scope.spawn(|| publish(Ring::Fill));
+            let transmit = publish(Ring::Transmit);
+            (fill.join().unwrap(), transmit)
+        });
+        assert_ne!(fill, transmit);
+        assert_eq!(ring.pending(Ring::Fill), Ok(1));
+        assert_eq!(ring.pending(Ring::Transmit), Ok(1));
         ring.begin_dispatch();
         assert!(ring.needs_kick());
         ring.counter(0).store(1000u32.to_le(), Ordering::Relaxed);

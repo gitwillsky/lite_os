@@ -9,7 +9,7 @@ fn receive_batch_keeps_independent_slots_and_never_overwrites_live_tokens() {
     let mut frames = [const { None }; RECEIVE_BATCH_CAPACITY + 4];
     assert_eq!(
         nic.receive_batch(0, &mut frames),
-        Ok(RECEIVE_BATCH_CAPACITY)
+        Ok(Some((0, RECEIVE_BATCH_CAPACITY)))
     );
     assert!(frames[RECEIVE_BATCH_CAPACITY..].iter().all(Option::is_none));
     assert_eq!(nic.wire.lock().unwrap().0.len(), 2);
@@ -41,7 +41,7 @@ fn receive_batch_keeps_independent_slots_and_never_overwrites_live_tokens() {
             .iter()
             .all(Option::is_none)
     );
-    assert_eq!(nic.receive_batch(0, &mut frames), Ok(2));
+    assert_eq!(nic.receive_batch(0, &mut frames), Ok(Some((0, 2))));
     drop(frames);
     assert!(
         nic.wire
@@ -62,10 +62,11 @@ fn actual_receive_batch_error_releases_prefix_after_leaving_device_lock() {
         wire.0.extend((0..4).map(|byte| vec![byte; 32]));
         wire.2.receive_error_after = Some(2);
     }
-    let adapter = device::ProtocolDevice::Ethernet(device::EthernetDevice::new(nic.clone(), 99, 2));
+    let packets = Arc::new(crate::packet::PacketRegistry::new());
+    let adapter =
+        device::ProtocolDevice::Ethernet(device::EthernetDevice::new(nic.clone(), 99, &packets, 2));
     let mut frames = [const { None }; 4];
-    let mut facts = [None; 4];
-    assert!(adapter.receive_batch(&mut frames, &mut facts).is_none());
+    assert!(adapter.receive_batch(&mut frames, true).is_none());
     assert!(frames.iter().all(Option::is_none));
     let wire = nic.wire.lock().unwrap();
     assert!(wire.2.received.iter().all(Option::is_none));
@@ -80,7 +81,6 @@ fn actual_receive_batch_error_releases_prefix_after_leaving_device_lock() {
 
 #[test]
 fn dropping_actual_batch_preserves_issued_frame_until_its_own_release() {
-    use smoltcp::phy::RxToken;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let nic = Arc::new(WireDevice::new());
@@ -91,11 +91,12 @@ fn dropping_actual_batch_preserves_issued_frame_until_its_own_release() {
         .extend((0..4).map(|byte| vec![byte; 3]));
     let reset = peer_tcp_frame(49599, smoltcp::wire::TcpControl::Rst, None);
     *nic.wire.lock().unwrap().0.front_mut().unwrap() = reset.clone();
-    let adapter = device::ProtocolDevice::Ethernet(device::EthernetDevice::new(nic.clone(), 99, 2));
+    let packets = Arc::new(crate::packet::PacketRegistry::new());
+    let adapter =
+        device::ProtocolDevice::Ethernet(device::EthernetDevice::new(nic.clone(), 99, &packets, 2));
     let mut frames = [const { None }; 4];
-    let mut facts = [None; 4];
-    let mut batch = adapter.receive_batch(&mut frames, &mut facts).unwrap();
-    let (rx, tx) = batch.next().unwrap().unwrap();
+    let mut batch = adapter.receive_batch(&mut frames, true).unwrap();
+    let (rx, tx) = batch.next().unwrap();
     drop(batch);
     assert_eq!(
         rx.addresses(),
@@ -122,10 +123,10 @@ fn dropping_actual_batch_preserves_issued_frame_until_its_own_release() {
 
 #[test]
 fn actual_loopback_claim_keeps_one_input_until_issued_token_finishes() {
-    use smoltcp::phy::RxToken;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let adapter = device::ProtocolDevice::prepare_loopback(99).unwrap();
+    let packets = Arc::new(crate::packet::PacketRegistry::new());
+    let adapter = device::ProtocolDevice::prepare_loopback(99, &packets).unwrap();
     let device::ProtocolDevice::Loopback(loopback) = &adapter else {
         unreachable!()
     };
@@ -133,27 +134,44 @@ fn actual_loopback_claim_keeps_one_input_until_issued_token_finishes() {
     header[12] = 8;
     loopback.inject(header, b"first", 0).unwrap();
     let mut frames = [None];
-    let mut facts = [None];
-    let mut batch = adapter.receive_batch(&mut frames, &mut facts).unwrap();
-    let (rx, tx) = batch.next().unwrap().unwrap();
+    let mut batch = adapter.receive_batch(&mut frames, true).unwrap();
+    let (rx, tx) = batch.next().unwrap();
     drop(batch);
     let mut other = [None];
-    let mut other_facts = [None];
-    assert!(
-        adapter
-            .receive_batch(&mut other, &mut other_facts)
-            .is_none()
-    );
+    assert!(adapter.receive_batch(&mut other, true).is_none());
     rx.consume(|bytes| assert_eq!(bytes, b"first"));
     drop(tx);
     loopback.inject(header, b"second", 0).unwrap();
-    let mut batch = adapter.receive_batch(&mut other, &mut other_facts).unwrap();
-    let (rx, tx) = batch.next().unwrap().unwrap();
+    let mut batch = adapter.receive_batch(&mut other, true).unwrap();
+    let (rx, tx) = batch.next().unwrap();
     drop(rx); // 不出队而只撤销 claim，后续 token 仍可消费同一输入。
     drop(tx);
     drop(batch);
-    let mut batch = adapter.receive_batch(&mut other, &mut other_facts).unwrap();
-    let (rx, tx) = batch.next().unwrap().unwrap();
+    let mut batch = adapter.receive_batch(&mut other, true).unwrap();
+    let (rx, tx) = batch.next().unwrap();
     rx.consume(|bytes| assert_eq!(bytes, b"second"));
     drop(tx);
+    drop(batch);
+
+    use device_model::network::NetworkError;
+    let rejected = adapter.reserve(|_| 0).unwrap();
+    assert_eq!(
+        rejected.consume_committed(1, 0x0800, |_| false),
+        Err(NetworkError::InvalidConfiguration),
+    );
+    assert!(adapter.receive_batch(&mut other, true).is_none());
+
+    // 批处理可以在编码前持有多个 TX token。最后一个槽被占用后，旧 token 不编码也不发布。
+    let late = adapter.reserve(|_| 0).unwrap();
+    for byte in 0..64u8 {
+        loopback.inject(header, &[byte], 0).unwrap();
+    }
+    assert_eq!(
+        late.consume_committed(1, 0x0800, |_| panic!("no loopback TX window")),
+        Err(NetworkError::WouldBlock),
+    );
+    for byte in 0..64u8 {
+        let (rx, _) = adapter.receive_batch(&mut other, true).unwrap().next().unwrap();
+        rx.consume(|bytes| assert_eq!(bytes, &[byte]));
+    }
 }

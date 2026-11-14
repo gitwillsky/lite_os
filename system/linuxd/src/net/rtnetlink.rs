@@ -445,7 +445,7 @@ impl RouteSocket {
             codec::RTM_NEWNEIGH | codec::RTM_DELNEIGH | codec::RTM_NEWRULE | codec::RTM_DELRULE => {
                 Reply::Error(-change::EPERM)
             }
-            // 修改请求：先检查 CAP_NET_ADMIN（Linux rtnetlink_rcv_msg 的顺序），再分发。
+            // 默认域由原生安装事务管理。独立 NEWNET 仍按 owning UserNS 检查 CAP_NET_ADMIN。
             codec::RTM_NEWLINK
             | codec::RTM_DELLINK
             | codec::RTM_SETLINK
@@ -453,7 +453,7 @@ impl RouteSocket {
             | codec::RTM_DELADDR
             | codec::RTM_NEWROUTE
             | codec::RTM_DELROUTE
-                if !net_admin =>
+                if scope.is_managed() || !net_admin =>
             {
                 Reply::Error(-change::EPERM)
             }
@@ -768,17 +768,16 @@ fn collect_links(
     scope: &super::NetNamespace,
 ) -> Result<Vec<(InterfaceSnapshot, NetworkStatistics)>, SocketError> {
     let interfaces = interface_snapshots(scope)?;
-    let statistics = network_snapshot(scope)?;
+    let mut statistics = network_snapshot(scope)?;
+    statistics.sort_unstable_by_key(|row| row.index);
     let mut rows = Vec::new();
     rows.try_reserve_exact(interfaces.len())
         .map_err(|_| SocketError::NoMemory)?;
     for interface in interfaces {
-        let counters = statistics
-            .iter()
-            .find(|row| row.name == interface.name)
-            .map(|row| row.statistics)
-            .unwrap_or_default();
-        rows.push((interface, counters));
+        // 两份快照之间接口可能撤下或复用名称。只配对同一身份，避免把新设备的流量归给旧设备。
+        if let Ok(position) = statistics.binary_search_by_key(&interface.index, |row| row.index) {
+            rows.push((interface, statistics[position].statistics));
+        }
     }
     Ok(rows)
 }

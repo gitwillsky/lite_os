@@ -5,6 +5,7 @@ use router_protocol::{
     configuration::PrefixDelegation,
     delegation::{self, DelegatedPrefix},
     interface::DelegatedPrefixes,
+    switching::Ports,
 };
 
 #[derive(Default)]
@@ -57,6 +58,66 @@ pub(super) fn downstream(
                 .matches(&interface.name, interface.mac)
                 .then_some(*subnet)
         })
+}
+
+fn vlan_subnet(config: Option<&Configuration>, name: &[u8; 16]) -> Option<u64> {
+    let end = name.iter().position(|&byte| byte == 0)?;
+    config?
+        .prefix_delegation
+        .as_ref()?
+        .downstream
+        .iter()
+        .find_map(|(key, &subnet)| (key.as_str().as_bytes() == &name[..end]).then_some(subnet))
+}
+
+// DHCP 事件与持久配置共用同一种下游执行行。地址和管理状态随执行接口提供。
+pub(super) fn prefix_plan(
+    (index, up, address, prefix_length): (u32, bool, Option<Ipv4Addr>, u8),
+    prefixes: &[DelegatedPrefix],
+) -> Result<InterfaceConfiguration<'_>, Status> {
+    Ok(InterfaceConfiguration {
+        index,
+        up,
+        address,
+        prefix_length,
+        mtu: None,
+        route: None,
+        ipv6: None,
+        delegated: Some(
+            DelegatedPrefixes::new(prefixes).map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+        ),
+        accept_ra: None,
+        advertise: None,
+    })
+}
+
+pub(super) fn vlan_assignments<'a>(
+    inner: &Inner,
+    candidate: Option<&Configuration>,
+    ports: Ports<'a>,
+    retain: bool,
+    now: i64,
+) -> Result<
+    Vec<(
+        router_protocol::switching::Gateway<'a>,
+        Vec<DelegatedPrefix>,
+    )>,
+    Status,
+> {
+    let mut assignments = Vec::new();
+    let gateways = ports
+        .gateways()
+        .filter(|gateway| gateway.binding.index != 0);
+    assignments
+        .try_reserve_exact(gateways.clone().count())
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    for gateway in gateways {
+        let subnet = vlan_subnet(candidate, &gateway.name);
+        // 全量重放只知道当前持久决定。无映射也显式清空，确认丢失后不会遗留旧前缀。
+        let prefixes = RouterConfig::delegated_prefixes(inner, candidate, subnet, now, retain)?;
+        assignments.push((gateway, prefixes));
+    }
+    Ok(assignments)
 }
 
 impl RouterConfig {
@@ -115,15 +176,11 @@ impl RouterConfig {
     pub(super) fn delegated_prefixes(
         inner: &Inner,
         candidate: Option<&Configuration>,
-        interface: &Interface,
-        enabled: bool,
+        subnet: Option<u64>,
         now: i64,
         retain: bool,
     ) -> Result<Vec<DelegatedPrefix>, Status> {
-        if !enabled || !retain {
-            return Ok(Vec::new());
-        }
-        let Some(subnet) = downstream(candidate, interface) else {
+        let Some(subnet) = subnet.filter(|_| retain) else {
             return Ok(Vec::new());
         };
         let config = candidate
@@ -259,57 +316,82 @@ impl RouterConfig {
         candidate: Option<&Configuration>,
         retain: bool,
     ) -> Result<(), Status> {
-        let count = inner
-            .interfaces
-            .iter()
-            .filter(|interface| downstream(candidate, interface).is_some())
-            .count();
-        if count == 0 {
+        let Some(policy) = candidate.and_then(|config| config.prefix_delegation.as_ref()) else {
             return Ok(());
+        };
+        if inner.rollback.is_some() || inner.source_retry_at.is_some() {
+            return Err(native_abi::ERR_SHOULD_WAIT);
         }
         let link = inner.link.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
+        let snapshots = link
+            .network
+            .interface_snapshots()
+            .map_err(configuration_status)?;
         let mut assignments = Vec::new();
         assignments
-            .try_reserve_exact(count)
+            .try_reserve_exact(snapshots.len().min(policy.downstream.len()))
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let now = native_runtime::system::monotonic();
-        for interface in &inner.interfaces {
-            if downstream(candidate, interface).is_some() {
+        for snapshot in snapshots {
+            let subnet = if snapshot.vlan {
+                vlan_subnet(candidate, &snapshot.name)
+            } else {
+                let Some(interface) = inner
+                    .interfaces
+                    .iter()
+                    .find(|row| row.index == snapshot.index)
+                else {
+                    continue;
+                };
+                let Some(subnet) = downstream(candidate, interface) else {
+                    continue;
+                };
                 if interface.retry_at.is_some() {
                     return Err(native_abi::ERR_SHOULD_WAIT);
                 }
-                let enabled = interface.config.method != Method::Disabled;
-                assignments.push((
-                    interface,
-                    enabled,
-                    Self::delegated_prefixes(inner, candidate, interface, enabled, now, retain)?,
-                ));
-            }
+                Some(subnet)
+            };
+            let Some(subnet) = subnet else { continue };
+            let prefixes = Self::delegated_prefixes(
+                inner,
+                candidate,
+                snapshot.up.then_some(subnet),
+                now,
+                retain,
+            )?;
+            assignments
+                .try_reserve(1)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            assignments.push((snapshot, prefixes));
+        }
+        if assignments.is_empty() {
+            return Ok(());
         }
         let mut plans = Vec::new();
         plans
-            .try_reserve_exact(count)
+            .try_reserve_exact(assignments.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for (interface, enabled, prefixes) in &assignments {
-            plans.push(InterfaceConfiguration {
-                index: interface.index,
-                up: *enabled,
-                mtu: None,
-                address: (!interface.address.is_unspecified()).then_some(interface.address),
-                prefix_length: interface.prefix_length,
-                route: None,
-                ipv6: None,
-                delegated: Some(
-                    DelegatedPrefixes::new(prefixes).map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+        for (snapshot, prefixes) in &assignments {
+            plans.push(prefix_plan(
+                (
+                    snapshot.index,
+                    snapshot.up,
+                    snapshot.address,
+                    snapshot.prefix_length,
                 ),
-                accept_ra: None,
-                advertise: None,
-            });
+                prefixes,
+            )?);
         }
-        link.activate_configuration(&plans, [None, None], None, None, network_protocol::ExecutionPolicy::default())
-            .map_err(StageError::status)?
-            .confirm()
-            .map_err(configuration_status)
+        link.activate_configuration(
+            &plans,
+            [None, None],
+            None,
+            None,
+            network_protocol::ExecutionPolicy::default(),
+        )
+        .map_err(StageError::status)?
+        .confirm()
+        .map_err(configuration_status)
     }
 
     /// 只有当前会话的事件可发布租约；关闭或无效消息撤销租约。

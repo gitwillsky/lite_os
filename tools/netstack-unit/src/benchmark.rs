@@ -8,15 +8,15 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 let peer = InetAddress::V4(core::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 16), 44000));
                 let packets: Vec<_> = (0..8).map(|number| peer_udp_frame(peer, 49590, &[number])).collect();
                 let input: [&[u8]; 8] = core::array::from_fn(|index| packets[index].as_slice());
-                let mut headers = [Err(packet_wire::batch::FrameError::Packet(packet_wire::PacketError::Truncated)); 8];
                 measure(
-                    "actual eight-frame L2/L3 header batch per frame",
+                    "actual eight-frame RX header preparation per frame",
                     100_000,
                     8,
                     true,
                     &mut || {
-                        packet_wire::batch::parse_ethernet(std::hint::black_box(input).into_iter(), &mut headers).unwrap();
-                        std::hint::black_box(&headers);
+                        for frame in std::hint::black_box(input) {
+                            std::hint::black_box(device_model::network::NetworkReceiveBuffer::inspect(frame, false));
+                        }
                     },
                 );
                 measure(
@@ -204,13 +204,14 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 Some(ack),
             ));
             let reset_frame = peer_tcp_frame(43010, TcpControl::Rst, Some(ack));
+            let clock_time = now();
             let mut network = initial_stack().unwrap().lock().unwrap();
             measure(
-                "actual pending TCP lifecycle observation",
+                "actual pending TCP child clock and reset phase",
                 2_000_000,
                 1,
                 true,
-                &mut || { let NetworkStack { tcp_endpoints, .. } = &mut *network; tcp::maintain(tcp_endpoints); },
+                &mut || network.maintain_tcp_clocks(clock_time),
             );
             drop(network);
             // 仅 boundary producer 提供重复 wire frame；parser 与 protocol poll 均为实际代码。
@@ -235,20 +236,13 @@ pub(crate) fn run(measure: &mut impl FnMut(&str, u64, usize, bool, &mut dyn FnMu
                 );
             }
             let mut network = initial_stack().unwrap().lock().unwrap();
-            measure(
-                "actual bounded TCP lifecycle scan per handle",
-                20_000,
-                SOCKET_STORAGE_CAPACITY,
-                true,
-                &mut || { let NetworkStack { tcp_endpoints, .. } = &mut *network; tcp::maintain(tcp_endpoints); },
-            );
             let clock_time = now();
             measure(
-                "actual route-independent TCP clock phase per handle",
+                "actual TCP clock and reset phase per handle",
                 20_000,
                 SOCKET_STORAGE_CAPACITY,
                 true,
-                &mut || tcp::maintain_clocks(&mut network, clock_time),
+                &mut || network.maintain_tcp_clocks(clock_time),
             );
             measure(
                 "actual complete single-NIC/loopback NET poll per handle",

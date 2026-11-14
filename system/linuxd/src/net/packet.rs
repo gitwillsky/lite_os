@@ -3,7 +3,7 @@
 //! 控制经 socket channel、收发与 poll 经固定共享 SQ/CQ；就绪经 netstack 置位的 Event 唤醒本地 notification，见 [`super::netstack`]。
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use device_protocol::ActivityBinding;
 use network_protocol::{PacketInformation, PacketKind, RemotePacketSocket};
@@ -13,12 +13,20 @@ use super::{
     netstack,
 };
 use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
+use crate::sync::Mutex;
+
+mod ring;
 
 /// 一个 AF_PACKET socket 的本地端。
 pub(super) struct PacketSocket {
     remote: RemotePacketSocket,
+    kind: PacketKind,
+    // OWNER: 接收环配置与 mmap 租约序列化，防止更换已交给用户的缓冲。
+    ring: Mutex<ring::ReceiveRing>,
     // OWNER: OFD 的 AUXDATA 输出策略；独立标量不发布其他状态，Relaxed 足够，缺失则所有 recvmsg 都会强制输出控制消息。
     auxiliary: AtomicBool,
+    // OFD 的时间戳 cmsg 类型。只读写此标量，不发布队列或其他状态，Relaxed 足够。
+    timestamp: AtomicU8,
     // OWNER: netstack 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
     readiness: ActivityBinding,
     notify_read: Arc<PipeEnd>,
@@ -48,7 +56,10 @@ impl PacketSocket {
         let readiness = netstack::bind_readiness(endpoint.readiness, &endpoint.channel, &notify.1)?;
         Arc::try_new(Self {
             remote: RemotePacketSocket::new(endpoint.channel)?,
+            kind,
+            ring: Mutex::new(ring::ReceiveRing::default()),
             auxiliary: AtomicBool::new(false),
+            timestamp: AtomicU8::new(0),
             readiness,
             notify_read: notify.0,
             notify_write: notify.1,
@@ -104,6 +115,18 @@ impl PacketSocket {
     }
     pub(super) fn auxiliary(&self) -> bool {
         self.auxiliary.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_timestamp(&self, kind: u8) {
+        self.timestamp.store(kind, Ordering::Relaxed);
+    }
+
+    pub(super) fn timestamp(&self) -> u8 {
+        self.timestamp.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn take_statistics(&self) -> Result<[u32; 2], SocketError> {
+        self.remote.take_statistics()
     }
 
     pub(super) fn poll_state(&self) -> SocketPollState {

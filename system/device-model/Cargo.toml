@@ -6,6 +6,7 @@ description = "驱动宿主与设备使用者共享的设备类 trait、类型�
 
 [dependencies]
 native-runtime = { path = "../native-runtime" }
+packet-wire = { path = "../../libraries/packet-wire" }
 
 [lints]
 workspace = true

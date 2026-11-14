@@ -1,5 +1,5 @@
 //! 调度分区：一个授权 worker 独占一个逻辑 CPU，其余线程留在共享核。
-//! 配置锁只保护冷事务；分派以每 CPU owner 的原子投影过滤，旧队列条目按原 generation 迁移。
+//! 配置锁只保护冷事务；分派用共享 CPU 集合过滤普通线程，旧队列条目按原 generation 迁移。
 use super::{
     PROCESSOR_TOPOLOGY, ReadyCause, Thread, current_per_cpu, deliver_ready_entry, processor_at,
     publish_reschedule_at, ready_entry, relocate_after_affinity, with_current_processor,
@@ -12,8 +12,9 @@ use crate::thread::scheduling::{CpuAffinity, RunState};
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-/// 无可用分区与执行体退出是不同错误；失败不改变已提交配置。
+/// 区分无效参数、准入失败、内存不足和退出或并发替换。
 pub(crate) enum IsolationError {
+    InvalidAssignment,
     Conflict,
     Terminated,
     NoMemory,
@@ -44,32 +45,30 @@ pub(in crate::thread) fn register_thread(thread: &Arc<Thread>) {
     threads.push((thread.id(), Arc::downgrade(thread)));
 }
 
-/// 预检普通线程仍有 active CPU；不能通过隔离偷偷放宽其他线程的硬 affinity。
-fn admits_partition(threads: &[Arc<Thread>], owner: u64, shared: CpuSet) -> bool {
-    threads.iter().all(|thread| {
-        let state = thread.scheduling.state.lock();
-        thread.id() == owner
-            || state.run_state() == RunState::Exited
-            || state.cpu_affinity.is_exclusive()
-            || !state.cpu_affinity.eligible_in(shared).is_empty()
-    })
-}
-
-/// 替换 worker 的独占核；None 归还独占核并恢复全部 possible CPU 的普通 affinity。
+/// 一次准入所有 `changes`。未列出的线程保留原分区，`None` 恢复共享 affinity。
 ///
+/// # Returns
+/// 新目标 CPU 已保存旧执行上下文后返回成功。线程退出仍自动归还独占核。
 /// # Errors
-/// 退出返回 Terminated；非 active CPU、占用冲突、无 housekeeping 核、硬 affinity/CBS 冲突
-/// 返回 Conflict；快照分配失败返回 NoMemory。接纳后等待目标 CPU 的上下文保存安全点，
-/// 锁外 yield 推进迁移，不忙等远端。
-pub(in crate::thread) fn replace_isolation(
-    thread: &Arc<Thread>,
-    target: Option<CpuId>,
+/// 重复线程或目标、非 active CPU、硬 affinity/CBS 冲突、执行体退出或内存不足。
+/// 准入失败保留原分区；发表后有后续配置或退出时返回 Terminated。
+pub(crate) fn replace_isolation(
+    changes: &[(Arc<Thread>, Option<CpuId>)],
 ) -> Result<(), IsolationError> {
+    if changes.is_empty() {
+        return Ok(());
+    }
     let topology = PROCESSOR_TOPOLOGY.wait();
-    // 1. 锁外准备快照容量；索引可能并发增长，取得配置锁后复核再复制。
-    // snapshot 必须先于 configuration 声明，错误返回也先解锁再析构强引用。
-    // 否则恰好退出的线程可能在持配置锁时释放栈/地址空间并等待远端 TLB。
     let mut threads = Vec::new();
+    let mut states = Vec::new();
+    let mut relocations = Vec::new();
+    states
+        .try_reserve_exact(changes.len())
+        .map_err(|_| IsolationError::NoMemory)?;
+    relocations
+        .try_reserve_exact(changes.len())
+        .map_err(|_| IsolationError::NoMemory)?;
+    // 1. 锁外准备强引用快照。先解配置锁再析构快照，避免在配置锁内等待远端 TLB。
     let configuration = loop {
         let required = topology.threads.lock().len();
         threads
@@ -85,115 +84,146 @@ pub(in crate::thread) fn replace_isolation(
         drop(index);
         drop(configuration);
     };
-    // 2. 在唯一配置事务中预检并发表；新创建的执行体使用全体共享核，不能破坏本次预检。
-    let old = topology
-        .slots
-        .iter()
-        .find(|slot| slot.processor.exclusive_owner.load(Ordering::Acquire) == thread.id())
-        .map(|slot| slot.cpu_id);
-    if let Some(cpu) = target {
-        if !cpu::is_active(cpu) {
-            return Err(IsolationError::Conflict);
-        }
-        let owner = processor_at(cpu.index())
-            .exclusive_owner
-            .load(Ordering::Acquire);
-        if owner != 0 && owner != thread.id() {
-            return Err(IsolationError::Conflict);
-        }
-        let mut shared = shared_cpus() & cpu::active();
-        if let Some(old) = old {
-            shared.insert(old);
-        }
-        shared.remove(cpu);
-        if shared.is_empty() || !admits_partition(&threads, thread.id(), shared) {
-            return Err(IsolationError::Conflict);
-        }
-        // 截止预算只能在其原准入分区执行；先撤销旧预算，再改变独占核。
-        // 退出可能并发归还预算，读取旧非零值最多保守拒绝，不会超售。
-        if old != target && topology.deadline_bandwidth.lock()[cpu.index()] != 0 {
-            return Err(IsolationError::Conflict);
+    let is_changing = |owner| changes.iter().any(|(thread, _)| thread.id() == owner);
+    let mut owners = [0; usize::BITS as usize];
+    let mut shared = cpu::possible();
+    for slot in &topology.slots {
+        let owner = slot.processor.exclusive_owner.load(Ordering::Acquire);
+        if owner != 0 && !is_changing(owner) {
+            owners[slot.cpu_id.index()] = owner;
+            shared.remove(slot.cpu_id);
         }
     }
-    let epoch;
-    let (ready, running) = {
-        let mut state = thread.scheduling.state.lock();
-        if state.run_state() == RunState::Exited || thread.is_killed() {
-            return Err(IsolationError::Terminated);
+    // 2. 预检完整目标集合，允许同一事务内互换归属。准入前不修改任何调度状态。
+    let mut assigned = CpuSet::EMPTY;
+    for (i, (thread, target)) in changes.iter().enumerate() {
+        if changes[..i]
+            .iter()
+            .any(|(other, _)| other.id() == thread.id())
+        {
+            return Err(IsolationError::InvalidAssignment);
         }
-        if old != target
-            && target.is_some()
-            && thread.scheduling.policy.lock().deadline_cpu().is_some()
+        if let Some(cpu) = *target {
+            if assigned.contains(cpu) {
+                return Err(IsolationError::InvalidAssignment);
+            }
+            if !cpu::is_active(cpu) || owners[cpu.index()] != 0 {
+                return Err(IsolationError::Conflict);
+            }
+            let previous = processor_at(cpu.index())
+                .exclusive_owner
+                .load(Ordering::Acquire);
+            if previous != thread.id() && topology.deadline_bandwidth.lock()[cpu.index()] != 0 {
+                return Err(IsolationError::Conflict);
+            }
+            assigned.insert(cpu);
+            owners[cpu.index()] = thread.id();
+            shared.remove(cpu);
+        }
+    }
+    let active_shared = shared & cpu::active();
+    if active_shared.is_empty() {
+        return Err(IsolationError::Conflict);
+    }
+    for thread in &threads {
+        let state = thread.scheduling.state.lock();
+        if !is_changing(thread.id())
+            && state.run_state() != RunState::Exited
+            && !state.cpu_affinity.is_exclusive()
+            && state.cpu_affinity.eligible_in(active_shared).is_empty()
         {
             return Err(IsolationError::Conflict);
         }
-        state.cpu_affinity = target.map_or_else(CpuAffinity::all, CpuAffinity::exclusive);
-        if let Some(cpu) = old.filter(|old| Some(*old) != target) {
-            processor_at(cpu.index())
-                .exclusive_owner
-                .store(0, Ordering::Release);
+    }
+    for (thread, target) in changes {
+        let state = thread.scheduling.state.lock();
+        if state.run_state() == RunState::Exited || thread.is_killed() {
+            return Err(IsolationError::Terminated);
         }
-        if let Some(cpu) = target {
-            processor_at(cpu.index())
-                .exclusive_owner
-                .store(thread.id(), Ordering::Release);
+        if let Some(cpu) = thread.scheduling.policy.lock().deadline_cpu()
+            && !target.map_or_else(|| active_shared.contains(cpu), |target| target == cpu)
+        {
+            return Err(IsolationError::Conflict);
         }
-        let mut shared = shared_cpus();
-        if let Some(cpu) = old {
-            shared.insert(cpu);
-        }
-        if let Some(cpu) = target {
-            shared.remove(cpu);
-        }
+    }
+    // 3. 阻止受影响的线程在共享集合与自身 affinity 之间观察到混合两代。
+    // 只有 CPU 配置事务同时取多个 state。外层 IRQ guard 覆盖所有内层 guard 的析构。
+    let mut epochs = [0; usize::BITS as usize];
+    {
+        let _irq = LocalIrqGuard::disable();
+        let mut states = states;
+        states.extend(
+            changes
+                .iter()
+                .map(|(thread, _)| thread.scheduling.state.lock()),
+        );
         topology
             .shared_cpus
             .store(shared.native_word(), Ordering::Release);
-        // 新 epoch 必须晚于共享集合发表；旧安全点的确认不能覆盖新分区的迁移。
-        epoch = target.map(|cpu| {
-            let slot = processor_at(cpu.index());
-            if old != target {
-                let epoch = crate::id::next_koid();
-                slot.exclusive_epoch.store(epoch, Ordering::Release);
-                epoch
-            } else {
-                slot.exclusive_epoch.load(Ordering::Acquire)
+        for slot in &topology.slots {
+            let index = slot.cpu_id.index();
+            let previous = slot.processor.exclusive_owner.load(Ordering::Acquire);
+            let owner = owners[index];
+            if owner != previous {
+                slot.processor
+                    .exclusive_owner
+                    .store(owner, Ordering::Release);
+                if owner != 0 {
+                    slot.processor
+                        .exclusive_epoch
+                        .store(crate::id::next_koid(), Ordering::Release);
+                }
             }
-        });
-        relocate_after_affinity(thread, &mut state)
-    };
+            epochs[index] = slot.processor.exclusive_epoch.load(Ordering::Acquire);
+        }
+        for ((thread, target), state) in changes.iter().zip(&mut states) {
+            state.cpu_affinity = target.map_or_else(CpuAffinity::all, CpuAffinity::exclusive);
+            relocations.push(relocate_after_affinity(thread, state));
+        }
+    }
     drop(configuration);
     drop(threads);
-    // 3. 全部锁和快照引用都已释放，才投递迁移、等待远端安全点。
-    if let Some((cpu, generation)) = ready {
-        deliver_ready_entry(
-            cpu,
-            ready_entry(thread.clone(), generation),
-            ReadyCause::Wake,
-        );
+    // 4. 锁外投递迁移及远端安全点请求。先通知所有 CPU，再等待确认。
+    for ((thread, target), (ready, running)) in changes.iter().zip(relocations) {
+        if let Some((cpu, generation)) = ready {
+            deliver_ready_entry(
+                cpu,
+                ready_entry(thread.clone(), generation),
+                ReadyCause::Wake,
+            );
+        }
+        if let Some(cpu) = running {
+            publish_reschedule_at(cpu);
+        }
+        if let Some(cpu) = *target {
+            publish_reschedule_at(cpu);
+        }
     }
-    if let Some(cpu) = running {
-        publish_reschedule_at(cpu);
+    if assigned.is_empty() {
+        return Ok(());
     }
-    if let Some(cpu) = target {
-        let slot = processor_at(cpu.index());
-        publish_reschedule_at(cpu);
-        loop {
-            // 若调用者就是目标 worker，当前上下文已属于 owner，可以直接确认。
-            let irq = LocalIrqGuard::disable();
-            observe_partition();
-            drop(irq);
+    loop {
+        // 调用者可以是目标 worker；此时已安全，无需等待切换到自己。
+        let irq = LocalIrqGuard::disable();
+        observe_partition();
+        drop(irq);
+        let mut acknowledged = true;
+        for (thread, target) in changes {
+            let Some(cpu) = *target else { continue };
+            let slot = processor_at(cpu.index());
+            let epoch = epochs[cpu.index()];
             if slot.exclusive_owner.load(Ordering::Acquire) != thread.id()
-                || Some(slot.exclusive_epoch.load(Ordering::Acquire)) != epoch
+                || slot.exclusive_epoch.load(Ordering::Acquire) != epoch
             {
                 return Err(IsolationError::Terminated);
             }
-            if Some(slot.exclusive_ack.load(Ordering::Acquire)) == epoch {
-                break;
-            }
-            super::super::yield_current();
+            acknowledged &= slot.exclusive_ack.load(Ordering::Acquire) == epoch;
         }
+        if acknowledged {
+            return Ok(());
+        }
+        super::super::yield_current();
     }
-    Ok(())
 }
 
 /// 已保存 outgoing context 的 continuation/idle 安全点调用；不能在 select 时提前确认。

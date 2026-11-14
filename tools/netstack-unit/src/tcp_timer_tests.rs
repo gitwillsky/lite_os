@@ -1,6 +1,6 @@
 #[test]
 fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
-    use smoltcp::time::Duration;
+    use ::tcp::time::Duration;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, _, _) = routing_domain(89239);
@@ -19,7 +19,7 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
         let mut network = net.protocol().unwrap().lock().unwrap();
         let socket = network.tcp_endpoints.get_mut(&id).unwrap().transport_for_test_mut();
         socket.set_timeout(Some(::tcp::time::Duration::from_millis(500)));
-        socket.maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros())).unwrap()
+        socket.maintenance_deadline(::tcp::time::Instant::ZERO).unwrap()
     };
     configure_route(&net, route, network_protocol::RouteChange { delete: true, replace: false, create: false, exclusive: false, append: false }).unwrap();
     configure_up(&net, 2, false).unwrap();
@@ -29,9 +29,9 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
             network.route(Ipv4Addr::UNSPECIFIED, peer, None),
             Err(SocketError::NetworkUnreachable)
         );
-        tcp::maintain_clocks(&mut network, deadline - Duration::from_millis(1));
+        network.maintain_tcp_clocks(deadline - Duration::from_millis(1));
         assert_eq!(network.tcp_endpoints[&id].pending_error_for_test(), None);
-        tcp::maintain_clocks(&mut network, deadline);
+        network.maintain_tcp_clocks(deadline);
         assert_eq!(
             network.tcp_endpoints[&id].pending_error_for_test(),
             Some(SocketError::TimedOut)
@@ -40,7 +40,7 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
     assert_eq!(endpoint.take_error(), Some(SocketError::TimedOut));
     {
         let mut network = net.protocol().unwrap().lock().unwrap();
-        tcp::maintain_clocks(&mut network, deadline + Duration::from_millis(1000));
+        network.maintain_tcp_clocks(deadline + Duration::from_millis(1000));
     }
     assert_eq!(endpoint.take_error(), None);
     endpoint.close_description();
@@ -49,7 +49,8 @@ fn actual_tcp_timeout_keeps_progress_without_route_and_reports_once() {
 #[test]
 fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_replies_reset_cycle() {
     use InternetOption as O;
-    use smoltcp::{phy::ChecksumCapabilities, time::Duration, wire::*};
+    use ::tcp::time::Duration;
+    use smoltcp::{phy::ChecksumCapabilities, wire::*};
     let _serial = SERIAL.lock().unwrap();
     initialize();
     for route_lost in [false, true] {
@@ -133,12 +134,17 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
             2,
             "actual accepted child keeps final ACK policy"
         );
+        let InetEndpoint::Tcp(id) = child.endpoint else { unreachable!() };
+        let retry = start + Duration::from_millis(1500);
+        assert_eq!(
+            net.protocol().unwrap().lock().unwrap().tcp_endpoints[&id]
+                .transport_for_test().maintenance_deadline(retry),
+            Some(retry),
+            "a due keepalive probe may not wake the worker before output can retry"
+        );
         if route_lost {
             configure_up(&net, 2, false).unwrap();
             a.wire.lock().unwrap().1.clear();
-            let InetEndpoint::Tcp(id) = child.endpoint else {
-                unreachable!()
-            };
             for millis in [1000, 2000] {
                 let timestamp = start + Duration::from_millis(millis);
                 net.protocol().unwrap().lock().unwrap().poll_at(timestamp);
@@ -146,7 +152,7 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
                 let network = net.protocol().unwrap().lock().unwrap();
                 let socket = network.tcp_endpoints[&id].transport_for_test();
                 assert_eq!(
-                    socket.maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros())),
+                    socket.maintenance_deadline(::tcp::time::Instant::ZERO),
                     Some(timestamp + Duration::from_millis(1000)),
                     "actual route failure consumes one probe and schedules a future deadline"
                 );
@@ -266,7 +272,7 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
 #[test]
 fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
     use InternetOption as O;
-    use smoltcp::time::Duration;
+    use ::tcp::time::Duration;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, _, _) = routing_domain(89241);
@@ -301,7 +307,7 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
         };
         let network = net.protocol().unwrap().lock().unwrap();
         network.tcp_endpoints[&id].transport_for_test()
-            .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
+            .maintenance_deadline(::tcp::time::Instant::ZERO)
             .unwrap()
     };
     let retry_start = deadline(&retry) - Duration::from_millis(1000);
@@ -310,7 +316,7 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
     configure_up(&net, 2, false).unwrap();
     {
         let mut network = net.protocol().unwrap().lock().unwrap();
-        tcp::maintain_clocks(&mut network, timed_start + Duration::from_millis(1000));
+        network.maintain_tcp_clocks(timed_start + Duration::from_millis(1000));
     }
     assert_eq!(
         timed.take_error(),
@@ -320,7 +326,7 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
     assert_eq!(deadline(&timed), timed_start + Duration::from_millis(1002));
     {
         let mut network = net.protocol().unwrap().lock().unwrap();
-        tcp::maintain_clocks(&mut network, timed_start + Duration::from_millis(1002));
+        network.maintain_tcp_clocks(timed_start + Duration::from_millis(1002));
     }
     assert_eq!(timed.take_error(), Some(SocketError::TimedOut));
     // native first four active SYN RTOs are linear; retry boundary is still a native elapsed model.
@@ -346,7 +352,8 @@ fn actual_tcp_syn_budget_and_user_timeout_expire_without_output_routes() {
 #[test]
 fn actual_zero_window_clock_preserves_user_deadline_and_unrouted_probe_budget() {
     use InternetOption as O;
-    use smoltcp::{time::Duration, wire::*};
+    use ::tcp::time::Duration;
+    use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     for scenario in 0..3u32 {
@@ -418,7 +425,7 @@ fn actual_zero_window_clock_preserves_user_deadline_and_unrouted_probe_budget() 
         let deadline = || {
             let network = net.protocol().unwrap().lock().unwrap();
             network.tcp_endpoints[&id].transport_for_test()
-                .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
+                .maintenance_deadline(::tcp::time::Instant::ZERO)
                 .unwrap()
         };
         let first = deadline();

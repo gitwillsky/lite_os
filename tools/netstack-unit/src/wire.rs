@@ -2,6 +2,14 @@ use std::sync::{Mutex as HostMutex, OnceLock};
 static SERIAL: HostMutex<()> = HostMutex::new(());
 static NAMESPACE: OnceLock<Arc<crate::namespace::Namespace>> = OnceLock::new();
 fn namespace() -> &'static Arc<crate::namespace::Namespace> { NAMESPACE.get().unwrap() }
+fn install_interface(
+    scope: &crate::namespace::Namespace,
+    device: Arc<dyn device_model::network::NetworkDevice>,
+    lifetime: native_runtime::Channel,
+    link_changed: native_runtime::Event,
+) -> Result<u32, SocketError> {
+    super::install_interface(scope, device, lifetime, link_changed, Default::default())
+}
 // 这个边界 peer 只发 IPv4；测试若错误传入 IPv6 必须显式失败，不能把地址截断后继续验收。
 fn ipv4_address(endpoint: InetAddress) -> Ipv4Addr {
     let InetAddress::V4(endpoint) = endpoint else { panic!("IPv4 wire peer received an IPv6 endpoint"); };
@@ -9,7 +17,6 @@ fn ipv4_address(endpoint: InetAddress) -> Ipv4Addr {
 }
 fn initialize() {
     let scope = NAMESPACE.get_or_init(|| {
-        crate::packet::init();
         let scope = crate::namespace::Namespace::create().unwrap();
         scope.install_protocol(prepare_network(&scope, &[Arc::new(Device)], true).unwrap());
         scope
@@ -36,10 +43,12 @@ fn initialize() {
         receive_error_after: Option<usize>,
         // 一次实际 submit 故障，在同一个 wire owner 消费；不能用 reserve 失败替代。
         submit_error: Option<device_model::network::NetworkError>,
+        receive_snapshot: Option<(u32, super::protocol_owner::ReceiveSnapshot)>,
+        pub(crate) last_transmit_queue: Option<u16>,
     }
     impl FrameLoans {
-        const fn new() -> Self { Self { received: [const { None }; device_model::network::RECEIVE_BATCH_CAPACITY], transmit: alloc::vec::Vec::new(), reserved: false, receive_error_after: None, submit_error: None } }
-        fn receive_batch<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16, input: &mut std::collections::VecDeque<alloc::vec::Vec<u8>>, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>], checksum_valid: bool) -> Result<usize, device_model::network::NetworkError> {
+        const fn new() -> Self { Self { received: [const { None }; device_model::network::RECEIVE_BATCH_CAPACITY], transmit: alloc::vec::Vec::new(), reserved: false, receive_error_after: None, submit_error: None, receive_snapshot: None, last_transmit_queue: None } }
+        fn receive_batch<'a>(&mut self, owner: &'a dyn device_model::network::NetworkReceiveOwner, queue: u16, input: &mut std::collections::VecDeque<alloc::vec::Vec<u8>>, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>], checksum_valid: bool) -> Result<usize, device_model::network::NetworkError> {
             if output.iter().any(Option::is_some) { return Err(device_model::network::NetworkError::InvalidConfiguration); }
             let mut count = 0;
             for output in output.iter_mut().take(device_model::network::RECEIVE_BATCH_CAPACITY) {
@@ -49,14 +58,19 @@ fn initialize() {
                 self.received[slot] = Some(frame);
                 let frame = self.received[slot].as_ref().unwrap();
                 // SAFETY: 每个 Vec 的独立存储由 owner 保活；本 slot 在对应 token 释放前不 take/resize/再次借出。
-                *output = Some(unsafe { device_model::network::NetworkReceiveFrame::new(owner, queue, slot as u16, 1, frame.as_ptr() as usize, frame.len(), checksum_valid) });
+                *output = Some(unsafe {
+                    let buffer = device_model::network::NetworkReceiveBuffer::prepare(frame, checksum_valid, |packet| {
+                        self.receive_snapshot.as_ref().map_or_else(Default::default, |(ingress, snapshot)| snapshot.prepare(packet, true, *ingress))
+                    });
+                    device_model::network::NetworkReceiveFrame::new(owner, queue, slot as u16, 1, buffer)
+                });
                 count += 1;
             }
             Ok(count)
         }
         fn reserve<'a>(&mut self, owner: &'a dyn device_model::network::NetworkDevice, queue: u16) -> Result<device_model::network::NetworkTransmit<'a>, device_model::network::NetworkError> {
             if self.reserved { return Err(device_model::network::NetworkError::WouldBlock); }
-            if self.transmit.is_empty() { self.transmit.resize(1514, 0); }
+            if self.transmit.is_empty() { self.transmit.resize(owner.transmit_capabilities().maximum_buffer_length as usize, 0); }
             // 重用 DMA 不承诺零值；整个实际 producer 必须定义提交窗口，不能依赖 adapter 清零。
             self.transmit.fill(0xa5);
             self.reserved = true;
@@ -70,6 +84,13 @@ fn initialize() {
         }
     }
     struct Device;
+    impl device_model::network::NetworkReceiveOwner for Device {
+        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
+        unsafe fn release_received(&self, _: u16, slot: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
+            assert!(WIRE.lock().unwrap().2.received[slot as usize].take().is_some());
+            Ok(())
+        }
+    }
     impl device_model::network::NetworkDevice for Device {
         fn supports_queue_affinity(&self) -> bool { false }
         fn set_queue_affinity(&self, _: u16, _: u32) -> Result<(), device_model::network::NetworkError> { Err(device_model::network::NetworkError::InvalidConfiguration) }
@@ -86,24 +107,33 @@ fn initialize() {
         fn link(
             &self,
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
-            Ok(device_model::network::NetworkLink::default())
+            Ok(device_model::network::NetworkLink {
+                carrier: true,
+                ..Default::default()
+            })
         }
-        fn receive_batch<'a>(&'a self, queue: u16, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>]) -> Result<usize, device_model::network::NetworkError> {
+        fn receive_batch<'a>(
+            &'a self,
+            start: u16,
+            output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>],
+        ) -> Result<Option<(u16, usize)>, device_model::network::NetworkError> {
+            if start != 0 {
+                return Err(device_model::network::NetworkError::InvalidConfiguration);
+            }
             let mut wire = WIRE.lock().unwrap();
             let (input, _, loans) = &mut *wire;
-            loans.receive_batch(self, queue, input, output, false)
+            let count = loans.receive_batch(self, 0, input, output, false)?;
+            Ok((count != 0).then_some((0, count)))
         }
         fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
             WIRE.lock().unwrap().2.reserve(self, queue)
         }
-        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
-        unsafe fn release_received(&self, _: u16, slot: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
-            assert!(WIRE.lock().unwrap().2.received[slot as usize].take().is_some());
-            Ok(())
-        }
         // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>, segmentation: Option<device_model::network::NetworkTcpSegmentation>) -> Result<(), device_model::network::NetworkError> {
+        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, data: device_model::network::NetworkTransmitData) -> Result<(), device_model::network::NetworkError> {
+            let device_model::network::NetworkTransmitData::Ready(checksum, segmentation) = data else {
+                return Err(device_model::network::NetworkError::InvalidConfiguration);
+            };
             assert!(segmentation.is_none());
             let mut wire = WIRE.lock().unwrap();
             let mut frame = wire.2.complete(length);
@@ -126,15 +156,8 @@ fn initialize() {
         fn transmit_available(&self, _queue: u16) -> bool {
             TRANSMIT_AVAILABLE.load(core::sync::atomic::Ordering::Relaxed)
         }
-        fn poll_completions(
-            &self,
-            _: u16,
-            _: usize,
-        ) -> Result<device_model::network::NetworkCompletion, device_model::network::NetworkError> {
-            Ok(device_model::network::NetworkCompletion::default())
-        }
-        fn finish_receive_batch(&self, _queue: u16) -> Result<(), device_model::network::NetworkError> {
-            Ok(())
+        fn take_progress(&self) -> device_model::network::NetworkDeviceProgress {
+            device_model::network::NetworkDeviceProgress::default()
         }
         fn statistics(&self) -> device_model::network::NetworkStatistics {
             device_model::network::NetworkStatistics::default()
@@ -363,7 +386,8 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
 }
 
     pub(crate) struct WireDevice {
-        link: std::sync::Mutex<(bool, Option<device_model::Activity>)>,
+        link: std::sync::Mutex<(bool, u32, Option<device_model::Activity>)>,
+        pub(crate) link_reads: core::sync::atomic::AtomicUsize,
         pub(crate) queue_count: u16,
         pub(crate) checksum: bool,
         pub(crate) receive_checksum_valid: core::sync::atomic::AtomicBool,
@@ -378,14 +402,18 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         pub(crate) fn set_carrier(&self, carrier: bool) {
             let callback = {
                 let mut link = self.link.lock().unwrap();
+                if link.0 != carrier {
+                    link.1 = link.1.wrapping_add(1);
+                }
                 link.0 = carrier;
-                link.1.clone()
+                link.2.clone()
             };
             if let Some(callback) = callback { callback(); }
         }
         pub(crate) fn new() -> Self {
             Self {
-                link: std::sync::Mutex::new((true, None)),
+                link: std::sync::Mutex::new((true, 0, None)),
+                link_reads: core::sync::atomic::AtomicUsize::new(0),
                 queue_count: 1,
                 checksum: false,
                 receive_checksum_valid: core::sync::atomic::AtomicBool::new(false),
@@ -402,14 +430,21 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             }
         }
     }
+    impl device_model::network::NetworkReceiveOwner for WireDevice {
+        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
+        unsafe fn release_received(&self, _: u16, slot: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
+            assert!(self.wire.lock().unwrap().2.received[slot as usize].take().is_some());
+            Ok(())
+        }
+    }
     impl device_model::network::NetworkDevice for WireDevice {
         fn supports_queue_affinity(&self) -> bool { false }
         fn set_queue_affinity(&self, _: u16, _: u32) -> Result<(), device_model::network::NetworkError> { Err(device_model::network::NetworkError::InvalidConfiguration) }
         fn queue_count(&self) -> u16 { self.queue_count }
-        fn transmit_capabilities(&self) -> device_model::network::NetworkTransmitCapabilities { device_model::network::NetworkTransmitCapabilities { checksum: self.checksum, tcp_ipv4: false, tcp_ipv6: false, tcp_ecn: false, maximum_frame_length: 1514, maximum_buffer_length: 1514 } }
+        fn transmit_capabilities(&self) -> device_model::network::NetworkTransmitCapabilities { device_model::network::NetworkTransmitCapabilities { checksum: self.checksum, tcp_ipv4: false, tcp_ipv6: false, tcp_ecn: false, maximum_frame_length: 1518, maximum_buffer_length: 1518 } }
         fn bind_activity(&self, _: u16, _: device_model::Activity) {}
         fn bind_link_activity(&self, activity: device_model::Activity) {
-            let old = self.link.lock().unwrap().1.replace(activity.clone());
+            let old = self.link.lock().unwrap().2.replace(activity.clone());
             drop(old);
             activity();
         }
@@ -422,26 +457,50 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
         fn link(
             &self,
         ) -> Result<device_model::network::NetworkLink, device_model::network::NetworkError> {
-            Ok(device_model::network::NetworkLink { carrier: self.link.lock().unwrap().0, carrier_epoch: 0, speed_mbps: None })
+            self.link_reads.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let link = self.link.lock().unwrap();
+            Ok(device_model::network::NetworkLink {
+                carrier: link.0,
+                carrier_epoch: link.1,
+                speed_mbps: None,
+            })
         }
-        fn receive_batch<'a>(&'a self, queue: u16, output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>]) -> Result<usize, device_model::network::NetworkError> {
-            if queue != self.receive_on.load(core::sync::atomic::Ordering::Relaxed) { return Ok(0); }
-            if self.error.swap(false, core::sync::atomic::Ordering::Relaxed) { return Err(device_model::network::NetworkError::Device); }
+        fn receive_batch<'a>(
+            &'a self,
+            start: u16,
+            output: &mut [Option<device_model::network::NetworkReceiveFrame<'a>>],
+        ) -> Result<Option<(u16, usize)>, device_model::network::NetworkError> {
+            if start >= self.queue_count {
+                return Err(device_model::network::NetworkError::InvalidConfiguration);
+            }
+            // 该 fixture 同时只给一个队列送帧，从任一起点循环搜索都会选中它。
+            let queue = self.receive_on.load(core::sync::atomic::Ordering::Relaxed);
+            if queue >= self.queue_count {
+                return Ok(None);
+            }
+            if self.error.swap(false, core::sync::atomic::Ordering::Relaxed) {
+                return Err(device_model::network::NetworkError::Device);
+            }
             let mut wire = self.wire.lock().unwrap();
             let (input, _, loans) = &mut *wire;
-            loans.receive_batch(self, queue, input, output, self.receive_checksum_valid.load(core::sync::atomic::Ordering::Relaxed))
+            let count = loans.receive_batch(
+                self,
+                queue,
+                input,
+                output,
+                self.receive_checksum_valid.load(core::sync::atomic::Ordering::Relaxed),
+            )?;
+            Ok((count != 0).then_some((queue, count)))
         }
         fn reserve_transmit(&self, queue: u16) -> Result<device_model::network::NetworkTransmit<'_>, device_model::network::NetworkError> {
             if !self.transmit_available(queue) { return Err(device_model::network::NetworkError::WouldBlock); }
             self.wire.lock().unwrap().2.reserve(self, queue)
         }
-        // SAFETY: production token 已结束内容引用，take 是唯一持有帧存储的退休路径。
-        unsafe fn release_received(&self, _: u16, slot: u16, _: u64) -> Result<(), device_model::network::NetworkError> {
-            assert!(self.wire.lock().unwrap().2.received[slot as usize].take().is_some());
-            Ok(())
-        }
         // SAFETY: production token 已交出写入权；边界 peer 此时才读取并记录帧，随后立即完成。
-        unsafe fn submit_transmit(&self, _: u16, _: u16, _: u64, length: usize, checksum: Option<device_model::network::NetworkChecksum>, segmentation: Option<device_model::network::NetworkTcpSegmentation>) -> Result<(), device_model::network::NetworkError> {
+        unsafe fn submit_transmit(&self, queue: u16, _: u16, _: u64, length: usize, data: device_model::network::NetworkTransmitData) -> Result<(), device_model::network::NetworkError> {
+            let device_model::network::NetworkTransmitData::Ready(checksum, segmentation) = data else {
+                return Err(device_model::network::NetworkError::InvalidConfiguration);
+            };
             assert!(segmentation.is_none());
             let mut wire = self.wire.lock().unwrap();
             if let Some(error) = wire.2.submit_error.take() { return Err(error); }
@@ -455,6 +514,7 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
                 frame[field..field + 2].copy_from_slice(&value.to_be_bytes());
             }
             wire.1.push(frame);
+            wire.2.last_transmit_queue = Some(queue);
             Ok(())
         }
         // SAFETY: production token 只在尚未提交时取消，内容引用已结束，无硬件异步访问。
@@ -466,21 +526,11 @@ fn receive<E: ReceiveEndpoint>(endpoint: &Arc<E>, output: &mut [u8], peek: bool)
             self.transmit_available
                 .load(core::sync::atomic::Ordering::Relaxed)
         }
-        fn poll_completions(
-            &self,
-            _: u16,
-            _: usize,
-        ) -> Result<device_model::network::NetworkCompletion, device_model::network::NetworkError> {
-            Ok(device_model::network::NetworkCompletion {
-                completed: 0,
-                backlog: false,
-                transmit_became_available: self
-                    .transmit_ready
-                    .swap(false, core::sync::atomic::Ordering::Relaxed),
-            })
-        }
-        fn finish_receive_batch(&self, _queue: u16) -> Result<(), device_model::network::NetworkError> {
-            Ok(())
+        fn take_progress(&self) -> device_model::network::NetworkDeviceProgress {
+            device_model::network::NetworkDeviceProgress {
+                transmit_ready: self.transmit_ready.swap(false, core::sync::atomic::Ordering::Relaxed),
+                ..Default::default()
+            }
         }
         fn statistics(&self) -> device_model::network::NetworkStatistics {
             device_model::network::NetworkStatistics::default()

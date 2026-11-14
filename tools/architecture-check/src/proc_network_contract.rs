@@ -19,6 +19,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let provider = source(sources, "system/linuxd/src/task/process_table/procfs.rs");
     let snapshot = source(sources, "system/linuxd/src/fs/procfs/snapshot.rs");
     let config = source(sources, "system/netstack/src/inet/configuration.rs");
+    let interfaces = source(sources, "system/netstack/src/inet/interface.rs");
     let task = source(sources, "system/linuxd/src/task/model/namespaces.rs");
     let kernel = source(sources, "system/linuxd/src/task/model/kernel_thread.rs");
     let table = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
@@ -53,7 +54,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || snapshot.contains("ProcNetworkSnapshot")
         || provider.contains("letnet=current")
         || config.contains(".find(|interface|interface.index!=1)")
-        || !config.contains("network.interfaces.iter().map(|interface|NetworkSnapshot")
+        || !config.contains("network.visible_interfaces().map(|interface|NetworkSnapshot")
+        || !interfaces
+            .contains("self.interfaces.iter().filter(|interface|self.interface_visible(interface))")
+        || !interfaces.contains(
+            "interface.device.vlan().is_none()||self.switching.has_gateway(interface.index)",
+        )
         || !table.contains("forinterfaceininterfaces{")
         || !table.contains("output.write_bytes(name)?")
         || !table.contains("interface.transmitted_dropped")
@@ -101,8 +107,8 @@ mod tests {
             ),
             (
                 "system/netstack/src/inet/configuration.rs",
-                "network.interfaces.iter().map(|interface| NetworkSnapshot",
-                "network.interfaces.iter().take(1).map(|interface| NetworkSnapshot",
+                ".visible_interfaces()\n            .map(|interface| NetworkSnapshot",
+                ".visible_interfaces().take(1).map(|interface| NetworkSnapshot",
             ),
             (
                 "system/linuxd/src/task/model/kernel_thread.rs",

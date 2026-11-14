@@ -93,7 +93,8 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
         network_protocol::routing::Configuration::encode(
             &plans,
             [Some(&source6), Some(&source4)],
-            None, None
+            None,
+            None
         )
         .is_err()
     );
@@ -362,6 +363,15 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
     let before_removal = route_snapshot::<Ipv6Addr>(&net).unwrap();
+    let cursor = router_protocol::route_view::Cursor {
+        family: router_protocol::routing::Family::Ipv6,
+        start: Default::default(),
+    };
+    let observe = || {
+        use router_protocol::route_view::Page;
+        Page::parse(&crate::inet::route_page(&net, cursor).unwrap(), cursor).unwrap()
+    };
+    let before = observe();
     assert_eq!(
         before_removal
             .iter()
@@ -380,6 +390,17 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
             .remove_interface(inserted)
     );
     let after_removal = route_snapshot::<Ipv6Addr>(&net).unwrap();
+    let after = observe();
+    assert!(before.rows.iter().any(|row| row.hop.is_some_and(|hop| hop.interface == inserted)));
+    assert!(after.rows.iter().all(|row| row.hop.is_none_or(|hop| hop.interface != inserted)));
+    {
+        use router_protocol::route_view::observation::{self, Update};
+        let update = observation::encode(cursor, &after, Some(&before)).unwrap().unwrap();
+        let Update::Changes(changes) = Update::parse(&update, cursor).unwrap() else {
+            panic!("removed FIB members must publish a page increment");
+        };
+        assert_eq!(changes.apply(&before, cursor).unwrap(), after);
+    }
     assert!(
         after_removal
             .iter()
@@ -415,6 +436,7 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
 }
 #[test]
 fn gateway6_failed_neighbor_retires_all_remote_waiters_once_and_new_route_survives_old_failure() {
+    use network_protocol::InternetErrorOrigin;
     let _serial = SERIAL.lock().unwrap();
     initialize();
     for switch in [false, true] {
@@ -429,6 +451,7 @@ fn gateway6_failed_neighbor_retires_all_remote_waiters_once_and_new_route_surviv
         let remote: Ipv6Addr = "2001:db8:900::9".parse().unwrap();
         let other: Ipv6Addr = "2001:db8:901::9".parse().unwrap();
         let endpoint = socket6(&net);
+        endpoint.set_receive_error(true, true).unwrap();
         endpoint
             .connect(InetAddress::new(remote.into(), 44000))
             .unwrap();
@@ -496,7 +519,22 @@ fn gateway6_failed_neighbor_retires_all_remote_waiters_once_and_new_route_surviv
             );
             assert_eq!(endpoint.take_error(), Some(SocketError::HostUnreachable));
             assert_eq!(endpoint.take_error(), None);
+            for number in 0..8 {
+                let mut empty = crate::receive::ReceiveBuffer::try_new(0).unwrap();
+                let (length, error) = endpoint.receive_error(&mut empty).unwrap();
+                assert_eq!(length, 0);
+                assert_eq!(error.origin, InternetErrorOrigin::Local);
+                assert_eq!(error.error, SocketError::HostUnreachable);
+                assert_eq!(error.offender, None);
+                let destination = if number % 2 == 0 { remote } else { other };
+                assert_eq!(
+                    error.destination,
+                    InetAddress::new(destination.into(), 44000)
+                );
+            }
         }
+        let mut empty = crate::receive::ReceiveBuffer::try_new(0).unwrap();
+        assert_eq!(endpoint.receive_error(&mut empty), Err(SocketError::Again));
         assert!(endpoint.poll_state().writable);
         endpoint.close_description();
     }

@@ -95,10 +95,7 @@ impl Node {
             spec.layout.grow = 0;
         }
         validate_layout(spec.layout)?;
-        validate_state(spec.state)?;
-        if spec.state & state::VSCROLL != 0 && spec.kind != widget::COLUMN {
-            return Err(invalid("vertical viewport requires a column"));
-        }
+        validate_state(spec.kind, spec.state)?;
         Ok(Self {
             revision: 1,
             painted: None,
@@ -246,7 +243,7 @@ pub fn validate_layout(l: abi::Layout) -> io::Result<()> {
     }
     Ok(())
 }
-pub fn validate_state(value: u32) -> io::Result<()> {
+pub fn validate_state(kind: u32, value: u32) -> io::Result<()> {
     if value
         & !(state::DISABLED
             | state::CHECKED
@@ -264,10 +261,17 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::KEYBOARD_CONTEXT_MENU
             | state::TRACK_NO_TICKS
             | state::TRACK_BOTH
-            | state::VSCROLL)
+            | state::VSCROLL
+            | state::READ_ONLY)
         != 0
     {
         return Err(invalid("unknown widget state"));
+    }
+    if value & state::VSCROLL != 0 && kind != widget::COLUMN {
+        return Err(invalid("vertical viewport requires a column"));
+    }
+    if value & state::READ_ONLY != 0 && kind != widget::TEXT_EDITOR {
+        return Err(invalid("read-only state requires a multiline editor"));
     }
     Ok(())
 }

@@ -62,10 +62,10 @@ fn accepted_update_preserves_first_attributes_and_orders_withdraw_before_announc
         [1, 3, 250]
     );
     let changes = received.changes().collect::<Vec<_>>();
-    let Change::Withdraw(withdrawn) = changes[0] else {
+    let Change::Withdraw(withdrawn, None) = changes[0] else {
         panic!("withdraw first")
     };
-    let Change::Announce { prefix, next_hop } = changes[1] else {
+    let Change::Announce { prefix, path_id: None, next_hop } = changes[1] else {
         panic!("announce second")
     };
     assert_eq!(withdrawn, prefix);
@@ -208,7 +208,7 @@ fn malformed_routing_attributes_withdraw_all_announcements_instead_of_ignoring_t
         assert!(
             received
                 .changes()
-                .all(|change| matches!(change, Change::Withdraw(_)))
+                .all(|change| matches!(change, Change::Withdraw(_, None)))
         );
     }
     for missing in [1, 2, 3, 5] {
@@ -377,7 +377,7 @@ fn mp_reachability_preserves_both_next_hops_and_eor_without_forging_missing_attr
     let bytes = update(&[], &attributes(&list), &[]);
     let received = receive(&mut established(false, true), &bytes);
     assert_eq!(received.handling(), Handling::Accept);
-    let Change::Announce { prefix, next_hop } = received.changes().next().unwrap() else {
+    let Change::Announce { prefix, path_id: None, next_hop } = received.changes().next().unwrap() else {
         panic!("IPv6 announce")
     };
     assert_eq!(
@@ -428,7 +428,7 @@ fn mp_reachability_preserves_both_next_hops_and_eor_without_forging_missing_attr
     assert_eq!(received.end_of_rib(), None);
     assert!(matches!(
         received.changes().next(),
-        Some(Change::Withdraw(_))
+        Some(Change::Withdraw(_, None))
     ));
 }
 
@@ -442,7 +442,7 @@ fn truncated_attributes_use_locatable_nlri_and_unlocatable_routes_reset_the_sess
     assert_eq!(received.handling(), Handling::TreatAsWithdraw);
     assert!(matches!(
         received.changes().next(),
-        Some(Change::Withdraw(_))
+        Some(Change::Withdraw(_, None))
     ));
     let bytes = update(&[], &list, &[]);
     let notice = closed(&mut established(false, true), &bytes);
@@ -463,7 +463,7 @@ fn truncated_attributes_use_locatable_nlri_and_unlocatable_routes_reset_the_sess
     let received = receive(&mut established(false, true), &bytes);
     assert!(received.framing_error());
     assert!(
-        matches!(received.changes().next(), Some(Change::Withdraw(prefix)) if prefix.address.is_ipv6())
+        matches!(received.changes().next(), Some(Change::Withdraw(prefix, None)) if prefix.address.is_ipv6())
     );
     let bytes = update(&[], &attributes(&base(false, true)), &[]);
     let received = receive(&mut established(false, true), &bytes);

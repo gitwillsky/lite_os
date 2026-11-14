@@ -1,7 +1,7 @@
 // 用实际网卡引用覆盖队列顺序、SO_ERROR 独立消费及接收截断。
 #[test]
 fn dual_stack_error_queue_keeps_quote_metadata_and_rearms_pending_error() {
-    use network_protocol::InternetErrorOrigin;
+    use network_protocol::{IcmpErrorExtension, InternetErrorOrigin, InternetPacketInfo};
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, device) = domain();
@@ -89,6 +89,113 @@ fn dual_stack_error_queue_keeps_quote_metadata_and_rearms_pending_error() {
         assert_eq!(endpoint.receive_error(&mut empty), Err(SocketError::Again));
         assert!(!endpoint.poll_state().error);
 
+        let (ip_length, option, packet_info) = if ipv6 {
+            endpoint
+                .set_ipv6_option(InternetOption::Ipv6PacketInfo, 1)
+                .unwrap();
+            (
+                40,
+                InternetOption::Ipv6ReceiveErrorExtensions,
+                InternetPacketInfo::Ipv6 {
+                    interface_index: 2,
+                    destination: LOCAL6,
+                },
+            )
+        } else {
+            endpoint.set_packet_info(true).unwrap();
+            (
+                20,
+                InternetOption::Ipv4ReceiveErrorExtensions,
+                InternetPacketInfo::Ipv4 {
+                    interface_index: 2,
+                    specific_address: LOCAL4,
+                    destination: LOCAL4,
+                },
+            )
+        };
+        let objects = [packet_wire::icmp::Object {
+            class: 200,
+            subtype: 1,
+            data: &[1, 2, 3, 4],
+        }];
+        let mut multipart = vec![0; ip_length + 8 + 128 + 12];
+        if ipv6 {
+            packet_wire::icmpv6::emit_error(
+                &mut multipart[40..],
+                1,
+                4,
+                0,
+                (PEER6, LOCAL6),
+                quote,
+                &objects,
+            )
+            .unwrap();
+            Ipv6Header {
+                source: PEER6,
+                destination: LOCAL6,
+                next_header: 58,
+                hop_limit: 64,
+                traffic_class: 0,
+                flow_label: 0,
+            }
+            .emit(&mut multipart)
+            .unwrap();
+        } else {
+            packet_wire::icmpv4::emit_error(&mut multipart[20..], 3, 3, 0, quote, &objects)
+                .unwrap();
+            Ipv4Header {
+                source: PEER4,
+                destination: LOCAL4,
+                protocol: 1,
+                hop_limit: 64,
+                dscp_ecn: 0,
+                identification: 0,
+                fragment: 0x4000,
+                options: &[],
+            }
+            .emit(&mut multipart)
+            .unwrap();
+        }
+        let offset = 128 - ip_length - 8;
+        assert_eq!(endpoint.option(option), Ok(0));
+        for (enabled, invalid) in [(false, false), (true, false), (true, true)] {
+            endpoint
+                .set_receive_error_extensions(ipv6, enabled)
+                .unwrap();
+            assert_eq!(endpoint.option(option), Ok(i32::from(enabled)));
+            if invalid {
+                // 损坏扩展 checksum，重新计算外层 checksum，错误本身仍应交付。
+                *multipart.last_mut().unwrap() ^= 1;
+                if ipv6 {
+                    packet_wire::icmpv6::emit(&mut multipart[40..], 1, 4, PEER6, LOCAL6).unwrap();
+                } else {
+                    packet_wire::icmpv4::emit(&mut multipart[20..], 3, 3).unwrap();
+                }
+            }
+            input(&device, envelope(&multipart));
+            poll(&net, 2201);
+            // 扩展选项在入队时生效，读取时改选项不会改写原记录。
+            endpoint
+                .set_receive_error_extensions(ipv6, !enabled)
+                .unwrap();
+            let mut bytes = crate::receive::ReceiveBuffer::try_new(160).unwrap();
+            let (length, error) = endpoint.receive_error(&mut bytes).unwrap();
+            assert_eq!(error.error, SocketError::ConnectionRefused);
+            assert_eq!(error.packet_info, Some(packet_info));
+            assert_eq!(
+                error.extension,
+                enabled.then_some(IcmpErrorExtension {
+                    offset: offset as u16,
+                    invalid
+                })
+            );
+            assert_eq!(length, offset + 12);
+            let bytes = bytes.into_bytes();
+            assert_eq!(&bytes[..payload.len()], payload);
+            assert!(bytes[payload.len()..offset].iter().all(|&byte| byte == 0));
+            assert_eq!(&bytes[offset..], &multipart[multipart.len() - 12..]);
+        }
+
         if ipv6 {
             // 首片的声明长度仍是完整片长。ICMP 截断引用不要求可见载荷为 8 字节倍数。
             endpoint.send_to(&[0x29; 3000], Some(target), &[]).unwrap();
@@ -142,15 +249,24 @@ fn dual_stack_error_queue_keeps_quote_metadata_and_rearms_pending_error() {
         assert_eq!(length, 0);
         assert_eq!(local.origin, InternetErrorOrigin::Local);
         assert_eq!(local.offender, None);
+        assert_eq!(local.packet_info, None);
+        assert_eq!(local.extension, None);
         assert_eq!(local.info, if ipv6 { 1280 } else { 1500 });
         assert_eq!(endpoint.take_error(), None);
         endpoint.close_description();
     }
 }
 
-fn fragmentation_needed(quote: &[u8], mtu: u16) -> Vec<u8> {
-    let mut packet = vec![0; 20 + 8 + quote.len()];
-    packet_wire::icmpv4::emit_error(&mut packet[20..], 3, 4, u32::from(mtu), quote, &[]).unwrap();
+fn ipv4_feedback(
+    quote: &[u8],
+    (kind, code, parameter): (u8, u8, u32),
+    objects: &[packet_wire::icmp::Object<'_>],
+) -> Vec<u8> {
+    let mut packet = vec![0; 20 + 8 + quote.len().max(128).next_multiple_of(4) + 16];
+    let length =
+        packet_wire::icmpv4::emit_error(&mut packet[20..], kind, code, parameter, quote, objects)
+            .unwrap();
+    packet.truncate(20 + length);
     Ipv4Header {
         source: PEER4,
         destination: LOCAL4,
@@ -164,6 +280,10 @@ fn fragmentation_needed(quote: &[u8], mtu: u16) -> Vec<u8> {
     .emit(&mut packet)
     .unwrap();
     envelope(&packet)
+}
+
+fn fragmentation_needed(quote: &[u8], mtu: u16) -> Vec<u8> {
+    ipv4_feedback(quote, (3, 4, u32::from(mtu)), &[])
 }
 
 // ICMP 引用匹配、路径共享及设备实际重分段横跨多个 owner，格式用例无法证明。
@@ -238,6 +358,29 @@ fn ipv4_pmtu_feedback_changes_udp_raw_and_inflight_tcp_output() {
         assert_eq!(length, 8);
         assert_eq!(bytes.into_bytes(), [0x43; 4]);
         assert_eq!(error.info, 1006);
+    }
+    raw.set_receive_error_extensions(false, true).unwrap();
+    let objects = [packet_wire::icmp::Object {
+        class: 200,
+        subtype: 1,
+        data: &[1, 2, 3, 4],
+    }];
+    for (hdrincl, offset) in [(false, 108), (true, 128)] {
+        raw.set_header_included(hdrincl).unwrap();
+        input(&device, ipv4_feedback(legacy_quote, (11, 0, 0), &objects));
+        poll(&net, 2106);
+        let mut short = crate::receive::ReceiveBuffer::try_new(4).unwrap();
+        let (length, error) = raw.receive_error(&mut short).unwrap();
+        assert_eq!(error.extension.unwrap().offset, offset);
+        assert_eq!(length, usize::from(offset) + 12);
+        assert_eq!(
+            short.into_bytes(),
+            if hdrincl {
+                &legacy_quote[..4]
+            } else {
+                &[0x43; 4]
+            }
+        );
     }
     assert_eq!(sender.option(InternetOption::Ipv4Mtu), Ok(1006));
 

@@ -5,13 +5,33 @@ use std::{
     io,
     io::{Read, Write},
     os::{
-        fd::{AsFd, AsRawFd, OwnedFd},
+        fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
         unix::process::CommandExt,
     },
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
 };
 
 use crate::raw;
+
+/// 将调用线程接入 `namespace` 指定的 Linux 网络命名空间。
+/// # Errors
+/// 描述符类型不符、权限不足或宿主没有 `setns`。
+pub fn enter_network_namespace(namespace: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        const CLONE_NEWNET: i32 = 0x4000_0000;
+        // SAFETY: 借用的描述符在调用期间有效。setns 接收整数并检查命名空间类型和权限。
+        if unsafe { raw::setns(namespace.as_raw_fd(), CLONE_NEWNET) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = namespace;
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
 
 /// 以标准 sched_setattr 为调用线程申请 CBS/EDF 配置；fork/clone 子线程恢复普通调度。
 /// # Parameters
@@ -227,6 +247,12 @@ pub fn signal(pid: Pid, signal: Signal) -> io::Result<()> {
 /// A Linux pidfd pins one process identity across numeric PID reuse.
 pub struct PidFd(OwnedFd);
 
+impl AsFd for PidFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
 impl PidFd {
     /// Opens a CLOEXEC identity handle for `pid`.
     ///
@@ -314,6 +340,8 @@ pub enum SessionIo {
     Background,
     /// Piped standard input/output and target diagnostics on `/dev/console`.
     Piped,
+    /// 空标准输入，标准输出和错误合并到调用者拥有的输出 FD。
+    Captured(OwnedFd),
     /// 消费 Wayland stdin 与双向监督 stdout socket；stderr 为控制台，不与 exec-status 混用。
     Wayland { socket: OwnedFd, control: OwnedFd },
     /// PTY slave 作为标准输入/输出/错误，launcher 在 setsid 后取得 controlling terminal。
@@ -442,6 +470,8 @@ impl SessionChild {
         }
         if matches!(&command.io, SessionIo::Pty { .. }) {
             launch.arg("--pty");
+        } else if matches!(&command.io, SessionIo::Captured(_)) {
+            launch.arg("--capture-stderr");
         }
         launch
             .arg("--")
@@ -458,6 +488,9 @@ impl SessionChild {
             }
             SessionIo::Piped => {
                 launch.stdin(Stdio::piped()).stdout(Stdio::piped());
+            }
+            SessionIo::Captured(output) => {
+                launch.stdin(Stdio::null()).stdout(Stdio::from(output));
             }
             SessionIo::Wayland { socket, control } => {
                 launch
@@ -561,6 +594,17 @@ impl SessionChild {
     }
 }
 
+/// session-launch 在执行目标前使用的诊断输出。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SessionDiagnostics {
+    /// 将目标 stderr 接到 `/dev/console`。
+    Console,
+    /// 将目标 stderr 接到调用者设置的 stdout。
+    Captured,
+    /// 将目标 stderr 接到 PTY slave，并把该终端设为 controlling terminal。
+    Pty,
+}
+
 /// Replaces the single-threaded trampoline with one supervised session child.
 ///
 /// # Parameters
@@ -569,7 +613,7 @@ impl SessionChild {
 /// - `program`: Target executable path.
 /// - `arguments`: Target arguments after `argv[0]`.
 /// - `user`: 可选的 uid/gid 与完整补充组；输出装配后、parent-death 设置前降权。
-/// - `pty`: stdin 是 slave，setsid 后以 TIOCSCTTY 绑定；stderr 同样连接该 slave。
+/// - `diagnostics`: 执行目标后 stderr 的输出位置和 PTY 装配方式。
 ///
 /// # Returns
 ///
@@ -581,7 +625,7 @@ pub fn exec_session_child(
     program: &OsStr,
     arguments: &[OsString],
     user: Option<(Identity, Vec<u32>)>,
-    pty: bool,
+    diagnostics: SessionDiagnostics,
 ) -> ! {
     let mut publication = match std::io::stderr().as_fd().try_clone_to_owned() {
         Ok(file) => std::fs::File::from(file),
@@ -591,20 +635,24 @@ pub fn exec_session_child(
         }
     };
     // 1. publication 是独占 CLOEXEC 副本；目标 stderr 替换后仍可向父进程报告 setup 错误。
-    // 2. PTY 不打开特权 console，因而普通用户终端也能启动。
-    let console = if pty {
-        None
-    } else {
+    // 2. PTY 和捕获模式使用调用者已打开的描述符，因此普通用户可启动。
+    let console = if diagnostics == SessionDiagnostics::Console {
         Some(
             match std::fs::OpenOptions::new().write(true).open("/dev/console") {
                 Ok(console) => console,
                 Err(error) => report_exec_failure(&mut publication, 4, error),
             },
         )
+    } else {
+        None
     };
-    let diagnostics = console.as_ref().map_or(0, AsRawFd::as_raw_fd);
-    // SAFETY: fd 0 由 SessionIo::Pty 装配，或 console 仍在作用域内；dup2 不借用用户内存。
-    if unsafe { raw::dup2(diagnostics, 2) } < 0 {
+    let fd = match diagnostics {
+        SessionDiagnostics::Console => console.as_ref().expect("opened console").as_raw_fd(),
+        SessionDiagnostics::Captured => 1,
+        SessionDiagnostics::Pty => 0,
+    };
+    // SAFETY: 标准描述符由 SessionIo 装配，console 也在作用域内；dup2 不借用用户内存。
+    if unsafe { raw::dup2(fd, 2) } < 0 {
         report_exec_failure(&mut publication, 5, io::Error::last_os_error());
     }
     if let Some((identity, groups)) = user {
@@ -613,7 +661,7 @@ pub fn exec_session_child(
     // 先降权再设置 parent-death：setuid 会清除此前设置的信号，顺序反过来会留下孤儿 desktop。
     enter_session(&mut publication, expected_parent);
     #[cfg(target_os = "linux")]
-    if pty {
+    if diagnostics == SessionDiagnostics::Pty {
         // SAFETY: 此处位于单线程 launcher、setsid 成功之后；stdin 是未带入其他 session 的 PTY slave。
         if unsafe { raw::ioctl(0, raw::TIOCSCTTY, std::ptr::null_mut()) } < 0 {
             report_exec_failure(&mut publication, 7, io::Error::last_os_error());

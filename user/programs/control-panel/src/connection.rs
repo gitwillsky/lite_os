@@ -1,6 +1,6 @@
 //! “本地连接 属性”与“Internet 协议 (TCP/IP) 属性”：按 Windows 2000 netshell 对话框 16004 与 netcfgx 对话框 2323 还原。
 //!
-//! 草稿是 router_config 中该接口的设置；“确定”后经 `/dev/network-settings` 提交，router_config 持久化并重新配置接口。
+//! 草稿是 router_config 中该接口的设置；“确定”后经 router-api 提交，router_config 持久化并重新配置接口。
 //! 组件列表只有 Internet 协议 (TCP/IP)：系统没有 Microsoft 网络客户端、文件和打印机共享等组件，安装/卸载与
 //! 网卡“配置”没有对应后端而禁用；“高级”TCP/IP 设置提供 DNS 服务器列表。
 mod dns;

@@ -56,20 +56,21 @@ fn eligible_mtu(
     index: u32,
     bound: Option<u32>,
     kind: RouteKind,
-    interfaces: impl Iterator<Item = InterfaceFacts>,
+    interfaces: Ipv4Interfaces<'_>,
 ) -> Option<usize> {
     if bound.is_some_and(|bound| index != bound) {
         return None;
     }
     interfaces
-        .into_iter()
-        .find(|interface| interface.index == index)
-        .filter(|interface| interface.mtu >= 68 && (interface.up || kind == RouteKind::Local))
+        .get(index)
+        .filter(|interface| {
+            interface.mtu >= 68 && (kind == RouteKind::Local || interface.up && interface.carrier)
+        })
         .map(|interface| interface.mtu)
 }
 /// 源/目的地址键与 Linux 默认 L3 ECMP 一致；分片不依赖只在首片存在的端口。
 /// Jenkins lookup3 的 two-word final，seed 只分隔组身份，不声称是抗攻击密钥。
-fn hash(source: Ipv4Addr, destination: Ipv4Addr, seed: u64) -> u32 {
+pub(in crate::inet) fn hash_ipv4(source: Ipv4Addr, destination: Ipv4Addr, seed: u64) -> u32 {
     let init = 0xdead_beef_u32
         .wrapping_add(8)
         .wrapping_add(seed as u32 ^ (seed >> 32) as u32);
@@ -100,38 +101,42 @@ pub(super) fn select(
     flow: Flow,
     seed: u64,
     kind: RouteKind,
-    interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    interfaces: Ipv4Interfaces<'_>,
 ) -> Option<NextHopMember<core::net::Ipv4Addr>> {
-    let mtu = |index| eligible_mtu(index, flow.bound, kind, interfaces.clone());
+    let mtu = |index| eligible_mtu(index, flow.bound, kind, interfaces);
     let usable = |member: &NextHopMember<Ipv4Addr>, mtu| {
         mtu >= 1280 || !member.gateway.is_some_and(|gateway| gateway.is_ipv6())
     };
+    select_members(
+        members,
+        || hash_ipv4(flow.source, flow.destination, seed),
+        mtu,
+        usable,
+    )
+}
+
+/// 成员按出口排序。同一轮权重累计只为每个出口查询一次设备资格。
+pub(super) fn select_members<A: network_protocol::routes::RouteAddress, E: Copy>(
+    members: &[NextHopMember<A>],
+    hash: impl FnOnce() -> u32,
+    interface: impl Fn(u32) -> Option<E>,
+    eligible: impl Fn(&NextHopMember<A>, E) -> bool,
+) -> Option<NextHopMember<A>> {
     if let [member] = members {
-        return mtu(member.interface_index)
-            .filter(|mtu| usable(member, *mtu))
+        return interface(member.interface_index)
+            .filter(|facts| eligible(member, *facts))
             .map(|_| *member);
     }
-    // 成员数与权重均不超过 u32::MAX；同出口连续排列，资格检查不按每个网关重复。
+    let eligible = &eligible;
     choose(
         || {
             members
                 .chunk_by(|left, right| left.interface_index == right.interface_index)
-                .filter_map(|run| mtu(run[0].interface_index).map(|mtu| (run, mtu)))
-                .flat_map(|(run, mtu)| run.iter().filter(move |member| usable(member, mtu)))
+                .filter_map(|run| interface(run[0].interface_index).map(|facts| (run, facts)))
+                .flat_map(|(run, facts)| run.iter().filter(move |member| eligible(member, facts)))
         },
-        || hash(flow.source, flow.destination, seed),
+        hash,
     )
-}
-
-pub(super) fn select_members<A: network_protocol::routes::RouteAddress>(
-    members: &[NextHopMember<A>],
-    hash: impl FnOnce() -> u32,
-    eligible: impl Fn(&NextHopMember<A>) -> bool,
-) -> Option<NextHopMember<A>> {
-    if let [member] = members {
-        return eligible(member).then_some(*member);
-    }
-    choose(|| members.iter().filter(|member| eligible(member)), hash)
 }
 
 fn choose<
@@ -158,7 +163,7 @@ fn choose<
 }
 
 /// Jenkins lookup3/jhash2 的八字 L3 键；两个 IPv6 地址的全部位参与，不折叠高低半部。
-pub(super) fn hash_ipv6(
+pub(in crate::inet) fn hash_ipv6(
     source: core::net::Ipv6Addr,
     destination: core::net::Ipv6Addr,
     seed: u64,

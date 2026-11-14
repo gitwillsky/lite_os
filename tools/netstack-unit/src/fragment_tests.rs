@@ -350,6 +350,7 @@ mod fragment_contract {
         let _serial = SERIAL.lock().unwrap();
         initialize();
         let (net, device) = domain();
+        let deadline = || stack(&net).unwrap().lock().unwrap().reassembly.next_deadline();
         learn(&net, &device, 2002);
         for (v6, id, at) in [(false, 31, 3000), (true, 32, 64000)] {
             let packet = udp(v6, &[9; 40], false);
@@ -358,8 +359,10 @@ mod fragment_contract {
             input(&device, fragment(&packet, 0, 24, true, id));
             poll(&net, at + 59000);
             learn(&net, &device, at + 59000);
+            assert_eq!(deadline(), Some(Instant::from_millis(at + 60000)));
             poll(&net, at + 60000);
             poll(&net, at + 60001);
+            assert_eq!(deadline(), None);
             let output = frames(&device);
             let errors: Vec<_> = output
                 .iter()
@@ -408,6 +411,23 @@ mod fragment_contract {
                 assert_eq!((icmp.message_type(), icmp.code()), (11, 1));
             }
         }
+        let receiver = socket(&net, false, false);
+        bind(&receiver, false);
+        let packet = udp(false, &[9; 40], false);
+        input(&device, fragment(&packet, 0, 24, true, 33));
+        poll(&net, 124002);
+        assert!(deadline().is_some());
+        configure_up(&net, 2, false).unwrap();
+        configure_up(&net, 2, true).unwrap();
+        assert_eq!(deadline(), None);
+        input(&device, fragment(&packet, 24, 24, false, 33));
+        poll(&net, 124003);
+        assert!(!receiver.poll_state().readable);
+        input(&device, fragment(&packet, 0, 24, true, 33));
+        poll(&net, 124004);
+        assert!(receiver.poll_state().readable);
+        assert_eq!(deadline(), None);
+        receiver.close_description();
     }
     #[test]
     fn reassembly_ipv6_atomic_packets_are_independent_and_incomplete_first_headers_get_errors() {
@@ -554,6 +574,34 @@ mod fragment_contract {
             b"small"
         );
         assert_eq!(device.cancelled_queue.load(Ordering::Relaxed), 0);
+
+        // 本轮截止已过，仍保证一次提交。端点刚好清空时，下一个被拒绝的端点应在续轮先获得机会。
+        let short_sender = socket(&net, false, false);
+        short_sender.send_to(b"first", target, &[]).unwrap();
+        sender.set_ipv4_mtu_discovery(1).unwrap();
+        sender.send_to(&[0x64; 100], target, &[]).unwrap();
+        let expired_round = |millis| {
+            stack(&net)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .poll_until(Instant::from_millis(millis), 0)
+        };
+        assert!(expired_round(8001).backlog);
+        let first = frames(&device);
+        assert_eq!(first.len(), 1);
+        let ip = Ipv4Packet::parse(EthernetFrame::parse(&first[0]).unwrap().payload()).unwrap();
+        assert!(!ip.fragmented());
+        short_sender.send_to(b"next", target, &[]).unwrap();
+        assert!(expired_round(8002).backlog);
+        let continued = frames(&device);
+        assert_eq!(continued.len(), 1);
+        let ip = Ipv4Packet::parse(EthernetFrame::parse(&continued[0]).unwrap().payload()).unwrap();
+        assert_eq!(ip.fragment_offset(), 0);
+        assert!(ip.more_fragments());
+        poll(&net, 8003);
+        assert_eq!(frames(&device).len(), 3);
+        short_sender.close_description();
         sender.close_description();
         receiver.close_description();
     }
@@ -771,6 +819,7 @@ mod fragment_contract {
         let _serial = SERIAL.lock().unwrap();
         initialize();
         let (net, device) = domain();
+        stack(&net).unwrap().lock().unwrap().forwarding_enabled.ipv4 = false;
         learn(&net, &device, 2002);
         configure_mtu(&net, 2, 68).unwrap();
         frames(&device);
@@ -806,5 +855,23 @@ mod fragment_contract {
         }
         let icmp = packet_wire::icmpv4::Icmpv4Packet::parse(&body).unwrap();
         assert_eq!((icmp.message_type(), icmp.code()), (3, 3));
+
+        let mut echo = peer_icmp_frame_for(PEER4, LOCAL4);
+        let payload_offset = packet_wire::ethernet::HEADER_LENGTH + 20;
+        packet_wire::icmpv4::emit(&mut echo[payload_offset..], 8, 0).unwrap();
+        let echoed = echo[payload_offset + 4..].to_vec();
+        input(&device, echo);
+        poll(&net, 3010);
+        let output = frames(&device);
+        assert_eq!(output.len(), 1);
+        let ethernet = EthernetFrame::parse(&output[0]).unwrap();
+        let ip = Ipv4Packet::parse(ethernet.payload()).unwrap();
+        assert_eq!(
+            (ip.source(), ip.destination(), ip.protocol()),
+            (LOCAL4, PEER4, 1),
+        );
+        let reply = packet_wire::icmpv4::Icmpv4Packet::parse(ip.payload()).unwrap();
+        assert_eq!((reply.message_type(), reply.code()), (0, 0));
+        assert_eq!(&reply.bytes()[4..], echoed);
     }
 }

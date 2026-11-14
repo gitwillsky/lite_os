@@ -19,6 +19,8 @@ pub mod ipv6;
 pub mod mld;
 pub mod multicast;
 pub mod ndisc;
+pub mod ospf;
+pub mod spanning_tree;
 pub mod tcp;
 pub mod udp;
 

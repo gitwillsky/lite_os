@@ -12,11 +12,13 @@ use address::{wire_address, wire_ip};
 use alloc::sync::Weak;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use fallible_tree::FallibleMap;
-use network_protocol::{InetAddress, InetFamily, InternetPacketInfo, SocketError, SocketPollState};
-use smoltcp::time::Instant;
+use network_protocol::{
+    InetAddress, InetFamily, InetProtocol, InternetPacketInfo, SocketError, SocketPollState,
+};
+use ::tcp::time::Instant;
 
 use super::{
-    InetSocket, InetSocketOptions, NetworkStack, PortBinding, PortLease, from_ip, port_error,
+    InetSocket, InetSocketOptions, NetworkStack, PortBinding, PortLease, port_error,
 };
 use crate::receive::ReceiveBuffer;
 pub(super) use io::{receive, send};
@@ -193,18 +195,34 @@ pub(super) fn create_endpoint(
 }
 
 impl NetworkStack {
-    fn ensure_udp_bound(&mut self, id: u64) -> Result<(), SocketError> {
+    fn ensure_udp_bound(
+        &mut self,
+        id: u64,
+        (source, peer): (IpAddr, InetAddress),
+        now: Instant,
+    ) -> Result<(), SocketError> {
         let state = self
             .udp_endpoints
             .get_mut(&id)
             .expect("live UDP endpoint disappeared");
+        let available = |port| {
+            !self.forwarding.local_tuple_taken(
+                InetProtocol::Udp,
+                (InetAddress::new(source, port), peer),
+                now,
+            )
+        };
         if state.local.port() != 0 {
-            return Ok(());
+            return if available(state.local.port()) {
+                Ok(())
+            } else {
+                Err(SocketError::AddressInUse)
+            };
         }
         let binding = state.binding(state.local, state.options.bound_to_device)?;
         let lease = self
             .udp_ports
-            .acquire_ephemeral(binding, state.options.reuse_address)
+            .acquire_ephemeral_matching(binding, state.options.reuse_address, available)
             .map_err(port_error)?;
         if let Err(error) = state.receive.prepare(128 * 1024) {
             self.udp_ports.release(lease);
@@ -321,18 +339,19 @@ pub(super) fn connect(
     let state = &network.udp_endpoints[&id];
     let peer = state.destination(peer)?;
     let device = state.destination_interface(peer)?;
-    network.ensure_udp_bound(id)?;
-    let state = &network.udp_endpoints[&id];
     let (source, outgoing) = state.send_packet_info(&network, peer, &[])?;
+    let timestamp = super::now();
     let output = network.ip_output(
         source,
         wire_address(peer),
         (outgoing, state.options.mark),
-        super::now(),
+        timestamp,
     )?;
     if output.kind == network_protocol::RouteKind::Broadcast && !state.options.broadcast {
         return Err(SocketError::PermissionDenied);
     }
+    network.ensure_udp_bound(id, (output.source, peer), timestamp)?;
+    let state = &network.udp_endpoints[&id];
     // 组播绑定是接收过滤器，关联 peer 不能把它改成发送所选的单播地址。
     let local = if wire_ip(state.local).is_multicast() {
         state.local
@@ -531,15 +550,15 @@ pub(super) fn bind_to_device(
 /// 没有分配或可恢复错误；未匹配的 peer 不能占用实际队列。
 pub(super) fn ingress(
     endpoints: &mut FallibleMap<u64, EndpointState>,
-    packet: smoltcp::iface::Ipv4Ingress<'_>,
+    packet: crate::inet::ingress::Ipv4Ingress<'_>,
 ) -> bool {
-    let source = from_ip(packet.source);
-    let destination = from_ip(packet.destination);
+    let source = packet.ip.source();
+    let destination = packet.ip.destination();
     let parsed = if packet.checksum_valid {
-        packet_wire::udp::UdpPacket::parse_header(packet.payload, false)
+        packet_wire::udp::UdpPacket::parse_header(packet.ip.payload(), false)
     } else {
         packet_wire::udp::UdpPacket::parse(
-            packet.payload,
+            packet.ip.payload(),
             core::net::IpAddr::V4(source),
             core::net::IpAddr::V4(destination),
         )
@@ -550,11 +569,11 @@ pub(super) fn ingress(
     let packet = Datagram {
         source: InetAddress::V4(SocketAddrV4::new(source, udp.source_port())),
         destination: InetAddress::V4(SocketAddrV4::new(destination, udp.destination_port())),
-        packet_info: packet
+        packet_info: packet.facts
             .specific_destination
             .map(|specific_address| InternetPacketInfo::Ipv4 {
                 interface_index: packet.interface_index,
-                specific_address: from_ip(specific_address),
+                specific_address,
                 destination,
             }),
         interface: packet.interface_index,
@@ -639,20 +658,22 @@ pub(in crate::inet) fn ingress_ipv6(
     )
 }
 
-/// ND 已耗尽真实探测预算；按当前路由的下一跳退休相关待发报文，不把远端 IP 误作网关。
+/// ARP/ND 已耗尽真实探测预算。只退休当前仍选择该下一跳的待发报文。
 /// 邻居 owner 的借用已结束，所有查询/队列清理仍在同一 NET guard，更新后的路由可保留旧网关等待者。
 /// # Returns
-/// 实际退休条数，交给设备 owner 一次性记 drop；无分配或每流网关缓存。
+/// 实际退休条数，交给设备 owner 一次性记 drop。只有启用错误队列才尝试分配错误记录。
 pub(in crate::inet) fn neighbor_failed(
     network: &mut NetworkStack,
     interface: u32,
-    neighbor: Ipv6Addr,
+    failed_neighbors: &[Option<IpAddr>],
     timestamp: Instant,
 ) -> usize {
     let NetworkStack {
         udp_endpoints,
+        routing,
         ipv6_routing,
         selection_rules,
+        path_mtu,
         identification,
         interfaces,
         ..
@@ -660,13 +681,9 @@ pub(in crate::inet) fn neighbor_failed(
     let mut dropped = 0;
     udp_endpoints.for_each_mut(|_, state| {
         let mut recheck = false;
-        let mut notify = false;
+        let peer = state.peer.map(wire_address);
+        let ipv6 = state.is_ipv6();
         let count = state.transmit.discard(|metadata| {
-            let (IpAddr::V6(source), IpAddr::V6(destination)) =
-                (metadata.source.ip(), metadata.destination.ip())
-            else {
-                return false;
-            };
             if metadata
                 .outgoing
                 .is_some_and(|bound| bound.get() != interface)
@@ -674,34 +691,37 @@ pub(in crate::inet) fn neighbor_failed(
                 return false;
             }
             recheck = true;
-            let failed = ipv6_routing
-                .select_output(
-                    source,
-                    destination,
+            let failed = super::route::output_for(
+                (routing, ipv6_routing, selection_rules.local()),
+                interfaces,
+                path_mtu,
+                metadata.source.ip(),
+                metadata.destination,
+                (
                     metadata.outgoing.map(core::num::NonZeroU32::get),
-                    timestamp.total_millis().max(0) as u64,
-                    (metadata.mark, selection_rules.local()),
-                    interfaces
-                        .iter()
-                        .map(super::route::Ipv6InterfaceFacts::capture),
-                )
-                .is_ok_and(|route| {
-                    !route.local && route.interface == interface && route.neighbor == neighbor
-                });
-            if failed && let Some(lease) = metadata.identification {
-                identification.release(lease, timestamp);
+                    metadata.mark,
+                ),
+                timestamp,
+            )
+            .is_ok_and(|route| {
+                route.interface_index == interface
+                    && failed_neighbors.contains(&Some(route.neighbor))
+            });
+            if failed {
+                if let Some(lease) = metadata.identification {
+                    identification.release(lease, timestamp);
+                }
+                state.errors.local_error(
+                    address::present_address(ipv6, metadata.destination, Some(interface)),
+                    SocketError::HostUnreachable,
+                    0,
+                    peer == Some(metadata.destination),
+                );
             }
-            notify |= failed
-                && state
-                    .peer
-                    .is_some_and(|peer| wire_address(peer) == metadata.destination);
             failed
         });
         if recheck {
             state.transmit_at = timestamp;
-        }
-        if notify {
-            state.errors.pending = Some(SocketError::HostUnreachable);
         }
         dropped += count;
     });

@@ -9,9 +9,9 @@ use crate::{
     fs::{AccessIdentity, vfs},
     ipc::{Pipe, PipeDirection, ReceiveBuffer},
     net::{
-        self, PreparedSocket, ReceivedMessage, Socket, SocketAddress, SocketDomain, SocketRequest,
+        self, PreparedSocket, ReceivedMessage, Socket, SocketDomain, SocketRequest,
         SocketSendDestination, SocketType, UnixAddress, UnixCredentials, UnixPathIdentity,
-        UnixSendCredentials,
+        UnixReply, UnixSendCredentials,
     },
     task::{self, PollWaitKey},
 };
@@ -64,13 +64,9 @@ pub(crate) fn publish(path: &[u8], group: u32, mode: u32) -> Arc<Socket> {
 pub(crate) fn receive(
     socket: &Socket,
     storage: &mut [u8],
-) -> Result<(usize, usize, SocketAddress), net::SocketError> {
-    let mut message = receive_message(socket, storage, false)?;
-    Ok((
-        message.count,
-        message.full_length,
-        message.source.take().expect("endpoint source"),
-    ))
+) -> Result<(usize, usize, UnixReply), net::SocketError> {
+    let (message, source) = receive_message(socket, storage, false)?;
+    Ok((message.count, message.full_length, source))
 }
 
 /// 接收可带 SCM_RIGHTS 和凭证的请求，返回完整消息。
@@ -82,15 +78,14 @@ pub(crate) fn receive_message(
     socket: &Socket,
     storage: &mut [u8],
     receive_rights: bool,
-) -> Result<ReceivedMessage, net::SocketError> {
+) -> Result<(ReceivedMessage, UnixReply), net::SocketError> {
     loop {
         let mut buffer = ReceiveBuffer::from_slice(storage);
-        match socket.receive_message(&mut buffer, false, receive_rights, true) {
-            Ok(message) => {
-                if message.source.is_some() {
-                    return Ok(message);
-                }
+        match socket.receive_endpoint(&mut buffer, receive_rights) {
+            Ok((message, Some(source))) if message.source.is_some() => {
+                return Ok((message, source));
             }
+            Ok(_) => {}
             Err(net::SocketError::Again) => {
                 let (sources, _guard) = socket.wait_sources(1);
                 let pipes: Vec<_> = sources
@@ -110,14 +105,14 @@ pub(crate) fn receive_message(
 }
 
 /// 以 linuxd 的身份把 `reply` 发回 `source`；发送失败（客户端已离开、队列满）时丢弃。
-pub(crate) fn reply(socket: &Socket, source: SocketAddress, reply: &[u8]) {
+pub(crate) fn reply(socket: &Socket, source: UnixReply, reply: &[u8]) {
     reply_with_rights(socket, source, reply, None);
 }
 
 /// 回复可携带标准 SCM_RIGHTS；独占消费 rights，发送失败时同样退休全部文件引用。
 pub(crate) fn reply_with_rights(
     socket: &Socket,
-    source: SocketAddress,
+    source: UnixReply,
     reply: &[u8],
     mut rights: Option<net::UnixRights>,
 ) {
@@ -133,7 +128,7 @@ pub(crate) fn reply_with_rights(
     };
     let _ = socket.send_to_with_ancillary(
         reply,
-        Some(SocketSendDestination::Address(source)),
+        Some(SocketSendDestination::UnixReply(source)),
         &mut rights,
         &credentials,
         core::iter::empty(),

@@ -12,6 +12,10 @@ pub(super) fn put_error(record: &mut Record, error: InternetError) {
         | origin << 8
         | u64::from(error.kind) << 16
         | u64::from(error.code) << 24;
+    if let Some(extension) = error.extension {
+        record[8] |=
+            u64::from(extension.offset) << 32 | 1 << 48 | u64::from(extension.invalid) << 49;
+    }
     record[9] = u64::from(error.info);
     match error.offender {
         Some(InetAddress::V4(address)) => {
@@ -25,12 +29,15 @@ pub(super) fn put_error(record: &mut Record, error: InternetError) {
         }
         None => {}
     }
+    let [tag, interface, address_high, address_low] =
+        packet_info::encode_receive_info(error.packet_info);
+    // word 12 仍归原目的 flowinfo。错误操作用同一 word 存放 tag 与接口。
+    record[13] = tag | interface << 32;
+    record[14] = address_high;
+    record[15] = address_low;
 }
 
 pub(crate) fn get_error(record: &Record) -> Result<InternetError, Status> {
-    if record[8] >> 32 != 0 || record[13..].iter().any(|&word| word != 0) {
-        return Err(invalid());
-    }
     let destination = get_inet(record)?.ok_or_else(invalid)?;
     let error = SocketError::from_code(record[8] as u8).ok_or_else(invalid)?;
     let kind = (record[8] >> 16) as u8;
@@ -65,6 +72,36 @@ pub(crate) fn get_error(record: &Record) -> Result<InternetError, Status> {
     if offender.is_some_and(|address| address.ip().to_canonical().is_ipv4() != is_ipv4) {
         return Err(invalid());
     }
+    let offset = (record[8] >> 32) as u16;
+    let extension = match record[8] >> 48 {
+        0 if offset == 0 => None,
+        flags @ (1 | 3)
+            if origin != InternetErrorOrigin::Local && u64::from(offset) + 4 <= record[3] =>
+        {
+            Some(IcmpErrorExtension {
+                offset,
+                invalid: flags == 3,
+            })
+        }
+        _ => return Err(invalid()),
+    };
+    let packet_info = packet_info::decode_receive_info(&[
+        u64::from(record[13] as u32),
+        record[13] >> 32,
+        record[14],
+        record[15],
+    ])?;
+    if packet_info.is_some_and(|info| {
+        origin == InternetErrorOrigin::Local
+            || match info {
+                InternetPacketInfo::Ipv4 { .. } | InternetPacketInfo::DualStack { .. } => !is_ipv4,
+                InternetPacketInfo::Ipv6 { destination, .. } => {
+                    destination.to_ipv4_mapped().is_some() != is_ipv4
+                }
+            }
+    }) {
+        return Err(invalid());
+    }
     Ok(InternetError {
         error,
         origin,
@@ -73,6 +110,8 @@ pub(crate) fn get_error(record: &Record) -> Result<InternetError, Status> {
         info: record[9] as u32,
         destination,
         offender,
+        extension,
+        packet_info,
     })
 }
 
@@ -90,12 +129,29 @@ mod tests {
             kind: 2,
             code: 0,
             info: 1280,
-            destination: "[fe80::10%4]:9090".parse().unwrap(),
+            destination: InetAddress::V6(core::net::SocketAddrV6::new(
+                "fe80::10".parse().unwrap(),
+                9090,
+                0x12345,
+                4,
+            )),
             offender: Some("[fe80::1%4]:0".parse().unwrap()),
+            extension: Some(IcmpErrorExtension {
+                offset: 80,
+                invalid: true,
+            }),
+            packet_info: Some(InternetPacketInfo::Ipv6 {
+                interface_index: 4,
+                destination: "fe80::20".parse().unwrap(),
+            }),
         };
         let mut record = [0; queue::WORDS];
+        record[3] = 96;
         put_error(&mut record, error);
         assert_eq!(get_error(&record), Ok(error));
+        record[3] = 83;
+        assert_eq!(get_error(&record), Err(invalid()));
+        record[3] = 96;
         record[8] ^= 1 << 8;
         assert_eq!(get_error(&record), Err(invalid()));
     }

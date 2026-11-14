@@ -94,15 +94,9 @@ impl Session {
         }
         let layer_count = self.server.layers().count();
         let layers_changed = layer_count != self.layers_seen;
-        if layer_count != self.layers_seen {
+        if layers_changed {
             self.layers_seen = layer_count;
             self.dirty = true;
-            for (_, layer) in self.server.layers() {
-                println!(
-                    "compositor: layer {:?} {:?}",
-                    layer.namespace, layer.state.layer
-                );
-            }
         }
         let commits = self.server.commits();
         if commits != self.commits_seen {

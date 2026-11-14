@@ -18,6 +18,7 @@ impl PartialEq for Ipv6Addresses<'_> {
 }
 impl Eq for Ipv6Addresses<'_> {}
 impl<'a> Ipv6Addresses<'a> {
+    pub(crate) const ROW_BYTES: usize = ROW;
     /// 借用已按地址排序的配置集合，包括空集合；不分配或改变输入。
     /// # Errors
     /// 地址非法、重复或未排序。
@@ -26,7 +27,7 @@ impl<'a> Ipv6Addresses<'a> {
         result.validate()?;
         Ok(result)
     }
-    pub(super) fn parse(bytes: &'a [u8]) -> Result<Self, Invalid> {
+    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, Invalid> {
         if !bytes.len().is_multiple_of(ROW) {
             return Err(Invalid);
         }
@@ -40,7 +41,7 @@ impl<'a> Ipv6Addresses<'a> {
         Ok(result)
     }
     // 只能从已验证的 InterfaceConfigurationBatch 解码，不在逐项读取中重新扫描全部地址。
-    pub(super) fn validated(bytes: &'a [u8]) -> Self {
+    pub(crate) fn validated(bytes: &'a [u8]) -> Self {
         Self(Data::Wire(bytes))
     }
     /// 意图项数；空集合仍表达显式清除，不等同于缺席。
@@ -80,7 +81,7 @@ impl<'a> Ipv6Addresses<'a> {
         }
         Ok(())
     }
-    pub(super) fn emit(self, bytes: &mut [u8]) {
+    pub(crate) fn emit(self, bytes: &mut [u8]) {
         for (value, row) in self.iter().zip(bytes.as_chunks_mut::<ROW>().0.iter_mut()) {
             row[..16].copy_from_slice(&value.address.octets());
             row[16] = value.prefix_length;

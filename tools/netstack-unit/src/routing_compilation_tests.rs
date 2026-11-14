@@ -791,7 +791,7 @@ mod routing_compilation {
             SelectionContext::new(session.config().local_as, session.config().identifier, None, None)
                 .unwrap();
         let minimum = NonZeroU32::new(20).unwrap();
-        let mut domain = RoutingDomain::try_new(context).unwrap();
+        let mut domain = RoutingDomain::try_new(context, [false; 2]).unwrap();
         domain
             .add_peer(
                 peer,
@@ -811,11 +811,11 @@ mod routing_compilation {
             }}}
         }"#).unwrap();
         let policy = configured.bgp.as_ref().unwrap().neighbors.values().next().unwrap().import.as_ref().unwrap();
-        let raw = domain.peer_routes(peer.id).unwrap().iter().next().unwrap().1.attributes().clone();
+        let raw = domain.peer_routes(peer.id).unwrap().iter().next().unwrap().2.attributes().clone();
         let decision = ::bgp::import_route(Some(policy), domain.peer_routes(peer.id).unwrap().iter().next().unwrap().0,
-            &peer, domain.peer_routes(peer.id).unwrap().iter().next().unwrap().1).unwrap();
+            &peer, domain.peer_routes(peer.id).unwrap().iter().next().unwrap().2).unwrap();
         let projected = domain.project_attributes(&raw, decision.changes()).unwrap();
-        let proposal = domain.propose(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, route| {
+        let proposal = domain.propose(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, _, route| {
             Ok(::bgp::import_route(Some(policy), prefix, peer, route).map_or_else(|| (route.next_hop(),None,route.attributes()), |decision| (decision.next_hop,Some(decision.preference),&projected)))
         }).unwrap();
         let bytes = proposal.encode_source(minimum).unwrap();
@@ -851,7 +851,7 @@ mod routing_compilation {
         let proof = staged.next.snapshot().unwrap().evaluate_installations(id, &[probe]).unwrap();
         assert_eq!(router_protocol::tracking::installation::decode_outcomes(&proof, id, proposed.view().generation(), 1).unwrap(), [router_protocol::tracking::installation::Outcome { reachable: true, interior_cost: Some(0) }]);
         let outcome = router_protocol::tracking::installation::decode_outcomes(&proof, id, proposed.view().generation(), 1).unwrap()[0];
-        let candidate = domain.prepare(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, route| {
+        let candidate = domain.prepare(packet_wire::bgp::nlri::Family::Ipv4, |prefix, peer, _, route| {
             let decision = ::bgp::import_route(Some(policy), prefix, peer, route).unwrap();
             Ok((decision.next_hop,Some(decision.preference),if outcome.reachable { Reachability::Resolved { interior_cost: outcome.interior_cost } } else { Reachability::Unresolved },&projected))
         }).unwrap();
@@ -905,7 +905,7 @@ mod routing_compilation {
         );
         domain.remove_peer(peer.id).unwrap();
         let candidate = domain
-            .prepare(packet_wire::bgp::nlri::Family::Ipv4, |_, _, _| {
+            .prepare(packet_wire::bgp::nlri::Family::Ipv4, |_, _, _, _| {
                 unreachable!("retired peer cannot leave raw candidates")
             })
             .unwrap();

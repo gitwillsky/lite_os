@@ -93,11 +93,19 @@ impl<A: Copy + Ord> NeighborCache<A> {
         u64::from(self.retransmit_ms)
     }
     /// 借用同一 owner 的事实，不延长邻居寿命、推进 NUD 或复制时钟索引。
-    pub(super) fn rows(&self, interface_index: u32) -> impl Iterator<Item = network_protocol::Neighbor> + Clone
+    pub(super) fn rows(
+        &self,
+        interface_index: u32,
+        after: Option<A>,
+    ) -> impl Iterator<Item = network_protocol::Neighbor> + Clone
     where
         A: Into<core::net::IpAddr>,
     {
-        self.entries.iter().map(move |(&address, entry)| {
+        let rows = match after {
+            Some(address) => self.entries.iter_after(&address),
+            None => self.entries.iter(),
+        };
+        rows.map(move |(&address, entry)| {
             let (state, probes) = match entry.state {
                 State::Incomplete(probes) => (NeighborState::Incomplete, probes),
                 State::Reachable => (NeighborState::Reachable, 0),
@@ -363,9 +371,16 @@ impl<A: Copy + Ord> NeighborCache<A> {
         }
     }
     pub(super) fn due(&self, now: u64) -> bool {
+        self.next_deadline().is_some_and(|at| at <= now)
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<u64> {
         self.deadlines
             .first_key_value()
-            .is_some_and(|((wake, _), _)| matches!(wake, Wake::At(at) if *at <= now))
+            .and_then(|((wake, _), _)| match wake {
+                Wake::At(at) => Some(*at),
+                _ => None,
+            })
     }
     /// 地址解析/NUD 共享八项时钟预算，NIC 背压进入独立 writable 索引，不忙轮询也不全表扫描。
     pub(super) fn poll(

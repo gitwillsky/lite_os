@@ -233,6 +233,9 @@ fn tcp6_link_scope_real_checksum_and_validated_ptb_resegment_unacked_bytes() {
         })
         .unwrap();
     let quote = &data[14..];
+    let before = client.tcp_information().unwrap();
+    assert!(matches!(before.phase, network_protocol::TcpPhase::Established));
+    assert_eq!(before.retransmitted_segments, 0);
     assert_eq!(client.option(InternetOption::Ipv6Mtu), Ok(1500));
     enqueue(&device, packet_too_big(quote, true));
     poll(&net, 2006);
@@ -243,14 +246,19 @@ fn tcp6_link_scope_real_checksum_and_validated_ptb_resegment_unacked_bytes() {
     assert_eq!(client.option(InternetOption::Ipv6Mtu), Ok(1280));
     let emitted = tcp_frames(&device);
     let mut payload = Vec::new();
+    let mut retransmitted = 0;
     for frame in &emitted {
         let ip = Ipv6Packet::parse(&frame[14..]).unwrap();
         assert!(ip.bytes().len() <= 1280);
         let segment =
             TcpPacket::parse(ip.upper_layer().unwrap(), LOCAL.into(), PEER.into()).unwrap();
+        retransmitted += u32::from(!segment.payload().is_empty());
         payload.extend_from_slice(segment.payload());
     }
     assert_eq!(payload, vec![0x42; 1400]);
+    let after = client.tcp_information().unwrap();
+    assert_eq!(after.retransmitted_segments, retransmitted);
+    assert!(after.send_mss < before.send_mss);
     enqueue(
         &device,
         tcp6_frame(
@@ -292,6 +300,9 @@ fn tcp6_link_scope_real_checksum_and_validated_ptb_resegment_unacked_bytes() {
         tcp6_frame((PEER, 45001), (LOCAL, 43411), 9001, syn_ack, tcp::ACK, &[]),
     );
     poll(&net, 2010);
+    let info = server.tcp_information().unwrap();
+    assert!(matches!(info.phase, network_protocol::TcpPhase::Listen));
+    assert_eq!((info.accept_ready, info.accept_limit), (1, 1));
     let accepted = server.accept(Arc::new(crate::Event::default())).unwrap();
     assert_eq!(
         accepted.peer_address().unwrap(),

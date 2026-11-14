@@ -1,5 +1,5 @@
 //! Semantic TCP segment values. All byte layout, option lengths and checksums belong to packet-wire.
-use crate::Sequence;
+use crate::{AoTrafficKey, Md5Key, Sequence};
 use core::net::IpAddr;
 use packet_wire::{
     PacketError,
@@ -81,18 +81,54 @@ pub struct Segment<'a> {
     pub sack_permitted: bool,
     pub sack_ranges: [Option<(u32, u32)>; 4],
     pub timestamp: Option<Timestamp>,
-    /// The selected owner requires RFC 2385 on this packet. Only emit_md5 can submit such output.
-    pub md5: bool,
+    /// Authentication required on this segment. The emitter must provide the matching key.
+    pub authentication: Authentication,
     pub payload: &'a [u8],
 }
+
+/// TCP wire authentication mode. The caller owns policy, keys and connection lifetimes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Authentication {
+    None,
+    Md5,
+    Ao,
+}
+
+impl Authentication {
+    const fn option_bytes(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Md5 => 18,
+            Self::Ao => AoTrafficKey::OPTION_BYTES,
+        }
+    }
+}
+
+/// Authentication inputs for an exact output segment. The caller selects a directional
+/// traffic key and sequence extension before borrowing the device window.
+#[derive(Clone, Copy)]
+pub enum SigningKey<'a> {
+    None,
+    Md5(&'a Md5Key),
+    Ao {
+        key: &'a AoTrafficKey,
+        /// KeyID followed by RNextKeyID.
+        ids: (u8, u8),
+        sne: u32,
+    },
+}
+
 impl<'a> Segment<'a> {
     /// Padded option space used by data segments, including a required signature and negotiated TS.
-    pub(crate) const fn data_option_space(timestamps: bool, md5: bool) -> usize {
+    pub(crate) const fn data_option_space(
+        timestamps: bool,
+        authentication: Authentication,
+    ) -> usize {
         let bytes = if timestamps {
             Timestamp::OPTION_BYTES
         } else {
             0
-        } + if md5 { 18 } else { 0 };
+        } + authentication.option_bytes();
         (bytes + 3) & !3
     }
     /// Capture state-machine values from a packet-wire view, borrowing its complete payload.
@@ -100,9 +136,15 @@ impl<'a> Segment<'a> {
     /// # Errors
     /// Zero ports or conflicting controls are malformed; authentication requires a configured key owner.
     pub fn capture(packet: TcpPacket<'a>) -> Result<Self, PacketError> {
-        Self::capture_options(packet, false)
+        let (segment, _) = Self::capture_options(packet)?;
+        if segment.authentication == Authentication::None {
+            Ok(segment)
+        } else {
+            Err(PacketError::Unsupported)
+        }
     }
-    fn capture_options(packet: TcpPacket<'a>, authenticated: bool) -> Result<Self, PacketError> {
+
+    fn capture_options(packet: TcpPacket<'a>) -> Result<(Self, Option<(u8, u8)>), PacketError> {
         let h = packet.header();
         if h.source_port() == 0 || h.destination_port() == 0 {
             return Err(PacketError::Malformed);
@@ -127,9 +169,10 @@ impl<'a> Segment<'a> {
             sack_permitted: false,
             sack_ranges: [None; 4],
             timestamp: None,
-            md5: false,
+            authentication: Authentication::None,
             payload: packet.payload(),
         };
+        let mut ao_ids = None;
         for option in packet.options() {
             match option.value {
                 TcpOption::MaximumSegmentSize(value) => result.max_seg_size = Some(value),
@@ -144,15 +187,21 @@ impl<'a> Segment<'a> {
                 TcpOption::Timestamp { value, echo } => {
                     result.timestamp = Some(Timestamp::new(value, echo))
                 }
-                // A format-checked MAC is not authentication; until a key owner verifies it, fail closed.
-                TcpOption::Md5(_) if authenticated => result.md5 = true,
-                TcpOption::Md5(_) | TcpOption::Authentication { .. } => {
-                    return Err(PacketError::Unsupported);
+                TcpOption::Md5(_) => {
+                    result.authentication = Authentication::Md5;
+                }
+                TcpOption::Authentication {
+                    key_id,
+                    next_key_id,
+                    ..
+                } => {
+                    result.authentication = Authentication::Ao;
+                    ao_ids = Some((key_id, next_key_id));
                 }
                 _ => {}
             }
         }
-        Ok(result)
+        Ok((result, ao_ids))
     }
     /// Aligned encoded header size, including protocol-selected options.
     pub fn header_len(&self) -> usize {
@@ -162,7 +211,7 @@ impl<'a> Segment<'a> {
             + usize::from(self.window_scale.is_some()) * 3
             + usize::from(self.sack_permitted) * 2
             + usize::from(self.timestamp.is_some()) * Timestamp::OPTION_BYTES
-            + usize::from(self.md5) * 18
+            + self.authentication.option_bytes()
             + if blocks == 0 { 0 } else { 2 + 8 * blocks };
         (size + 3) & !3
     }
@@ -187,45 +236,26 @@ impl<'a> Segment<'a> {
         source: IpAddr,
         destination: IpAddr,
     ) -> Result<(), PacketError> {
-        self.emit_checksum(bytes, source, destination, false, None)
+        self.emit_with_authentication(bytes, (source, destination), SigningKey::None, false)
     }
-    /// Encode for actual hardware checksum offload without scanning payload; the caller must set its device metadata.
+
+    /// Encode into the final window of `buffer_len()` bytes using the selected signing key.
+    /// `offloaded` requires real device checksum metadata.
     /// # Errors
-    /// The same option, family and capacity errors as emit; without offload the result is not wire-valid.
-    pub fn emit_offloaded(
+    /// Missing or incompatible key, malformed fields or insufficient output capacity.
+    pub fn emit_with_authentication(
         &self,
         bytes: &mut [u8],
-        source: IpAddr,
-        destination: IpAddr,
-    ) -> Result<(), PacketError> {
-        self.emit_checksum(bytes, source, destination, true, None)
-    }
-    /// Encode a complete MD5-protected segment with the selected key and actual IP pseudo-header.
-    /// # Errors
-    /// Missing MD5 output requirement, invalid fields, capacity or family/length mismatch.
-    /// `offloaded` is true only when the caller commits real hardware checksum metadata.
-    pub fn emit_md5(
-        &self,
-        bytes: &mut [u8],
-        source: IpAddr,
-        destination: IpAddr,
-        key: &crate::Md5Key,
+        (source, destination): (IpAddr, IpAddr),
+        key: SigningKey<'_>,
         offloaded: bool,
     ) -> Result<(), PacketError> {
-        if !self.md5 {
-            return Err(PacketError::Malformed);
-        }
-        self.emit_checksum(bytes, source, destination, offloaded, Some(key))
-    }
-    fn emit_checksum(
-        &self,
-        bytes: &mut [u8],
-        source: IpAddr,
-        destination: IpAddr,
-        offloaded: bool,
-        key: Option<&crate::Md5Key>,
-    ) -> Result<(), PacketError> {
-        if self.md5 != key.is_some() {
+        let supplied = match key {
+            SigningKey::None => Authentication::None,
+            SigningKey::Md5(_) => Authentication::Md5,
+            SigningKey::Ao { .. } => Authentication::Ao,
+        };
+        if self.authentication != supplied {
             return Err(PacketError::Unsupported);
         }
         let header = self.header_len();
@@ -237,8 +267,12 @@ impl<'a> Segment<'a> {
         {
             return Err(PacketError::Malformed);
         }
-        if bytes.len() != self.buffer_len()
-            || source.is_ipv4() && u16::try_from(bytes.len()).is_err()
+        if bytes.len() != header + self.payload.len()
+            || if source.is_ipv4() {
+                u16::try_from(bytes.len()).is_err()
+            } else {
+                u32::try_from(bytes.len()).is_err()
+            }
         {
             return Err(PacketError::Capacity);
         }
@@ -255,8 +289,12 @@ impl<'a> Segment<'a> {
         if let Some(ts) = self.timestamp {
             options.timestamp(ts.tsval, ts.tsecr)?;
         }
-        if self.md5 {
-            options.md5(&[0; 16])?;
+        match key {
+            SigningKey::Md5(_) => options.md5(&[0; 16])?,
+            SigningKey::Ao { ids, .. } => {
+                options.authentication(ids.0, ids.1, &[0; AoTrafficKey::OPTION_BYTES - 4])?;
+            }
+            SigningKey::None => {}
         }
         let mut blocks = [(0, 0); 4];
         let mut count = 0;
@@ -283,17 +321,26 @@ impl<'a> Segment<'a> {
             window: self.window_len,
             urgent_pointer: 0,
         };
-        if let Some(key) = key {
+        if supplied != Authentication::None {
             // Reserve/validate the final header first, then hash once and finish the ordinary checksum.
             header_value.emit_offloaded(bytes, header, source, destination)?;
             let packet = TcpPacket::parse_header(bytes)?;
-            let digest = key.digest(packet, source, destination)?;
-            let offset = packet
-                .options()
-                .find(|option| matches!(option.value, TcpOption::Md5(_)))
-                .expect("emitted sole MD5 option")
-                .offset;
-            bytes[offset + 2..offset + 18].copy_from_slice(&digest);
+            match key {
+                SigningKey::Md5(key) => {
+                    let digest = key.digest(packet, source, destination)?;
+                    let offset = packet
+                        .options()
+                        .find(|option| matches!(option.value, TcpOption::Md5(_)))
+                        .expect("emitted sole MD5 option")
+                        .offset;
+                    bytes[offset + 2..offset + 18].copy_from_slice(&digest);
+                }
+                SigningKey::Ao { key, sne, .. } => {
+                    let (tag, digest) = key.digest(packet, (source, destination), sne)?;
+                    bytes[tag].copy_from_slice(&digest);
+                }
+                SigningKey::None => unreachable!("authenticated output has a signing key"),
+            }
             if !offloaded {
                 // The format owner rewrites only the fixed header to finish the checksum after the MAC.
                 header_value.emit(bytes, header, source, destination)?;
@@ -312,24 +359,35 @@ impl<'a> Segment<'a> {
 pub struct IncomingSegment<'a> {
     pub(crate) packet: TcpPacket<'a>,
     pub(crate) segment: Segment<'a>,
+    ao_ids: Option<(u8, u8)>,
 }
 impl<'a> IncomingSegment<'a> {
     /// Capture checked wire input once; the IP owner supplies completeness/checksum evidence.
     /// # Errors
-    /// Invalid transport fields or unsupported authentication format. This does not authenticate MD5.
+    /// Invalid transport fields. Authentication still requires the selected key.
     pub fn capture(packet: TcpPacket<'a>) -> Result<Self, PacketError> {
+        let (segment, ao_ids) = Segment::capture_options(packet)?;
         Ok(Self {
             packet,
-            segment: Segment::capture_options(packet, true)?,
+            segment,
+            ao_ids,
         })
     }
     /// Control value for receive dispatch; observing it cannot authorize a state transition.
     pub fn control(self) -> Control {
         self.segment.control
     }
-    /// Whether unsigned connectionless responses must be suppressed.
-    pub fn requires_md5(self) -> bool {
-        self.segment.md5
+    /// Received KeyID and RNextKeyID for key lookup. Only a successful MAC makes either trusted.
+    pub fn ao_ids(self) -> Option<(u8, u8)> {
+        self.ao_ids
+    }
+    /// Wire sequence and acknowledgment candidates for traffic key and SNE lookup.
+    pub fn sequence(self) -> (Sequence, Option<Sequence>) {
+        (self.segment.seq_number, self.segment.ack_number)
+    }
+    /// Source and destination ports from the validated fixed header.
+    pub fn ports(self) -> (u16, u16) {
+        (self.segment.src_port, self.segment.dst_port)
     }
     /// Authenticate against the selected peer key before exposing connection input.
     /// None requires an unsigned packet; failed authentication returns None without a response.
@@ -339,12 +397,24 @@ impl<'a> IncomingSegment<'a> {
         destination: IpAddr,
         key: Option<&crate::Md5Key>,
     ) -> Option<Segment<'a>> {
-        if key.is_some_and(|key| !key.verify(self.packet, source, destination))
-            || key.is_none() && self.requires_md5()
-        {
-            return None;
+        match (self.segment.authentication, key) {
+            (Authentication::None, None) => Some(self.segment),
+            (Authentication::Md5, Some(key)) if key.verify(self.packet, source, destination) => {
+                Some(self.segment)
+            }
+            _ => None,
         }
-        Some(self.segment)
+    }
+    /// Apply the selected directional AO key and exact sequence extension. An invalid tag
+    /// yields no semantic TCP segment, so the caller cannot advance the connection.
+    pub fn authenticate_ao(
+        self,
+        addresses: (IpAddr, IpAddr),
+        key: &AoTrafficKey,
+        sne: u32,
+    ) -> Option<Segment<'a>> {
+        key.verify(self.packet, addresses, sne)
+            .then_some(self.segment)
     }
 }
 /// Semantic enclosing IP packet; the IP owner, not TCP, performs address admission and header emission.

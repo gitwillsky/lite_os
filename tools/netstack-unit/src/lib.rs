@@ -34,8 +34,15 @@ mod time {
             .as_micros() as u64
     }
 }
-// 随机源只适配宿主 OS；协议计时与 nonce 仍执行同一生产路径。
+// 时钟与随机源适配宿主 OS；协议计时与 nonce 仍执行同一生产路径。
 mod system {
+    pub(crate) fn utc() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64
+    }
+
     pub(crate) fn cprng_draw(bytes: &mut [u8]) {
         use std::io::Read;
         std::fs::File::open("/dev/urandom")
@@ -45,7 +52,28 @@ mod system {
     }
 }
 mod worker {
-    pub(crate) fn request_poll() {}
+    pub(crate) const PARTITIONS: usize = 5;
+    #[derive(Default)]
+    pub(crate) struct DeviceQueues;
+
+    impl DeviceQueues {
+        pub(crate) fn publish_ingress(&self, _: u32) {}
+        pub(crate) fn separate_transmit_worker(&self, _: u16) -> bool {
+            false
+        }
+    }
+
+    pub(crate) fn partition_count() -> usize {
+        PARTITIONS
+    }
+
+    pub(crate) fn partition(domain: u64) -> usize {
+        ((domain - 1) % PARTITIONS as u64) as usize
+    }
+    pub(crate) fn ensure_partition(_: u64) -> Result<(), native_abi::Status> {
+        Ok(())
+    }
+    pub(crate) fn request_poll(_: u64) {}
 }
 #[path = "../../../system/netstack/src/identity.rs"]
 mod identity;
@@ -79,6 +107,16 @@ mod inet {
     ));
     pub(crate) mod fixture {
         use super::*;
+        impl super::protocol_owner::NetworkStackGuard<'_> {
+            fn poll(&mut self) -> poll::NetworkPoll {
+                self.poll_at(now())
+            }
+
+            fn poll_at(&mut self, timestamp: Instant) -> poll::NetworkPoll {
+                self.poll_until(timestamp, u64::MAX)
+            }
+        }
+
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wire.rs"));
         mod benchmark {
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/benchmark.rs"));
@@ -116,6 +154,10 @@ mod inet {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/forwarding_tests.rs"
+            ));
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/switching_tests.rs"
             ));
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),

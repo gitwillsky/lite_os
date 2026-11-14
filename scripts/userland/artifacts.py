@@ -17,6 +17,7 @@ from pathlib import Path
 from apk_elf_closure import extract_closure
 from build_cache import cache_lock, fingerprint, manifest_matches, publish_directory, sha256, temporary_directory, write_manifest
 from userland import UserlandArtifact
+from userland.iperf import iperf_userland
 from userland.rust import (
     SYSTEM_LIBRARIES,
     SYSTEM_LIBRARY_DIRECTORY,
@@ -45,7 +46,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"),
                               ("linux-uapi", "session-launch"), ("terminal", "terminal"),
-                              ("resolvd", "resolvd"), ("network-config", "ipconfig"))
+                              ("resolvd", "resolvd"), ("network-config", "ipconfig"),
+                              ("network-config", "router-api"), ("network-manager", "network-manager"))
     )
     library_targets = tuple(
         _RustUserTarget(package, name, f"system-library-{name}", 1, True)
@@ -81,13 +83,13 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/mime/packages/liteos.xml", "/usr/share/mime/packages/liteos.xml"),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
         *programs, *fonts, ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(), *file_type_icons(),
-        *_openssh_userland(),
+        *_packaged_userland(), *iperf_userland(musl),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
 
 
-OPENSSH_PACKAGES = {
+USERLAND_PACKAGES = {
     "openssh-server-10.0_p1-r11.apk": (
         "bf9fd3fb8840c679699ca57b3953e853db28613422f2229e9c1b0e382ee50f0d",
         "a1d8d29c4dc64e61b1ecf2ef8e10a23ad8852e0f81b59916dfa73cfc1cf5eeb1",
@@ -104,26 +106,35 @@ OPENSSH_PACKAGES = {
         "2d274cb1b2a36d0e8347d802e6dea8648cab952ea5fae1989ab72e725842a2c3",
         "9dfa50a52957f9d04b90b70c9fdfb08e1adca326fc57a3552d6e41047434e02c",
     ),
+    "tcpdump-4.99.5-r1.apk": (
+        "caeaeaac5c28b3e9ba61fa7ddf82f127525f47ae902ae8729a0d78a1712a26f4",
+        "78a9c296155326e7fc3539dce587cb36541f7f7f6a6128c4faaf9d7d2cd9b78f",
+    ),
+    "libpcap-1.10.7-r0.apk": (
+        "e7dd4e69c51b37e4062ac9c66ea9c5c07b88363a9ba129defba15ba3e5ca3192",
+        "65545a986bf44fd6e2f61584fcb3a299fa99211a5c58db55613751f1e2a659b5",
+    ),
 }
 # OpenSSH 以编译时绝对路径启动两个 privilege-separation 子程序。
-OPENSSH_SEEDS = {"/" + path: path for path in (
+USERLAND_SEEDS = {"/" + path: path for path in (
     "usr/sbin/sshd", "usr/lib/ssh/sshd-auth", "usr/lib/ssh/sshd-session", "usr/bin/ssh-keygen",
+    "usr/bin/tcpdump",
 )}
 
 
-def _openssh_userland() -> tuple[UserlandArtifact, ...]:
-    """发布经过 SHA-256、架构和依赖闭包校验的诊断服务文件。"""
+def _packaged_userland() -> tuple[UserlandArtifact, ...]:
+    """发布经过 SHA-256、架构和依赖闭包校验的上游命令与共享库。"""
     target = target_from_environment()
     index = {"aarch64": 0, "riscv64": 1}[target.arch]
-    packages = [{"name": name, "sha256": hashes[index]} for name, hashes in OPENSSH_PACKAGES.items()]
-    payload = {"arch": target.arch, "packages": packages, "seeds": OPENSSH_SEEDS}
-    cache = ROOT / "target" / "openssh-runtime" / target.arch
+    packages = [{"name": name, "sha256": hashes[index]} for name, hashes in USERLAND_PACKAGES.items()]
+    payload = {"arch": target.arch, "packages": packages, "seeds": USERLAND_SEEDS}
+    cache = ROOT / "target" / "apk-userland" / target.arch
     final = cache / fingerprint(payload)
     with cache_lock(cache / ".lock"):
         if not manifest_matches(final, payload, ("files.json",)):
             temporary = temporary_directory(cache, "runtime")
             try:
-                extract_closure(packages, OPENSSH_SEEDS, temporary, label="OpenSSH",
+                extract_closure(packages, USERLAND_SEEDS, temporary, label="APK userland",
                                 machine=("AArch64", "RISC-V")[index])
                 write_manifest(temporary, payload)
                 publish_directory(temporary, final)
@@ -134,8 +145,10 @@ def _openssh_userland() -> tuple[UserlandArtifact, ...]:
     for entry in entries:
         path = final / entry["path"]
         if sha256(path) != entry["sha256"]:
-            raise RuntimeError(f"corrupt OpenSSH runtime cache: {path}")
+            raise RuntimeError(f"corrupt APK userland cache: {path}")
         files.append(UserlandArtifact(path, "/" + entry["path"], entry["mode"]))
     return (*files,
+            *(UserlandArtifact(ROOT / f"user/base/licenses/{package}", f"/usr/share/licenses/{package}/LICENSE")
+              for package in ("tcpdump", "libpcap")),
             UserlandArtifact(ROOT / "user/base/sshd", "/etc/init.d/sshd", 0o755),
             UserlandArtifact(ROOT / "user/base/sshd_config", "/etc/ssh/sshd_config"))

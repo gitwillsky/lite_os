@@ -146,9 +146,8 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
   EFAULT 只允许保留此前完整 batch/vector 的 partial progress。
 - pipe/socket/regular-file write 必须使用同一个 `UserInputStaging` seam；memory user-copy 直接初始化 `MaybeUninit<u8>` destination，不得为形成 `&mut [u8]` 预清零随后完整覆盖，也不得在各 syscall 保留 unsafe 转换分支。
 - userspace application 不得依赖 LiteOS 私有 runtime、init、device protocol 或第二条 rootfs path。
-- 授予指定系统程序的原生服务协议只经 linuxd 发布的授权端点适配（发布与授权见 `linuxd::system::endpoint`）：
-  `/dev/task-observer`（root:adm 0660，任务管理器）、`/dev/network-status`（公开 GET）和
-  `/dev/network-settings`（root:netdev 0660，SET/WAIT/租约操作）。帧格式由对应协议 crate 拥有；受限端点由 VFS 组权限授权。WAIT 与租约操作共用至多 4 个阻塞转发名额，
+- 授予指定系统程序的原生服务协议经 linuxd 发布的授权端点适配。`/dev/task-observer` 为 root:adm 0660。
+  `/dev/network-status` 与 `/dev/network-settings` 为 root 0600，由 [router-api](#网络管理入口) 转发。帧格式由对应协议 crate 拥有。WAIT 与租约操作共用至多 4 个原生阻塞转发名额，
   超出返回资源不足。
 - Linux 侧不配置接口、不运行 DHCP 客户端：接口设置的 owner 是原生 router-config，`network-config` 只是客户端；
   `/etc/resolv.conf` 由 init 监督的 resolvd 依据设置快照以临时文件、fsync、rename 原子维护。
@@ -175,7 +174,7 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
   不使用 host-dependent `ErrorKind::NotFound`；无论 group 是否已消失都必须回收 leader。
   parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
   复检 parent identity、`setsid`，PTY 模式再执行 `TIOCSCTTY`，最后同 PID `exec`。
-  PTY 目标 stderr 接 slave，其他 profile 接 console，均与 exec-status 分离。
+  PTY 目标 stderr 接 slave，捕获模式合并到调用者交付的 stdout，其他 profile 接 console，均与 exec-status 分离。
   parent 独占 exec-status 读端，trampoline
   独占 CLOEXEC 写端；固定 frame 发布所有确定性 setup/exec 错误，空 EOF 表示没有这类已发布错误，
   不虚报异步致死与成功 exec 后立即退出可区分。错误、非空截断或非法 frame 必须 kill/wait 回收；
@@ -222,6 +221,63 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
   `/usr/local`。该 owner 必须验证 npm package identity、平台 optional package、APK metadata、
   package database、唯一 command 入口与真实 CLI 启动；不得污染产品 rootfs、加入滚动
   repository、保留 raw binary/Claude APK 第二路径，或把 namespace sandbox 宣称为已支持。
+
+### 网络管理入口
+
+`router-api` 由 init 启动，经 `/run/router-api.sock` 接受 Unix WebSocket。`network-config` 的系统设置、诊断查询、订阅和写入统一使用该入口。
+网关从 `SO_PEERCRED` 取得内核投影的 UID，客户端核对网关 UID 0。root 与账户数据库中的 `netdev` 成员拥有管理权限。
+`netview` 成员可查看公开状态、路由域名称、BGP、OSPF、租约、防火墙、连接、邻居、路由和接口流量及其更新。其他本机账户可读取普通接口快照。含认证秘密的配置导出、差异和备份均需管理权限。
+权限取连接时的账户主组和组成员关系，修改账户权限后重新连接。网关在接收文档之前验证操作权限，只有网关转发访问原生设置端点。
+
+桌面网络管理器的备份查询、创建、导出、删除和恢复复用 `network-config` 及上述授权。导出独占创建权限为 `0600` 的文件，恢复使用确认前的配置代际。使用方法见[配置备份](../../user/programs/network-manager/README.md#配置备份)。
+配置提交使用审阅时冻结的正文和代际。失败后查询提交编号的保存结果，另查应用状态。[路由配置](../../user/programs/network-manager/README.md#路由配置)
+
+握手使用 [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) 路径 `/router` 与子协议 `liteos-router-v1`。本地 Unix 握手拒绝浏览器 `Origin`。
+具名网络命名空间描述符只在 root 可访问的本机设置 socket 经 `SCM_RIGHTS` 移交。系统端点用实际请求 socket 回复，避免按服务端所在网络域重查客户端的抽象地址。
+每次操作先发一个二进制控制消息（原 bridge 请求或回复），管理文档再传连续二进制块，合计精确等于管理控制帧声明的长度。每条消息不超过 60 KiB，只有整份配置候选可提交更长的正文。
+网关将完整入站正文写入同一个封印 memfd 后交给现有 fd 转发路径，出站从原只读 fd 分块。截断、超长、权限不足或会话关闭时回收未发布内容。
+会话可顺序发多个请求。不同权限的会话分别限 8、8、16 个，握手和传输有独立截止。响应发送阻塞只占当前会话，原生配置事务仍按原 owner 串行。
+防火墙计数、邻居、路由和接口流量订阅独占本次会话，复用只读查询权限与会话配额。[计数订阅](ip-forwarding.md#桌面计数订阅)、[邻居观察](ipv6-link.md#桌面邻居观察)、[路由观察](ip-forwarding.md#桌面路由观察)、[接口流量](#接口流量观察)
+`ROUTING_DOMAINS(29)` 返回已保存的具名域，正文是 u32 版本 1 和升序排列的长度前缀 UTF-8 名称。它不返回完整配置或运行时命名空间能力。
+按域的内联观察请求使用 u32 版本 1、长度前缀域名（空表示默认域）和长度前缀操作游标，长度为 u32。每次查询由配置 owner 定位实际域，域缺失或待应用时明确返回错误。
+无逐包成本。管理验收测量大配置传输的额外内存、订阅规模和慢读并发。
+
+远程监听仅在 `/etc/router-api.conf` 显式指定地址与有效 PEM 证书和私钥时启动。配置和证书属 root 且组及其他用户不可写，私钥仅 root 可访问。
+TLS 1.3 握手后才处理 HTTP Basic 认证，客户端核对信任链和主机名。Linux 账户验证复用 `linux-uapi::credentials::account` 的 shadow 策略，远程另要求非空有效口令。
+通过认证的 root、netdev 或 netview 进入同一 WebSocket 分派。每个来源 60 秒允许 5 次失败尝试，状态至多记录 256 个来源，认证 I/O 和散列在锁外。
+远程最多 16 个会话，其中同时至多 4 个未完成握手，与本地名额独立。指定地址尚未出现时，监听线程退避等待，配置错误不影响本地入口。
+远程命令重连后查询当前状态，修改结果不明确时按提交编号查询。来宾互通待系统验收。
+
+桌面网络管理器复用本机 BusyBox 及 iperf3，通过标准 socket UAPI 执行，继承当前账户的权限。每窗口同时运行一项诊断，UI 就绪循环逐行消费输出。
+Ping 和逐跳探测的输出上限 16 KiB。TCP 带宽测试持续 10 秒，每秒读取结构化结果，输出上限 64 KiB，进程总时限 20 秒。以接收端平均速率为最终结果。
+后台沿同一 SessionChild 监督命令，使用 pidfd 等待退出。关闭取消管道或到达截止时清理进程组并回收，意外退出由原有 parent-death 语义终止探测。[网络管理器](../../user/programs/network-manager/README.md)
+
+#### 接口流量观察
+
+- 网关在自身网络域通过标准 `RTM_GETLINK` 读取设备身份及 `IFLA_STATS64`，使用 [Linux 6.12 链路统计](https://docs.kernel.org/6.12/networking/statistics.html) 的前八个计数。该读取沿 NET 与设备服务已有计数来源。
+- 网关操作码 `0x80000004` 接收 u32 版本 1、u32 独占起点（接口索引，0 为首页）。回复沿用 i32 状态头，正文标签 0 为保活。
+  标签 1 和 2 随后是 u8 行数和 u8 续页标志，标签 2 再跟 u64 变化位置位图。
+  行按接口索引排列，为 u32 索引、16 字节零填充名称、八个 u64 累计计数和 u8 速率标志。速率存在时追加两个 u64 字节每秒，依次为接收和发送。整数均为小端。
+- 每秒读取一次完整的内核链路快照，网关只保留当前页和上一页，至多各 64 个接口。用同一索引的相邻采样及单调时间差计算速率。
+  计数回退或缺少前次采样时不产生速率。只有完整的内核回复才可更新当前页，读取失败沿原观察会话关闭。
+- 无新增逐包工作。多接口并发订阅的全量链路读取、分页及管理消息开销随管理负载纳入整机验收。[桌面入口](../../user/programs/network-manager/README.md#接口流量)
+
+#### 本地按接口抓包
+
+- 网关操作 `0x80000005` 仅接受 Unix 管理连接上的 root 和 netdev。请求为 u32 版本 1、u32 接口索引。网关在自身网络域使用只绑定该索引的 AF_PACKET RAW，应用只接收文件数据。
+- 回复沿用 i32 状态头。正文标签 1 携带 PCAP 文件头，2 携带一个或多个完整记录，3 携带 u8 结束原因（手动停止、时限、文件上限、接口不可用，依次为 0–3）与 u32 抓包丢弃数。
+- 采集时限为 60 秒，文件最多 64 MiB，单帧捕获前缀受消息容量限制并保留原长。记录使用小端 PCAP 2.4、纳秒时间戳、Ethernet 链路类型。
+  回环保留接收副本。物理发帧保持镜像时的原字节，可能仍含卸载用的未完成校验和。[PCAP 布局](https://www.ietf.org/archive/id/draft-ietf-opsawg-pcap-07.html)
+- 停止时客户端关闭连接写侧，网关关闭捕获描述符并返回结束结果。文件按调用者权限独占创建为 0600，写完同步，失败清理未完成文件。
+  窗口关闭等待写入完成。远程 TLS 不接收抓包请求，避免管理流量经同一接口捕获再回送。[桌面用法](../../user/programs/network-manager/README.md#抓包)
+
+#### 本地流量分析
+
+- 网关操作 `0x80000006` 与抓包使用同一接口请求格式及本地管理权限。只有活动订阅建立按接口绑定的 AF_PACKET 接收描述符，关闭会话或接口移除即释放。
+- 网关每帧只读取至多 256 字节前缀，按实际帧长和收发方向计量。IPv4/IPv6 按地址、协议和可见的端口归类，其他帧按 MAC 地址和协议归类。回环保留接收副本。
+- 每方向用 64 个预留槽执行带权 Space-Saving。每个单调时间窗发布最多 12 条主要流量。回复沿用 i32 状态头，正文为 u8 版本 1 和 `router-protocol::management::flows::Sample` 的 JSON。
+- 样本包含收发观察字节数、窗口时长、套接字采集丢弃数和各项的字节上下界。未归属字节等于观察总数减去显示项下界，采集丢包独立显示，不外推流量。
+- 聚合只在网关运行。未订阅时不建立新捕获端点；订阅时沿现有 packet tap 和队列产生镜像成本，活动时的小包吞吐、采集丢弃和 UI 延迟纳入整机验收。[桌面用法](../../user/programs/network-manager/README.md#实时流量分析)
 
 ## Failure and cleanup
 

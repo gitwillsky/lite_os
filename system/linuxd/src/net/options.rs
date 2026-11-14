@@ -4,10 +4,46 @@ use super::{
 };
 
 impl Socket {
+    pub(crate) fn tcp_information(&self) -> Result<network_protocol::TcpInformation, SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.tcp_information(),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    pub(crate) fn tcp_ao_status(&self) -> Result<network_protocol::TcpAoStatus, SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.ao_status(),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    pub(crate) fn set_tcp_ao_key(
+        &self,
+        config: network_protocol::TcpAoKey,
+        key: &[u8],
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_ao_key(config, key, selection),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    pub(crate) fn select_tcp_ao_keys(
+        &self,
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.select_ao_keys(selection),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
     /// 标准 TCP_MD5SIG 的已捕获 selector 与密钥；实际匹配/验签只属于原生 TCP owner。
     pub(crate) fn set_tcp_md5(
         &self,
-        selector: network_protocol::TcpMd5Selector,
+        selector: network_protocol::TcpKeySelector,
         key: &[u8],
     ) -> Result<(), SocketError> {
         match &self.backend {
@@ -25,6 +61,28 @@ impl Socket {
     }
     pub(crate) fn packet_auxiliary(&self) -> bool {
         matches!(&self.backend, SocketBackend::Packet(socket) if socket.auxiliary())
+    }
+
+    pub(crate) fn set_packet_timestamp(&self, kind: u8) -> Result<(), SocketError> {
+        let SocketBackend::Packet(socket) = &self.backend else {
+            return Err(SocketError::OperationNotSupported);
+        };
+        socket.set_timestamp(kind);
+        Ok(())
+    }
+
+    pub(crate) fn packet_timestamp(&self) -> Option<u8> {
+        match &self.backend {
+            SocketBackend::Packet(socket) => Some(socket.timestamp()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn take_packet_statistics(&self) -> Result<[u32; 2], SocketError> {
+        match &self.backend {
+            SocketBackend::Packet(socket) => socket.take_statistics(),
+            _ => Err(SocketError::OperationNotSupported),
+        }
     }
 
     /// 已创建 socket 的实际网络域；accept 从 listener 捕获，setns 不重定向既有 fd。

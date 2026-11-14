@@ -4,6 +4,7 @@ use packet_wire::{
     PacketError,
     bgp::{
         self,
+        nlri::Family,
         open::{Capabilities, Capability, CapabilityValue, IPV4_VIA_IPV6, Open, Parameter},
     },
 };
@@ -23,6 +24,10 @@ pub struct Config {
     pub passive: bool,
     pub ipv4_unicast: bool,
     pub ipv6_unicast: bool,
+    /// 对此邻居接收已启用的单播族的多条路径；不隐式授权发送多路径。
+    pub receive_add_path: bool,
+    /// 对此邻居发布多条合格的单播路径。
+    pub send_add_path: bool,
     pub route_refresh: bool,
     /// 只有完整 RFC 7606 处理已接入后，运行时才可启用并宣告扩展消息。
     pub extended_messages: bool,
@@ -90,7 +95,7 @@ impl Config {
         let mut capabilities = [Capability {
             code: 65,
             data: &asn,
-        }; 7];
+        }; 8];
         let mut count = 1;
         for capability in Capabilities::unicast(self.ipv4_unicast, self.ipv6_unicast) {
             capabilities[count] = capability;
@@ -113,8 +118,18 @@ impl Config {
                 count += 1;
             }
         }
-        // AS4 六字节、两个 MP 各六字节、Extended Next Hop 八字节，其他三个能力各两字节。
-        let mut content = [0; 32];
+        let mut add_path = [0; 8];
+        if let Some(capability) = Capability::add_path(
+            &mut add_path,
+            [self.ipv4_unicast, self.ipv6_unicast],
+            self.send_add_path,
+            self.receive_add_path,
+        ) {
+            capabilities[count] = capability;
+            count += 1;
+        }
+        // 原有能力最多 32 字节，双栈 ADD-PATH 再占 10 字节。
+        let mut content = [0; 42];
         let length = Capabilities::emit(&mut content, &capabilities[..count])?;
         Open::emit(
             bytes,
@@ -162,6 +177,10 @@ pub struct Negotiated {
     pub send_ipv4_via_ipv6: bool,
     /// 本端已声明接收 IPv6 下一跳，且双方协商了 IPv4 MP。
     pub receive_ipv4_via_ipv6: bool,
+    /// 从此连接收到的 IPv4/IPv6 单播 NLRI 是否分别携带四字节路径标识。
+    pub receive_add_path: [bool; 2],
+    /// 本连接对 IPv4、IPv6 单播发送方向的 ADD-PATH 授权。
+    pub send_add_path: [bool; 2],
     pub four_octet_asn: bool,
     pub send_extended: bool,
     pub receive_extended: bool,
@@ -169,6 +188,12 @@ pub struct Negotiated {
     pub receive_refresh: bool,
     /// 双方交换能力 70 后才使用刷新边界并在接收端清除陈旧路由。
     pub enhanced_refresh: bool,
+}
+impl Negotiated {
+    /// 本次连接在指定族是否按带路径标识的布局接收 UPDATE。
+    pub fn receives_add_path(self, family: Family) -> bool {
+        self.receive_add_path[usize::from(family == Family::Ipv6)]
+    }
 }
 /// 接纳对端 OPEN；未知 capability 忽略，未知可选参数按原 wire 返回错误，重复相同 AS4 值可接纳。
 /// # Errors
@@ -196,6 +221,8 @@ pub(super) fn negotiate<'a>(
     let mut refresh = false;
     let mut enhanced_refresh = false;
     let mut extended = false;
+    let mut add_path_receive = [false; 2];
+    let mut add_path_send = [false; 2];
     for (parameter, wire) in open.parameters().wire_parameters() {
         if parameter.kind != 2 {
             return Err(Notice {
@@ -226,6 +253,12 @@ pub(super) fn negotiate<'a>(
                 CapabilityValue::RouteRefresh => refresh = true,
                 CapabilityValue::EnhancedRouteRefresh => enhanced_refresh = true,
                 CapabilityValue::ExtendedMessage => extended = true,
+                CapabilityValue::AddPath(value) => {
+                    for (index, afi) in [1, 2].into_iter().enumerate() {
+                        add_path_receive[index] |= value.sends(afi, 1);
+                        add_path_send[index] |= value.receives(afi, 1);
+                    }
+                }
                 CapabilityValue::Unknown(_) => {}
             }
         }
@@ -259,6 +292,18 @@ pub(super) fn negotiate<'a>(
         ipv6_unicast,
         send_ipv4_via_ipv6: capabilities && config.ipv4_unicast && v4 && ipv4_via_ipv6,
         receive_ipv4_via_ipv6: capabilities && config.ipv4_unicast && v4,
+        receive_add_path: core::array::from_fn(|index| {
+            capabilities
+                && config.receive_add_path
+                && [ipv4_unicast, ipv6_unicast][index]
+                && add_path_receive[index]
+        }),
+        send_add_path: core::array::from_fn(|index| {
+            capabilities
+                && config.send_add_path
+                && [ipv4_unicast, ipv6_unicast][index]
+                && add_path_send[index]
+        }),
         four_octet_asn: capabilities && asn.is_some(),
         send_extended: capabilities && config.extended_messages && extended,
         receive_extended: capabilities && config.extended_messages,

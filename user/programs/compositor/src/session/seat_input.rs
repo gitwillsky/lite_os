@@ -77,7 +77,7 @@ impl Session {
                 }
                 if code == BUTTON_LEFT && !pressed && self.grab.is_some() {
                     self.end_grab()?;
-                } else if pressed && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
+                } else if pressed && (first || matches!(code, BUTTON_LEFT | BUTTON_RIGHT)) {
                     // 点在弹出层之外：持有 grab 的弹出层结束（客户端随后销毁它们）。
                     let point = position;
                     if code == BUTTON_LEFT && self.popup_hit(point, self.stack.windows()).is_none()
@@ -93,16 +93,20 @@ impl Session {
                         }
                     }
                     // 单击应用窗口：激活并置顶。外壳 surface 不是窗口，点击它不改变活动窗口。
-                    let point = position;
                     let boxes = self.layer_boxes();
                     let hit = self.hit_test(&boxes, point);
+                    if first && !self.secure_pending {
+                        // 前一抓取可能在同批刚释放，Seat 此时没有焦点。先以本次按下的
+                        // 位置恢复 enter，再派发 button 及 serial；不改写仍按住的隐式目标。
+                        self.seat.update_pointer(&mut self.server, hit, point, scale, time, false);
+                    }
                     let root = hit.and_then(|hit| self.root_target(hit.target));
                     let layer = root.and_then(|root| {
                         boxes
                             .iter()
                             .find(|layer| (layer.client, layer.surface) == root)
                     });
-                    if !self.secure_pending {
+                    if !self.secure_pending && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
                         match layer {
                             Some(layer) if layer.keyboard == KeyboardInteractivity::OnDemand => {
                                 self.keyboard_layer = Some((layer.client, layer.surface));

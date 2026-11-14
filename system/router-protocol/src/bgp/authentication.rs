@@ -1,40 +1,54 @@
 //! BGP 配置中的认证秘密；持久化仍归唯一配置树，不进入会话状态与调试文本。
-use alloc::string::String;
-use core::fmt;
+use alloc::vec::Vec;
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize};
-use zeroize::Zeroize;
+use serde::{Deserialize, Serialize};
 
-/// 与 TCP_MD5SIG 互通的 1..=80 字节 UTF-8 秘密；所有权退休时擦除，Debug 不输出内容。
-#[derive(Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct Md5Password(#[schemars(length(min = 1, max = 80))] String);
-impl Md5Password {
-    /// 只向实际密钥安装路径借用字节，不创建日志或状态投影。
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
+pub use crate::secret::Secret as TcpSecret;
+
+/// RFC 5926 的 96 位 MAC 算法。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AoAlgorithm {
+    HmacSha1,
+    Aes128Cmac,
 }
-impl Drop for Md5Password {
-    fn drop(&mut self) {
-        self.0.zeroize();
-    }
+
+/// 一个邻居的 TCP-AO 主密钥；同一邻居可同时保留轮换前后的密钥。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AoKey {
+    pub send_id: u8,
+    pub receive_id: u8,
+    pub algorithm: AoAlgorithm,
+    pub secret: TcpSecret,
+    /// RFC 5925 的选项覆盖开关。默认覆盖其他 TCP 选项。
+    #[serde(default)]
+    pub exclude_options: bool,
 }
-impl fmt::Debug for Md5Password {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("Md5Password([redacted])")
-    }
+
+/// 邻居配置指定的密钥和换钥选择。实时选钥仍由 TCP 持有。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TcpAo {
+    #[schemars(length(min = 1, max = 256))]
+    pub keys: Vec<AoKey>,
+    /// 主动连接以及管理员切换时使用的发送 ID。
+    pub send_id: u8,
+    /// 通知对端首选的接收 ID。
+    pub receive_id: u8,
 }
-impl<'de> Deserialize<'de> for Md5Password {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut value = String::deserialize(deserializer)?;
-        if value.is_empty() || value.len() > 80 {
-            value.zeroize();
-            return Err(serde::de::Error::custom(
-                "TCP MD5 password must contain 1 to 80 bytes",
-            ));
+
+impl TcpAo {
+    pub(super) fn valid(&self) -> bool {
+        let mut send = [false; 256];
+        let mut receive = [false; 256];
+        for key in &self.keys {
+            if core::mem::replace(&mut send[usize::from(key.send_id)], true)
+                || core::mem::replace(&mut receive[usize::from(key.receive_id)], true)
+            {
+                return false;
+            }
         }
-        Ok(Self(value))
+        send[usize::from(self.send_id)] && receive[usize::from(self.receive_id)]
     }
 }

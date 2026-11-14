@@ -1,293 +1,36 @@
 //! 双栈传输共用双向连接跟踪和定时清理。正反方向共用一个表项，只有实际提交转发才确认或刷新状态。
 
+mod nat;
+mod packet;
+mod policy;
+mod table;
 mod tcp;
+pub(super) use nat::{EndpointEdits, TranslationEdit};
+pub(super) use packet::{Datagram, Key, Packet};
+pub(in crate::inet) use packet::prepare_transport;
+use packet::{Endpoint, Protocol, trackable_addresses};
+pub(in crate::inet) use policy::{PolicySlot, RetainedPolicies};
+use table::{FlowShards, Tables};
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::{
-    hash::BuildHasher,
-    net::{IpAddr, SocketAddr},
-};
+use core::{hash::BuildHasher, net::SocketAddr};
 use fallible_tree::{FallibleMap, VacantEntry};
-use hashbrown::HashMap;
 use native_runtime::{
     Event,
     native_abi::{self, Status, signals},
 };
-use packet_wire::{
-    icmpv4::{self, Icmpv4Packet},
-    icmpv6::{self, Icmpv6Packet},
-    ipv4::{Ipv4Packet, Ipv4Quote},
-    ipv6::{Ipv6Datagram, Ipv6Packet, Ipv6Quote},
-    tcp::TcpPacket,
-    udp::UdpPacket,
-};
 use router_protocol::connections::changes::{self, Change};
 use router_protocol::{connections, firewall::ConnectionState};
 use siphasher::sip::SipHasher13;
-use smoltcp::time::{Duration, Instant};
+use ::tcp::time::{Duration, Instant};
 
 const CAPACITY: usize = 1_000_000;
 const RETIRE_BATCH: usize = 64;
+// 每八条截止记录检查一次软截止，限制并摊薄时钟读取。轮次至少推进一组。
+const RETIRE_CLOCK_INTERVAL: usize = 8;
 const SHORT_IDLE: Duration = Duration::from_millis(30_000);
 const UDP_REPLIED: Duration = Duration::from_millis(120_000);
 const CHANGE_HISTORY: usize = 1024;
-
-type Endpoint = (IpAddr, u16);
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum Protocol {
-    Tcp,
-    Udp,
-    Echo,
-}
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct Key {
-    endpoints: [Endpoint; 2],
-    protocol: Protocol,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Datagram {
-    key: Key,
-    reversed: bool,
-}
-
-impl Datagram {
-    fn ports(protocol: Protocol, source: Endpoint, destination: Endpoint) -> Option<Self> {
-        if source == destination || source.1 == 0 || destination.1 == 0 {
-            return None;
-        }
-        let reversed = source > destination;
-        let endpoints = if reversed {
-            [destination, source]
-        } else {
-            [source, destination]
-        };
-        Some(Self {
-            key: Key {
-                endpoints,
-                protocol,
-            },
-            reversed,
-        })
-    }
-
-    fn echo(source: IpAddr, destination: IpAddr, identifier: u16, reply: bool) -> Option<Self> {
-        if source == destination {
-            return None;
-        }
-        // Echo 发起者由消息类型确定。两端并发使用同一个 ID 时仍是两条流。
-        let (origin, peer) = if reply {
-            (destination, source)
-        } else {
-            (source, destination)
-        };
-        Some(Self {
-            key: Key {
-                endpoints: [(origin, identifier), (peer, 0)],
-                protocol: Protocol::Echo,
-            },
-            reversed: reply,
-        })
-    }
-
-    fn quoted(source: IpAddr, destination: IpAddr, protocol: u8, bytes: &[u8]) -> Option<Packet> {
-        if !trackable_addresses(source, destination) {
-            return None;
-        }
-        match (source.is_ipv6(), protocol) {
-            (_, 6) => {
-                let [a, b, c, d, e, f, g, h] = *bytes.first_chunk::<8>()?;
-                let datagram = Self::ports(
-                    Protocol::Tcp,
-                    (source, u16::from_be_bytes([a, b])),
-                    (destination, u16::from_be_bytes([c, d])),
-                )?;
-                Some(Packet::Error(
-                    datagram,
-                    Some(u32::from_be_bytes([e, f, g, h])),
-                ))
-            }
-            (_, 17) => {
-                let udp = UdpPacket::parse_quote(bytes, source.is_ipv6()).ok()?;
-                Self::ports(
-                    Protocol::Udp,
-                    (source, udp.source_port()),
-                    (destination, udp.destination_port()),
-                )
-                .map(|datagram| Packet::Error(datagram, None))
-            }
-            (false, 1) => {
-                let icmpv4::Message::Echo {
-                    reply, identifier, ..
-                } = Icmpv4Packet::parse_header(bytes).ok()?.message()
-                else {
-                    return None;
-                };
-                Self::echo(source, destination, identifier, reply)
-                    .map(|datagram| Packet::Error(datagram, None))
-            }
-            (true, 58) => {
-                let icmpv6::Message::Echo {
-                    reply, identifier, ..
-                } = Icmpv6Packet::parse_header(bytes).ok()?.message()
-                else {
-                    return None;
-                };
-                Self::echo(source, destination, identifier, reply)
-                    .map(|datagram| Packet::Error(datagram, None))
-            }
-            _ => None,
-        }
-    }
-}
-
-fn trackable_addresses(source: IpAddr, destination: IpAddr) -> bool {
-    [source, destination]
-        .into_iter()
-        .all(|address| !matches!(address, IpAddr::V6(address) if address.is_unicast_link_local()))
-}
-
-pub(super) enum Packet {
-    Data(Datagram),
-    Tcp(Datagram, tcp::Segment),
-    Error(Datagram, Option<u32>),
-}
-
-impl Packet {
-    pub(super) fn ipv4(ip: Ipv4Packet<'_>, checksum_valid: bool) -> Option<Self> {
-        if ip.fragment_offset() != 0 || ip.more_fragments() {
-            return None;
-        }
-        let source = ip.source().into();
-        let destination = ip.destination().into();
-        match ip.protocol() {
-            6 => Self::tcp(source, destination, ip.payload(), checksum_valid),
-            17 => Self::udp(source, destination, ip.payload(), checksum_valid),
-            1 => {
-                let icmp = if checksum_valid {
-                    Icmpv4Packet::parse_header(ip.payload())
-                } else {
-                    Icmpv4Packet::parse(ip.payload())
-                }
-                .ok()?;
-                match icmp.message() {
-                    icmpv4::Message::Echo {
-                        reply, identifier, ..
-                    } => Datagram::echo(source, destination, identifier, reply).map(Self::Data),
-                    icmpv4::Message::Error { body, .. }
-                        if matches!(
-                            (icmp.message_type(), icmp.code()),
-                            (3, 0..=15) | (11, 0..=1) | (12, 0..=2)
-                        ) =>
-                    {
-                        let quote = Ipv4Quote::parse(body.quoted_bytes().ok()?).ok()?;
-                        // 外层目的必须是被引用方向的发送端，不能把已知 tuple 当作跨主机放行凭据。
-                        if quote.source() != ip.destination() {
-                            return None;
-                        }
-                        Datagram::quoted(
-                            quote.source().into(),
-                            quote.destination().into(),
-                            quote.protocol(),
-                            quote.upper_layer()?,
-                        )
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    pub(super) fn ipv6(ip: Ipv6Datagram<'_>, checksum_valid: bool) -> Option<Self> {
-        let source = ip.source().into();
-        let destination = ip.destination().into();
-        if !trackable_addresses(source, destination) {
-            return None;
-        }
-        let packet = Ipv6Packet::parse(ip.bytes()).ok()?;
-        let bytes = packet.upper_layer()?;
-        match packet.upper_protocol() {
-            6 => Self::tcp(source, destination, bytes, checksum_valid),
-            17 => Self::udp(source, destination, bytes, checksum_valid),
-            58 => {
-                let icmp = if checksum_valid {
-                    Icmpv6Packet::parse_header(bytes)
-                } else {
-                    Icmpv6Packet::parse(bytes, ip.source(), ip.destination())
-                }
-                .ok()?;
-                match icmp.message() {
-                    icmpv6::Message::Echo {
-                        reply, identifier, ..
-                    } => Datagram::echo(source, destination, identifier, reply).map(Self::Data),
-                    icmpv6::Message::Error { body, .. }
-                        if matches!(
-                            (icmp.message_type(), icmp.code()),
-                            (1, 0..=6) | (2, 0) | (3, 0..=1) | (4, 0..=2)
-                        ) =>
-                    {
-                        let quote = Ipv6Quote::parse(body.quoted_bytes().ok()?).ok()?;
-                        if quote.source() != ip.destination() {
-                            return None;
-                        }
-                        Datagram::quoted(
-                            quote.source().into(),
-                            quote.destination().into(),
-                            quote.upper_protocol(),
-                            quote.upper_layer()?,
-                        )
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn tcp(
-        source: IpAddr,
-        destination: IpAddr,
-        bytes: &[u8],
-        checksum_valid: bool,
-    ) -> Option<Self> {
-        let packet = if checksum_valid {
-            TcpPacket::parse_header(bytes)
-        } else {
-            TcpPacket::parse(bytes, source, destination)
-        }
-        .ok()?;
-        let header = packet.header();
-        let datagram = Datagram::ports(
-            Protocol::Tcp,
-            (source, header.source_port()),
-            (destination, header.destination_port()),
-        )?;
-        Some(Self::Tcp(datagram, tcp::Segment::capture(packet)?))
-    }
-
-    fn udp(
-        source: IpAddr,
-        destination: IpAddr,
-        bytes: &[u8],
-        checksum_valid: bool,
-    ) -> Option<Self> {
-        let udp = if checksum_valid {
-            UdpPacket::parse_header(bytes, source.is_ipv6())
-        } else {
-            UdpPacket::parse(bytes, source, destination)
-        }
-        .ok()?;
-        Datagram::ports(
-            Protocol::Udp,
-            (source, udp.source_port()),
-            (destination, udp.destination_port()),
-        )
-        .map(Self::Data)
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(super) enum Observation {
@@ -296,6 +39,8 @@ pub(super) enum Observation {
         // 待发包只能刷新原来看到的一代。复用同一 tuple 后旧包不能改写新状态。
         generation: Option<u64>,
         segment: Option<tcp::Segment>,
+        // 候选转换随待发包保存，重试先确认两侧元组仍可用。
+        translation: Option<Datagram>,
     },
     Related {
         key: Key,
@@ -317,22 +62,26 @@ type Deadline = (Instant, u64);
 /// 本次 TX 的候选状态及预留节点。发送失败时直接销毁，排队只保存报文观察。
 pub(super) struct Tracked {
     pub(super) observation: Observation,
+    hash: u64,
     tcp: Option<tcp::State>,
     restart: bool,
     deadline: Option<VacantEntry<Deadline, ()>>,
     identity: Option<VacantEntry<u64, Key>>,
     tcp_storage: Option<Box<tcp::State>>,
+    related: Option<EndpointEdits>,
 }
 
 impl Tracked {
-    fn new(observation: Observation, tcp: Option<tcp::State>, restart: bool) -> Self {
+    fn new(observation: Observation, hash: u64, tcp: Option<tcp::State>, restart: bool) -> Self {
         Self {
             observation,
+            hash,
             tcp,
             restart,
             deadline: None,
             identity: None,
             tcp_storage: None,
+            related: None,
         }
     }
 }
@@ -344,6 +93,28 @@ struct Flow {
     original_reversed: bool,
     replied: bool,
     tcp: Option<Box<tcp::State>>,
+}
+
+/// 连接查询的一次借用投影，不另存连接或 TCP 状态。
+#[derive(Clone, Copy)]
+struct FlowObservation {
+    generation: u64,
+    expires: Instant,
+    original_reversed: bool,
+    replied: bool,
+    tcp: Option<tcp::State>,
+}
+
+impl FlowObservation {
+    fn capture(flow: &Flow) -> Self {
+        Self {
+            generation: flow.generation,
+            expires: flow.expires,
+            original_reversed: flow.original_reversed,
+            replied: flow.replied,
+            tcp: flow.tcp.as_deref().copied(),
+        }
+    }
 }
 
 impl Flow {
@@ -443,7 +214,8 @@ impl Journal {
 }
 
 #[derive(Clone, Copy)]
-struct FlowHash([u8; 16]);
+pub(in crate::inet) struct FlowHash([u8; 16]);
+
 impl BuildHasher for FlowHash {
     type Hasher = SipHasher13;
 
@@ -452,11 +224,68 @@ impl BuildHasher for FlowHash {
     }
 }
 
+/// 网卡队列的只读连接索引。共享的是实际原始连接表，NAT 索引仍归域。
+#[derive(Clone)]
+pub(in crate::inet) struct ReceiveFlows {
+    hash: FlowHash,
+    shards: Option<Arc<FlowShards>>,
+    udp: [bool; 2],
+}
+
+impl ReceiveFlows {
+    pub(in crate::inet) fn probe(
+        &self,
+        packet: device_model::network::ReceivePacket<'_>,
+        separate_worker: bool,
+    ) -> Option<ReceiveFlow> {
+        let (key, hash, bytes) = self.hash.receive(packet)?;
+        let observation = match (separate_worker, key.protocol) {
+            (true, Protocol::Tcp) => match tcp::Segment::prepare(bytes) {
+                Some(segment) => {
+                    let [sequence, control] = segment.words();
+                    [ReceiveFlow::TCP_PARSED, sequence, control]
+                }
+                None => [ReceiveFlow::TCP_INVALID, 0, 0],
+            },
+            (true, Protocol::Udp) if self.udp[usize::from(key.endpoints[0].0.is_ipv6())] => self
+                .shards
+                .as_ref()
+                .and_then(|shards| shards.probe(key, hash))
+                .unwrap_or_default(),
+            _ => [0; 3],
+        };
+        Some(ReceiveFlow { hash, observation })
+    }
+}
+
+/// 绑定于一个原始物理帧的散列及 TCP 头检查结果或 UDP 查找提示。
+#[derive(Clone, Copy)]
+pub(in crate::inet) struct ReceiveFlow {
+    pub(in crate::inet) hash: u64,
+    pub(in crate::inet) observation: [u64; 3],
+}
+
+impl ReceiveFlow {
+    // observation 的含义由同一原始报文的协议决定。UDP 在此位置保存分片版本。
+    const TCP_PARSED: u64 = 1;
+    const TCP_INVALID: u64 = 2;
+
+    fn prepared_tcp(self) -> Option<Option<tcp::Segment>> {
+        match self.observation {
+            [Self::TCP_PARSED, sequence, control] => {
+                Some(Some(tcp::Segment::from_words([sequence, control])))
+            }
+            [Self::TCP_INVALID, 0, 0] => Some(None),
+            _ => None,
+        }
+    }
+}
+
 /// NET guard 下唯一的连接状态。每流一个定时节点；延长只改真实期限，缩短复用原节点换键。
 pub(super) struct Flows {
-    entries: HashMap<Key, Flow, FlowHash>,
-    deadlines: FallibleMap<Deadline, ()>,
+    tables: Tables,
     identities: FallibleMap<u64, Key>,
+    policies: RetainedPolicies,
     epoch: u64,
     generation: u64,
     journal: Option<Journal>,
@@ -468,29 +297,47 @@ impl Flows {
         native_runtime::system::cprng_draw(&mut seed);
         // 游标实例码与哈希密钥使用独立字节，不通过管理接口公开哈希种子。
         let (key, epoch) = seed.split_at(16);
+        let hasher = FlowHash(key.try_into().expect("hash key width"));
         Self {
-            entries: HashMap::with_hasher(FlowHash(key.try_into().expect("hash key width"))),
-            deadlines: FallibleMap::new(),
+            tables: Tables::new(hasher),
             identities: FallibleMap::new(),
+            policies: RetainedPolicies::new(),
             epoch: u64::from_le_bytes(epoch.try_into().expect("epoch width")).max(1),
             generation: 0,
             journal: None,
         }
     }
 
+    pub(super) fn receive_flows(&self) -> ReceiveFlows {
+        ReceiveFlows {
+            hash: self.tables.hasher(),
+            shards: self.tables.shared().cloned(),
+            udp: self.receive_udp(),
+        }
+    }
+
+    pub(super) fn receive_udp(&self) -> [bool; 2] {
+        [false, true].map(|ipv6| self.tables.shared().is_some() && !self.tables.translates(ipv6))
+    }
+
     pub(super) fn observe(
         &self,
         packet: Packet,
+        receive: Option<ReceiveFlow>,
         now: Instant,
-    ) -> Option<(ConnectionState, Tracked)> {
-        match packet {
-            Packet::Data(datagram) => self.track_data(datagram, None, now),
-            Packet::Tcp(datagram, segment) => self.track_data(datagram, Some(segment), now),
+    ) -> Result<Option<(ConnectionState, Tracked)>, ()> {
+        let (datagram, segment) = match packet {
+            Packet::Data(datagram) => (datagram, None),
+            Packet::Tcp(datagram, segment) => (datagram, Some(segment)),
             Packet::Error(datagram, sequence) => {
-                let flow = self
-                    .entries
-                    .get(&datagram.key)
-                    .filter(|flow| flow.expires > now)?;
+                let (datagram, related) = self.quoted_translation(datagram, now)?;
+                let Some(flow) = self
+                    .tables
+                    .flow(datagram.key)
+                    .filter(|flow| flow.expires > now)
+                else {
+                    return Ok(None);
+                };
                 let matches = if let Some(sequence) = sequence {
                     flow.tcp
                         .as_ref()
@@ -498,33 +345,74 @@ impl Flows {
                 } else {
                     flow.replied || flow.original_reversed == datagram.reversed
                 };
-                matches.then(|| {
+                if !matches && related.is_some() {
+                    return Err(());
+                }
+                return Ok(matches.then(|| {
                     let observation = Observation::Related {
                         key: datagram.key,
                         generation: flow.generation,
                     };
-                    (
-                        ConnectionState::Related,
-                        Tracked::new(observation, None, false),
-                    )
-                })
+                    let mut tracked = Tracked::new(
+                        observation,
+                        self.tables.hash_key(observation.key()),
+                        None,
+                        false,
+                    );
+                    tracked.related = related;
+                    (ConnectionState::Related, tracked)
+                }));
+            }
+        };
+        if !trackable_addresses(datagram.key.endpoints[0].0, datagram.key.endpoints[1].0) {
+            return Ok(None);
+        }
+        let receive =
+            receive.filter(|_| matches!(datagram.key.protocol, Protocol::Tcp | Protocol::Udp));
+        debug_assert!(
+            receive.is_none_or(|receive| receive.hash == self.tables.hash_key(datagram.key))
+        );
+        let hash = receive.map_or_else(
+            || self.tables.hash_key(datagram.key),
+            |receive| receive.hash,
+        );
+        // 线上别名及其发布由域协调，存在同族转换时必须先按线上键查实际别名。
+        if datagram.key.protocol == Protocol::Udp
+            && !self
+                .tables
+                .translates(datagram.key.endpoints[0].0.is_ipv6())
+            && let Some(flow) = receive
+                .and_then(|receive| self.tables.validate_probe(hash, receive.observation, now))
+        {
+            return Ok(Self::track_data(datagram, hash, flow, None, now));
+        }
+        let (datagram, hash, lookup) = self.original_datagram(datagram, hash, now)?;
+        let observation = Self::track_data(datagram, hash, lookup.flow, segment, now);
+        if lookup.outgoing.is_some() {
+            let Some((_, tracked)) = &observation else {
+                return Err(());
+            };
+            // 反方向上的新 SYN 不能把已绑定的转换改成另一首发方向。
+            if tracked.restart
+                && datagram.reversed != lookup.flow.expect("indexed flow").original_reversed
+            {
+                return Err(());
             }
         }
+        Ok(observation)
     }
 
     fn track_data(
-        &self,
         datagram: Datagram,
+        hash: u64,
+        flow: Option<FlowObservation>,
         segment: Option<tcp::Segment>,
         now: Instant,
     ) -> Option<(ConnectionState, Tracked)> {
-        let flow = self
-            .entries
-            .get(&datagram.key)
-            .filter(|flow| flow.expires > now);
+        let flow = flow.filter(|flow| flow.expires > now);
         let direction = usize::from(datagram.reversed);
         let (tcp, restart) = if let Some(segment) = segment {
-            match flow.and_then(|flow| flow.tcp.as_deref()) {
+            match flow.and_then(|flow| flow.tcp) {
                 Some(state) if !state.may_restart(segment, direction) => {
                     (Some(state.advance(segment, direction)?), false)
                 }
@@ -549,7 +437,9 @@ impl Flows {
                     datagram,
                     segment,
                     generation: flow.map(|flow| flow.generation),
+                    translation: None,
                 },
+                hash,
                 tcp,
                 restart,
             ),
@@ -561,16 +451,41 @@ impl Flows {
         let Observation::Data {
             datagram,
             generation,
+            translation,
             ..
         } = tracked.observation
         else {
             return Some(tracked);
         };
-        if generation.is_none() && !self.entries.contains_key(&datagram.key) {
-            if self.entries.len() >= CAPACITY {
+        if self
+            .tables
+            .hashed_incoming(datagram.key, tracked.hash)
+            .is_some()
+        {
+            return None;
+        }
+        let current = if generation.is_none() || tracked.restart {
+            self.tables.hashed_flow(datagram.key, tracked.hash)
+        } else {
+            None
+        };
+        if generation.is_none() || tracked.restart {
+            if current.is_some_and(|flow| flow.expires > now) && !tracked.restart {
+                if self.tables.hashed_outgoing(datagram.key, tracked.hash) != translation {
+                    return None;
+                }
+            } else if let Some(wire) = translation {
+                if !self.wire_available(datagram.key, wire.key) {
+                    return None;
+                }
+                self.tables.reserve_translation(datagram.key, wire.key)?;
+            }
+        }
+        if generation.is_none() && current.is_none() {
+            if self.identities.len() >= CAPACITY {
                 return None;
             }
-            self.entries.try_reserve(1).ok()?;
+            self.tables.reserve_flow(tracked.hash)?;
             tracked.deadline = Some(FallibleMap::try_prepare((now, 0), ()).ok()?);
             tracked.identity = Some(FallibleMap::try_prepare(0, datagram.key).ok()?);
             if let Some(tcp) = tracked.tcp {
@@ -581,15 +496,19 @@ impl Flows {
     }
 
     pub(super) fn retry(&mut self, observation: Observation, now: Instant) -> Option<Tracked> {
+        let hash = self.tables.hash_key(observation.key());
         let tracked = match observation {
             Observation::Data {
                 datagram,
                 generation,
                 segment: Some(segment),
+                translation,
             } => {
-                let (_, tracked) = self.track_data(datagram, Some(segment), now)?;
+                let flow = self.tables.hashed_flow(datagram.key, hash);
+                let (_, mut tracked) = Self::track_data(datagram, hash, flow, Some(segment), now)?;
                 let Observation::Data {
                     generation: current,
+                    translation: ref mut pending,
                     ..
                 } = tracked.observation
                 else {
@@ -598,6 +517,13 @@ impl Flows {
                 if generation != current && (generation.is_some() || tracked.restart) {
                     return None;
                 }
+                if generation.is_none()
+                    && current.is_some()
+                    && self.tables.hashed_outgoing(datagram.key, hash) != translation
+                {
+                    return None;
+                }
+                *pending = translation;
                 tracked
             }
             _ => {
@@ -607,13 +533,13 @@ impl Flows {
                 };
                 // 到期或被清除的流不能授权已经等待出口的回包或关联错误。
                 if generation.is_some_and(|id| {
-                    self.entries
-                        .get(&observation.key())
+                    self.tables
+                        .hashed_flow(observation.key(), hash)
                         .is_none_or(|flow| flow.generation != id || flow.expires <= now)
                 }) {
                     return None;
                 }
-                Tracked::new(observation, None, false)
+                Tracked::new(observation, hash, None, false)
             }
         };
         self.reserve(tracked, now)
@@ -624,6 +550,7 @@ impl Flows {
             datagram,
             generation,
             segment,
+            translation,
         } = tracked.observation
         else {
             return;
@@ -641,68 +568,93 @@ impl Flows {
                 tcp::State::idle,
             )
         };
-        if let Some(flow) = self.entries.get_mut(&key) {
-            let previous_id = flow.generation;
-            // 没有回包的原方向 SYN 重传不延长半开期限。
-            if generation == Some(flow.generation)
-                && flow.original_reversed == datagram.reversed
-                && !tracked.restart
-                && segment.is_some_and(|segment| {
-                    flow.tcp
-                        .as_ref()
-                        .is_some_and(|tcp| tcp.awaits_reply(segment))
-                })
-            {
-                return;
-            }
-            let previous_phase = self.journal.as_ref().map(|_| flow.phase());
-            if flow.expires > now
-                && generation.is_none_or(|generation| generation == flow.generation)
-            {
-                if tracked.restart {
+        let edited = if tracked.deadline.is_some() {
+            None
+        } else {
+            self.tables.edit_flow(key, tracked.hash, |slot, flow| {
+                let previous_id = flow.generation;
+                // 没有回包的原方向 SYN 重传不延长半开期限。
+                if generation == Some(flow.generation)
+                    && flow.original_reversed == datagram.reversed
+                    && !tracked.restart
+                    && segment.is_some_and(|segment| {
+                        flow.tcp
+                            .as_ref()
+                            .is_some_and(|tcp| tcp.awaits_reply(segment))
+                    })
+                {
+                    return None;
+                }
+                let previous_phase = self.journal.as_ref().map(|_| flow.phase());
+                if flow.expires > now
+                    && generation.is_none_or(|generation| generation == flow.generation)
+                {
+                    if tracked.restart {
+                        self.generation += 1;
+                        flow.generation = self.generation;
+                        flow.original_reversed = datagram.reversed;
+                        flow.replied = false;
+                    } else {
+                        flow.replied |= flow.original_reversed != datagram.reversed;
+                    }
+                } else if flow.expires <= now && generation.is_none() {
                     self.generation += 1;
                     flow.generation = self.generation;
                     flow.original_reversed = datagram.reversed;
                     flow.replied = false;
                 } else {
-                    flow.replied |= flow.original_reversed != datagram.reversed;
+                    return None;
                 }
-            } else if flow.expires <= now && generation.is_none() {
-                self.generation += 1;
-                flow.generation = self.generation;
-                flow.original_reversed = datagram.reversed;
-                flow.replied = false;
-            } else {
+                if let Some(tcp) = tracked.tcp {
+                    **flow.tcp.as_mut().expect("TCP flow storage") = tcp;
+                }
+                flow.expires = now + idle(flow.replied);
+                let reschedule = if flow.expires < flow.scheduled || flow.generation != previous_id
+                {
+                    let previous = (flow.scheduled, previous_id);
+                    flow.scheduled = flow.expires;
+                    Some((previous, (flow.scheduled, flow.generation)))
+                } else {
+                    None
+                };
+                let replaced = flow.generation != previous_id;
+                let change = self.journal.as_ref().and_then(|_| {
+                    if replaced {
+                        Some(Change::Added(flow.record(key, now)))
+                    } else if previous_phase != Some(flow.phase()) {
+                        Some(Change::Updated(flow.record(key, now)))
+                    } else {
+                        None
+                    }
+                });
+                Some((slot, previous_id, flow.generation, reschedule, change))
+            })
+        };
+        if let Some(edited) = edited {
+            let Some((slot, previous_id, generation, reschedule, change)) = edited else {
                 return;
-            }
-            if let Some(tcp) = tracked.tcp {
-                **flow.tcp.as_mut().expect("TCP flow storage") = tcp;
-            }
-            flow.expires = now + idle(flow.replied);
-            if flow.generation != previous_id {
+            };
+            let replaced = generation != previous_id;
+            if replaced {
                 let mut identity = self
                     .identities
                     .take_entry(&previous_id)
                     .expect("indexed flow");
-                identity.set_key(flow.generation);
+                identity.set_key(generation);
                 self.identities.commit_vacant(identity);
             }
-            if flow.expires < flow.scheduled || flow.generation != previous_id {
-                let mut deadline = self
-                    .deadlines
-                    .take_entry(&(flow.scheduled, previous_id))
-                    .expect("scheduled flow");
-                flow.scheduled = flow.expires;
-                deadline.set_key((flow.scheduled, flow.generation));
-                self.deadlines.commit_vacant(deadline);
+            if let Some((previous, deadline)) = reschedule {
+                self.tables.reschedule(slot, previous, deadline);
             }
-            if let Some(journal) = &mut self.journal {
-                if flow.generation != previous_id {
+            if replaced {
+                self.tables.replace_translation(key, translation);
+                self.retire_policy(previous_id);
+            }
+            if let Some((journal, change)) = self.journal.as_mut().zip(change) {
+                if replaced {
                     journal.publish(Change::Removed(previous_id));
-                    journal.publish(Change::Added(flow.record(key, now)));
-                } else if previous_phase != Some(flow.phase()) {
-                    journal.publish(Change::Updated(flow.record(key, now)));
                 }
+                journal.publish(change);
             }
         } else if let Some(mut deadline) = tracked.deadline {
             self.generation += 1;
@@ -716,12 +668,15 @@ impl Flows {
                 tcp: tracked.tcp_storage,
             };
             let added = self.journal.as_ref().map(|_| flow.record(key, now));
-            self.entries.insert(key, flow);
+            if let Some(wire) = translation {
+                self.tables.install_translation(key, wire);
+            }
+            let slot = self.tables.insert_flow(key, tracked.hash, flow);
             let mut identity = tracked.identity.expect("reserved flow identity");
             identity.set_key(self.generation);
             self.identities.commit_vacant(identity);
             deadline.set_key((expires, self.generation));
-            self.deadlines.commit_vacant(deadline);
+            self.tables.schedule(slot, deadline);
             if let Some((journal, added)) = self.journal.as_mut().zip(added) {
                 journal.publish(Change::Added(added));
             }
@@ -749,11 +704,16 @@ impl Flows {
         // 大量到期项尚在分批退休时也限制锁内工作；空页仍可推进游标。
         for (id, key) in positions.by_ref().take(connections::PAGE_LIMIT * 4) {
             last = *id;
-            let flow = &self.entries[key];
-            if flow.expires <= now {
+            let row = self
+                .tables
+                .with_flow(*key, |flow| {
+                    (flow.expires > now).then(|| flow.record(*key, now))
+                })
+                .expect("indexed flow");
+            let Some(row) = row else {
                 continue;
-            }
-            page.rows.push(flow.record(*key, now));
+            };
+            page.rows.push(row);
             if page.rows.len() == connections::PAGE_LIMIT {
                 break;
             }
@@ -790,9 +750,11 @@ impl Flows {
     }
 
     pub(super) fn due(&self, now: Instant) -> bool {
-        self.deadlines
-            .first_key_value()
-            .is_some_and(|((deadline, _), ())| *deadline <= now)
+        self.next_deadline().is_some_and(|at| at <= now)
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.tables.next_deadline()
     }
 
     pub(super) fn clear(
@@ -807,48 +769,76 @@ impl Flows {
             .identities
             .get(&identity.id)
             .ok_or(native_abi::ERR_NOT_FOUND)?;
-        let flow = &self.entries[&key];
-        if flow.expires <= now {
+        let (expires, scheduled) = self
+            .tables
+            .with_flow(key, |flow| (flow.expires, flow.scheduled))
+            .expect("indexed flow");
+        if expires <= now {
             return Err(native_abi::ERR_NOT_FOUND);
         }
-        self.remove_record(key, (flow.scheduled, identity.id));
+        self.remove_record(key, (scheduled, identity.id));
         Ok(key)
     }
 
     fn remove_record(&mut self, key: Key, deadline: Deadline) {
-        self.deadlines.remove(&deadline);
+        self.tables.unschedule(key, deadline);
         self.identities.remove(&deadline.1);
-        self.entries.remove(&key);
-        if self.entries.is_empty() {
-            self.entries = HashMap::with_hasher(*self.entries.hasher());
+        self.retire_policy(deadline.1);
+        self.tables.remove_flow(key);
+        if self.identities.is_empty() {
+            self.tables.reset_empty();
         }
         if let Some(journal) = &mut self.journal {
             journal.publish(Change::Removed(deadline.1));
         }
     }
 
-    pub(super) fn retire(&mut self, now: Instant) -> bool {
-        for _ in 0..RETIRE_BATCH {
-            let Some((&(deadline, id), ())) = self.deadlines.first_key_value() else {
+    /// 旧 TCP 已关闭，新 SYN 交回本机时释放原转发身份和转换。
+    pub(super) fn retire_local_restart(&mut self, tracked: &Tracked) {
+        if tracked.restart {
+            let key = tracked.observation.key();
+            let deadline = self
+                .tables
+                .with_flow(key, |flow| (flow.scheduled, flow.generation))
+                .expect("indexed flow");
+            self.remove_record(key, deadline);
+        }
+    }
+
+    pub(super) fn retire(&mut self, now: Instant, work_until: u64) -> bool {
+        let mut remaining = RETIRE_BATCH;
+        while remaining != 0 {
+            let Some(slot) = self.tables.next_ready_shard(now) else {
                 return false;
             };
-            if deadline > now {
-                return false;
-            }
-            let key = *self.identities.get(&id).expect("indexed flow");
-            let flow = self.entries.get_mut(&key).expect("scheduled flow");
-            if flow.expires > now {
-                let mut node = self
-                    .deadlines
-                    .take_entry(&(deadline, id))
-                    .expect("due flow deadline");
-                flow.scheduled = flow.expires;
-                node.set_key((flow.scheduled, id));
-                self.deadlines.commit_vacant(node);
-            } else {
-                self.remove_record(key, (deadline, id));
-                if self.entries.is_empty() {
-                    return false;
+            while remaining != 0 {
+                let Some(deadline @ (_, id)) = self.tables.due_in_shard(slot, now) else {
+                    break;
+                };
+                remaining -= 1;
+                let key = *self.identities.get(&id).expect("indexed flow");
+                let hash = self.tables.hash_key(key);
+                let refreshed = self
+                    .tables
+                    .edit_flow(key, hash, |owner, flow| {
+                        debug_assert_eq!(slot, owner);
+                        if flow.expires <= now {
+                            return None;
+                        }
+                        flow.scheduled = flow.expires;
+                        Some((flow.scheduled, id))
+                    })
+                    .expect("scheduled flow");
+                if let Some(next) = refreshed {
+                    self.tables.reschedule(slot, deadline, next);
+                } else {
+                    self.remove_record(key, deadline);
+                }
+                if remaining.is_multiple_of(RETIRE_CLOCK_INTERVAL)
+                    && work_until != u64::MAX
+                    && crate::time::get_time_us() >= work_until
+                {
+                    return self.due(now);
                 }
             }
         }

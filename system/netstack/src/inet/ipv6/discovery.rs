@@ -87,16 +87,25 @@ impl Discovery {
         }
     }
 
-    pub(super) fn due(&self, now: u64) -> bool {
-        self.dns.due(now)
-            || self.gateway_routes.iter().any(|route| route.expires <= now)
-            || self.prefixes.iter().any(|prefix| prefix.expires <= now)
-            || self.addresses.iter().any(|row| {
-                row.valid_until <= now || row.address.preferred() && row.preferred_until <= now
-            })
-            || self.solicitation.is_some_and(|(at, remaining)| {
-                remaining != 0 && at.deadline().is_some_and(|at| at <= now)
-            })
+    pub(super) fn next_deadline(&self) -> Option<u64> {
+        self.dns
+            .next_deadline()
+            .into_iter()
+            .chain(self.gateway_routes.iter().map(|route| route.expires))
+            .chain(self.prefixes.iter().map(|prefix| prefix.expires))
+            .chain(self.addresses.iter().map(|row| {
+                if row.address.preferred() {
+                    row.valid_until.min(row.preferred_until)
+                } else {
+                    row.valid_until
+                }
+            }))
+            .chain(
+                self.solicitation
+                    .filter(|&(_, remaining)| remaining != 0)
+                    .and_then(|(at, _)| at.deadline()),
+            )
+            .min()
     }
 
     pub(super) fn expire(&mut self, now: u64) -> bool {

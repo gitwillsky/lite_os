@@ -780,7 +780,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_RESOLVD_SINGLE_51",
-                    # resolvd 经 /dev/network-status 读取 router-config 的设置：删除 resolv.conf 并结束它，init 重启的
+                    # resolvd 经 router-api 读取 router-config 的设置：删除 resolv.conf 并结束它，init 重启的
                     # 新实例必须重新写出 DHCP 租约中的 DNS（端点授权、init 监督与 router-config 快照一起被覆盖）。
                     ShellCommand(b"old=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); /bin/rm -f /etc/resolv.conf; /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf 2>/dev/null; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_RESOLVD_RESPAWN_$((7*7+2))\n"),
                 ),
@@ -790,6 +790,15 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_PING_52",
+                    # 必须见到实际应答行；仅检查退出码会把整条路径超时也当作通过。
+                    ShellCommand(
+                        b"/bin/traceroute -4 -n -m 1 -q 1 -w 1 127.0.0.1 | /bin/grep -Eq '^ *1 +127[.]0[.]0[.]1 +[0-9].* ms' && "
+                        b"/bin/traceroute -6 -n -m 1 -q 1 -w 1 ::1 | /bin/grep -Eq '^ *1 +::1 +[0-9].* ms' && "
+                        b"echo LITEOS_TRACEROUTE_$((7*7+4))\n"
+                    ),
+                ),
+                (
+                    "LITEOS_TRACEROUTE_53",
                     ShellCommand(b"/bin/dynamic-smoke resolve example.com\n"),
                 ),
                 (

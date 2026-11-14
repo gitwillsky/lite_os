@@ -1,8 +1,8 @@
 //! resolvd：把原生 router_config 正在生效的 DNS 写入 Linux 的 `/etc/resolv.conf`（init 监督，root 运行）。
 //!
-//! 1. 经 `/dev/network-status` 取设置快照，按接口顺序收集 DNS（去重，至多 3 个，与 musl 的 `MAXNS` 一致）；
+//! 1. 经 router-api 取设置快照，按接口顺序收集 DNS（去重，至多 3 个，与 musl 的 `MAXNS` 一致）；
 //! 2. 内容变化时以“同目录临时文件 → fsync → rename”原子替换，读者只会看到完整的旧内容或新内容；
-//! 3. 经 `/dev/network-settings` 阻塞等待设置代际变化后重复；端点暂不可用（router_config 或 linuxd 正在重启）时退避重试。
+//! 3. 等待设置代际变化后重复；管理网关或原生设置服务暂不可用时退避重试。
 use std::{
     fs,
     io::{self, Write},
@@ -25,7 +25,11 @@ fn render(snapshot: &network_config::Snapshot) -> String {
     for server in snapshot.nameservers().into_iter().take(MUSL_MAXNS) {
         match server {
             std::net::SocketAddr::V6(server) if server.scope_id() != 0 => {
-                text.push_str(&format!("nameserver {}%{}\n", server.ip(), server.scope_id()));
+                text.push_str(&format!(
+                    "nameserver {}%{}\n",
+                    server.ip(),
+                    server.scope_id()
+                ));
             }
             _ => text.push_str(&format!("nameserver {}\n", server.ip())),
         }
@@ -70,16 +74,15 @@ fn store(text: &str) -> io::Result<()> {
 }
 
 fn main() {
-    let mut generation = 0;
     loop {
         let result = network_config::snapshot().and_then(|snapshot| {
             store(&render(&snapshot))?;
             network_config::wait(snapshot.generation)
         });
         match result {
-            Ok(next) => generation = next,
+            Ok(_) => {}
             Err(error) => {
-                eprintln!("resolvd: {error} (generation {generation})");
+                eprintln!("resolvd: {error}");
                 thread::sleep(RETRY);
             }
         }

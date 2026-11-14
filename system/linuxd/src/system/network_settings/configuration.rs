@@ -76,8 +76,29 @@ pub(super) fn forward(
     let mut response = service_rpc::call(channel, &request, handles)?;
     let mut reader = response.reader();
     let header = reader.bytes()?.to_vec();
-    reader.finish()?;
     let metadata = Reply::decode(operation, &header).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    if operation == ordinal::OPEN_NETWORK_NAMESPACE {
+        let instance = core::num::NonZeroU128::new(u128::from_le_bytes(
+            reader
+                .bytes()?
+                .try_into()
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+        ))
+        .ok_or(native_abi::ERR_INVALID_ARGS)?;
+        reader.finish()?;
+        if response.handles.len() != 1 {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let network = network_protocol::RemoteNamespace::from_channel(Channel::from_handle(
+            service_rpc::take_handle(&mut response.handles, 0)?,
+        ));
+        let namespace = crate::net::NetNamespace::adopt_managed(instance, network)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let reference = crate::namespace::NamespaceReference::new(namespace);
+        let file = OpenFileDescription::open_namespace(reference).map_err(filesystem_status)?;
+        return Ok((header, Some(single_file(file)?)));
+    }
+    reader.finish()?;
     if response.handles.len() != usize::from(Reply::has_document(operation)) {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
@@ -107,18 +128,17 @@ pub(super) fn forward(
         .prepare_named(opened, O_RDONLY)
         .map_err(filesystem_status)?;
     let file = prepared.finish(InodeOpen::Storage(None));
+    Ok((header, Some(single_file(file)?)))
+}
+
+fn single_file(file: Arc<OpenFileDescription>) -> Result<UnixRights, Status> {
     let mut files: Vec<Arc<dyn UnixPassedFile>> = Vec::new();
     files
         .try_reserve_exact(1)
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     files.push(file);
-    Ok((
-        header,
-        Some(
-            UnixRights::new(files, 0, None).map_err(|error| match error {
-                crate::net::SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-                _ => native_abi::ERR_INVALID_ARGS,
-            })?,
-        ),
-    ))
+    UnixRights::new(files, 0, None).map_err(|error| match error {
+        crate::net::SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+        _ => native_abi::ERR_INVALID_ARGS,
+    })
 }

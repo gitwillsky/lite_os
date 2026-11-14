@@ -62,18 +62,18 @@
 
 ## CPU 分区
 
-- `THREAD_SET_ISOLATION` 需 system::SCHEDULE resource 与线程 MANAGE，只接受已启动执行体。
-  一个 worker 独占一个 active 逻辑 CPU，至少保留一个共享 active CPU；None 归还并恢复全 possible 集合的普通 affinity。
+- `THREAD_SET_ISOLATION` 需 system::SCHEDULE resource 与各线程 MANAGE，只接受已启动执行体。
+  一次提交线程与目标逻辑 CPU 的列表，线程和目标 CPU 各自唯一，至少保留一个共享 active CPU。归还条目恢复全 possible 集合的普通 affinity。
   普通 affinity 不能创建独占凭据、修改独占线程或绕过分区；预设 affinity 不预留 CPU，start 重新接纳，冲突返回 NO_RESOURCES。
 - `processor::isolation` 在唯一 CPU 配置锁内串行化 affinity、CBS、分区及退出归还。
-  分区预检所有存活执行体的 requested affinity，拒绝导致其他普通线程无核可用或使既有 CBS 承诺迁移的请求；移动独占核前先撤销预算。
+  整批预检线程状态、CPU 归属、所有存活执行体的 requested affinity 及 CBS 承诺，准入失败保留上一份配置。同批可交换 CPU 归属，移动独占核前先撤销冲突的预算。
   每核 owner 是租约权威，shared_cpus 是该事务一次发表的调度投影；选核用一代集合快照，实际 Ready→Running 再验证。
   动态分区可使已发表 Ready 条目失效，沿既有 generation/负载 token 迁移，不把线程 affinity 暗改为其他 CPU。
 - ThreadSlot 同时准备弱索引容量；登记/移除不分配，弱索引不保活线程。配置预检在锁外准备强引用快照容量，
   取得配置锁后复核并复制；所有引用在配置锁之外析构，不能把栈/地址空间退休与远端 TLB 等待带入配置锁。
-  锁序 CPU 配置 → 短索引锁（复制后释放）→ state；容量增长沿 admission → 短索引锁，不反向取得配置锁。
+  锁序 CPU 配置 → 短索引锁（复制后释放）→ state；容量增长沿 admission → 短索引锁，不反向取得配置锁。发表时在本地 IRQ guard 内锁住受影响的线程状态，避免受影响的线程在两代配置之间被分派。
 - 接纳不等于撤离完成：新租约唯一 epoch 晚于分区发表；目标 CPU 只在 outgoing context 保存后的 handoff/idle 安全点确认，
-  取消切换的 resume 路径重新观察分区，避免清除并发隔离请求。调用者在全部锁释放后 yield 等待该 epoch，不能复用同一 worker 上次的确认。
+  取消切换的 resume 路径重新观察分区，避免清除并发隔离请求。调用者释放锁、通知所有目标 CPU 后，yield 等待各 epoch；目标线程退出或归属被后续请求替换时返回 BAD_STATE。
   线程退出立即归还核，句柄与旧队列 Arc 不延长租约。CPU 隔离只排除普通执行体，不屏蔽设备 IRQ/必要的内核中断；IRQ 路由独立授权配置。
 - Benchmark 决策：分派增加一次机器字 Acquire/位测试，选核每轮只取一份快照；无新增热路径分配或全局锁。
   弱索引随线程高水位复用，配置快照为 O(线程数) 临时存储。现有 scheduler-unit 增补硬 affinity/独占授权过滤回归；

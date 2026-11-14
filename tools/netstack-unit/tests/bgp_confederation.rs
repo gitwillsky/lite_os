@@ -38,6 +38,8 @@ fn config(kind: PeerKind) -> Config {
         ipv4_unicast: true,
         ipv6_unicast: false,
         route_refresh: true,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     }
 }
@@ -75,8 +77,7 @@ fn message(path: &[(SegmentKind, &[u32])], extra: &[Attribute<'_>]) -> Vec<u8> {
 }
 fn domain(local: u32, kind: PeerKind) -> RoutingDomain {
     let mut domain = RoutingDomain::try_new(
-        SelectionContext::new(local, config(kind).identifier, None, Some(PUBLIC)).unwrap(),
-    )
+        SelectionContext::new(local, config(kind).identifier, None, Some(PUBLIC)).unwrap(), [false; 2])
     .unwrap();
     domain
         .add_peer(
@@ -96,7 +97,7 @@ fn choose(domain: &mut RoutingDomain) {
         rules: vec![],
     };
     domain
-        .prepare(Family::Ipv4, |prefix, peer, route| {
+        .prepare(Family::Ipv4, |prefix, peer, _, route| {
             let decision = import_route(Some(&policy), prefix, peer, route).unwrap();
             Ok((
                 decision.next_hop,
@@ -143,7 +144,7 @@ fn export(
     outgoing: &mut AdjRibOut,
     context: ExportContext,
 ) -> Option<Vec<u8>> {
-    outgoing.changed(prefix(), 0).unwrap();
+    outgoing.changed(domain, prefix(), 0).unwrap();
     outgoing
         .prepare(
             domain,
@@ -287,7 +288,7 @@ fn trusted_member_boundaries_control_acceptance_attributes_and_treat_as_withdraw
             assert!(
                 received
                     .changes()
-                    .all(|change| change == bgp::Change::Withdraw(prefix()))
+                    .all(|change| change == bgp::Change::Withdraw(prefix(), None))
             );
         } else {
             assert_eq!(received.handling(), Handling::Accept);
@@ -297,7 +298,7 @@ fn trusted_member_boundaries_control_acceptance_attributes_and_treat_as_withdraw
             );
             let mut domain = domain(LOCAL, kind);
             domain.receive(1, &received).unwrap();
-            let route = domain.peer_routes(1).unwrap().get(prefix()).unwrap();
+            let route = domain.peer_routes(1).unwrap().get(prefix(), None).unwrap();
             let policy = router_protocol::bgp::ImportPolicy {
                 default: Disposition::Permit,
                 preference: 100,
@@ -359,7 +360,7 @@ fn publication_preserves_member_attributes_and_sanitizes_external_identity() {
         PeerKind::External,
     ] {
         let context = target(kind, AsnWidth::Four);
-        let sent = export(&mut domain, &mut AdjRibOut::new(), context).unwrap();
+        let sent = export(&mut domain, &mut AdjRibOut::default(), context).unwrap();
         let expected = match kind {
             PeerKind::Internal => vec![(Confed, vec![REMOTE]), (Seq, vec![65002, 64500])],
             PeerKind::Confederation => {
@@ -395,6 +396,35 @@ fn publication_preserves_member_attributes_and_sanitizes_external_identity() {
             Handling::Accept
         );
     }
+    let configured = Configuration::parse(br#"{
+        "local_as":65000,"identifier":"192.0.2.1",
+        "confederation":{"identifier":64496,"members":[65001,65002]},
+        "neighbors":{"member":{
+            "address":"192.0.2.3","asn":65002,"preference":20,
+            "hold_seconds":90,"retry_seconds":5,"passive":true,
+            "export":{"default":"deny","rules":[{"action":{"kind":"permit","as_path_prepend":[64496]}}]}
+        }}
+    }"#).unwrap();
+    let context = target(PeerKind::Confederation, AsnWidth::Four);
+    let mut outgoing = AdjRibOut::default();
+    export(&mut domain, &mut outgoing, context).unwrap();
+    outgoing.sent(0);
+    outgoing.changed(&domain, prefix(), 1).unwrap();
+    let policy = configured
+        .neighbors
+        .values()
+        .next()
+        .unwrap()
+        .export
+        .as_ref();
+    let withdrawn = outgoing
+        .prepare(&mut domain, policy, context, 1)
+        .unwrap()
+        .unwrap();
+    let withdrawn = Update::parse(&withdrawn[19..]).unwrap();
+    assert_eq!(withdrawn.withdrawn().unwrap().prefixes().count(), 1);
+    assert_eq!(withdrawn.announced().unwrap().prefixes().count(), 0);
+
     // 同类段不足 255 项时原段前置；达到上限时新开段，不能发出零长度或溢出的段。
     for count in [254, 255, 256] {
         let members = vec![REMOTE; count];
@@ -403,7 +433,7 @@ fn publication_preserves_member_attributes_and_sanitizes_external_identity() {
         choose(&mut domain);
         let sent = export(
             &mut domain,
-            &mut AdjRibOut::new(),
+            &mut AdjRibOut::default(),
             target(PeerKind::Confederation, AsnWidth::Four),
         )
         .unwrap();
@@ -460,7 +490,7 @@ fn well_known_communities_respect_member_and_confederation_boundaries() {
             assert_eq!(
                 export(
                     &mut domain,
-                    &mut AdjRibOut::new(),
+                    &mut AdjRibOut::default(),
                     target(kind, AsnWidth::Four)
                 )
                 .is_some(),
@@ -477,7 +507,7 @@ fn unmappable_confederation_withdraws_only_the_old_peer_and_does_not_leak_privat
     let initial = message(&[(Confed, &[REMOTE]), (Seq, &[64500])], &[]);
     domain.receive(1, &receive(&mut session, &initial)).unwrap();
     choose(&mut domain);
-    let mut outgoing = AdjRibOut::new();
+    let mut outgoing = AdjRibOut::default();
     let old = target(PeerKind::Confederation, AsnWidth::Two);
     assert!(export(&mut domain, &mut outgoing, old).is_some());
     outgoing.sent(0);
@@ -502,7 +532,7 @@ fn unmappable_confederation_withdraws_only_the_old_peer_and_does_not_leak_privat
     assert!(outgoing.is_empty());
     let external = export(
         &mut domain,
-        &mut AdjRibOut::new(),
+        &mut AdjRibOut::default(),
         target(PeerKind::External, AsnWidth::Two),
     )
     .unwrap();
@@ -556,10 +586,11 @@ fn member_loops_use_confederation_segments_and_internal_routes_compete_on_igp_co
         );
         let mut domain = domain(LOCAL, PeerKind::Internal);
         domain.receive(1, &receive(&mut session, &bytes)).unwrap();
-        let route = domain.peer_routes(1).unwrap().get(prefix()).unwrap();
+        let route = domain.peer_routes(1).unwrap().get(prefix(), None).unwrap();
         let internal = peer(PeerKind::Internal);
         let member = peer(PeerKind::Confederation);
         let candidate = |peer, cost| Candidate {
+            path_id: None,
             peer,
             attributes: route.attributes(),
             received_path: route.attributes().path(),
@@ -601,6 +632,7 @@ fn member_loops_use_confederation_segments_and_internal_routes_compete_on_igp_co
                 )
                 .unwrap();
             let edited = Candidate {
+                path_id: None,
                 peer: &internal,
                 attributes: &projected,
                 received_path: original.path(),

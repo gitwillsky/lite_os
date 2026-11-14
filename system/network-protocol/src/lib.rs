@@ -16,6 +16,7 @@
 
 extern crate alloc;
 pub mod bgp;
+pub mod ospf;
 
 mod address;
 use address::{
@@ -30,13 +31,15 @@ mod socket_io;
 pub use server_queue::SocketQueue;
 mod options;
 mod packet;
-pub use packet::{PacketSocketService, dispatch_packet};
+pub use packet::{CaptureRing, FrameRingLayout, PacketSocketService, dispatch_packet};
 mod types;
-pub use options::{IcmpFilterUpdate, InetOptionChange, TCP_MD5_MAX_KEY_BYTES, TcpMd5Selector};
+pub use options::{
+    IcmpFilterUpdate, InetOptionChange, TCP_AO_MAX_KEY_BYTES, TCP_MD5_MAX_KEY_BYTES,
+    TcpAoAlgorithm, TcpAoCounters, TcpAoKey, TcpAoSelection, TcpAoStatus, TcpKeySelector,
+};
 use options::{get_option_change, put_option_change};
 
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::net::Ipv4Addr;
 
 use native_runtime::native_abi::{self, Status};
@@ -67,7 +70,8 @@ mod configuration;
 pub mod routes;
 pub mod routing;
 pub use configuration::{
-    ConfigurationService, ExecutionPolicy, Forwarding, PreparedConfiguration, dispatch_configuration,
+    ConfigurationService, ExecutionPolicy, Forwarding, PreparedConfiguration,
+    dispatch_configuration,
 };
 use routes::{get_route, put_route};
 
@@ -106,31 +110,14 @@ mod ordinal {
     pub(super) const QUEUE: u32 = 19;
     pub(super) const MD5_KEY: u32 = 20;
     pub(super) const ICMP_FILTER: u32 = 21;
-}
-
-/// 新建 socket 的两端：服务端持 channel 对端与 Event 原件，使用者持这里的 channel 与 Event 副本。
-pub struct SocketEndpoint {
-    pub channel: Channel,
-    pub readiness: Event,
+    pub(super) const AO_KEY: u32 = 22;
+    pub(super) const AO_STATUS: u32 = 23;
 }
 
 mod inet;
-pub use inet::{InetSocketService, dispatch_inet};
+pub use inet::{InetSocketService, TcpInformation, TcpPhase, dispatch_inet};
 
 // ---- 线编码 ----
-
-fn put_option_u32(writer: &mut Writer, value: Option<u32>) {
-    writer.bool(value.is_some()).u32(value.unwrap_or(0));
-}
-
-fn get_option_u32(reader: &mut Reader<'_>) -> Result<Option<u32>, Status> {
-    let present = reader.bool()?;
-    let value = reader.u32()?;
-    if !present && value != 0 {
-        return Err(native_abi::ERR_INVALID_ARGS);
-    }
-    Ok(present.then_some(value))
-}
 
 fn fixed<const N: usize>(reader: &mut Reader<'_>) -> Result<[u8; N], Status> {
     reader

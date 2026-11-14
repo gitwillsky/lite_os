@@ -9,6 +9,7 @@ router-protocol = { path = "../router-protocol" }
 native-runtime = { path = "../native-runtime" }
 service-rpc = { path = "../service-rpc" }
 device-model = { path = "../device-model" }
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 
 [lints]
 workspace = true

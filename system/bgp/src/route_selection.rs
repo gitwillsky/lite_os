@@ -13,6 +13,7 @@ use router_protocol::{bgp::Neighbor, tracking::installation::Outcome};
 struct Classified<'a> {
     prefix: Prefix,
     peer: u64,
+    path_id: Option<u32>,
     decision: ImportDecision<'a>,
     attributes: RouteAttributes,
     resolve_via_default: bool,
@@ -36,9 +37,16 @@ fn execution(error: network_protocol::SocketError) -> Status {
         _ => native_abi::ERR_BAD_STATE,
     }
 }
-fn entry(classified: &[Classified<'_>], prefix: Prefix, peer: u64) -> Option<usize> {
+fn entry(
+    classified: &[Classified<'_>],
+    prefix: Prefix,
+    peer: u64,
+    path_id: Option<u32>,
+) -> Option<usize> {
     classified
-        .binary_search_by(|entry| (entry.prefix, entry.peer).cmp(&(prefix, peer)))
+        .binary_search_by_key(&(prefix, peer, path_id), |entry| {
+            (entry.prefix, entry.peer, entry.path_id)
+        })
         .ok()
 }
 /// 原生 actor 的一次完整来源重算；bindings 只借用仍注册的实际 TCP 身份与唯一配置。
@@ -84,7 +92,7 @@ fn reconcile_family(
         if parameters.import.is_none() {
             continue;
         }
-        for (prefix, route) in received.iter() {
+        for (prefix, path_id, route) in received.iter() {
             if prefix.address.is_ipv4() != (family == Family::Ipv4) {
                 continue;
             }
@@ -95,6 +103,7 @@ fn reconcile_family(
                 classified.push(Classified {
                     prefix,
                     peer: peer.id,
+                    path_id,
                     decision,
                     attributes: route.attributes().clone(),
                     resolve_via_default: parameters.resolve_via_default,
@@ -107,7 +116,7 @@ fn reconcile_family(
             .project_attributes(&item.attributes, item.decision.changes())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     }
-    classified.sort_unstable_by_key(|entry| (entry.prefix, entry.peer));
+    classified.sort_unstable_by_key(|entry| (entry.prefix, entry.peer, entry.path_id));
     let mut probes = Vec::new();
     probes
         .try_reserve_exact(classified.len())
@@ -126,8 +135,8 @@ fn reconcile_family(
     }
     // 1. 尚未验证的提案保留 Unresolved；只提供给真实 RIB 求解，不伪造可达或直接提交。
     let mut encoded = routes
-        .propose(family, |prefix, peer, route| {
-            Ok(entry(&classified, prefix, peer.id).map_or_else(
+        .propose(family, |prefix, peer, path_id, route| {
+            Ok(entry(&classified, prefix, peer.id, path_id).map_or_else(
                 || (route.next_hop(), None, route.attributes()),
                 |index| {
                     (
@@ -162,8 +171,8 @@ fn reconcile_family(
         let outcomes = prepared.outcomes();
         // 2. 只用当前候选图返回的可达证明选择；原始接收属性保持不变。
         let update = routes
-            .prepare(family, |prefix, peer, route| {
-                Ok(entry(&classified, prefix, peer.id).map_or_else(
+            .prepare(family, |prefix, peer, path_id, route| {
+                Ok(entry(&classified, prefix, peer.id, path_id).map_or_else(
                     || {
                         (
                             route.next_hop(),
@@ -195,7 +204,7 @@ fn reconcile_family(
         let next = update.encode_source(minimum).map_err(encoding)?;
         if next == encoded {
             // 3. 来源与证明一致才发表。只有选中路径或复探义务改变才确认，避免通知自激。
-            if update.changed_prefixes().is_empty() && !prepared.recovery_changed() {
+            if !update.forwarding_changed() && !prepared.recovery_changed() {
                 prepared.abort().map_err(execution)?;
             } else {
                 if let Err(error) = prepared.activate() {

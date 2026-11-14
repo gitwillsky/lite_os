@@ -12,7 +12,7 @@ pub const PAUSE: u32 = 2;
 /// 暂停期间替换监听和上游设置，正文为 Settings，空正文停用，附单次回复 channel。
 pub const APPLY: u32 = 3;
 pub const DNS_PORT: u16 = 53;
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_LISTEN: usize = 32;
 const MAX_UPSTREAM: usize = 8;
 
@@ -27,6 +27,7 @@ pub struct Binding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub listen: Vec<Binding>,
+    /// 当前可用的上游。全部有作用域的上游失联时保留监听，查询返回 SERVFAIL。
     pub upstream: Vec<SocketAddr>,
 }
 
@@ -64,13 +65,13 @@ impl Settings {
         if wire.u32()? != VERSION {
             return Err(Invalid);
         }
-        let listen = read_list(&mut wire, MAX_LISTEN, |wire| {
+        let listen = read_list(&mut wire, 1..=MAX_LISTEN, |wire| {
             Ok(Binding {
                 interface: wire.u32()?,
                 address: read_ip(wire)?,
             })
         })?;
-        let upstream = read_list(&mut wire, MAX_UPSTREAM, |wire| {
+        let upstream = read_list(&mut wire, 0..=MAX_UPSTREAM, |wire| {
             let ip = read_ip(wire)?;
             let scope = wire.u32()?;
             match ip {
@@ -86,9 +87,7 @@ impl Settings {
     }
 
     fn validate(&self) -> Result<(), Invalid> {
-        if !(1..=MAX_LISTEN).contains(&self.listen.len())
-            || !(1..=MAX_UPSTREAM).contains(&self.upstream.len())
-        {
+        if !(1..=MAX_LISTEN).contains(&self.listen.len()) || self.upstream.len() > MAX_UPSTREAM {
             return Err(Invalid);
         }
         for (index, binding) in self.listen.iter().enumerate() {
@@ -125,11 +124,11 @@ impl Settings {
 
 fn read_list<T>(
     wire: &mut Decoder<'_>,
-    maximum: usize,
+    range: core::ops::RangeInclusive<usize>,
     mut item: impl FnMut(&mut Decoder<'_>) -> Result<T, Invalid>,
 ) -> Result<Vec<T>, Invalid> {
     let length = wire.u32()? as usize;
-    if !(1..=maximum).contains(&length) {
+    if !range.contains(&length) {
         return Err(Invalid);
     }
     let mut result = Vec::new();

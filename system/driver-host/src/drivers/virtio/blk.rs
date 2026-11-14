@@ -162,6 +162,7 @@ impl VirtIOBlockDevice {
     /// 使用已发现的 MMIO/PCI transport 初始化同一 block queue、DMA 与 completion owner。
     /// 必要 feature、队列或 DMA 分配缺失时返回 None，不发布部分 adapter。
     pub(super) fn from_device(device: VirtIODevice) -> Option<Arc<Self>> {
+        let mut device = device;
         if device.device_id() != 2 {
             return None;
         }
@@ -180,6 +181,7 @@ impl VirtIOBlockDevice {
         if device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
+        device.prepare_queues()?;
 
         let queue_size = device.queue_max_size(0).ok()?;
         if usize::from(queue_size) < MIN_DESCRIPTORS_PER_REQUEST {

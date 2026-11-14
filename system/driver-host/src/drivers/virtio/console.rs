@@ -125,7 +125,7 @@ impl VirtIOConsoleDevice {
         Self::from_device(VirtIODevice::from_pci(3, transport, bti))
     }
 
-    fn from_device(device: VirtIODevice) -> Option<Arc<Self>> {
+    fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
         if device.device_id() != 3 {
             return None;
         }
@@ -143,6 +143,7 @@ impl VirtIOConsoleDevice {
         if device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
+        device.prepare_queues()?;
 
         let mut control_rx = Self::receive_queue(&device, CONTROL_RX_QUEUE, CONTROL_SLOTS)?;
         let control_tx = Self::transmit_queue(&device, CONTROL_TX_QUEUE, CONTROL_SLOTS)?;

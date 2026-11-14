@@ -76,6 +76,15 @@ pub(crate) fn namespace_opened(
     PseudoFileSystem::Namespace.open(existing.unwrap_or(candidate))
 }
 
+/// 为 `namespace` 创建 nsfs 设备后端。后端持有该命名空间引用，供普通打开及直接交付文件描述使用。
+/// # Errors
+/// 后端分配失败时返回 OutOfMemory。
+pub(crate) fn namespace_device(
+    namespace: NamespaceReference,
+) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
+    Ok(Arc::try_new(NamespaceFile(namespace)).map_err(|_| FileSystemError::OutOfMemory)?)
+}
+
 fn visible_owner(owner: &Arc<UserNamespace>, caller: &Arc<UserNamespace>) -> bool {
     let mut current = Some(owner.clone());
     while let Some(namespace) = current {
@@ -131,9 +140,9 @@ impl Inode for NamespaceInode {
         _: &super::AccessIdentity,
         _: &crate::namespace::NamespaceAuthority,
     ) -> Result<super::InodeOpen, super::InodeOpenError> {
-        let backend = Arc::try_new(NamespaceFile(self.namespace.clone()))
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        Ok(super::InodeOpen::Device(backend))
+        Ok(super::InodeOpen::Device(namespace_device(
+            self.namespace.clone(),
+        )?))
     }
     fn namespace_reference(&self) -> Option<NamespaceReference> {
         Some(self.namespace.clone())

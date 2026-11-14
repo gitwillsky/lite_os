@@ -9,7 +9,15 @@ pub use crate::routes::snapshot::{RouteSnapshot, RoutingSnapshot};
 use alloc::vec::Vec;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-use device_model::network::{NetworkLink, NetworkStatistics};
+pub use device_model::network::NetworkLink;
+use device_model::network::NetworkStatistics;
+use native_runtime::{Channel, Event};
+
+/// 新建 socket 的客户端通道及就绪 Event 副本。服务端持有通道对端和 Event 原件。
+pub struct SocketEndpoint {
+    pub channel: Channel,
+    pub readiness: Event,
+}
 
 /// socket 操作的失败；使用者按自己的 ABI 映射为错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +68,13 @@ pub enum SocketError {
     ProtocolOptionUnavailable,
     HostDown,
     NetworkIsolated,
+    /// The selected key is still needed by an active connection.
+    Busy,
+    /// The requested authentication conflicts with a different installed authentication mode.
+    KeyRejected,
 }
 
-const SOCKET_ERRORS: [SocketError; 36] = [
+const SOCKET_ERRORS: [SocketError; 38] = [
     SocketError::Invalid,
     SocketError::NoMemory,
     SocketError::NoBuffer,
@@ -99,6 +111,8 @@ const SOCKET_ERRORS: [SocketError; 36] = [
     SocketError::ProtocolOptionUnavailable,
     SocketError::HostDown,
     SocketError::NetworkIsolated,
+    SocketError::Busy,
+    SocketError::KeyRejected,
 ];
 
 impl SocketError {
@@ -306,9 +320,11 @@ pub enum InternetOption {
     Ipv6ReceiveError,
     /// 本机发送使用的 32 位路由标记。
     Mark,
+    Ipv4ReceiveErrorExtensions,
+    Ipv6ReceiveErrorExtensions,
 }
 
-const INTERNET_OPTIONS: [InternetOption; 35] = [
+const INTERNET_OPTIONS: [InternetOption; 37] = [
     InternetOption::ReuseAddress,
     InternetOption::Broadcast,
     InternetOption::BoundToDevice,
@@ -344,6 +360,8 @@ const INTERNET_OPTIONS: [InternetOption; 35] = [
     InternetOption::Ipv4ReceiveError,
     InternetOption::Ipv6ReceiveError,
     InternetOption::Mark,
+    InternetOption::Ipv4ReceiveErrorExtensions,
+    InternetOption::Ipv6ReceiveErrorExtensions,
 ];
 
 impl InternetOption {
@@ -367,42 +385,7 @@ pub struct RouteMetrics {
     pub round_trip_time: u32,
 }
 
-/// 路由类型的领域语义；数值由 syscall/netlink codec 拥有。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RouteKind {
-    Unicast,
-    Local,
-    Broadcast,
-    Unreachable,
-    Throw,
-    /// 静默丢弃；本机发送按 ABI 映射为 Invalid。
-    Blackhole,
-    /// 管理策略禁止；本机发送按 ABI 映射为 PermissionDenied。
-    Prohibit,
-}
-
-const ROUTE_KINDS: [RouteKind; 7] = [
-    RouteKind::Unicast,
-    RouteKind::Local,
-    RouteKind::Broadcast,
-    RouteKind::Unreachable,
-    RouteKind::Throw,
-    RouteKind::Blackhole,
-    RouteKind::Prohibit,
-];
-
-impl RouteKind {
-    pub(crate) fn code(self) -> u8 {
-        ROUTE_KINDS
-            .iter()
-            .position(|kind| *kind == self)
-            .map_or(0, |index| index as u8)
-    }
-
-    pub(crate) fn from_code(code: u8) -> Option<Self> {
-        ROUTE_KINDS.get(usize::from(code)).copied()
-    }
-}
+pub use router_protocol::routing::RouteKind;
 
 /// 已解码的类型化路由配置；没有 raw sockaddr/用户指针。
 /// A 表示目标和首选源的地址族；IPv4 允许使用 IPv6 网关。
@@ -438,9 +421,11 @@ pub enum Ipv4RouteError {
     Missing,
     /// 原生配置事务独占写入，调用者可稍后重试。
     Again,
+    /// 此域的路由只能由拥有安装能力的配置事务修改。
+    OperationNotPermitted,
 }
 
-const ROUTE_ERRORS: [Ipv4RouteError; 9] = [
+const ROUTE_ERRORS: [Ipv4RouteError; 10] = [
     Ipv4RouteError::Invalid,
     Ipv4RouteError::NoDevice,
     Ipv4RouteError::NetworkDown,
@@ -450,21 +435,23 @@ const ROUTE_ERRORS: [Ipv4RouteError; 9] = [
     Ipv4RouteError::NotFound,
     Ipv4RouteError::Missing,
     Ipv4RouteError::Again,
+    Ipv4RouteError::OperationNotPermitted,
 ];
 
 impl Ipv4RouteError {
     /// 对应的 Linux errno（正值）；ioctl 与 rtnetlink 共用，保证两条配置路径报告同一错误。
     pub const fn errno(self) -> i32 {
         match self {
-            Self::Invalid => 22,             // EINVAL
-            Self::NoDevice => 19,            // ENODEV
-            Self::NetworkDown => 100,        // ENETDOWN
-            Self::NetworkUnreachable => 101, // ENETUNREACH
-            Self::NoMemory => 12,            // ENOMEM
-            Self::Exists => 17,              // EEXIST
-            Self::NotFound => 3,             // ESRCH
-            Self::Missing => 2,              // ENOENT
-            Self::Again => 11,               // EAGAIN
+            Self::Invalid => 22,              // EINVAL
+            Self::NoDevice => 19,             // ENODEV
+            Self::NetworkDown => 100,         // ENETDOWN
+            Self::NetworkUnreachable => 101,  // ENETUNREACH
+            Self::NoMemory => 12,             // ENOMEM
+            Self::Exists => 17,               // EEXIST
+            Self::NotFound => 3,              // ESRCH
+            Self::Missing => 2,               // ENOENT
+            Self::Again => 11,                // EAGAIN
+            Self::OperationNotPermitted => 1, // EPERM
         }
     }
 
@@ -520,6 +507,8 @@ pub struct InterfaceSnapshot {
     pub index: u32,
     pub name: [u8; 16],
     pub loopback: bool,
+    /// 网桥上的逻辑三层接口，由 NET 配置租约拥有。
+    pub vlan: bool,
     pub mtu: i32,
     pub mac: [u8; 6],
     pub address: Option<Ipv4Addr>,
@@ -582,6 +571,7 @@ impl InterfaceSnapshot {
 /// 接口配置与计数器的当前快照；从实际域 owner 读取，不保存第二份配置。
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkSnapshot {
+    pub index: u32,
     pub name: [u8; 16],
     pub statistics: NetworkStatistics,
 }
@@ -601,6 +591,8 @@ pub enum PacketChecksum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PacketInformation {
     pub checksum: PacketChecksum,
+    /// 镜像点捕获的 UTC 纳秒。
+    pub timestamp_ns: u64,
     /// 相对本次 socket 交付内容的 L3 header 偏移。
     pub network_offset: u16,
 }
@@ -622,6 +614,15 @@ pub enum InternetErrorOrigin {
     Icmpv6,
 }
 
+/// ICMP 扩展在交给应用的引用字节中的位置及验证结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IcmpErrorExtension {
+    /// 扩展起点相对完整错误数据的字节偏移，接收截断不改变它。
+    pub offset: u16,
+    /// 扩展自身格式或校验无效，外层 ICMP 错误已验证。
+    pub invalid: bool,
+}
+
 /// 一条独立的发送错误及原目的。offender 无端口，局部错误没有 offender。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InternetError {
@@ -632,6 +633,8 @@ pub struct InternetError {
     pub info: u32,
     pub destination: InetAddress,
     pub offender: Option<InetAddress>,
+    pub extension: Option<IcmpErrorExtension>,
+    pub packet_info: Option<InternetPacketInfo>,
 }
 
 /// 已从错误队列消费的记录。data 只包含实际可见的引用部分。

@@ -55,7 +55,7 @@ fn find_endpoint_after<K: Copy + Ord, V, R>(
 impl NetworkStack {
     /// 在协议 poll 前冻结全部 endpoint readiness；缺失该快照会把长期 writable
     /// 误判为每轮新 edge，持续唤醒所有网络 waiter。
-    /// 分离借用 SocketSet 与 endpoint AVL，完整快照只走一次 O(N) 中序遍历，
+    /// 各原生端点目录的快照只走一次 O(N) 中序遍历，
     /// 不逐项重新查树；此阶段不改变树结构，通知 drain 仍按有界 cursor 执行。
     pub(super) fn snapshot_readiness(&mut self) {
         self.udp_endpoints.for_each_mut(|_, state| {
@@ -175,12 +175,14 @@ pub(super) fn notify_pending(pending: PendingNotifications) {
     }
 }
 
-/// 全局packet目录每次safe point只drain一批；不随NET域数量重复扫描或无界通知。
-pub(super) fn notify_packet_pending() -> bool {
+/// 每次只交付本域的一批 packet edge，其他域的订阅不进入此次扫描。
+pub(super) fn notify_packet_pending(packets: &packet::PacketRegistry) -> bool {
+    let mut after = 0;
     for _ in 0..NETWORK_NOTIFICATION_BUDGET {
-        let Some((_, endpoint)) = packet::take_pending_notification(0) else {
+        let Some((id, endpoint)) = packet::take_pending_notification(packets, after) else {
             return false;
         };
+        after = id;
         endpoint.notify();
     }
     true

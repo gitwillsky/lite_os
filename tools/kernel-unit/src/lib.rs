@@ -312,15 +312,6 @@ mod socket_message_limits;
 mod drm_publication;
 
 #[cfg(test)]
-#[path = "../../../system/netstack/src/inet/device_error.rs"]
-mod network_device_error;
-
-#[cfg(test)]
-#[path = "../../../tools/source-view/device-model/network/network/network.rs"]
-#[allow(dead_code)]
-mod network_transmit;
-
-#[cfg(test)]
 #[path = "../../../system/linuxd/src/devices/tty/terminal/flush.rs"]
 mod terminal_flush;
 
@@ -510,5 +501,3 @@ mod file {
 use devices::model::io_completion;
 #[cfg(test)]
 use execution::timer as time;
-#[cfg(test)]
-type Activity = device_model::Activity;

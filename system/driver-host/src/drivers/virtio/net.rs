@@ -16,7 +16,8 @@ use queue_pair::QueueState;
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
-    completion_irq::VirtIOCompletionIrq, queue::VirtQueue,
+    completion_irq::VirtIOCompletionIrq,
+    queue::{VIRTIO_F_EVENT_IDX, VirtQueue},
 };
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::network::{
@@ -49,7 +50,8 @@ const QUEUE_SIZE: u16 = 64;
 // device 把 Ethernet frame 的前两个字节误当作 header，并使全部 TX/RX 帧错位。
 const VIRTIO_NET_HEADER_SIZE: usize = 12;
 const RX_BUFFER_SIZE: usize = 2048;
-const MAX_ETHERNET_FRAME: usize = 1514;
+// Ethernet header plus one 802.1Q tag and the usual 1500-byte payload.
+const MAX_ETHERNET_FRAME: usize = 1518;
 // 64-byte 对齐的密集槽，保持头部/数据 cache line 边界，不为每个 1526-byte frame 独占一页。
 const MAX_SEGMENTED_FRAME: usize = 65_535 + 14;
 
@@ -109,6 +111,7 @@ impl VirtIONetworkDevice {
     /// # Returns
     /// 必要 feature、配置或分配失败返回 None。
     pub(super) fn from_device(device: VirtIODevice) -> Option<Arc<Self>> {
+        let mut device = device;
         if device.device_id() != 1 {
             return None;
         }
@@ -141,6 +144,7 @@ impl VirtIONetworkDevice {
             | features
                 & (VIRTIO_NET_F_CSUM
                     | VIRTIO_NET_F_GUEST_CSUM
+                    | VIRTIO_F_EVENT_IDX
                     | VIRTIO_NET_F_STATUS
                     | VIRTIO_NET_F_SPEED_DUPLEX);
         device.set_driver_features(features).ok()?;
@@ -151,6 +155,7 @@ impl VirtIONetworkDevice {
         if device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
+        device.prepare_queues()?;
         let maximum_pairs = if features & (VIRTIO_NET_F_MQ | VIRTIO_NET_F_RSS) != 0 {
             device
                 .read_config_consistent(|device| device.read_config_u16(MAX_PAIRS_OFFSET))
@@ -220,6 +225,15 @@ impl VirtIONetworkDevice {
         crate::io_completion::register_completion_source(controller.clone()).ok()?;
         Some(controller)
     }
+    fn notify_available(&self, index: u32, queue: &VirtQueue, added: u16) -> Result<(), NetworkError> {
+        if queue.needs_available_notification(added, self.features & VIRTIO_F_EVENT_IDX != 0) {
+            self.device
+                .notify_queue(index)
+                .map_err(|_| NetworkError::Device)?;
+        }
+        Ok(())
+    }
+
     fn notify_activity(&self, queue: u16) {
         let callback = self
             .lease
@@ -272,6 +286,10 @@ impl NetworkController for VirtIONetworkDevice {
         self.device.message_interrupts().is_some()
     }
     fn maximum_queue_pairs(&self) -> u16 {
+        if self.features & VIRTIO_NET_F_MQ == 0 && !self.rss.is_some_and(|cap| cap.hash_types != 0) {
+            // RSS-only 设备在没有可用散列类型时只会使用未分类接收队列。
+            return 1;
+        }
         self.device
             .message_interrupts()
             .map_or(self.maximum_pairs, |msix| {
@@ -405,7 +423,7 @@ impl NetworkController for VirtIONetworkDevice {
             if self.features & VIRTIO_NET_F_MQ != 0 {
                 control
                     .lock()
-                    .set_pairs(&self.device, count)
+                    .set_pairs(&self, count)
                     .map_err(|_| NetworkError::Device)?;
             } else if self.rss.is_some() {
                 // RSS-only 硬件没有 PAIRS_SET。客户端安装前提交实际策略；bootstrap 只指定 TX 数和未分类队列。
@@ -415,7 +433,7 @@ impl NetworkController for VirtIONetworkDevice {
                     .map_err(|_| NetworkError::NoMemory)?;
                 indirection.push(0);
                 control.lock().set_rss(
-                    &self.device,
+                    &self,
                     count,
                     &NetworkRssConfiguration {
                         hash_types: 0,
@@ -426,6 +444,7 @@ impl NetworkController for VirtIONetworkDevice {
                 )?;
             }
         }
+        // 激活队列时显式通知一次已有 RX 描述符；运行期间按设备的通知位置合并。
         for index in 0..count {
             self.device
                 .notify_queue(u32::from(index) * 2)
@@ -584,6 +603,10 @@ struct VirtIONetworkIrqHandler {
 }
 
 impl InterruptHandler for VirtIONetworkIrqHandler {
+    fn worker_priority(&self) -> Option<u32> {
+        Some(device_protocol::network::FORWARDING_WORKER_PRIORITY)
+    }
+
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
         // native IRQ 服务线程可在冷重配置期间阻塞；控制 ACK 由 DMA/used 推进，不依赖此线程。
         // 与重开事务串行 ACK/错误锁存，否则上一租约的延迟错误可能停止下一租约。

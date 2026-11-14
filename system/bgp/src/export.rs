@@ -2,6 +2,7 @@
 mod wire;
 use crate::{
     AttributeChanges, NextHop, Peer, PeerKind, RouteAttributes, RoutingDomain, import::action,
+    routes::ExportOrigin,
 };
 use alloc::{rc::Rc, vec::Vec};
 use core::net::{IpAddr, Ipv4Addr};
@@ -113,7 +114,11 @@ fn same_output(a: Option<&Advertisement>, b: Option<&Advertisement>, kind: PeerK
     }
 }
 
+type PathKey = (Prefix, ExportOrigin);
+type Deadline = (u64, PathKey);
+
 struct Record {
+    path_id: Option<u32>,
     // OWNER: 同一单线程 actor 的不可变发送投影；同批前缀共享，避免每条记录复制全局/链路下一跳和属性句柄。
     // Rc 不跨线程，没有原子或新驻留池；最后一个发送记录/在途帧退休时释放。撤回不创建投影。
     route: Option<Rc<Advertisement>>,
@@ -123,13 +128,14 @@ struct Record {
     refresh_pending: Option<RefreshMode>,
 }
 // 一帧内每个目标只保留身份和撤回后的预留清理节点；相同已编码属性由整批唯一持有。
-struct FlightPrefix {
-    prefix: Prefix,
-    expiry: Option<NodeSlot<(u64, Prefix), ()>>,
+struct FlightPath {
+    key: PathKey,
+    path_id: Option<u32>,
+    expiry: Option<NodeSlot<Deadline, ()>>,
 }
 enum Flight {
     Routes {
-        prefixes: Vec<FlightPrefix>,
+        prefixes: Vec<FlightPath>,
         route: Option<Rc<Advertisement>>,
         interval: u64,
     },
@@ -149,7 +155,7 @@ struct Refresh {
 #[derive(Clone, Copy)]
 enum RefreshProgress {
     Starting,
-    Scanning(Option<Prefix>),
+    Scanning(Option<PathKey>),
     Draining,
 }
 impl Refresh {
@@ -180,8 +186,11 @@ const EXPORT_BATCH: usize = 128;
 /// 单 TCP 的 Adj-RIB-Out；发送记录只在完整送入该 TCP 后更新，断线必须整体丢弃。
 pub struct AdjRibOut {
     // OWNER: 记录实际已发送值与同前缀唯一工作索引；ready 是该 owner 的截止索引，不持第二份路由。
-    records: FallibleMap<Prefix, Record>,
-    ready: FallibleMap<(u64, Prefix), ()>,
+    records: FallibleMap<PathKey, Record>,
+    ready: FallibleMap<Deadline, ()>,
+    // 协商结果在当前 TCP 上固定。编号达到上限后，只复用同一前缀已退休的编号。
+    send_add_path: [bool; 2],
+    last_path_id: u32,
     // OWNER: 至多一份已编码在途 UPDATE；后续变更可重新排队，不能取消已经部分写出的 TCP 帧。
     flight: Option<Flight>,
     // OWNER: 初始同步结束标记，只在全部初始工作发送后生成；部分发送不提前清除此义务。
@@ -198,15 +207,17 @@ pub struct AdjRibOut {
 }
 impl Default for AdjRibOut {
     fn default() -> Self {
-        Self::new()
+        Self::new([false; 2])
     }
 }
 impl AdjRibOut {
     /// 创建空连接记录；尚未启动初始同步，不分配。
-    pub const fn new() -> Self {
+    pub const fn new(send_add_path: [bool; 2]) -> Self {
         Self {
             records: FallibleMap::new(),
             ready: FallibleMap::new(),
+            send_add_path,
+            last_path_id: 0,
             flight: None,
             end_pending: [false; 2],
             advertised: 0,
@@ -292,29 +303,34 @@ impl AdjRibOut {
             } else {
                 Family::Ipv6
             };
-            let recorded = match after {
-                None => self.records.ceiling(&Prefix {
+            let first = (
+                Prefix {
                     address: if slot == 0 {
                         core::net::Ipv4Addr::UNSPECIFIED.into()
                     } else {
                         core::net::Ipv6Addr::UNSPECIFIED.into()
                     },
                     length: 0,
-                }),
-                Some(prefix) => self.records.successor(&prefix),
-            }
-            .map(|(prefix, record)| (*prefix, record.route.is_some()))
-            .filter(|(prefix, _)| usize::from(prefix.address.is_ipv6()) == slot);
-            // 2. 合并实际发送记录与当前三来源视图：旧目标能撤回，之前被拒绝的目标也能恢复。
+                },
+                ExportOrigin::Selected,
+            );
+            let recorded = after
+                .map_or_else(
+                    || self.records.ceiling(&first),
+                    |key| self.records.successor(&key),
+                )
+                .map(|(key, record)| (*key, record.route.is_some()))
+                .filter(|((prefix, _), _)| usize::from(prefix.address.is_ipv6()) == slot);
+            // 2. 合并实际发送记录与当前目标视图；按路径展开，单个多路径网段不会吃完本轮预算。
             let intended = (refresh.mode == RefreshMode::Reconsider)
-                .then(|| domain.next_announcement(family, after))
+                .then(|| self.next_target(domain, family, after))
                 .flatten();
             let next = recorded
-                .map(|(prefix, _)| prefix)
+                .map(|(key, _)| key)
                 .into_iter()
                 .chain(intended)
                 .min();
-            let Some(prefix) = next else {
+            let Some(key) = next else {
                 if refresh.mode == RefreshMode::Enhanced {
                     self.refresh[slot].as_mut().expect("active cursor").progress =
                         RefreshProgress::Draining;
@@ -330,13 +346,13 @@ impl AdjRibOut {
                 self.refresh[slot]
                     .as_mut()
                     .expect("active rescan cursor")
-                    .progress = RefreshProgress::Scanning(Some(prefix));
+                    .progress = RefreshProgress::Scanning(Some(key));
                 continue;
             }
-            self.changed(prefix, now)?;
+            self.changed_path(key, now)?;
             let record = self
                 .records
-                .get_mut(&prefix)
+                .get_mut(&key)
                 .expect("rescan target remains registered");
             if record.refresh_pending.is_none() {
                 self.refresh_queued[slot] += 1;
@@ -345,20 +361,67 @@ impl AdjRibOut {
             self.refresh[slot]
                 .as_mut()
                 .expect("active rescan cursor")
-                .progress = RefreshProgress::Scanning(Some(prefix));
+                .progress = RefreshProgress::Scanning(Some(key));
         }
         Ok(())
+    }
+    fn next_target(
+        &self,
+        domain: &RoutingDomain,
+        family: Family,
+        after: Option<PathKey>,
+    ) -> Option<PathKey> {
+        let add_path = self.send_add_path[usize::from(family == Family::Ipv6)];
+        if add_path
+            && let Some((prefix, origin)) = after
+            && let Some(next) = domain.export_origin_after(prefix, Some(origin))
+        {
+            return Some((prefix, next));
+        }
+        let prefix = domain.next_announcement(family, after.map(|key| key.0))?;
+        let origin = if add_path {
+            domain.export_origin_after(prefix, None)?
+        } else {
+            ExportOrigin::Selected
+        };
+        Some((prefix, origin))
     }
     /// 已完整送入当前 TCP 的宣告数；不代表远端确认。
     pub fn len(&self) -> usize {
         self.advertised
     }
-    /// 当前 TCP 是否已完整接受此网段的宣告；撤回完整送出后为 false，不代表远端确认。
-    /// 只读实际发送记录，不因排队/编码成功而提前报告，不保留另一份观测状态或分配。
-    pub fn is_advertised(&self, prefix: Prefix) -> bool {
+    /// 当前 TCP 已完整接收此网段的各条宣告。普通单路径宣告返回 None 作为编号。
+    pub fn advertised_paths(&self, prefix: Prefix) -> impl Iterator<Item = Option<u32>> {
+        self.prefix_records(prefix)
+            .filter_map(|record| record.route.as_ref().map(|_| record.path_id))
+    }
+    fn prefix_records(&self, prefix: Prefix) -> impl Iterator<Item = &Record> {
         self.records
-            .get(&prefix)
-            .is_some_and(|record| record.route.is_some())
+            .iter_from(&(prefix, ExportOrigin::Selected))
+            .take_while(move |((network, _), _)| *network == prefix)
+            .map(|(_, record)| record)
+    }
+    fn allocate_path_id(
+        &self,
+        last: &mut u32,
+        prefix: Prefix,
+        batch: &[FlightPath],
+    ) -> Result<u32, ExportError> {
+        if let Some(next) = last.checked_add(1) {
+            *last = next;
+            return Ok(next);
+        }
+        // 编号只在同一前缀内唯一。仅耗尽递增区间后搜索空位，保留在途及仍有撤回义务的身份。
+        (1..=u32::MAX)
+            .find(|id| {
+                !self
+                    .prefix_records(prefix)
+                    .any(|record| record.path_id == Some(*id))
+                    && !batch
+                        .iter()
+                        .any(|path| path.key.0 == prefix && path.path_id == Some(*id))
+            })
+            .ok_or(ExportError::Invalid)
     }
     /// 最近因当前方向容量/AS 编码无法发布的目标和原因，不代表会话断开。
     pub fn rejected_route(&self) -> Option<(Prefix, PacketError)> {
@@ -368,10 +431,15 @@ impl AdjRibOut {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// 登记真实选择变化；同前缀只保留一个截止，准备时再读取最新 Loc-RIB。
+    /// 登记此网段已确认的路径变化；每条待处理路径保留一个截止，准备时再读取最新选择。
     /// # Errors
     /// 索引预留失败；调用者须结束该域，不能跳过更新继续把旧发送记录当作准确状态。
-    pub fn changed(&mut self, prefix: Prefix, now: u64) -> Result<(), ExportError> {
+    pub fn changed(
+        &mut self,
+        domain: &RoutingDomain,
+        prefix: Prefix,
+        now: u64,
+    ) -> Result<(), ExportError> {
         if !(router_protocol::tracking::IpPrefix {
             network: prefix.address,
             length: prefix.length,
@@ -380,11 +448,28 @@ impl AdjRibOut {
         {
             return Err(ExportError::Invalid);
         }
-        if !self.records.contains_key(&prefix) {
+        let first = (prefix, ExportOrigin::Selected);
+        if !self.send_add_path[usize::from(prefix.address.is_ipv6())] {
+            return self.changed_path(first, now);
+        }
+        let mut current = self.records.ceiling(&first).map(|(key, _)| *key);
+        while let Some(key) = current.filter(|(network, _)| *network == prefix) {
+            // 已发送但退出候选的路径也须进入同一队列，按其原编号撤回。
+            self.changed_path(key, now)?;
+            current = self.records.successor(&key).map(|(next, _)| *next);
+        }
+        for origin in domain.export_origins(prefix) {
+            self.changed_path((prefix, origin), now)?;
+        }
+        Ok(())
+    }
+    fn changed_path(&mut self, key: PathKey, now: u64) -> Result<(), ExportError> {
+        if !self.records.contains_key(&key) {
             self.records
                 .try_insert(
-                    prefix,
+                    key,
                     Record {
+                        path_id: None,
                         route: None,
                         sent_at: None,
                         pending_at: None,
@@ -395,16 +480,16 @@ impl AdjRibOut {
         }
         let record = self
             .records
-            .get_mut(&prefix)
+            .get_mut(&key)
             .expect("registered output record");
         if record.pending_at == Some(now) {
             return Ok(());
         }
         self.ready
-            .try_insert((now, prefix), ())
+            .try_insert((now, key), ())
             .map_err(|_| ExportError::NoMemory)?;
         if let Some(old) = record.pending_at.replace(now) {
-            self.ready.remove(&(old, prefix));
+            self.ready.remove(&(old, key));
         }
         Ok(())
     }
@@ -492,6 +577,7 @@ impl AdjRibOut {
         let mut attributes_length = 0;
         let mut batch_mp = false;
         let mut after = None;
+        let mut last_path_id = self.last_path_id;
         for _ in 0..EXPORT_BATCH {
             let key = after
                 .map_or_else(
@@ -499,12 +585,14 @@ impl AdjRibOut {
                     |key| self.ready.successor(&key),
                 )
                 .map(|(key, ())| *key);
-            let Some((at, prefix)) = key else { break };
+            let Some((at, target @ (prefix, origin))) = key else {
+                break;
+            };
             if at > now {
                 break;
             }
             after = key;
-            let mut next = match projection(domain, policy, context, prefix) {
+            let mut next = match projection(domain, policy, context, target) {
                 Err(ExportError::Packet(PacketError::Unsupported)) => {
                     self.rejected = Some((prefix, PacketError::Unsupported));
                     None
@@ -513,42 +601,55 @@ impl AdjRibOut {
             };
             let record = self
                 .records
-                .get(&prefix)
+                .get(&target)
                 .expect("deadline belongs to output record");
-            let due = record
+            let expiry = record
                 .sent_at
                 .map(|sent| sent.saturating_add(context.interval_ns));
             if record
                 .refresh_pending
                 .is_none_or(|mode| mode == RefreshMode::Reconsider)
                 && same_output(record.route.as_deref(), next.as_ref(), context.target.kind)
-                && (next.is_some() || due.is_none_or(|due| due <= now))
+                && (next.is_some() || expiry.is_none_or(|due| due <= now))
             {
-                self.retire_work(at, prefix);
+                self.retire_work(at, target);
                 continue;
             }
+            let add_path = origin != ExportOrigin::Selected;
+            let due = if add_path
+                && context.interval_ns != 0
+                && (next.is_some() || record.route.is_some())
+            {
+                // MRAI 仍按目的网段；同一批允许合并属性相同的路径，分别发送时遵守共同截止。
+                self.prefix_records(prefix)
+                    .filter_map(|path| path.sent_at)
+                    .max()
+                    .map(|sent| sent.saturating_add(context.interval_ns))
+            } else {
+                expiry
+            };
             if let Some(due) = due
                 && due > now
             {
                 self.ready
-                    .try_insert((due, prefix), ())
+                    .try_insert((due, target), ())
                     .map_err(|_| ExportError::NoMemory)?;
-                self.ready.remove(&(at, prefix));
+                self.ready.remove(&(at, target));
                 self.records
-                    .get_mut(&prefix)
+                    .get_mut(&target)
                     .expect("output record exists")
                     .pending_at = Some(due);
                 continue;
             }
-            if prefixes.first().is_some_and(|first: &FlightPrefix| {
-                first.prefix.address.is_ipv4() != prefix.address.is_ipv4()
+            if prefixes.first().is_some_and(|first: &FlightPath| {
+                first.key.0.address.is_ipv4() != prefix.address.is_ipv4()
             }) || !prefixes.is_empty()
                 && !same_output(next.as_ref(), advertised.as_ref(), context.target.kind)
             {
                 // 目标间无发送顺序依赖；有界向前寻找同组，异组保持原截止，不增加全表分组索引。
                 continue;
             }
-            let size = 1 + usize::from(prefix.length).div_ceil(8);
+            let size = 1 + usize::from(prefix.length).div_ceil(8) + usize::from(add_path) * 4;
             let family = if prefix.address.is_ipv4() {
                 Family::Ipv4
             } else {
@@ -594,10 +695,10 @@ impl AdjRibOut {
             if next.is_none()
                 && self
                     .records
-                    .get(&prefix)
+                    .get(&target)
                     .is_some_and(|record| record.route.is_none())
             {
-                self.retire_work(at, prefix);
+                self.retire_work(at, target);
                 continue;
             }
             // 1. 编码前预留整批完成所需资源；索引/重发义务此时尚未消费，失败仍可安全重试。
@@ -607,7 +708,16 @@ impl AdjRibOut {
             } else {
                 None
             };
-            prefixes.push(FlightPrefix { prefix, expiry });
+            let path_id = if add_path && record.path_id.is_none() {
+                Some(self.allocate_path_id(&mut last_path_id, prefix, &prefixes)?)
+            } else {
+                record.path_id
+            };
+            prefixes.push(FlightPath {
+                key: target,
+                path_id,
+                expiry,
+            });
             if prefixes.len() == 1 {
                 advertised = next;
                 batch_mp = multiprotocol;
@@ -616,10 +726,10 @@ impl AdjRibOut {
         }
         if !prefixes.is_empty() {
             let message = wire::message(
-                prefixes.iter().map(|target| target.prefix),
+                prefixes.iter().map(|target| (target.key.0, target.path_id)),
                 advertised.as_ref(),
                 context,
-                if prefixes[0].prefix.address.is_ipv4() {
+                if prefixes[0].key.0.address.is_ipv4() {
                     Family::Ipv4
                 } else {
                     Family::Ipv6
@@ -632,18 +742,20 @@ impl AdjRibOut {
                 .transpose()
                 .map_err(|_| ExportError::NoMemory)?;
             // 2. 完整报文成功后才消费所含目标；编码后新到的 changed/refresh 仍可登记在同一记录上。
+            self.last_path_id = last_path_id;
             for target in &prefixes {
                 let record = self
                     .records
-                    .get_mut(&target.prefix)
+                    .get_mut(&target.key)
                     .expect("staged output record exists");
                 let at = record
                     .pending_at
                     .take()
                     .expect("staged work remains pending");
-                self.ready.remove(&(at, target.prefix));
+                self.ready.remove(&(at, target.key));
+                record.path_id = target.path_id;
                 if record.refresh_pending.take().is_some() {
-                    self.refresh_queued[usize::from(target.prefix.address.is_ipv6())] -= 1;
+                    self.refresh_queued[usize::from(target.key.0.address.is_ipv6())] -= 1;
                 }
             }
             self.flight = Some(Flight::Routes {
@@ -674,15 +786,15 @@ impl AdjRibOut {
             Ok(None)
         }
     }
-    fn retire_work(&mut self, at: u64, prefix: Prefix) {
-        self.ready.remove(&(at, prefix));
-        let record = self.records.get_mut(&prefix).expect("output record exists");
+    fn retire_work(&mut self, at: u64, key: PathKey) {
+        self.ready.remove(&(at, key));
+        let record = self.records.get_mut(&key).expect("output record exists");
         record.pending_at = None;
         if record.refresh_pending.take().is_some() {
-            self.refresh_queued[usize::from(prefix.address.is_ipv6())] -= 1;
+            self.refresh_queued[usize::from(key.0.address.is_ipv6())] -= 1;
         }
         if record.route.is_none() {
-            self.records.remove(&prefix);
+            self.records.remove(&key);
         }
     }
     /// 一帧已完整送入 TCP；无分配更新发送记录，保留编码后新到的工作。
@@ -694,10 +806,10 @@ impl AdjRibOut {
                 interval,
             }) => {
                 // 3. 整帧只确认一次；每个目标保留独立间隔与期间新到的工作，完成阶段不分配。
-                for FlightPrefix { prefix, expiry } in prefixes {
+                for FlightPath { key, expiry, .. } in prefixes {
                     let record = self
                         .records
-                        .get_mut(&prefix)
+                        .get_mut(&key)
                         .expect("in-flight record remains registered");
                     match (record.route.is_some(), route.is_some()) {
                         (false, true) => self.advertised += 1,
@@ -709,10 +821,10 @@ impl AdjRibOut {
                     if record.route.is_none() && record.pending_at.is_none() {
                         if let Some(slot) = expiry {
                             let due = now.saturating_add(interval);
-                            self.ready.commit_vacant(slot.fill((due, prefix), ()));
+                            self.ready.commit_vacant(slot.fill((due, key), ()));
                             record.pending_at = Some(due);
                         } else {
-                            self.records.remove(&prefix);
+                            self.records.remove(&key);
                         }
                     }
                 }
@@ -740,12 +852,12 @@ fn projection(
     domain: &mut RoutingDomain,
     policy: Option<&ExportPolicy>,
     context: ExportContext,
-    prefix: Prefix,
+    (prefix, origin): PathKey,
 ) -> Result<Option<Advertisement>, ExportError> {
     let Some(policy) = policy else {
         return Ok(None);
     };
-    let Some(route) = domain.export_route(prefix) else {
+    let Some(route) = domain.export_path(prefix, origin) else {
         return Ok(None);
     };
     let local = route.peer.is_none();
@@ -760,18 +872,9 @@ fn projection(
                 && origin.kind == PeerKind::Internal
                 && (context.cluster_id.is_none()
                     || !origin.route_reflector_client && !context.target.route_reflector_client)
-    }) || match context.target.kind {
-        PeerKind::External => attributes.path().contains(context.target.asn),
-        PeerKind::Confederation => attributes.path().segments().any(|(kind, asns)| {
-            matches!(
-                kind,
-                packet_wire::bgp::attributes::SegmentKind::ConfederationSequence
-                    | packet_wire::bgp::attributes::SegmentKind::ConfederationSet
-            ) && asns.contains(&context.target.asn)
-        }),
-        // 同 AS 的去环已经由域准入检查；联盟内成员号码出现在普通路径中并不代表成员环路。
-        PeerKind::Internal => false,
-    } || restricted(&attributes, context.target.kind)
+    }) || context.target.kind != PeerKind::Internal
+        && domain.export_path_loops(attributes.path(), context.target)
+        || restricted(&attributes, context.target.kind)
     {
         return Ok(None);
     }
@@ -844,6 +947,12 @@ fn projection(
     let attributes = domain
         .project_attributes(&attributes, changes)
         .map_err(|_| ExportError::NoMemory)?;
+    // Loc-RIB 的去环只证明了改写前的路径。替换或前置可以引入接收方身份。
+    if (!changes.as_path_prepend.is_empty() || changes.as_path_replace.is_some())
+        && domain.export_path_loops(attributes.path(), context.target)
+    {
+        return Ok(None);
+    }
     // OLD 方向不能用 AS4_PATH 修复联盟成员 AS；逐目标拒绝并撤回旧宣告，不能把整个域当作损坏。
     if context.width == AsnWidth::Two
         && context.target.kind != PeerKind::External

@@ -1,8 +1,8 @@
 //! 网络设置的 Linux 适配：把 router_config 的 `liteos.network.Settings` 交给 netdev 组的系统程序（控制面板、resolvd）。
 //!
-//! 1. 状态端点只接受 GET；设置端点限 root:netdev，接受 SET、DHCP 操作和 resolvd 的 WAIT；
+//! 1. 两端点仅 root 可访问，由 Linux 管理网关代理；状态端点只接受 GET。
 //! 2. 请求 datagram 为 `u32` 序号后接载荷，回复为 `i32` 状态后接载荷；载荷是 `router_protocol` 的编码：
-//!    GET 无载荷、回复快照；SET 载荷由 router_config 解码并提交；WAIT 载荷为 `u64` 代际、回复新代际；
+//!    GET 无载荷、回复快照；SET 载荷由 router_config 解码并提交；WAIT 收发同一版本字段；
 //! 3. 只读查询重连后可重放，修改结果不确定时不自动重放；WAIT/DHCP 共用 [`WAIT_LIMIT`] 个在途请求。
 //! 4. 原生配置管理的控制帧和文档分离，正文经 SCM_RIGHTS ↔ 独立只读 VMO，不使用内联旁路。
 
@@ -11,13 +11,14 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use native_runtime::Channel;
 use native_runtime::native_abi::{self, Status};
-use router_protocol::{Decoder, bridge, ordinal};
+use router_protocol::{Decoder, Revision, bridge, ordinal};
 
 mod configuration;
 
-/// 同时在途的 WAIT 与 DHCP 操作上限。
+/// 设置、DHCP 和连接观察共用的在途等待名额。
 const WAIT_LIMIT: usize = 4;
-// OWNER: 阻塞请求的在途计数，在线程派生前递增、回复后递减。否则客户端能创建无界数量的内核线程。
+const _: () = assert!(bridge::CONNECTION_WATCH_BUSY == native_abi::ERR_NO_RESOURCES);
+// OWNER: 阻塞请求的在途计数，在线程派生前递增、完成等待时递减。否则客户端能创建无界数量的内核线程。
 static WAITS: AtomicUsize = AtomicUsize::new(0);
 
 /// 发布端点并启动服务线程；与其他授权端点相同，须在 devtmpfs 挂载之后、init 发布之前调用。
@@ -26,8 +27,8 @@ static WAITS: AtomicUsize = AtomicUsize::new(0);
 ///
 /// 端点或线程创建失败。
 pub(crate) fn start() {
-    let settings = super::endpoint::publish(bridge::PATH, bridge::GROUP, 0o660);
-    let status = super::endpoint::publish(bridge::STATUS_PATH, 0, 0o666);
+    let settings = super::endpoint::publish(bridge::PATH, 0, 0o600);
+    let status = super::endpoint::publish(bridge::STATUS_PATH, 0, 0o600);
     task::spawn_kernel_thread("network-settings", Box::new(move || serve(settings, true)))
         .expect("network settings worker");
     task::spawn_kernel_thread("network-status", Box::new(move || serve(status, false)))
@@ -53,15 +54,15 @@ fn serve(socket: Arc<Socket>, writable: bool) {
     let mut settings: Option<Channel> = None;
     let mut storage = alloc::vec![0u8; bridge::DATAGRAM_MAX];
     loop {
-        let mut message = match super::endpoint::receive_message(&socket, &mut storage, true) {
-            Ok(message) => message,
-            Err(error) => {
-                error!("network settings receive: {error:?}");
-                return;
-            }
-        };
+        let (mut message, source) =
+            match super::endpoint::receive_message(&socket, &mut storage, true) {
+                Ok(message) => message,
+                Err(error) => {
+                    error!("network settings receive: {error:?}");
+                    return;
+                }
+            };
         let (count, full_length) = (message.count, message.full_length);
-        let source = message.source.take().expect("endpoint source");
         if full_length != count || count < bridge::HEADER_BYTES {
             super::endpoint::reply(&socket, source, &frame(Err(native_abi::ERR_INVALID_ARGS)));
             continue;
@@ -87,9 +88,16 @@ fn serve(socket: Arc<Socket>, writable: bool) {
         } else {
             None
         };
-        if matches!(ordinal, ordinal::WAIT | ordinal::DHCP | ordinal::WAIT_CONNECTION_CHANGES) {
+        if matches!(
+            ordinal,
+            ordinal::WAIT | ordinal::DHCP | ordinal::WAIT_CONNECTION_CHANGES
+        ) {
             if ordinal == ordinal::WAIT_CONNECTION_CHANGES
-                && router_protocol::connections::changes::Cursor::parse(payload).is_err()
+                && router_protocol::administration::parse_scoped_query(payload)
+                    .and_then(|(_, query)| {
+                        router_protocol::connections::changes::Cursor::parse(query)
+                    })
+                    .is_err()
             {
                 super::endpoint::reply(&socket, source, &frame(Err(native_abi::ERR_INVALID_ARGS)));
                 continue;
@@ -108,11 +116,17 @@ fn serve(socket: Arc<Socket>, writable: bool) {
                 | ordinal::BACKUPS
                 | ordinal::BACKUP_EXPORT
                 | ordinal::BGP_STATUS
+                | ordinal::OSPF_STATUS
                 | ordinal::BGP_ROUTES
                 | ordinal::DHCP_SERVER_BINDINGS
                 | ordinal::CONNECTIONS
                 | ordinal::CONNECTION_CHANGES
                 | ordinal::FIREWALL_COUNTERS
+                | ordinal::NEIGHBOR_PAGE
+                | ordinal::ROUTE_PAGE
+                | ordinal::COMMIT_RESULT
+                | ordinal::OPEN_NETWORK_NAMESPACE
+                | ordinal::ROUTING_DOMAINS
         );
         let mut result = Err(native_abi::ERR_PEER_CLOSED);
         for _ in 0..2 {
@@ -159,9 +173,8 @@ fn forward(channel: &Channel, ordinal: u32, payload: &[u8]) -> Result<Vec<u8>, S
             request.bytes(payload);
         }
         ordinal::WAIT => {
-            let generation = decoder.u64().map_err(invalid)?;
-            decoder.finish().map_err(invalid)?;
-            request.u64(generation);
+            Revision::from_bytes(payload).map_err(invalid)?;
+            request.bytes(payload);
         }
         ordinal::DHCP => {
             let name = decoder.bytes().map_err(invalid)?;
@@ -184,7 +197,10 @@ fn forward(channel: &Channel, ordinal: u32, payload: &[u8]) -> Result<Vec<u8>, S
     let mut reader = reply.reader();
     let result = match ordinal {
         ordinal::GET => reader.bytes()?.to_vec(),
-        ordinal::WAIT => reader.u64()?.to_le_bytes().to_vec(),
+        ordinal::WAIT => Revision::from_bytes(reader.bytes()?)
+            .map_err(invalid)?
+            .to_bytes()
+            .to_vec(),
         _ => Vec::new(),
     };
     reader.finish()?;
@@ -197,7 +213,7 @@ fn forward(channel: &Channel, ordinal: u32, payload: &[u8]) -> Result<Vec<u8>, S
 /// 在独立内核线程上经新连接转发一个可能等待的请求。
 fn forward_waiting(
     socket: &Arc<Socket>,
-    source: crate::net::SocketAddress,
+    source: crate::net::UnixReply,
     ordinal: u32,
     payload: &[u8],
 ) {
@@ -211,8 +227,9 @@ fn forward_waiting(
     let payload = payload.to_vec();
     let worker = Box::new(move || {
         let result = connect().and_then(|channel| forward(&channel, ordinal, &payload));
-        super::endpoint::reply(&worker_socket, worker_source, &frame(result));
+        // 回复会唤醒立即重新登记的客户端，此时本次等待已结束并应释放名额。
         WAITS.fetch_sub(1, Ordering::AcqRel);
+        super::endpoint::reply(&worker_socket, worker_source, &frame(result));
     });
     if task::spawn_kernel_thread("network-settings-wait", worker).is_err() {
         WAITS.fetch_sub(1, Ordering::AcqRel);

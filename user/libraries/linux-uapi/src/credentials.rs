@@ -1,6 +1,39 @@
-//! musl 1.2.6 的可重入密码散列验证；账户与 shadow 策略由 logon 拥有。
+//! Linux 账户与密码散列验证。
 
 use std::io;
+
+pub mod account;
+
+/// 按 Linux group(5) 的主组与成员列表解析账户的组。名称与编号借用原数据库行。
+/// # Errors
+/// 数据库行缺字段、包含多余字段或组编号无效。
+pub fn group_memberships<'a>(
+    database: &'a str,
+    user: &str,
+    primary: u32,
+) -> io::Result<Vec<(&'a str, u32)>> {
+    let mut groups = Vec::new();
+    for row in database
+        .lines()
+        .filter(|row| !row.is_empty() && !row.starts_with('#'))
+    {
+        let mut fields = row.split(':');
+        let (Some(name), Some(_), Some(id), Some(members), None) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        let id = id.parse().map_err(|_| io::ErrorKind::InvalidData)?;
+        if id == primary || members.split(',').any(|member| member == user) {
+            groups.push((name, id));
+        }
+    }
+    Ok(groups)
+}
 
 /// 将字符串现有分配内的明文擦除，然后清空；不改变容量或分配新的副本。
 ///

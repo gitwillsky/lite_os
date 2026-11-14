@@ -23,14 +23,8 @@ fn prerouting_chain(bytes: &[u8]) -> router_protocol::firewall::Prerouting<'_> {
     router_protocol::firewall::Prerouting::parse(bytes).expect("encoded firewall policy")
 }
 
-fn activate_execution(
-    prepared: Result<PreparedConfiguration, Status>,
-) -> Result<PreparedConfiguration, StageError> {
-    let transaction = prepared.map_err(StageError::Unchanged)?;
-    if let Err(error) = transaction.activate() {
-        return Err(abort_execution(transaction, configuration_status(error)));
-    }
-    Ok(transaction)
+fn bridge_ports(bytes: &[u8]) -> router_protocol::switching::Ports<'_> {
+    router_protocol::switching::Ports::parse(bytes).expect("encoded bridge ports")
 }
 
 /// 只改 MTU 时保留原 DHCP；替换时才拥有暂存的新能力。None 新会话和保留旧会话是不同的寿命操作。
@@ -45,8 +39,6 @@ struct StagedInterface {
     prefix_length: u8,
     route: Option<router_protocol::interface::DefaultRoute>,
     dhcp: DhcpChange,
-    pool: Option<router_protocol::dhcp_server::Pool>,
-    pool_pause: Option<Channel>,
 }
 
 /// 一次配置决定的全部临时执行资源；根配置锁保证 position 在暂存期间不改变。
@@ -54,6 +46,7 @@ pub(super) struct StagedConfiguration {
     transaction: PreparedConfiguration,
     interfaces: Vec<StagedInterface>,
     dns_pause: Option<Channel>,
+    pools: Option<dhcp_server::StagedPools>,
 }
 
 impl StagedConfiguration {
@@ -70,7 +63,9 @@ impl StagedConfiguration {
         if let Err(error) = self.transaction.confirm() {
             RouterConfig::retain_dns_pause(inner, self.dns_pause.take());
             owner.queue_dns(inner);
-            retain_unconfirmed_pools(inner, &mut self.interfaces);
+            if let Some(pools) = &mut self.pools {
+                pools.hold(&mut inner.pools);
+            }
             owner.queue_applications(inner, self.interfaces.iter().map(|staged| staged.position));
             owner.queue_sources(inner);
             error!(
@@ -83,8 +78,7 @@ impl StagedConfiguration {
         RouterConfig::retain_dns_pause(inner, self.dns_pause.take());
         owner.queue_dns(inner);
         // 3. 执行服务确认整个批次后，才发布全部地址与新 DHCP 会话。
-        let mut result = Ok(());
-        for mut staged in self.interfaces {
+        for staged in self.interfaces {
             let interface = &mut inner.interfaces[staged.position];
             match staged.dhcp {
                 DhcpChange::Keep => interface.retry_at = None,
@@ -93,16 +87,13 @@ impl StagedConfiguration {
                     interface.dhcp = dhcp;
                 }
             }
-            if let Err(status) = owner.apply_pool(inner, staged.position, staged.pool) {
-                if let Some(session) = &mut inner.interfaces[staged.position].dhcp_server {
-                    session.pending_pause = staged.pool_pause.take();
-                }
-                owner.queue_application(&mut inner.interfaces[staged.position]);
-                error!("router-config: downstream DHCP application pending: {status}");
-                result = Err(native_abi::ERR_BAD_STATE);
-            }
-            drop(staged.pool_pause);
         }
+        let mut result = self.pools.take().map_or(Ok(()), |pools| {
+            pools.confirm(owner, inner).map_err(|status| {
+                error!("router-config: downstream DHCP application pending: {status}");
+                native_abi::ERR_BAD_STATE
+            })
+        });
         if result.is_ok() && inner.dns.retry_at.is_some() {
             result = owner
                 .apply_dns(inner)
@@ -115,20 +106,12 @@ impl StagedConfiguration {
         let result = self.transaction.abort().map_err(configuration_status);
         if result.is_err() {
             RouterConfig::retain_dns_pause(inner, self.dns_pause.take());
-            retain_unconfirmed_pools(inner, &mut self.interfaces);
+            if let Some(pools) = &mut self.pools {
+                pools.hold(&mut inner.pools);
+            }
         }
         drop(self.interfaces);
         result
-    }
-}
-
-fn retain_unconfirmed_pools(inner: &mut Inner, interfaces: &mut [StagedInterface]) {
-    for staged in interfaces {
-        if let Some(token) = staged.pool_pause.take()
-            && let Some(session) = &mut inner.interfaces[staged.position].dhcp_server
-        {
-            session.pending_pause = Some(token);
-        }
     }
 }
 
@@ -210,10 +193,15 @@ impl RouterConfig {
                 changes.iter().map(|(position, _, _)| *position),
             )
             .map_err(StageError::Unchanged)?;
+        let retain = self
+            .retains_delegation(inner, configuration)
+            .map_err(StageError::Unchanged)?;
         // 已确认且静态来源不变时只切换执行策略；重连或未知结果必须重放完整已持久决定，不能乐观省略。
         if changes.is_empty()
             && inner.source_retry_at.is_none()
             && let Some((previous, candidate)) = inner.saved.as_deref().zip(configuration)
+            && previous.prefix_delegation == candidate.prefix_delegation
+            && (!inner.delegation.has_session() || retain)
             && routing::changed(Some(previous), candidate)
             && !routing::sources_changed(Some(previous), candidate)
         {
@@ -221,10 +209,24 @@ impl RouterConfig {
                 .link
                 .as_ref()
                 .ok_or(StageError::Unchanged(native_abi::ERR_BAD_STATE))?;
-            let firewall = routing::firewall_changed(Some(previous), candidate)
-                .then(|| routing::prerouting(Some(candidate), &inner.interfaces))
+            let firewall_changed = routing::firewall_changed(Some(previous), candidate);
+            let multicast_changed = routing::multicast_changed(Some(previous), candidate);
+            let bridges = (routing::bridges_changed(Some(previous), candidate)
+                || (firewall_changed || multicast_changed) && routing::has_gateways(candidate))
+            .then(|| routing::bridges(Some(candidate), &inner.interfaces, &link.installer, &[]))
+            .transpose()
+            .map_err(StageError::Unchanged)?;
+            let ports = bridges.as_deref().map(bridge_ports);
+            let firewall = firewall_changed
+                .then(|| routing::prerouting(Some(candidate), &inner.interfaces, ports))
                 .transpose()
                 .map_err(StageError::Unchanged)?;
+            // 新拓扑下重新绑定组播引用；设备已离开时保留配置意图，不能拿旧接口阻止网桥提交。
+            let multicast = (multicast_changed
+                || ports.is_some() && !candidate.multicast_routes.is_empty())
+            .then(|| routing::multicast(Some(candidate), &inner.interfaces, ports))
+            .transpose()
+            .map_err(StageError::Unchanged)?;
             let execution = network_protocol::ExecutionPolicy {
                 forwarding: (previous.ipv4_forwarding != candidate.ipv4_forwarding
                     || previous.ipv6_forwarding != candidate.ipv6_forwarding)
@@ -233,26 +235,26 @@ impl RouterConfig {
                         ipv6: candidate.ipv6_forwarding,
                     }),
                 prerouting: firewall.as_deref().map(prerouting_chain),
+                bridges: ports,
+                multicast: multicast.as_deref(),
             };
-            let transaction = match link.activate_configuration(&[], [None, None], None, None, execution) {
-                Ok(transaction) => transaction,
-                Err(error) => {
-                    if matches!(error, StageError::RollbackFailed { .. }) {
-                        RouterConfig::retain_dns_pause(inner, dns_pause.take());
+            let transaction =
+                match link.activate_configuration(&[], [None, None], None, None, execution) {
+                    Ok(transaction) => transaction,
+                    Err(error) => {
+                        if matches!(error, StageError::RollbackFailed { .. }) {
+                            RouterConfig::retain_dns_pause(inner, dns_pause.take());
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             return Ok(StagedConfiguration {
                 transaction,
                 interfaces: Vec::new(),
                 dns_pause,
+                pools: None,
             });
         }
-        let routes =
-            routing::compile(configuration, &inner.interfaces).map_err(StageError::Unchanged)?;
-        let firewall =
-            routing::prerouting(configuration, &inner.interfaces).map_err(StageError::Unchanged)?;
         let mut plans = Vec::new();
         plans
             .try_reserve_exact(changes.len())
@@ -262,25 +264,18 @@ impl RouterConfig {
             .try_reserve_exact(changes.len())
             .map_err(|_| StageError::Unchanged(native_abi::ERR_NO_MEMORY))?;
         let mut assignments = Vec::new();
-        if self
-            .retains_delegation(inner, configuration)
-            .map_err(StageError::Unchanged)?
-        {
+        let now = native_runtime::system::monotonic();
+        if retain {
             assignments
                 .try_reserve_exact(changes.len())
                 .map_err(|_| StageError::Unchanged(native_abi::ERR_NO_MEMORY))?;
-            let now = native_runtime::system::monotonic();
             for &(position, config, _) in changes {
+                let subnet = (config.method != Method::Disabled)
+                    .then(|| delegation::downstream(configuration, &inner.interfaces[position]))
+                    .flatten();
                 assignments.push(
-                    Self::delegated_prefixes(
-                        inner,
-                        configuration,
-                        &inner.interfaces[position],
-                        config.method != Method::Disabled,
-                        now,
-                        true,
-                    )
-                    .map_err(StageError::Unchanged)?,
+                    Self::delegated_prefixes(inner, configuration, subnet, now, retain)
+                        .map_err(StageError::Unchanged)?,
                 );
             }
         }
@@ -345,6 +340,14 @@ impl RouterConfig {
                 .transpose()
                 .map_err(|_| StageError::Unchanged(native_abi::ERR_INVALID_ARGS))?
                 .flatten();
+            if let Some(port) = configuration.and_then(|configuration| {
+                configuration.bridged_profile(&interface.name, interface.mac)
+            }) {
+                plan.up = port.enabled != Some(false);
+                plan.address = None;
+                plan.prefix_length = 0;
+                plan.route = None;
+            }
             let addresses = profile
                 .and_then(|profile| profile.ipv6.as_ref())
                 .map_or(&[][..], |ipv6| ipv6.addresses.as_slice());
@@ -366,23 +369,12 @@ impl RouterConfig {
                 router_protocol::interface::Ipv6Addresses::new(addresses)
                     .map_err(|_| StageError::Unchanged(native_abi::ERR_INVALID_ARGS))?,
             );
-            let pool = if plan.up {
-                profile
-                    .map(router_protocol::configuration::Interface::dhcp_pool)
-                    .transpose()
-                    .map_err(|_| StageError::Unchanged(native_abi::ERR_INVALID_ARGS))?
-                    .flatten()
-            } else {
-                None
-            };
             plans.push(plan);
             interfaces.push(StagedInterface {
                 position,
                 address: plan.address,
                 prefix_length: plan.prefix_length,
                 route: plan.route,
-                pool,
-                pool_pause: None,
                 dhcp: if keep {
                     DhcpChange::Keep
                 } else {
@@ -390,30 +382,47 @@ impl RouterConfig {
                 },
             });
         }
-        for staged in &mut interfaces {
-            let interface = &mut inner.interfaces[staged.position];
-            if interface
-                .dhcp_server
-                .as_ref()
-                .is_some_and(dhcp_server::PoolSession::closed)
-            {
-                interface.dhcp_server = None;
-            }
-            if let Some(session) = &interface.dhcp_server {
-                staged.pool_pause = match session.pause_for(staged.pool.as_ref()) {
-                    Ok(pause) => pause,
-                    Err(native_abi::ERR_PEER_CLOSED) => {
-                        interface.dhcp_server = None;
-                        None
-                    }
-                    Err(status) => return Err(StageError::Unchanged(status)),
-                };
-            }
-        }
         let link = inner
             .link
             .as_ref()
             .ok_or(StageError::Unchanged(native_abi::ERR_BAD_STATE))?;
+        let bridges = routing::bridges(configuration, &inner.interfaces, &link.installer, &plans)
+            .map_err(StageError::Unchanged)?;
+        let ports = bridge_ports(&bridges);
+        let vlan_assignments =
+            delegation::vlan_assignments(inner, configuration, ports, retain, now)
+                .map_err(StageError::Unchanged)?;
+        plans
+            .try_reserve_exact(vlan_assignments.len())
+            .map_err(|_| StageError::Unchanged(native_abi::ERR_NO_MEMORY))?;
+        for (gateway, prefixes) in &vlan_assignments {
+            plans.push(
+                delegation::prefix_plan(
+                    (
+                        gateway.binding.index,
+                        true,
+                        gateway.address,
+                        gateway.prefix_length,
+                    ),
+                    prefixes,
+                )
+                .map_err(StageError::Unchanged)?,
+            );
+        }
+        let routes = routing::compile(configuration, &inner.interfaces, ports)
+            .map_err(StageError::Unchanged)?;
+        let firewall = routing::prerouting(configuration, &inner.interfaces, Some(ports))
+            .map_err(StageError::Unchanged)?;
+        let multicast = routing::multicast(configuration, &inner.interfaces, Some(ports))
+            .map_err(StageError::Unchanged)?;
+        let mut pools = dhcp_server::stage(
+            &mut inner.pools,
+            &inner.interfaces,
+            configuration,
+            ports,
+            &plans,
+        )
+        .map_err(StageError::Unchanged)?;
         let activated = link.activate_configuration(
             &plans,
             [Some(&routes.main[0]), Some(&routes.main[1])],
@@ -425,6 +434,8 @@ impl RouterConfig {
                     ipv6: configuration.ipv6_forwarding,
                 }),
                 prerouting: Some(prerouting_chain(&firewall)),
+                bridges: Some(ports),
+                multicast: Some(&multicast),
             },
         );
         let transaction = match activated {
@@ -432,7 +443,7 @@ impl RouterConfig {
             Err(error) => {
                 if matches!(error, StageError::RollbackFailed { .. }) {
                     RouterConfig::retain_dns_pause(inner, dns_pause.take());
-                    retain_unconfirmed_pools(inner, &mut interfaces);
+                    pools.hold(&mut inner.pools);
                 }
                 return Err(error);
             }
@@ -456,7 +467,7 @@ impl RouterConfig {
                     let error = abort_execution(transaction, status);
                     if matches!(error, StageError::RollbackFailed { .. }) {
                         RouterConfig::retain_dns_pause(inner, dns_pause.take());
-                        retain_unconfirmed_pools(inner, &mut interfaces);
+                        pools.hold(&mut inner.pools);
                     }
                     drop(interfaces);
                     return Err(error);
@@ -467,6 +478,7 @@ impl RouterConfig {
             transaction,
             interfaces,
             dns_pause,
+            pools: Some(pools),
         })
     }
 

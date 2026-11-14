@@ -2,7 +2,7 @@
 
 use packet_wire::tcp::{ACK, FIN, RST, SYN, TcpPacket, options::TcpOption};
 use router_protocol::connections::Phase;
-use smoltcp::time::Duration;
+use ::tcp::time::Duration;
 
 const ACK_SLACK: u32 = 66_000;
 
@@ -17,6 +17,33 @@ pub(in crate::inet::forward) struct Segment {
 }
 
 impl Segment {
+    /// 在队列线程上完成结构检查。校验和仍由原帧的校验状态单独证明。
+    pub(super) fn prepare(bytes: &[u8]) -> Option<Self> {
+        Self::capture(TcpPacket::parse_header(bytes).ok()?)
+    }
+
+    // 只在同一进程的 RX 借用内交付，复用 UDP 连接提示的空间。
+    pub(super) fn words(self) -> [u64; 2] {
+        [
+            u64::from(self.sequence) | (u64::from(self.end) << 32),
+            u64::from(self.acknowledgment)
+                | (u64::from(self.window) << 32)
+                | (u64::from(self.scale.map_or(0, |scale| scale + 1)) << 48)
+                | (u64::from(self.flags) << 56),
+        ]
+    }
+
+    pub(super) fn from_words([sequence, control]: [u64; 2]) -> Self {
+        Self {
+            sequence: sequence as u32,
+            end: (sequence >> 32) as u32,
+            acknowledgment: control as u32,
+            window: (control >> 32) as u16,
+            scale: ((control >> 48) as u8).checked_sub(1),
+            flags: (control >> 56) as u8,
+        }
+    }
+
     pub(super) fn capture(packet: TcpPacket<'_>) -> Option<Self> {
         let header = packet.header();
         let flags = header.flags() & (SYN | ACK | FIN | RST);

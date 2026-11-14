@@ -6,6 +6,7 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <signal.h>
 #include <stdint.h>
@@ -15,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 int verify_network_namespaces(void);
@@ -28,9 +30,9 @@ static struct sockaddr_in local_address(int fd)
     if(getsockname(fd,(struct sockaddr *)&result,&size) || size!=sizeof result) result.sin_family=0;
     return result;
 }
-static int configure(int fd,unsigned long request,const struct sockaddr_in *address)
+static int configure_loopback(int fd,unsigned long request,const struct sockaddr_in *address)
 {
-    struct ifreq value={0}; strcpy(value.ifr_name,"eth0");
+    struct ifreq value={0}; strcpy(value.ifr_name,"lo");
     memcpy(&value.ifr_addr,address,sizeof *address);
     return ioctl(fd,request,&value);
 }
@@ -254,6 +256,17 @@ static int native_options(void)
             if (setsockopt(fd,IPPROTO_TCP,TCP_MAXSEG,&value,sizeof value)) return 64;
             length=sizeof value;
             if (getsockopt(fd,IPPROTO_TCP,TCP_MAXSEG,&value,&length) || value!=536) return 65;
+            struct tcp_info info;
+            memset(&info, 0xa5, sizeof info);
+            length=sizeof info;
+            if (getsockopt(fd,IPPROTO_TCP,TCP_INFO,&info,&length) || length!=104
+                || info.tcpi_state!=TCP_CLOSE || info.tcpi_snd_mss!=536 || info.tcpi_total_retrans!=0) return 167;
+            unsigned char state_only[2]={0,0xa5};
+            length=1;
+            if (getsockopt(fd,IPPROTO_TCP,TCP_INFO,state_only,&length) || length!=1
+                || state_only[0]!=TCP_CLOSE || state_only[1]!=0xa5) return 168;
+            length=sizeof info; errno=0;
+            if (getsockopt(fd,IPPROTO_TCP,TCP_INFO,(void *)1,&length)!=-1 || errno!=EFAULT || length!=104) return 169;
         } else {
             value=1; errno=0;
             if (setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&value,sizeof value)!=-1 || errno!=ENOPROTOOPT) return 52;
@@ -326,32 +339,36 @@ static int native_pktinfo(void)
 }
 
 /* devinet_ioctl 使用真实 ifa 记录：首次classful，显式broadcast在mask变化后保留。 */
-static int native_interface_address(int control)
+static int native_interface_address(void)
 {
+    if(unshare(CLONE_NEWNET)) return 174;
+    int control=socket(AF_INET,SOCK_DGRAM,0); if(control<0) return 174;
+    struct ifreq value={0}; strcpy(value.ifr_name,"lo"); value.ifr_flags=IFF_UP;
+    if(ioctl(control,SIOCSIFFLAGS,&value)) return 174;
+    if(ioctl(control,SIOCGIFBRDADDR,&value) || ((struct sockaddr_in *)&value.ifr_broadaddr)->sin_addr.s_addr) return 180;
     struct sockaddr_in local={.sin_family=AF_INET},mask={.sin_family=AF_INET},broadcast={.sin_family=AF_INET};
     inet_pton(AF_INET,"172.19.3.15",&local.sin_addr);
-    if(configure(control,SIOCSIFADDR,&local)) return 175;
-    struct ifreq value={0}; strcpy(value.ifr_name,"eth0");
+    if(configure_loopback(control,SIOCSIFADDR,&local)) return 175;
+    memset(&value,0,sizeof value); strcpy(value.ifr_name,"lo");
     if(ioctl(control,SIOCGIFNETMASK,&value) || ((struct sockaddr_in *)&value.ifr_netmask)->sin_addr.s_addr!=htonl(0xffff0000)) return 176;
     inet_pton(AF_INET,"172.19.3.99",&broadcast.sin_addr);
     inet_pton(AF_INET,"255.255.255.0",&mask.sin_addr);
-    if(configure(control,SIOCSIFBRDADDR,&broadcast) || configure(control,SIOCSIFNETMASK,&mask)
-        || configure(control,SIOCSIFADDR,&local)) return 177;
-    memset(&value,0,sizeof value); strcpy(value.ifr_name,"eth0");
-    if(ioctl(control,SIOCGIFBRDADDR,&value) || ((struct sockaddr_in *)&value.ifr_broadaddr)->sin_addr.s_addr!=broadcast.sin_addr.s_addr) return 178;
-    memset(&value,0,sizeof value); strcpy(value.ifr_name,"eth0");
-    if(ioctl(control,SIOCGIFNETMASK,&value) || ((struct sockaddr_in *)&value.ifr_netmask)->sin_addr.s_addr!=mask.sin_addr.s_addr) return 179;
+    if(configure_loopback(control,SIOCSIFBRDADDR,&broadcast) || configure_loopback(control,SIOCSIFNETMASK,&mask)
+        || configure_loopback(control,SIOCSIFADDR,&local)) return 177;
     memset(&value,0,sizeof value); strcpy(value.ifr_name,"lo");
-    if(ioctl(control,SIOCGIFBRDADDR,&value) || ((struct sockaddr_in *)&value.ifr_broadaddr)->sin_addr.s_addr) return 180;
+    if(ioctl(control,SIOCGIFBRDADDR,&value) || ((struct sockaddr_in *)&value.ifr_broadaddr)->sin_addr.s_addr!=broadcast.sin_addr.s_addr) return 178;
+    memset(&value,0,sizeof value); strcpy(value.ifr_name,"lo");
+    if(ioctl(control,SIOCGIFNETMASK,&value) || ((struct sockaddr_in *)&value.ifr_netmask)->sin_addr.s_addr!=mask.sin_addr.s_addr) return 179;
     struct ifreq invalid={0}; strcpy(invalid.ifr_name,"missing"); invalid.ifr_addr.sa_family=AF_UNIX;
     errno=0; if(ioctl(control,SIOCSIFADDR,&invalid)!=-1 || errno!=EINVAL) return 181;
     local.sin_addr.s_addr=0;
-    if(configure(control,SIOCSIFADDR,&local)) return 182;
+    if(configure_loopback(control,SIOCSIFADDR,&local)) return 182;
     for(unsigned long request=SIOCGIFADDR;;request=SIOCGIFNETMASK) {
-        memset(&value,0,sizeof value); strcpy(value.ifr_name,"eth0");
+        memset(&value,0,sizeof value); strcpy(value.ifr_name,"lo");
         errno=0; if(ioctl(control,request,&value)!=-1 || errno!=EADDRNOTAVAIL) return 183;
         if(request==SIOCGIFNETMASK) break;
     }
+    close(control);
     return 0;
 }
 /* native proc_net: root 是 self/net symlink，task selector 与实际 NET 文件共享 inode。 */
@@ -464,30 +481,25 @@ done:
 }
 int verify_udp_native(void)
 {
+    pid_t child=fork();
+    if(child==0) _exit(native_interface_address());
+    int status=0;
+    if(child<0 || waitpid(child,&status,0)!=child || !WIFEXITED(status)) return 174;
+    if(WEXITSTATUS(status)) return WEXITSTATUS(status);
+
     int control=socket(AF_INET,SOCK_DGRAM,0); if(control<0) return 235;
-    struct ifreq saved_address={0},saved_mask={0},saved_flags={0},saved_broadcast={0};
-    int had_address=1;
-    strcpy(saved_address.ifr_name,"eth0"); strcpy(saved_mask.ifr_name,"eth0"); strcpy(saved_flags.ifr_name,"eth0");
-    if(ioctl(control,SIOCGIFADDR,&saved_address)) {
-        if(errno!=EADDRNOTAVAIL) return 236;
-        had_address=0;
-        ((struct sockaddr_in *)&saved_address.ifr_addr)->sin_family=AF_INET;
+    /* 真实网卡使用原生 DHCP 设置。等已管理的地址发布，Linux 侧不临时覆盖它。 */
+    struct ifreq address={0}; strcpy(address.ifr_name,"eth0");
+    for(unsigned attempt=0; ioctl(control,SIOCGIFADDR,&address); ++attempt) {
+        if(errno!=EADDRNOTAVAIL || attempt==99) return 236;
+        usleep(50*1000);
     }
-    if(ioctl(control,SIOCGIFNETMASK,&saved_mask)) {
-        if(errno!=EADDRNOTAVAIL) return 236;
-        ((struct sockaddr_in *)&saved_mask.ifr_netmask)->sin_family=AF_INET;
-    }
-    if(ioctl(control,SIOCGIFFLAGS,&saved_flags)) return 236;
-    strcpy(saved_broadcast.ifr_name,"eth0");
-    if(had_address && ioctl(control,SIOCGIFBRDADDR,&saved_broadcast)) return 236;
-    int result=native_interface_address(control);
-    if(result) return result;
-    struct sockaddr_in address={.sin_family=AF_INET},mask={.sin_family=AF_INET},peer={.sin_family=AF_INET,.sin_port=htons(44000)};
-    inet_pton(AF_INET,"10.0.2.15",&address.sin_addr); inet_pton(AF_INET,"255.255.255.0",&mask.sin_addr);
-    inet_pton(AF_INET,"10.0.2.16",&peer.sin_addr);
-    struct ifreq up=saved_flags; up.ifr_flags|=IFF_UP;
-    if(configure(control,SIOCSIFADDR,&address) || configure(control,SIOCSIFNETMASK,&mask) || ioctl(control,SIOCSIFFLAGS,&up)) return 237;
-    result=native_data_ring();
+    uint32_t local=((struct sockaddr_in *)&address.ifr_addr)->sin_addr.s_addr;
+    if(ioctl(control,SIOCSIFADDR,&address)!=-1 || errno!=EPERM) return 237;
+    close(control);
+    struct sockaddr_in peer={.sin_family=AF_INET,.sin_port=htons(44000)};
+    inet_pton(AF_INET,"10.0.2.2",&peer.sin_addr);
+    int result=native_data_ring();
     if(!result) result=native_options();
     if(!result) result=native_raw_header();
     if(!result) result=native_pktinfo();
@@ -496,12 +508,8 @@ int verify_udp_native(void)
     if(!result) result=verify_netlink_native();
     if(!result) result=verify_interface_mtu();
     if(!result) result=verify_ipv4_routing();
-    if(!result) result=bindings(&peer,address.sin_addr.s_addr);
+    if(!result) result=bindings(&peer,local);
     if(!result) result=shutdown_policy(&peer);
-    if(ioctl(control,SIOCSIFADDR,&saved_address)
-        || (had_address && (ioctl(control,SIOCSIFNETMASK,&saved_mask) || ioctl(control,SIOCSIFBRDADDR,&saved_broadcast)))
-        || ioctl(control,SIOCSIFFLAGS,&saved_flags)) return 238;
-    close(control);
     if(result) {dprintf(2,"UDP native policy failure step=%d errno=%d\n",result,errno);return result;}
     puts("LiteOS musl UDP bind locks disconnect shutdown EOF and packet EPIPE policy ok");
     return 0;

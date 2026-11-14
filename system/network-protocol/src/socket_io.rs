@@ -108,11 +108,12 @@ pub(super) fn packet_information(record: &mut Record, info: PacketInformation) {
         PacketChecksum::Partial => 1,
         PacketChecksum::Verified => 2,
     } | (u64::from(info.network_offset) << 16);
+    record[9] = info.timestamp_ns;
 }
 pub(super) fn get_packet_information(record: &Record) -> Result<PacketInformation, Status> {
     if record[8] & !0xffff_0003 != 0
         || record[8] >> 16 > record[3]
-        || record[9..].iter().any(|&word| word != 0)
+        || record[10..].iter().any(|&word| word != 0)
     {
         return Err(invalid());
     }
@@ -124,6 +125,7 @@ pub(super) fn get_packet_information(record: &Record) -> Result<PacketInformatio
             _ => return Err(invalid()),
         },
         network_offset: (record[8] >> 16) as u16,
+        timestamp_ns: record[9],
     })
 }
 fn poll(state: SocketPollState) -> u64 {

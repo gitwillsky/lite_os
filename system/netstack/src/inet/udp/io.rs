@@ -28,7 +28,6 @@ pub(in crate::inet) fn send(
             {
                 return Err(error);
             }
-            network.ensure_udp_bound(id)?;
             let state = &network.udp_endpoints[&id];
             let peer = state.destination(
                 target
@@ -41,11 +40,12 @@ pub(in crate::inet) fn send(
             let options = state.options;
             let (source, outgoing) = state.send_packet_info(network, peer, packet_info)?;
             let peer = wire_address(peer);
+            let timestamp = super::super::now();
             let route = network.ip_output(
                 source,
                 peer,
                 (outgoing, options.mark),
-                super::super::now(),
+                timestamp,
             )?;
             let header = if peer.is_ipv4() { 28 } else { 48 };
             let mtu = if peer.is_ipv4() {
@@ -72,7 +72,7 @@ pub(in crate::inet) fn send(
                 let state = network.udp_endpoints.get_mut(&id).expect("live UDP");
                 if state.errors.local_mtu(destination, mtu) {
                     state.notification_pending = true;
-                    crate::worker::request_poll();
+                    crate::worker::request_poll(endpoint.namespace.id());
                 }
                 return Err(SocketError::MessageTooLarge);
             }
@@ -82,6 +82,8 @@ pub(in crate::inet) fn send(
             if state.shutdown & SEND_SHUTDOWN != 0 {
                 return Err(SocketError::BrokenPipe);
             }
+            network.ensure_udp_bound(id, (route.source, peer), timestamp)?;
+            let state = &network.udp_endpoints[&id];
             let mut metadata = Transmit {
                 source: InetAddress::new(route.source, state.local.port()),
                 destination: peer,
@@ -153,7 +155,7 @@ pub(in crate::inet) fn send(
             state.transmit_at = super::super::now();
         },
     )?;
-    crate::worker::request_poll();
+    crate::worker::request_poll(endpoint.namespace.id());
     Ok(written)
 }
 

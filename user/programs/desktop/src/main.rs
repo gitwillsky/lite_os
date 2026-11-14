@@ -14,7 +14,9 @@ use classic_ui::{
 };
 use desktop_entry::file_uris;
 use dialogs::{Dialog, Kind};
+use linux_uapi::filesystem::DirectoryChanges;
 use linux_uapi::shared_memory::MemFd;
+use linux_uapi::unix::{PollBuffer, PollEvents, PollFd, poll};
 use std::{
     collections::HashSet,
     io::{self, Read, Write},
@@ -28,8 +30,17 @@ use std::{
 const TASKBAR_HEIGHT: i32 = 28;
 
 /// 开始菜单“程序”使用用户与系统安装条目；设置程序只在控制面板出现。
-fn installed_programs() -> Vec<desktop_entry::Entry> {
-    let mut apps = desktop_entry::installed();
+fn installed_programs(changes: Option<&mut DirectoryChanges>) -> Vec<desktop_entry::Entry> {
+    let mut apps = match changes {
+        Some(changes) => {
+            let (apps, watch) = desktop_entry::watch_installed(changes);
+            if let Err(error) = watch {
+                eprintln!("desktop: application directories: {error}");
+            }
+            apps
+        }
+        None => desktop_entry::installed(),
+    };
     apps.retain(|app| !app.in_category("Settings"));
     apps
 }
@@ -90,13 +101,14 @@ struct Rename {
 struct Desktop {
     background: WindowId,
     taskbar: WindowId,
-    menu: Option<WindowId>,
+    menu: start::Surface,
     /// 全屏输入根到局部绘图子表面的唯一关联；根销毁时 Display 递归销毁子表面。
     popup_surfaces: std::collections::HashMap<WindowId, WindowId>,
     menu_selection: start::Selection,
     /// 当前弹出层（托盘音量面板或右键菜单）及其全屏表面；同一时刻最多一个。
     overlay: Option<(WindowId, popups::Overlay)>,
     apps: Vec<desktop_entry::Entry>,
+    application_changes: Option<DirectoryChanges>,
     dialogs: Vec<Dialog>,
     children: Vec<Child>,
     control: UnixStream,
@@ -156,6 +168,7 @@ impl Desktop {
         let settings = desktop_settings::Settings::load();
         let taskbar =
             display.create_layer("org.liteos.taskbar", Self::taskbar_layer(&settings, false))?;
+        let menu = start::Surface::Prepared(start::prepare_layer(display)?);
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| io::Error::other("HOME missing"))?;
@@ -171,14 +184,19 @@ impl Desktop {
             }
         });
         let control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
+        let mut application_changes = DirectoryChanges::open()
+            .inspect_err(|error| eprintln!("desktop: application notifications: {error}"))
+            .ok();
+        let apps = installed_programs(application_changes.as_mut());
         Ok(Self {
             background,
             taskbar,
-            menu: None,
+            menu,
             popup_surfaces: Default::default(),
             menu_selection: start::Selection::default(),
             overlay: None,
-            apps: installed_programs(),
+            apps,
+            application_changes,
             dialogs: Vec::new(),
             children: Vec::new(),
             control,
@@ -460,7 +478,7 @@ impl Desktop {
             // 图标只落在网格单元上，已经对齐；保留命令以与原版菜单一致。
             Action::LineUpIcons => {}
             Action::Refresh => {
-                self.apps = installed_programs();
+                self.apps = installed_programs(self.application_changes.as_mut());
                 self.refresh_icons();
             }
             Action::Window(id, request) => display.control_toplevel(id, request)?,
@@ -509,7 +527,7 @@ impl Desktop {
     }
     /// 开始菜单的键盘导航：上下在当前层移动，右进入子菜单，左退出，回车执行。
     fn menu_key(&mut self, display: &mut Display, code: u32) -> io::Result<()> {
-        let Some(menu) = self.menu else {
+        let Some(menu) = self.menu.visible() else {
             return Ok(());
         };
         let Some(c) = display.configuration(menu) else {
@@ -846,7 +864,7 @@ impl Desktop {
                         Drag::Selection { .. } => {}
                     }
                 }
-                if Some(window) == self.menu
+                if Some(window) == self.menu.visible()
                     && let Some(c) = display.configuration(window)
                 {
                     let (_, geometry) = self.menu_geometry(c);
@@ -868,7 +886,7 @@ impl Desktop {
                     Some(c) => c,
                     None => return Ok(()),
                 };
-                if Some(window) == self.menu {
+                if Some(window) == self.menu.visible() {
                     if !pressed {
                         let (rows, geometry) = self.menu_geometry(c);
                         let point = (self.pointer.1 as i32, self.pointer.2 as i32);
@@ -1088,7 +1106,7 @@ impl Desktop {
                 }
             }
             EventKind::Key(key) if key.pressed => {
-                if Some(window) == self.menu {
+                if Some(window) == self.menu.visible() {
                     self.menu_key(display, key.code)?;
                 } else {
                     match key.code {
@@ -1204,8 +1222,8 @@ impl Desktop {
                 code: 0x111,
                 pressed: false,
                 ..
-            } if Some(window) != self.menu => self.context_menu(display, art, window, false)?,
-            EventKind::Close if Some(window) == self.menu => self.toggle_menu(display)?,
+            } if Some(window) != self.menu.visible() => self.context_menu(display, art, window, false)?,
+            EventKind::Close if Some(window) == self.menu.window() => self.retire_menu(display)?,
             _ => {}
         }
         Ok(())
@@ -1223,12 +1241,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut minute = 0;
     let mut last_unix_minute = 0;
     let mut revision = 0;
-    // 外部安装器会写入 XDG 应用目录；每秒刷新一次，避免每个输入事件都扫描完整应用树。
-    let mut application_poll = Instant::now();
+    let mut external = PollBuffer::default();
     // 持续移动鼠标时也按普通空闲循环的频率查目录，避免每个输入批次都查询文件系统。
     let mut icon_poll = Instant::now();
     let mut pending = HashSet::new();
     loop {
+        let mut applications_ready = false;
         // 1. 同批已到达的输入先按顺序交付，再绘制最终状态；逐事件重画全屏会让滑块追赶旧坐标。
         // 2. 每轮至多处理 64 项，持续输入时仍给绘制、外部状态和会话回收执行机会。
         for index in 0..64 {
@@ -1253,11 +1271,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Duration::ZERO
             };
             let event = {
-                use linux_uapi::unix::{PollEvents, PollFd};
-                let mut source = art
-                    .picture_notification()
-                    .map(|fd| PollFd::new(fd, PollEvents::READ));
-                display.next_event_with_sources(Some(timeout), source.as_mut_slice())?
+                let mut sources = external.prepare();
+                if let Some(fd) = art.picture_notification() {
+                    sources.push(PollFd::new(fd, PollEvents::READ));
+                }
+                if let Some(changes) = &state.application_changes {
+                    sources.push(PollFd::new(changes.descriptor(), PollEvents::READ));
+                }
+                let sources = sources.sources();
+                let event = display.next_event_with_sources(Some(timeout), sources)?;
+                if state.application_changes.is_some() {
+                    applications_ready |= sources
+                        .last()
+                        .is_some_and(|source| source.returned().contains(PollEvents::READ));
+                }
+                event
             };
             let Some(event) = event else {
                 break;
@@ -1309,15 +1337,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pending.insert(state.background);
         }
         state.tick_auto_hide(&mut display)?;
-        if application_poll.elapsed() >= Duration::from_secs(1) {
-            application_poll = Instant::now();
-            let apps = installed_programs();
-            if apps != state.apps {
-                state.apps = apps;
-                if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
-                    state.refresh_icons();
+        if applications_ready
+            && let Some(changes) = &mut state.application_changes
+        {
+            match changes.drain() {
+                Ok(true) => {
+                    let apps = installed_programs(Some(changes));
+                    if apps != state.apps {
+                        state.apps = apps;
+                        if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
+                            state.refresh_icons();
+                        }
+                        state.apps_changed = true;
+                    }
                 }
-                state.apps_changed = true;
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("desktop: application notifications: {error}");
+                    state.application_changes = None;
+                }
             }
         }
         if icon_poll.elapsed() >= Duration::from_millis(100)
@@ -1364,7 +1402,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             revision = current_revision;
             dirty = true;
         }
-        use linux_uapi::unix::{PollEvents, PollFd, poll};
         let mut fd = [PollFd::new(state.control.as_fd(), PollEvents::READ)];
         if poll(&mut fd, Some(Duration::ZERO))? != 0 {
             let mut byte = [0];
@@ -1382,7 +1419,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
         let ids: Vec<_> = [state.background, state.taskbar]
             .into_iter()
-            .chain(state.menu)
+            .chain(state.menu.visible())
             .chain(state.overlay.as_ref().map(|(w, _)| *w))
             .chain(state.dialogs.iter().map(|d| d.window))
             .chain(state.tooltip_window.as_ref().map(|(w, _)| *w))
@@ -1403,7 +1440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if !art.present_background(&state, &mut display)? {
                     continue;
                 }
-            } else if Some(id) == state.menu
+            } else if Some(id) == state.menu.visible()
                 || state.overlay.as_ref().is_some_and(|(root, _)| *root == id)
             {
                 if !paint::present_popup(&mut state, &mut display, id, c, &mut art)? {

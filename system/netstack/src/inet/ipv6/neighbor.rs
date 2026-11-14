@@ -41,8 +41,9 @@ impl Neighbors {
     pub(super) fn rows(
         &self,
         interface_index: u32,
+        after: Option<Ipv6Addr>,
     ) -> impl Iterator<Item = network_protocol::Neighbor> + Clone {
-        self.cache.rows(interface_index)
+        self.cache.rows(interface_index, after)
     }
     pub(super) fn clear(&mut self) -> usize {
         let count = self.packets.len();
@@ -199,6 +200,20 @@ impl Neighbors {
                 packet.expires <= now
                     || !packet.writable && self.cache.router_rank(packet.destination).1
             })
+    }
+
+    pub(super) fn next_deadline(&self, now: u64) -> Option<u64> {
+        self.cache
+            .next_deadline()
+            .into_iter()
+            .chain(self.packets.values().map(|packet| {
+                if !packet.writable && self.cache.router_rank(packet.destination).1 {
+                    now
+                } else {
+                    packet.expires
+                }
+            }))
+            .min()
     }
     pub(super) fn poll(
         &mut self,

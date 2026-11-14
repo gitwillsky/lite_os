@@ -594,11 +594,11 @@ fn ipv6_multicast_new_groups_share_interface_query_compatibility_and_skip_all_no
     loopback.ipv6_membership(group, 1, true).unwrap();
     poll(&net, 2005);
     assert!(
-        !stack(&net).unwrap().lock().unwrap().interfaces[0]
+        stack(&net).unwrap().lock().unwrap().interfaces[0]
             .ipv6
             .as_ref()
             .unwrap()
-            .due(2005),
+            .next_deadline(2005).is_none_or(|at| at > 2005),
         "loopback membership must not retain an unsendable MLD deadline"
     );
     loopback.close_description();

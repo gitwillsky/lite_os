@@ -39,7 +39,7 @@ impl ControlQueue {
     /// VirtIO 1.4 §5.1.9.5.6：无显式 RSS 时采用标准自动分流。
     /// # Errors
     /// 命令失败后调用者必须 reset，不能复用未完成 DMA。
-    pub(super) fn set_pairs(&mut self, device: &VirtIODevice, pairs: u16) -> Result<(), ()> {
+    pub(super) fn set_pairs(&mut self, device: &VirtIONetworkDevice, pairs: u16) -> Result<(), ()> {
         self.command(device, 0, &pairs.to_le_bytes())
     }
     /// 用标准 RSS_CONFIG 替换 Toeplitz 参数，并启用 pairs 个 TX 队列。
@@ -49,7 +49,7 @@ impl ControlQueue {
     /// 编码分配失败返回 NoMemory；设备拒绝、畸形完成或超时返回 Device，调用者必须 reset。
     pub(super) fn set_rss(
         &mut self,
-        device: &VirtIODevice,
+        device: &VirtIONetworkDevice,
         pairs: u16,
         config: &NetworkRssConfiguration,
     ) -> Result<(), NetworkError> {
@@ -69,7 +69,12 @@ impl ControlQueue {
         self.command(device, 1, &payload)
             .map_err(|()| NetworkError::Device)
     }
-    fn command(&mut self, device: &VirtIODevice, command: u8, payload: &[u8]) -> Result<(), ()> {
+    fn command(
+        &mut self,
+        device: &VirtIONetworkDevice,
+        command: u8,
+        payload: &[u8],
+    ) -> Result<(), ()> {
         let length = 2 + payload.len();
         if length >= self.bytes.pages() * PAGE_SIZE {
             return Err(());
@@ -81,7 +86,9 @@ impl ControlQueue {
         let ack = DmaSlice::backing(&self.bytes, length..length + 1, true).map_err(|_| ())?;
         let head = self.queue.add_dma(&[request, ack]).map_err(|_| ())?;
         self.queue.add_to_avail(head);
-        device.notify_queue(self.index).map_err(|_| ())?;
+        device
+            .notify_available(self.index, &self.queue, 1)
+            .map_err(|_| ())?;
         let deadline = native_runtime::system::deadline_after(1_000_000_000);
         loop {
             if let Some(completion) = self.queue.used()? {

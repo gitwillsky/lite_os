@@ -292,7 +292,7 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertEqual(
             argument_after(command, "-machine"),
             "virt,accel=hvf,gic-version=3,its=on,secure=off,"
-            "virtualization=off,acpi=off",
+            "virtualization=off,acpi=off,kernel-irqchip=off",
         )
         self.assertEqual(argument_after(command, "-cpu"), "host")
         self.assertNotIn("-accel", command)

@@ -1,9 +1,14 @@
 //! 有界的预路由规则计数页。规则描述与统计来自同一已安装规则链。
 
-use super::{Decoder, Destination, Ingress, Invalid, MAX_NAME_BYTES, PreroutingAction, Rule, valid_chain_name, valid_name};
+use super::{
+    Decoder, Destination, Ingress, Invalid, MAX_NAME_BYTES, PreroutingAction, Rule,
+    valid_chain_name, valid_name,
+};
 use alloc::{string::String, vec::Vec};
 
-const VERSION: u32 = 3;
+pub mod observation;
+
+const VERSION: u32 = 9;
 const ROW: usize = super::ROW + 23;
 const HEADER: usize = 17;
 /// 固定查询正文长度。
@@ -89,8 +94,12 @@ impl Counter {
     }
 
     fn names(&self) -> [&str; 3] {
-        [self.chain.as_deref(), self.destination_set.as_deref(), self.jump_chain.as_deref()]
-            .map(|name| name.unwrap_or(""))
+        [
+            self.chain.as_deref(),
+            self.destination_set.as_deref(),
+            self.jump_chain.as_deref(),
+        ]
+        .map(|name| name.unwrap_or(""))
     }
 }
 
@@ -122,7 +131,12 @@ impl Page {
             return Err(Invalid);
         }
         let mut bytes = Vec::new();
-        let names: usize = self.rows.iter().flat_map(Counter::names).map(str::len).sum();
+        let names: usize = self
+            .rows
+            .iter()
+            .flat_map(Counter::names)
+            .map(str::len)
+            .sum();
         bytes
             .try_reserve_exact(HEADER + self.rows.len() * ROW + names)
             .map_err(|_| Invalid)?;

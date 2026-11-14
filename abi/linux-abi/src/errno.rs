@@ -114,6 +114,8 @@ pub const EBADFD: isize = 77;
 pub const ETIMEDOUT: isize = 110;
 /// Linux `ECANCELED`：io_uring 请求因提交线程退出而被取消。
 pub const ECANCELED: isize = 125;
+/// 认证密钥与已有安全策略冲突。
+pub const EKEYREJECTED: isize = 129;
 /// Linux `ETIME`：`io_uring_enter` 的等待在 EXT_ARG 超时前未收满 CQE。
 pub const ETIME: isize = 62;
 /// Linux `EBADR`：`io_uring_enter` 通知至少一个 CQE 因溢出上限被丢弃。

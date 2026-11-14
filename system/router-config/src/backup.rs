@@ -114,11 +114,11 @@ impl RouterConfig {
         )
         .map_err(|_| native_abi::ERR_OUT_OF_RANGE)
     }
-    fn publish_backup_change(&self, notification: Arc<Event>) -> Result<u64, Status> {
+    fn publish_backup_change(&self, notification: Arc<Event>) -> Result<Revision, Status> {
         let mut inner = self.inner.lock();
         inner
             .generation
-            .checked_add(1)
+            .checked_next()
             .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
         Self::publish_notification(&mut inner, notification);
         Ok(inner.generation)
@@ -137,14 +137,14 @@ impl RouterConfig {
     pub(super) fn backup_export(&self, id: Id) -> Result<Vec<u8>, Status> {
         archive::read(&self.storage, id)
     }
-    pub(super) fn backup_delete(&self, id: Id) -> Result<u64, Status> {
+    pub(super) fn backup_delete(&self, id: Id) -> Result<Revision, Status> {
         let notification = Self::prepare_notification(&self.inner.lock())?;
         let result = archive::remove(&self.storage, id);
         // 删除错误也可能已改变命名状态；唤醒观察者重新查询，不声称删除已撤销。
         let generation = self.publish_backup_change(notification)?;
         result.map(|()| generation)
     }
-    pub(super) fn backup_create(&self) -> Result<(u64, Id), Status> {
+    pub(super) fn backup_create(&self) -> Result<(Revision, Id), Status> {
         let (current, notification) = {
             let inner = self.inner.lock();
             (

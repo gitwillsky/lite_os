@@ -17,12 +17,11 @@
   自身容量（当前 TCP 为 16），但不能改变 syscall 层的 ABI 归一化语义。
 - hardirq 不分配且只确认设备并发布 Network bit；deferred 网络处理有 batch 上限，并且只从
   user-return/idle safe point 调用 `try_poll`。owner 竞争或存在 payload loan 时不得等待/自旋，必须
-  O(1) 回投 Network bit；SocketSet 完整时 poll 持唯一可睡眠 owner 进入 VirtIO ordinary lock，其他
+  O(1) 回投 Network bit；协议栈准备完成后 poll 持唯一可睡眠 owner 进入 VirtIO ordinary lock，其他
   task 竞争者由 `TaskMutex` handoff 唤醒，kernel SSIP 不得直接 poll 网络。readiness pending state
   在 poll owner 内提取为最多 64 个 endpoint Arc，释放 owner 后才进入 wait owner；满批次必须回投。
   actual OFD fput 以 `operation.take()` 消费 protocol registration，`InetSocket` Drop 仅处理未发布失败；
-  close cleanup 只能 `try_lock`：失败时把唯一 endpoint identity 发布到与生产 SocketSet
-  capacity 同为 1024 的 fixed pending-cleanup ring；下一轮 poll 在协议推进前 O(1) pop 最多 64 项，
+  close cleanup 只能 `try_lock`：失败时把唯一 endpoint identity 发布到固定容量的 pending-cleanup ring；下一轮 poll 在协议推进前 O(1) pop 最多 64 项，
   有余项则回投 Network bit。同一 endpoint 的 actual close 唯一且 poll 持 owner 时不能创建/复用 slot，
   每个 TCP facade 始终持至少一个真实 handle：取消 SYN_SENT 等无需 RST 的 transport 后，原 slot
   保留无 buffer 的 CLOSED socket，下一次 connect/listen 完整预分配 buffer 后替换同一 slot。
@@ -35,12 +34,10 @@
   close/drop 不得在 registry/graph lock 内反向调用 socket state。
 - network-device receive seam 只消费 adapter 已完成 ownership transition 的 frame；VirtIO-net
   adapter 独占 RX slot/head mapping，畸形 completion 不得把 driver-owned slot 泄漏给协议层。
-- smoltcp `Device` callback 无法直接返回 adapter error；`EthernetDevice` 因而独占首个 pending
-  error latch，deferred poll按actual interface返回有界诊断和counter；不能把硬件fault
-  投影成无关socket的SO_ERROR/POLLERR。AF_PACKET直接发送仍返回所选device同步typed错误。
+- `EthernetDevice` 保留首个未报告的异步设备错误，轮询按实际接口返回有界诊断和计数。发送预留及提交返回原始错误；硬件故障不投影到无关 socket 的 SO_ERROR/POLLERR。
   `WouldBlock` 不得进入 latch；TX reservation 只在 descriptor 成功发布后解除 RAII rollback。
 - port membership 所需 outer/exact AVL node 必须在发布前预留；accept 在 replacement
-  socket 进入 `SocketSet` 前预留 exact-address token，active connect 在 SYN 发布前预留
+  socket 交付前预留 exact-address token，active connect 在 SYN 发布前预留
   wildcard→exact迁移token。OOM保留原membership且不留孤儿socket；正常FIN/TIME_WAIT
   orphan持有lease至纯协议时钟退休；abort只把一次原codec payload交给RouteReplies后释放身份。
 
@@ -154,7 +151,7 @@ core buffer mode为0444。net_ctl_permissions加proc_sysctl::test_perm按GLOBAL_
 或owning UserNS NET_ADMIN授权，不能用stat的mapped root owner代替permission规则。
 此阶段只有领域准备与UNIX范围，未开放NEWNET：必须完成实际INET stack/interface归属后再publish task membership。
 协议owner的持有已移交NetNamespace.protocol的唯一Once<Arc<NetworkStackOwner>>，全局
-NETWORK_STACK已删除；Once只消费完整准备的owner，重复初始化不替换已有SocketSet/ports。
+Once 只接收完整准备的协议栈，重复初始化保留已有端点和端口状态。
 boot初始NET先于Task装配，设备发现后初始化真实protocol。InetSocket与facade共享实际
 SocketMemory：TCP/UDP/raw操作、payload loan、poll/epoll observer、SO_ERROR和实际fput
 均使用其捕获NET的protocol，accept消费预留的新memory，保持listener域。构造/rollback

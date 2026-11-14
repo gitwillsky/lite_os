@@ -437,7 +437,7 @@ pub struct MpUnreach<'a> {
     pub safi: u8,
     nlri: &'a [u8],
 }
-fn prefixes(afi: u16, safi: u8, bytes: &[u8]) -> Result<Nlri<'_>, PacketError> {
+fn prefixes(afi: u16, safi: u8, bytes: &[u8], path_ids: bool) -> Result<Nlri<'_>, PacketError> {
     if !matches!(safi, 1 | 2) {
         return Err(PacketError::Unsupported);
     }
@@ -446,7 +446,7 @@ fn prefixes(afi: u16, safi: u8, bytes: &[u8]) -> Result<Nlri<'_>, PacketError> {
         2 => Family::Ipv6,
         _ => return Err(PacketError::Unsupported),
     };
-    Nlri::parse(bytes, family)
+    Nlri::parse_with_path_ids(bytes, family, path_ids)
 }
 fn afi(prefixes: Nlri<'_>, safi: u8) -> Result<u16, PacketError> {
     if !matches!(safi, 1 | 2) {
@@ -474,7 +474,13 @@ impl<'a> MpReach<'a> {
     /// # Errors
     /// 族/SAFI 不支持或 NLRI 非法；被保留的下一跳字节仍可由相应扩展 owner 检查。
     pub fn prefixes(self) -> Result<Nlri<'a>, PacketError> {
-        prefixes(self.afi, self.safi, self.nlri)
+        self.prefixes_with_path_ids(false)
+    }
+    /// 检查本方向的 MP 宣告，路径标识的布局来自协商。
+    /// # Errors
+    /// 族/SAFI 不支持，或 NLRI 非法。
+    pub fn prefixes_with_path_ids(self, path_ids: bool) -> Result<Nlri<'a>, PacketError> {
+        prefixes(self.afi, self.safi, self.nlri, path_ids)
     }
     /// 将普通双栈前缀与已由协议 owner 按协商检查的下一跳写入最终属性值，清零 reserved。
     /// # Errors
@@ -513,7 +519,13 @@ impl<'a> MpUnreach<'a> {
     /// # Errors
     /// 族/SAFI 不支持或 NLRI 非法。
     pub fn prefixes(self) -> Result<Nlri<'a>, PacketError> {
-        prefixes(self.afi, self.safi, self.nlri)
+        self.prefixes_with_path_ids(false)
+    }
+    /// 检查本方向的 MP 撤回，路径标识的布局来自协商。
+    /// # Errors
+    /// 族/SAFI 不支持，或 NLRI 非法。
+    pub fn prefixes_with_path_ids(self, path_ids: bool) -> Result<Nlri<'a>, PacketError> {
+        prefixes(self.afi, self.safi, self.nlri, path_ids)
     }
     /// 写普通双栈撤回列表；空列表可用于该族的 End-of-RIB。
     /// # Errors

@@ -220,6 +220,12 @@ impl Window {
     pub fn close(&self) -> Result<()> {
         self.inner.close()
     }
+    /// 在窗口任务中注册非阻塞 FD，与应用使用同一个事件循环。
+    /// 返回值持有 FD，释放时注销。窗口已关闭或注册失败时返回错误。
+    pub fn watch(&self, fd: std::os::fd::OwnedFd) -> Result<crate::AsyncFd> {
+        self.inner.check()?;
+        self.inner.connection.watch(fd)
+    }
     /// 在窗口根布局中创建控件；参数/连接错误不发布半个节点。
     pub fn widget(&self, spec: WidgetSpec<'_>) -> Result<Widget> {
         Widget::new(self.inner.clone(), None, spec)

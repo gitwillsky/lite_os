@@ -93,18 +93,16 @@ pub(super) fn message_length(
     Ok(bgp::HEADER_BYTES + 4 + attributes + payload)
 }
 pub(super) fn message(
-    prefixes: impl Iterator<Item = Prefix>,
+    prefixes: impl Iterator<Item = (Prefix, Option<u32>)> + Clone,
     route: Option<&Advertisement>,
     context: ExportContext,
     family: Family,
     multiprotocol: bool,
 ) -> Result<Vec<u8>, ExportError> {
-    // 128 个 /128 的最坏 NLRI 2176 bytes，只在当前帧借用栈，不复制属性或分配中间正文。
-    let mut nlri = [0; super::EXPORT_BATCH * 17];
-    let mut size = 0;
-    for prefix in prefixes {
-        size += Nlri::emit(&mut nlri[size..], family, &[prefix])?;
-    }
+    // 128 个携路径标识的 /128 最多 2688 bytes，沿原批次复用栈缓冲。
+    let mut nlri = [0; super::EXPORT_BATCH * 21];
+    let add_path = prefixes.clone().next().is_some_and(|(_, id)| id.is_some());
+    let size = Nlri::emit_paths(&mut nlri, family, prefixes)?;
     let capacity = message_length(
         attributes_length(route, context)?,
         route,
@@ -119,7 +117,7 @@ pub(super) fn message(
         .try_reserve_exact(capacity)
         .map_err(|_| ExportError::NoMemory)?;
     encoded.resize(capacity, 0);
-    let prefix = Nlri::parse(&nlri[..size], family)?;
+    let prefix = Nlri::parse_with_path_ids(&nlri[..size], family, add_path)?;
     let empty = Nlri::parse(&[], Family::Ipv4)?;
     let length = Update::emit_with(
         &mut encoded,

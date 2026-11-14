@@ -21,10 +21,8 @@ fn packet_address(index: i32, protocol: u16) -> network_protocol::PacketAddress 
 }
 #[test]
 fn actual_packet_socket_uses_captured_domain_link_and_native_rebinding() {
-    use crate::packet;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    packet::init();
     let first =
         crate::namespace::Namespace::create().unwrap();
     let second =
@@ -32,7 +30,8 @@ fn actual_packet_socket_uses_captured_domain_link_and_native_rebinding() {
     let a = Arc::new(WireDevice::new());
     let b = Arc::new(WireDevice::new());
     let c = Arc::new(WireDevice::new());
-    first.install_protocol(prepare_network(&first, &[a.clone(), b.clone()], true).unwrap());
+    first.install_protocol(prepare_network(&first, &[a.clone()], true).unwrap());
+    assert_eq!(install_interface(&first, b.clone(), crate::Channel, crate::Event::default()), Ok(3));
     second.install_protocol(prepare_network(&second, &[c.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
@@ -106,6 +105,10 @@ fn actual_packet_socket_uses_captured_domain_link_and_native_rebinding() {
         only_a.send_to(b"down", Some(packet_address(3, 0x0800))),
         Err(SocketError::NetworkDown)
     );
+    crate::inet::release_interface(&first, 3).unwrap();
+    assert_eq!(only_a.take_error(), Some(SocketError::NetworkDown));
+    assert_eq!(only_a.bind(packet_address(3, 0)), Err(SocketError::NoDevice));
+    assert_eq!(only_second.take_error(), None);
     for endpoint in [&any_first, &only_a, &only_second, &disabled] {
         endpoint.close_description();
     }
@@ -116,7 +119,6 @@ fn actual_packet_loopback_and_transmit_edges_stay_in_domain_and_interface() {
     use crate::packet;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    packet::init();
     let net = crate::namespace::Namespace::create().unwrap();
     net.install_protocol(prepare_network(&net, &[], true).unwrap());
     let observer = scoped_packet(&net, 0x0003); // ETH_P_ALL，不依赖L3是否接受。
@@ -133,16 +135,17 @@ fn actual_packet_loopback_and_transmit_edges_stay_in_domain_and_interface() {
     assert_eq!(received.2.hardware_type, 772);
     assert_eq!(received.2.protocol, 0x0806u16.to_be());
     // 清空所有actual pending，然后只发表本域lo的容量变化；initial NET不得被唤醒。
-    while packet::take_pending_notification(0).is_some() {}
+    while packet::take_pending_notification(net.packets(), 0).is_some() {}
     let initial = scoped_packet(&namespace().clone(), 0x0800);
     initial.bind(packet_address(2, 0x0800)).unwrap();
-    packet::publish_transmit_ready(net.id(), 1);
+    packet::publish_transmit_ready(net.packets(), 1);
     let mut seen = 0;
-    while let Some((_, endpoint)) = packet::take_pending_notification(0) {
+    while let Some((_, endpoint)) = packet::take_pending_notification(net.packets(), 0) {
         assert!(!Arc::ptr_eq(&endpoint, &initial));
         seen += 1;
     }
     assert_eq!(seen, 2);
+    assert!(packet::take_pending_notification(namespace().packets(), 0).is_none());
     for endpoint in [&observer, &sender, &initial] {
         endpoint.close_description();
     }
@@ -155,7 +158,6 @@ fn actual_packet_raw_preserves_link_header_and_excludes_origin_from_outgoing_tap
     use crate::packet;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    packet::init();
     let net = crate::namespace::Namespace::create().unwrap();
     let nic = Arc::new(WireDevice::new());
     net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn device_model::network::NetworkDevice>], true).unwrap());
@@ -187,7 +189,7 @@ fn actual_packet_raw_preserves_link_header_and_excludes_origin_from_outgoing_tap
     assert_eq!(received.2.packet_type, 4);
     assert_eq!(&received.2.address[..6], &[2, 0, 0, 0, 9, 9]);
     // 同一实际tap的RAW projection保留header；DGRAM只剥一次，二者共享同一packet owner。
-    packet::deliver(net.id(), 2, [2, 0, 0, 0, 0, 1], &frame, false);
+    packet::deliver(net.packets(), 2, [2, 0, 0, 0, 0, 1], &frame, false);
     let received = receive(&sender, &mut output, false)
         .unwrap();
     assert_eq!(received.1, frame.len());

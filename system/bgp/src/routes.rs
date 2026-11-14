@@ -1,4 +1,5 @@
 //! 一个 BGP 路由域的接收、选择与来源发表顺序；传输层不逐邻居自行修改统一 RIB。
+mod announcement;
 mod links;
 use crate::{
     AdjRibIn, AttributePool, Candidate, LocRib, LocRibError, LocRibUpdate, NextHop, OutOfMemory,
@@ -7,6 +8,8 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+pub(crate) use announcement::ExportOrigin;
+pub use announcement::ExportRoute;
 use core::num::NonZeroU32;
 use fallible_tree::{FallibleMap, NodeSlot};
 pub use links::ExportAddress;
@@ -54,17 +57,6 @@ struct Neighbor {
     received: AdjRibIn,
 }
 
-/// 单一出口选择的借用视图；本机宣告覆盖同前缀的学习出口，不等于已送入 TCP。
-pub struct ExportRoute<'a> {
-    /// None 为本机宣告，Some 为真实已登记邻居；不伪造零号邻居。
-    pub peer: Option<&'a Peer>,
-    /// 原始出口政策输入的共享属性。
-    pub attributes: &'a RouteAttributes,
-    /// 本机宣告为 unspecified，本方向由实际 TCP 本地地址选择 next-hop-self，不直接编码该零值。
-    pub next_hop: NextHop,
-    /// 本机宣告的标准默认值，或学习路径的后政策 degree。
-    pub preference: u32,
-}
 // 本机宣告的唯一意图及当前 RIB 资格；所有网段共享基础属性，不反向加入转发来源来证明自己可达。
 struct Originated {
     networks: Vec<(router_protocol::tracking::IpPrefix, bool)>,
@@ -94,6 +86,8 @@ pub struct RoutingDomain {
     attributes: AttributePool,
     selector: Selector,
     selected: LocRib,
+    // 配置创建时冻结；没有多路径出口的族只保留赢家，避免增加全表属性驻留。
+    retain_export_paths: [bool; 2],
     // OWNER: 已接收到但尚未完成来源确认的前缀。缺失它会在编码/OOM/发布失败后丢失更新，留下陈旧路由。
     pending: Vec<Prefix>,
     // OWNER: 未取得精确 RIB 证明前全部不活跃；与学习路由同走出口，原生 RIB 仍唯一拥有转发路径。
@@ -108,7 +102,10 @@ impl RoutingDomain {
     /// 创建一个冻结本地 AS/Identifier/反射身份的空域，不建立网络连接。
     /// # Errors
     /// 属性驻留 owner 分配失败。
-    pub fn try_new(context: SelectionContext) -> Result<Self, OutOfMemory> {
+    pub fn try_new(
+        context: SelectionContext,
+        retain_export_paths: [bool; 2],
+    ) -> Result<Self, OutOfMemory> {
         Ok(Self {
             context,
             neighbors: FallibleMap::new(),
@@ -116,6 +113,7 @@ impl RoutingDomain {
             attributes: AttributePool::try_new()?,
             selector: Selector::new(),
             selected: LocRib::new(),
+            retain_export_paths,
             pending: Vec::new(),
             originated: None,
             redistribution: None,
@@ -375,149 +373,7 @@ impl RoutingDomain {
             .ok()?;
         Some(originated.networks[index].1)
     }
-    fn originated(&self, prefix: Prefix) -> Option<&RouteAttributes> {
-        self.network_is_available(prefix)?.then(|| {
-            &self
-                .originated
-                .as_ref()
-                .expect("configured network owns attributes")
-                .attributes
-        })
-    }
-    /// 返回唯一出口政策输入；有效显式网络、其他来源重分发、学习路径依次回退。
-    /// 不修改选路/转发来源，也不表示本方向出口政策已经允许。
-    pub fn export_route(&self, prefix: Prefix) -> Option<ExportRoute<'_>> {
-        if let Some(attributes) = self.originated(prefix).or_else(|| {
-            self.redistribution
-                .as_ref()?
-                .routes
-                .get(&prefix)
-                .map(|route| &route.attributes)
-        }) {
-            return Some(ExportRoute {
-                peer: None,
-                attributes,
-                next_hop: NextHop {
-                    address: if prefix.address.is_ipv4() {
-                        core::net::Ipv4Addr::UNSPECIFIED.into()
-                    } else {
-                        core::net::Ipv6Addr::UNSPECIFIED.into()
-                    },
-                    link_local: None,
-                },
-                preference: 100,
-            });
-        }
-        let route = self.selected.get(prefix)?;
-        Some(ExportRoute {
-            peer: Some(self.peer(route.peer())?),
-            attributes: route.attributes(),
-            next_hop: route.next_hop(),
-            preference: route.preference(),
-        })
-    }
-    /// 当前有效本机宣告数，不含仅配置但不可用的网段。
-    pub fn originated_len(&self) -> usize {
-        self.originated.as_ref().map_or(0, |originated| {
-            originated
-                .networks
-                .iter()
-                .filter(|(_, active)| *active)
-                .count()
-        })
-    }
-    /// 单连接初始同步的唯一有序目标视图；归并三类候选，同前缀不重复登记。
-    pub fn announcement_prefixes(&self) -> impl Iterator<Item = Prefix> + '_ {
-        let mut learned = self.selected.iter().map(|(prefix, _)| prefix).peekable();
-        let mut networks = self
-            .originated
-            .iter()
-            .flat_map(|originated| {
-                originated
-                    .networks
-                    .iter()
-                    .filter(|(_, active)| *active)
-                    .map(|(prefix, _)| Prefix {
-                        address: prefix.network,
-                        length: prefix.length,
-                    })
-            })
-            .peekable();
-        let mut imported = self
-            .redistribution
-            .iter()
-            .flat_map(|state| state.routes.iter().map(|(prefix, _)| *prefix))
-            .peekable();
-        core::iter::from_fn(move || {
-            let prefix = [
-                learned.peek().copied(),
-                networks.peek().copied(),
-                imported.peek().copied(),
-            ]
-            .into_iter()
-            .flatten()
-            .min()?;
-            if learned.peek() == Some(&prefix) {
-                learned.next();
-            }
-            if networks.peek() == Some(&prefix) {
-                networks.next();
-            }
-            if imported.peek() == Some(&prefix) {
-                imported.next();
-            }
-            Some(prefix)
-        })
-    }
-    /// 同一三来源目标视图的有界游标定位；只保存最后身份，不复制或从头重走完整视图。
-    pub(crate) fn next_announcement(
-        &self,
-        family: Family,
-        after: Option<Prefix>,
-    ) -> Option<Prefix> {
-        let start = after.unwrap_or_else(|| Prefix {
-            address: match family {
-                Family::Ipv4 => core::net::Ipv4Addr::UNSPECIFIED.into(),
-                Family::Ipv6 => core::net::Ipv6Addr::UNSPECIFIED.into(),
-            },
-            length: 0,
-        });
-        let bound = if after.is_some() {
-            core::ops::Bound::Excluded(start)
-        } else {
-            core::ops::Bound::Included(start)
-        };
-        let local = self.originated.as_ref().and_then(|originated| {
-            let key = router_protocol::tracking::IpPrefix {
-                network: start.address,
-                length: start.length,
-            };
-            let at = originated
-                .networks
-                .partition_point(|(prefix, _)| *prefix < key || after.is_some() && *prefix == key);
-            originated.networks[at..]
-                .iter()
-                .take_while(|(prefix, _)| prefix.network.is_ipv4() == start.address.is_ipv4())
-                .find(|(_, active)| *active)
-                .map(|(prefix, _)| Prefix {
-                    address: prefix.network,
-                    length: prefix.length,
-                })
-        });
-        let imported = self.redistribution.as_ref().and_then(|state| {
-            if after.is_some() {
-                state.routes.successor(&start)
-            } else {
-                state.routes.ceiling(&start)
-            }
-            .map(|(prefix, _)| *prefix)
-        });
-        [self.selected.next_prefix(bound), local, imported]
-            .into_iter()
-            .flatten()
-            .filter(|prefix| prefix.address.is_ipv4() == start.address.is_ipv4())
-            .min()
-    }
+
     /// 登记当前配置/已协商邻居的不可变身份及来源距离；不能覆盖仍持路由的旧邻居。
     /// # Errors
     /// 复用尚待撤回确认的身份、身份为零、重复或分配失败；既有邻居和工作保持不变。
@@ -601,7 +457,7 @@ impl RoutingDomain {
             .try_reserve_exact(neighbor.received.len())
             .map_err(|_| RoutingError::NoMemory)?;
         self.pending
-            .extend(neighbor.received.iter().map(|(prefix, _)| prefix));
+            .extend(neighbor.received.iter().map(|(prefix, _, _)| prefix));
         self.neighbors.remove(&id);
         if let Some(retirement) = retirement {
             self.retired.commit_vacant(retirement);
@@ -653,7 +509,7 @@ impl RoutingDomain {
             .map_err(|_| RoutingError::NoMemory)?;
         for neighbor in self.neighbors.values() {
             self.pending
-                .extend(neighbor.received.iter().map(|(prefix, _)| prefix));
+                .extend(neighbor.received.iter().map(|(prefix, _, _)| prefix));
         }
         self.pending
             .extend(self.selected.iter().map(|(prefix, _)| prefix));
@@ -663,6 +519,15 @@ impl RoutingDomain {
     /// 本域不可变的反射簇身份；由唯一持久配置投影，普通 iBGP 返回 None。
     pub fn cluster_id(&self) -> Option<core::net::Ipv4Addr> {
         self.context.cluster_id()
+    }
+
+    /// 以接收邻居实际使用的 AS 或联盟身份检查出口路径。
+    pub(crate) fn export_path_loops(&self, path: &crate::StoredPath, target: Peer) -> bool {
+        if target.kind == crate::PeerKind::External {
+            path.contains(target.asn)
+        } else {
+            self.context.path_loops_at(path, target.asn)
+        }
     }
 
     /// 借用已确认的协议选择；接收表更新/预备失败不提前改变它。
@@ -765,13 +630,27 @@ impl RoutingDomain {
         classify: impl FnMut(
             Prefix,
             &'a Peer,
+            Option<u32>,
             &'a ReceivedRoute,
         ) -> Result<
             (NextHop, Option<u32>, Reachability, &'a RouteAttributes),
             OutOfMemory,
         >,
     ) -> Result<RoutingUpdate<'a>, RoutingError> {
-        self.prepare_using(family, classify, SelectedRoute::select_observed)
+        let retain_paths = self.retain_export_paths[usize::from(family == Family::Ipv6)];
+        self.prepare_using(
+            family,
+            classify,
+            |selector, context, candidates, decisions| {
+                SelectedRoute::select_observed(
+                    selector,
+                    context,
+                    candidates,
+                    decisions,
+                    retain_paths,
+                )
+            },
+        )
     }
     /// 为真实 RIB 检查形成未验证提案；没有可达证明，不可直接 commit 或当成实际选路。
     /// # Errors
@@ -782,14 +661,15 @@ impl RoutingDomain {
         mut classify: impl FnMut(
             Prefix,
             &'a Peer,
+            Option<u32>,
             &'a ReceivedRoute,
         )
             -> Result<(NextHop, Option<u32>, &'a RouteAttributes), OutOfMemory>,
     ) -> Result<RoutingProposal<'a>, RoutingError> {
         self.prepare_using(
             family,
-            |prefix, peer, route| {
-                classify(prefix, peer, route).map(|(hop, degree, attributes)| {
+            |prefix, peer, path_id, route| {
+                classify(prefix, peer, path_id, route).map(|(hop, degree, attributes)| {
                     (hop, degree, Reachability::Unresolved, attributes)
                 })
             },
@@ -805,6 +685,7 @@ impl RoutingDomain {
         mut classify: impl FnMut(
             Prefix,
             &'a Peer,
+            Option<u32>,
             &'a ReceivedRoute,
         ) -> Result<
             (NextHop, Option<u32>, Reachability, &'a RouteAttributes),
@@ -845,11 +726,13 @@ impl RoutingDomain {
             .map(|prefix| {
                 candidates.clear();
                 for (_, neighbor) in neighbors.iter() {
-                    if let Some(received) = neighbor.received.get(*prefix) {
+                    for (path_id, received) in neighbor.received.paths(*prefix) {
                         let (next_hop, preference, reachability, attributes) =
-                            classify(*prefix, &neighbor.peer, received)?;
+                            classify(*prefix, &neighbor.peer, path_id, received)?;
+                        candidates.try_reserve(1).map_err(|_| OutOfMemory)?;
                         candidates.push(Candidate {
                             peer: &neighbor.peer,
+                            path_id,
                             attributes,
                             received_path: received.attributes().path(),
                             next_hop,
@@ -906,6 +789,10 @@ impl RoutingUpdate<'_> {
     pub fn changed_prefixes(&self) -> &[Prefix] {
         self.selected.changed_prefixes()
     }
+    /// 本次更新是否改变了提交给统一 RIB 的最佳路径；单独的备选变化只影响出口。
+    pub fn forwarding_changed(&self) -> bool {
+        self.selected.forwarding_changed()
+    }
     /// 来源确认成功后提交选择并消费本族工作；不分配、不执行 RPC 或用户回调。
     pub fn commit(self) -> Vec<Prefix> {
         let family = self.selected.family();
@@ -917,7 +804,7 @@ impl RoutingUpdate<'_> {
             Family::Ipv6 => prefix.address.is_ipv6(),
         }) {
             for (_, neighbor) in self.neighbors.iter() {
-                if let Some(received) = neighbor.received.get(*prefix) {
+                for (_, received) in neighbor.received.paths(*prefix) {
                     received.confirm_decision(
                         decisions.next().expect("prepared candidate has decision"),
                     );

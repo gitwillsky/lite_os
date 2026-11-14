@@ -2,7 +2,7 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_INET6 TCP/UDP、AF_PACKET、有限 AF_NETLINK（`NETLINK_KOBJECT_UEVENT` 与只读的 `NETLINK_ROUTE`） |
+| 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_INET6 TCP/UDP、AF_PACKET、有限 AF_NETLINK（`NETLINK_KOBJECT_UEVENT` 与 `NETLINK_ROUTE`） |
 | 199 | `socketpair` | Complete | AF_UNIX stream/datagram/seqpacket |
 | 200 | `bind` | Partial | 支持 domain 的 address scope |
 | 201 | `listen` | Partial | AF_UNIX/双栈 TCP backlog；Linux signed-32 ABI 与 4096 kernel cap |
@@ -36,13 +36,16 @@
 ## 已知缺口
 
 TCP_MD5SIG 与 TCP_MD5SIG_EXT 的主机/前缀密钥、添加/替换/删除及双栈报文签名已接通；密钥不提供 getter。
-EXT IFINDEX 的 L3 master/VRF 作用域当前返回 EOPNOTSUPP，TCP-AO 尚未提供；范围与验证边界见 [TCP 认证契约](../architecture-contract/tcp-authentication.md)。
+EXT IFINDEX 的 L3 master/VRF 作用域当前返回 `EOPNOTSUPP`。
+TCP-AO 提供 `TCP_AO_ADD_KEY`、同步 `TCP_AO_DEL_KEY` 与 `TCP_AO_INFO` 选择和统计，支持 `hmac(sha1)`、`cmac(aes128)` 以及 16 字节密钥的 `cmac(aes)`。
+密钥长度须非零，MAC 长度为 12 字节。IFINDEX、异步删除、强制所有对端使用 AO、接受硬 ICMP、设置计数返回 `EOPNOTSUPP`。
+`TCP_AO_GET_KEYS` 和 `TCP_AO_REPAIR` 返回 `ENOPROTOOPT`。互通验证边界见 [TCP 认证契约](../architecture-contract/tcp-authentication.md#linux-tcp-ao-配置)。
 
-完整 IPv6 地址配置/路由/转发、错误队列附带信息、组播来源过滤与路由、完整 rtnetlink/veth/设备迁移、userspace netlink publish 与高级 TCP 扩展仍未完成。
+完整 IPv6 地址配置/路由/转发、错误队列附带信息、应用组播来源过滤及 Linux MRT/MRT6、完整 rtnetlink/veth/设备迁移、userspace netlink publish 与高级 TCP 扩展仍未完成。
 当前多接口及 IPv6 UDP 的具体范围由下述传输契约维护；NEWNET 只提供其中已声明的能力。
 
 原生 netstack 可独立重启（Linux 没有对应情形）：重启前创建的 AF_INET/AF_PACKET socket 之后的操作以 `ENETDOWN` 失败，
-已建立的 TCP 连接不保留；新 socket 进入重建后的网络域。非初始网络域重建后与新建的 NEWNET 一样从 DOWN 回环开始。
+已建立的 TCP 连接不保留。独立 NEWNET 重建后从 DOWN 回环开始。具名受管域由路由配置服务重新创建，旧成员须通过新描述符进入新实例。
 
 双栈分片接收已接通[原生重组](../architecture-contract/ip-reassembly.md)。IPv4 UDP/RAW 提供分片发送及 IP_MTU_DISCOVER(10) 的 0..5 模式控制；IPv6 UDP/RAW 提供分片发送及 IPV6_DONTFRAG(62) 开关。禁止本机分片时超 MTU 返回 EMSGSIZE。
 AF_INET SOCK_RAW 支持协议号 1..=255，按实际协议精确接收；IPPROTO_RAW(255) 默认 IP_HDRINCL、只发送。
@@ -53,8 +56,12 @@ IPv4 UDP/RAW/TCP 通过 IP_MTU(14) 查询关联路径上限。Fragmentation Need
 AF_PACKET 出口 tap 在网卡之前；设备启用 TX partial checksum 时，内核生成的 TCP/UDP 帧可能仍含伪头 seed，而非线上最终 checksum。
 标准 SOL_PACKET/PACKET_AUXDATA 支持 i32 开关与短 getter；recvmsg 输出 20-byte tpacket_auxdata，卸载请求标明 TP_STATUS_CSUMNOTREADY。
 USER、原长、捕获长度与 L3 偏移来自实际帧，PEEK 保持信息；用户缓冲截断不改变捕获长度，短控制缓冲沿既有 MSG_CTRUNC 规则。
-RX checksum 已验证或驱动补全后标明 CSUM_VALID；未验证包保持无校验标志。未协商 GSO/VLAN 剥离时不伪造其状态位；不支持 packet ring/fanout/BPF。
+RX checksum 已验证或驱动补全后标明 CSUM_VALID；未验证包保持无校验标志。未协商 GSO/VLAN 剥离时不伪造其状态位。
 AF_PACKET 自行发送的帧不请求卸载，内容保持调用者字节。
+AF_PACKET 支持 `SO_TIMESTAMPNS_OLD`（35）及 `SO_TIMESTAMPNS_NEW`（64）。开启后 `recvmsg` 输出对应类型的 `SOL_SOCKET` 控制项，数据为采集时的两个 LP64 字段（UTC 秒、纳秒）。PEEK 不改变采集时刻。
+`SOL_PACKET/PACKET_STATISTICS` 返回两项 u32（匹配总数与其中的丢弃数），在查询时清零，支持短缓冲。普通队列或接收环满及共享报文分配失败算作抓包丢弃，区别于设备丢包。
+`PACKET_HDRLEN`、`PACKET_VERSION`、`PACKET_RESERVE` 与 `PACKET_RX_RING` 支持 `TPACKET_V2` 的 RAW/DGRAM 映射接收。环上限为 64 MiB，映射从零偏移覆盖整环，使用共享且不可执行的权限。
+启用后从映射读取帧及时间戳，`poll` 可等待帧。变更活动环的版本、预留空间或几何时返回 `EBUSY`，有映射时也不能撤销环。不支持 TPACKET_V1/V3 映射、TX 环、packet fanout、混杂模式和内核 socket BPF。
 TCP/UDP/raw 当前使用固定有界协议缓冲，INET 的 SO_SNDBUF/SO_RCVBUF 调优明确返回 EOPNOTSUPP，不伪造 getter 或设置成功。
 
 新增 AF_UNIX 与 KOBJECT netlink MSG_PEEK 已有原始队列消费模式及回归源码SCM_RIGHTS peek 复制实际 OFD、保留原 inflight 与 readiness。family-only autobind 与按 socket type 隔离的 abstract bind 已修改源码及回
@@ -117,7 +124,7 @@ IP_MULTICAST_IF(32)/TTL(33)/LOOP(34) 接通 UDP/RAW 发送与本机回送；IF �
 实际network fd固定该域并展示全部接口及发送丢包计数；普通proc snapshot不查询网络。
 IPv4接口首次地址采用原生classful掩码，同地址no-op保留mask/broadcast，显式广播在mask
 改变后保留并用于真实UDP/raw收发；lo默认broadcast零，无地址查询EADDRNOTAVAIL。
-静态 FIB、单地址 MTU 与 NEWNET/setns 在下述范围开放；多地址未开放。
+静态 FIB、MTU 与 NEWNET/setns 在下述范围开放。默认域及具名受管域的接口和路由通过原生配置入口管理，Linux 的对应 ioctl 写操作返回 EPERM。
 
 
 NEWNET标准入口已接真实独立protocol/ports/LO的源码；旧socket/OFD创建域保持，proc文件
@@ -184,6 +191,13 @@ RST原表示只由实际TCP构造，standalone dispatch和kernel RouteReplies均
 无FIN期限、orphan -1/1/默认60/120s及IF DOWN退休；nativeguest option范围与负围栏已写。
 zero-window budgets 由同一 transport clock owner 管理。
 
+#### TCP_INFO
+
+`getsockopt(IPPROTO_TCP, TCP_INFO)` 在 IPv4 和 IPv6 TCP 上返回 `struct tcp_info` 的 104 字节前缀。有效长度取用户容量与 104 的最小值，先写 optlen 再复制该前缀，零容量不访问 optval。
+支持连接状态、协商的 SACK/窗口缩放/时间戳、连续超时、RTT/RTO、发送与广告 MSS、拥塞窗口、慢启动阈值及累计重传。
+监听器以 `tcpi_unacked`、`tcpi_sacked` 分别报告可接收的连接数和 backlog 上限。前缀内其余统计保留为零，104 字节后的扩展未提供。
+字段与错误顺序对照 [Linux v6.12 tcp_info](https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/tcp.h) 和 [do_tcp_getsockopt](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp.c)。
+
 NET 链路硬件 fault 由实际设备 owner 记录；单物理 NIC 与 lo 共用一套 outcome。NetworkPoll唯一完整outcome同时持backlog、
 8项actual-link TX-ready及8项actual-link首个typed诊断；没有“一个device错误覆盖整个Result”
 分支。退出NET guard后同轮所有成功link的AF_PACKET writer edges仍交付，RX/cleanup/通知
@@ -226,7 +240,7 @@ IPV6_RECVPKTINFO（49）可查询/设置，默认关闭；recvmsg 的 IPV6_PKTIN
 IPv6 RAW 提供精确协议、作用域、payload 收发及校验和选项，见 [RAW 契约](../architecture-contract/raw-ip.md)；IPv6 TCP 已接通标准连接/监听/收发/关闭。
 IPV6_JOIN_GROUP(20)/LEAVE_GROUP(21) 接通 UDP/RAW 的 ASM 成员；IPV6_MULTICAST_ALL(29) 可设/查，默认 1。
 IPV6_MULTICAST_IF(17)/HOPS(18)/LOOP(19) 接通 UDP/RAW 发送和本机回送，可设/查；默认值、接口优先级、scope 与生命周期见[组播契约](../architecture-contract/ipv6-link.md#组播监听)。
-来源过滤、可配置组播路由及其他未列选项仍未接通；不宣称完整 IPv6 socket 兼容或来宾互通已验收。
+应用组播来源过滤与 Linux MRT/MRT6 接口待实现。双栈静态组播路由由 LiteOS 配置树管理。[组播转发](../architecture-contract/ip-forwarding.md#静态组播转发)
 IPv6 UDP 查询同一 NET 的本机/显式直连/受管 FIB；经网关发送保持远端 IP，ND 解析实际下一跳，失败交付一次 EHOSTUNREACH。
 IPv6 静态路由经统一配置接入，BGP IPv6 来源已接通，其他动态协议仍待完成；无路由返回 ENETUNREACH。Jumbo 和 IPV6_MTU_DISCOVER 模式仍未实现。
 IPv6 UDP 已生成回环、直连与静态网关回程的端口不可达；已关联 socket 收到匹配错误时 POLLIN/POLLERR 置位，send/recvmsg（含 PEEK）/SO_ERROR 一次消费 ECONNREFUSED。
@@ -235,7 +249,8 @@ IPV6_MTU（24）查询已关联 socket 的当前路径 MTU，未关联返回 ENO
 主机采用路由通告的 IPv6 MTU 后，查询与分片使用同一链路上限。`ip link` 中的设备 MTU 仍反映实际设备设置。
 PTB Type 2/Code 0 经匹配后收紧路径；已关联 endpoint 异步报 EMSGSIZE，同路径其他端口与后续发送使用实际路径限制。
 低于 1280、坏引用/校验或不匹配 tuple 不改变估计；不因更大 PTB 增长估计。IPv4/IPv6 UDP 与 RAW 可设/查 IP_RECVERR(11)/IPV6_RECVERR(25)。MSG_ERRQUEUE 取原目的、可见引用和错误控制消息，空队列返回 EAGAIN。
-详细 errno、offender、截断及未支持的附带信息见[数据报错误队列](../architecture-contract/socket-transport.md#数据报错误队列)。
+可设/查 IP_RECVERR_RFC4884(26)/IPV6_RECVERR_RFC4884(31)，控制新记录的扩展位置和校验标志。ICMP 错误的接收接口和地址按 IP_PKTINFO/IPV6_RECVPKTINFO 返回。
+详细 errno、offender、截断及本机失败范围见[数据报错误队列](../architecture-contract/socket-transport.md#数据报错误队列)。
 flowinfo 暂未启用发送选项，实际发送/名称查询使用默认值；详细范围与系统验收边界见[传输契约](../architecture-contract/socket-transport.md#linux-边界与当前限制)。
 
 ## NETLINK_ROUTE
@@ -262,8 +277,9 @@ dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓�
 原生权重先按公因数约分；比例仍超出 rtnh_hops 的 1..256 范围则查询回复 EOVERFLOW，完整多路径属性超出 u16 长度则 EMSGSIZE，不裁剪成员或修改执行状态。
 /proc/net/route 按 Linux 约定只列首成员。接收存储准备失败不推进 dump 游标，peek 不消费；单条大消息仍完整生成并应用用户缓冲截断。
 首次发送自动 bind；port 空间按（协议，NET）隔离。
+接口、地址、路由、邻居和规则均从 socket 打开时所属的网络域读取。setns 后打开的 socket 使用新域，已存在的 socket 保留原域。
 
-**修改**（需要 socket 所属 NET 的 owning UserNS 里的 `CAP_NET_ADMIN`，否则 `EPERM`，检查先于分发）：
+**修改**：默认域及具名受管域的链路、地址、路由、邻居和规则写操作返回 EPERM。应用自行创建的独立域可使用下列接口，需具有 socket 所属域的 owning UserNS 中的 `CAP_NET_ADMIN`。
 `RTM_NEWLINK`/`RTM_SETLINK` 修改 MTU 与 UP/DOWN（`ifi_flags/ifi_change` 按 Linux 语义，`NLM_F_EXCL` 得 `EEXIST`）；
 `RTM_NEWADDR`/`RTM_DELADDR` 设置或删除 IPv4 地址、前缀与广播地址；`RTM_NEWROUTE`/`RTM_DELROUTE` 直接进入同一 NET 的 FIB，
 `NLM_F_CREATE/EXCL/REPLACE/APPEND` 原样交给 FIB，`RTN_UNSPEC` 删除匹配任意类型。`NLM_F_ACK` 返回 `error = 0` 确认。
@@ -271,7 +287,7 @@ blackhole/prohibit/unreachable 保留独立类型；未指定 oif 的本机发�
 
 **明确不支持，返回 `EOPNOTSUPP` 而不伪造成功**：一个接口的第二个 IPv4 地址、点对点 peer、`eth0:1` 式别名 label；设备创建、删除、重命名、
 改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；anycast/multicast 路由类型、多路径修改、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
-邻居、规则、qdisc 等其他对象；非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）；多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）；IPv6 地址/路由修改（`EAFNOSUPPORT`）。
+qdisc 等其他对象、非 dump 的 `RTM_GETADDR/GETRULE`、多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）。独立域的 IPv6 地址和路由写入返回 EAFNOSUPPORT。
 
 网卡移除（驱动宿主终止）按 NETDEV_UNREGISTER：接口及其地址/路由从 dump 中消失，绑定该 ifindex 的 AF_PACKET socket 解绑并报告 `ENETDOWN`（`POLLERR`）；
 ifindex 不复用，`SO_BINDTODEVICE` 到已移除接口的 socket 无路由可选。因不支持组播订阅，不发 `RTM_DELLINK`/`RTM_NEWLINK` 通知。

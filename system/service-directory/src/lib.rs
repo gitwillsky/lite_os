@@ -12,6 +12,8 @@ extern crate alloc;
 
 /// BGP 域配置工厂；只路由到原生配置 owner，不直接授予 Linux 程序。
 pub const BGP_CONFIGURATOR: &[u8] = b"liteos.bgp.Configuration";
+/// 仅由路由配置 owner 获得的 OSPF 实例工厂。
+pub const OSPF_CONFIGURATOR: &[u8] = b"liteos.ospf.Configuration";
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

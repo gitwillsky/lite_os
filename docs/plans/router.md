@@ -2,7 +2,7 @@
 
 Status: Active
 
-执行期间存在；完成后把持久事实迁入架构/契约/ABI 矩阵/性能文档并删除本文件。
+文末的 [TODO](#todo待实现功能) 和 [Done](#done已实现功能) 按用户可使用的功能记录进度。[系统验收](#系统验收) 单独记录实际验证范围。计划完成后将持久事实迁入对应领域文档并删除本计划。
 
 ## 目标
 
@@ -51,142 +51,181 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - 用户提供的 x86_64 PVE 可按需要用于后续平台支持及部署验收；不修改既有虚拟机，尤其家庭网关/OpenWrt，亦不修改宿主现有网桥、路由或防火墙。
   只使用专用测试实例；DHCP/RA、动态路由和二层环路等主动测试必须与家庭业务网隔离。连接凭据不进入源码、文档或日志。
 
-## 服务拓扑
+## 领域文档
 
-| 服务 | 职责 |
-|---|---|
-| `netstack`（重写） | 网卡队列、L2（网桥/VLAN）、L3 多 VRF 双栈转发、邻居（ARP/ND）、连接跟踪、NAT、防火墙分类器、流表快路径；主机协议栈（TCP/UDP/原始 IP/ICMP、多播加组、TCP-MD5/AO）；socket 共享环；镜像点 |
-| `router-config` | 配置树 owner：schema、校验、事务、持久化、订阅；把配置下发给 netstack、routing-rib、协议进程与执行服务 |
-| `routing-rib`（新） | 各来源路由的汇总与选路、递归下一跳解析、路由策略（前缀列表、团体属性等）、按 VRF 下发 FIB 与共享下一跳对象 |
-| `bgp`、`ospf`（新） | 协议状态机；作为主机协议栈的普通 socket 使用者；向 routing-rib 提交路由 |
-| `dhcp-client`（保留） | 由 router-config 驱动的 DHCPv4/DHCPv6-PD 客户端 |
-| `dhcp-server`、`dns-cache`（新） | 由 router-config 驱动的执行服务 |
-| `router-api`（新，Linux 侧） | WebSocket 网关：本地 Unix socket（`SO_PEERCRED`）与远程 TLS（Linux 账号登录）；按组授权（如 `netadmin` 可写、`netview` 只读）；持有 linuxd 发布的授权端点 `/dev/router-config` |
-| 网络管理器（新，Linux 桌面应用） | 经典控件实现的图形化管理器：左侧菜单树、列表窗口、属性对话框、实时刷新、诊断工具；只连 router-api |
-
-现有配置入口与权限见[路由配置契约](../architecture-contract/router-configuration.md)。
-
-## 数据结构
-
-- **FIB**：每 VRF 一张；IPv4 用 Poptrie 或 DIR-24-8，IPv6 用 Poptrie（Asai & Ohara, SIGCOMM 2015）；
-  路由指向共享下一跳对象（含多路径组），下一跳变化 O(1) 影响所有引用它的路由。读侧无锁（RCU/epoch 式发布），
-  写侧批量更新。
-- **策略路由**：规则表（源地址、入接口、标记等）选择 VRF/路由表。
-- **连接跟踪**：每核分片哈希表，按协议状态定时老化；NAT 映射与端口分配在同一 owner 内。
-- **分类器**：规则链编译为决策树与哈希集合；地址集独立更新不触发整体重编译；按规则计数（每核计数，读时汇总）。
-- **报文缓冲**：每队列预分配缓冲池，网卡 DMA 直接写入 netstack 的 VMO；批大小固定，热路径不分配。
-- **状态寿命**：本期运行时 FIB、下一跳、接口表、连接跟踪随其 owner 存续，不宣称故障后恢复；配置树仍按版本持久化。跨重启保留及布局迁移属二期。
+- 转发与选路见[双栈转发契约](../architecture-contract/ip-forwarding.md)、[路由选用与下发](../architecture-contract/ipc-network.md#rib-候选目录)和[网桥与 VLAN](../architecture-contract/switching.md)。
+- 配置与管理见[路由配置契约](../architecture-contract/router-configuration.md)、[网络管理入口](../architecture-contract/userspace-abi.md#网络管理入口)和[桌面网络管理器](../../user/programs/network-manager/README.md)。
 
 ## 系统验收
 
-整机验收待完成。按[构建与验证](../development/build-and-verify.md)验证 R1–R16 及必需交互。
+整机验收待完成，覆盖以下实际使用场景。验证入口见[构建与验证](../development/build-and-verify.md)。
+
+- **已验证**。具名路由域可双向转发 IPv4 和 IPv6，使用共享或专用 CPU 均可。使用多队列网卡时，增加专用 CPU 可提高单个路由域的双栈吞吐。
+  [多核吞吐验证](../development/desktop-verification.md#单个路由域的多核吞吐)
+- **待验收**。转发期间可打开菜单、移动窗口和调整窗口大小，高负载时响应仍会变慢。仍需确认满载时的桌面响应及网卡重新连接后的双向转发。
+  [桌面响应验证](../development/desktop-verification.md#转发负载下的桌面响应)
 
 - **主机与地址服务**。验证静态及动态通告、地址冲突、前缀变更、DNS、租约和认证。验证双栈 socket、并发分片、错误反馈及 TCP 丢包恢复，并与成熟系统互通。
 - **路由与转发**。验证多网卡独立启停、邻居解析、多路径、跳数、分片和错误报告。覆盖 BGP/OSPF 与 FRR/BIRD 互通、BGP 反射及联盟，以及邻居、网卡或策略变化后的查询、宣告、收敛与实际转发。
-- **二层与安全**。在与家庭业务网隔离的环境验证 VLAN 互通、环路抑制、链路切换，以及防火墙与 NAT 的双向行为和规则顺序。
-- **配置与管理**。验证完整桌面操作、权限边界、配置生效时间，以及存储失败、断电后的配置加载与备份恢复。
-- **性能与规模**。以同等 QEMU 配置对比 Linux 和 RouterOS CHR，测量小包及 IMIX 吞吐、NAT/防火墙开销、多核扩展与空闲 CPU。覆盖目标路由、连接、规则及列表规模下的收敛、内存和交互响应。
+  核对 OSPF 邻居发现、双向通信与失联后的状态变化，再验证同一区域和跨区域的路由学习与转发。
+  通过 OSPF 上联访问 LiteOS 的 IPv4 和 IPv6 局域网，核对局域网只通告网段，并验证移除地址或停用链路后的对端路由。
+- **路由域隔离**。在两个域中配置相同的地址和网段，验证各域独立选路、转发及认证。设置不同的防火墙和 NAT 规则，核对双向流量与命中计数。
+  把应用放入指定域，核对其通信和查询结果，并验证重启后保存的接口归属与路由配置重新生效。
+  从桌面创建域、分配网卡、编辑域内设置并提交。核对网卡移回默认域和删除具名域后的设置与转发，验证取消编辑时当前配置保持原样。
+  用只读账户在两个具有重叠地址的域之间切换，核对各页只显示所选域的数据；用管理账户清除其中一条连接，确认其他域连接保持有效。
+- **二层与安全**。在与家庭业务网隔离的环境验证 VLAN 互通、与第三方网桥的环路抑制和链路切换，以及防火墙与 NAT 的双向行为和规则顺序。
+  从桌面配置接入和带标签上联，验证同 VLAN 互通、隔离端口、跨 VLAN 路由，以及撤销改动后的转发路径。
+  从桌面修改规则顺序、地址集和组合 NAT，核对命中、两方向流量及已有连接处理。
+- **配置与管理**。验证完整桌面操作、权限边界、配置生效时间，以及存储失败、断电后的配置加载与备份恢复。覆盖全部路由功能的审阅、提交、变更通知和备份恢复。
+  在桌面一次提交备选表、静态路由和选路规则，确认实际路径随优先级变化，并验证系统拒绝删除仍被引用的表。
+  在桌面修改网卡地址和转发开关，确认两族分别生效，重启后按保存的设备绑定加载。
+  从桌面配置物理下游与 VLAN，验证客户端取得预期地址、委派前缀、网关和 DNS，并通过配置的解析器查询域名。
+- **流量分析与抓包**。验证桌面显示的主要流量、字节占比、近期速率及采集丢包。用 `tcpdump` 实时查看和筛选接口报文，保存后重新读取抓包文件。
+- **性能与规模**。以同等 QEMU 配置对比 Linux 和 RouterOS CHR，测量小包及 IMIX 吞吐、NAT/防火墙开销、多核扩展与空闲 CPU。
+  覆盖目标路由、连接、规则及列表规模下的收敛、内存和交互响应。使用目标规模的配置验证导入、查找变更、审阅和提交。
+  在至少三颗逻辑 CPU 的系统上分配、替换及释放转发专用 CPU，确认桌面仍有可用 CPU、转发继续工作、重启后重新应用。验证提交失败保留上一份配置。
+  保持网卡配置和流量条件一致，分别测量多个路由域同时转发和单个路由域内多条连接的吞吐，比较增加转发可用 CPU 前后的结果。
+  在共享 CPU 上持续转发时测量桌面输入和窗口调整延迟，随后停止流量，测量空闲 CPU 用量，并检查空闲后首包和协议重传。
 
 ## 二期：故障恢复
 
 二期验收故障或重启后的运行状态恢复、恢复时限、连续转发，以及 BGP/OSPF 平滑重启。本期验收配置保存与开机加载，范围见 R12。
 
-## TODO（待交付功能）
+## TODO（待实现功能）
 
-### 双栈主机网络
+- [ ] **在持续转发时流畅操作桌面**。桌面与转发共享 CPU 时，用户可流畅打开菜单、移动窗口和调整窗口大小。
 
-- [ ] **完整的数据报错误详情**。数据报发送失败时，应用可取得本机错误或远端返回的 ICMP 错误，并查询相关接口、地址和扩展信息。[错误反馈](../architecture-contract/socket-transport.md#数据报错误队列)
-- [ ] **TCP 认证**。可为 TCP 连接启用 TCP-AO，并按路由域管理认证密钥。
-- [ ] **Linux 网络查询**。可在各 Linux 网络命名空间内查询对应路由域的接口、地址、路由、邻居及规则。[网络查询](../architecture-contract/packet-netlink.md)
+## Done（已实现功能）
 
-### 多网卡与路由
+### 路由域隔离
 
-- [ ] **路由隔离**。可独立配置多个路由域，在不同域内复用地址，并为 Linux 网络命名空间指定对应的路由域。
-- [ ] **双栈组播转发**。可配置 IPv4 和 IPv6 组播路由，让订阅者跨网段接收组播流量。
-- [ ] **转发配置变更**。管理员可调整转发选项。链路、路由或策略变化时，受影响的流量按最新配置切换或停止转发。
-- [ ] **转发负载管理**。可指定转发专用 CPU。高负载可利用多核，空闲时减少 CPU 占用，未配置专用 CPU 时保持桌面响应。
-
-### BGP 与 OSPF
-
-- [ ] **按 BGP 邻居配置路由策略**。可为每个邻居分别设置接收和发布策略，筛选路由并改写路由属性。[BGP](../architecture-contract/bgp.md#尚未接入的行为)
-- [ ] **BGP 同网段多路径发布**。可向同一邻居发布同一网段的多条路径。本期是否交付待确认。[BGP](../architecture-contract/bgp.md)
-- [ ] **OSPF 动态路由**。可配置 OSPFv2/v3 邻居与区域，发布和学习双栈路由。多区域拓扑变化或与其他来源路由并存时，实际转发随选路结果更新。
-
-### 连接跟踪、NAT 与防火墙
-
-- [ ] **地址转换**。可配置源地址转换、目的地址转换和随出口地址变化的转换规则。出口端口用尽时，系统拒绝建立新的映射。
-- [ ] **防火墙规则管理**。可将规则分组并跳转到其他规则组。
-- [ ] **有状态防火墙**。可按连接状态过滤分片流量，为已建立的连接配置双向放行、丢弃和地址转换，并决定新规则是否影响已有连接。
-
-### 网桥、VLAN 与 RSTP
-
-- [ ] **网桥与 VLAN**。可将多个端口接入网桥，让同一 802.1Q VLAN 内的设备互通，并按 VLAN 或端口隔离流量。
-  网桥可在允许的端口转发目的位置未知的报文，并在设备换端口或离线后更新转发路径。
-- [ ] **二层环路防护**。网桥默认启用 RSTP，可防止环路风暴，拓扑变化后更新转发并切换备用链路。MSTP 不属本期。
-
-### 配置、管理与诊断
-
-- [ ] **统一配置与变更通知**。管理员可在同一入口编辑、校验和审阅全部路由设置，一次提交多项修改并接收变更通知。提交失败或重连后可查询提交结果。
-- [ ] **完整的配置保存与恢复**。全部路由设置均支持开机加载、导出、导入、对比、定时备份和恢复。升级后仍可加载旧版本配置。
-- [ ] **本地及远程管理**。可按账号和组授予查看或修改权限，通过加密连接远程管理，断线重连后看到当前状态。其他管理会话响应较慢时仍可正常操作。
-- [ ] **图形化管理**。桌面管理器提供经典菜单树、列表和属性对话框。管理器及控制面板网络页均可完成配置和备份操作，列表实时更新。
-- [ ] **网络诊断**。可查看实时流量分解，使用 ping、traceroute、带宽测试与抓包诊断实际收发。
-
-## Done（已有功能）
-
-以下列出已有的可用能力。整机验收进度见[系统验收](#系统验收)。
+- **建立独立的静态路由域**。管理员可导入配置，为具名域分配网卡、设置双栈地址和静态路由，分别启停两族转发。各域可使用重叠地址，设置随系统启动加载。[配置方法](../../user/libraries/network-config/README.md#建立独立静态路由域)
+- **为隔离网络设置选路、防火墙和 NAT**。管理员可在各域设置备选路由表、选路规则、路由准入和有状态防火墙及 NAT。获授权的用户可按域查看规则命中数。[配置与查询](../../user/libraries/network-config/README.md#按路由域设置选路和防火墙)
+- **在隔离网络使用 BGP**。管理员可为各域配置独立邻居、认证及收发策略，按域查询会话和路由，并请求指定邻居刷新路由。[配置与查询](../../user/libraries/network-config/README.md#在具名路由域配置-bgp)
+- **在隔离网络使用 OSPF**。管理员可为各域分别配置 OSPFv2、OSPFv3 和认证，按域查看邻接、认证结果和实际采用的路由。[配置与查询](../../user/libraries/network-config/README.md#在具名路由域配置-ospf)
+- **让 Linux 应用使用指定路由域**。管理员可在已配置的域中启动程序。程序可通过标准 Linux 接口通信，并查看域内接口、地址、路由、邻居和选路规则。[启动与查询](../../user/libraries/network-config/README.md#在指定路由域启动应用)
+- **在桌面管理独立路由域**。管理员可创建和删除域、跨域分配网卡，并一起审阅和提交多个域的网络设置。获授权的用户可切换并查看各域的运行状态。
+  [路由域设置](../../user/programs/network-manager/README.md#独立路由域)、[按域查看状态](../../user/programs/network-manager/README.md#按域查看运行状态)
 
 ### 地址分发与 DNS
 
-- **DNS 转发与缓存**。可为下游客户端提供域名解析，并自动分发 DNS 地址。设置修改后生效，开机时自动加载。[DNS 转发](../architecture-contract/dns-forwarding.md)
+- **DNS 转发与缓存**。可在物理接口或 VLAN 网关提供双栈域名解析，下游客户端可自动取得解析器地址。设置修改后生效，开机时自动加载。[DNS 转发](../architecture-contract/dns-forwarding.md)
 - **IPv6 下游静态配置**。下游设备可自动获得管理员指定的 IPv6 前缀、默认网关和 DNS。配置修改或停用后，旧值会撤回。[下游路由通告](../architecture-contract/ipv6-link.md#下游路由通告)
 - **DHCPv4 地址分发**。可为各下游配置地址池、租期、网关和 DNS，按接口查询租约。客户端可取得和续订地址，分配时默认避开已占用地址。[地址分发契约](../architecture-contract/ipc-network.md#dhcpv4-下游地址分发)
-- **DHCPv6 前缀委派**。可让下游客户端使用上联分配的 IPv6 前缀，前缀到期或停用后撤回。可对服务器发来的重新配置请求启用认证。[委派会话](../architecture-contract/ipc-network.md#dhcpv6-前缀委派会话)
+- **DHCPv6 前缀委派**。管理员可为物理下游和各 VLAN 分配不同的 IPv6 子网。客户端可自动使用上联提供的前缀，前缀更换、到期或停用时会收到更新。
+  可对上联服务器发来的重新配置请求启用认证。[委派会话](../architecture-contract/ipc-network.md#dhcpv6-前缀委派会话)
+- **在桌面管理地址分发与 DNS**。管理员可为物理接口及 VLAN 设置 DHCPv4 地址池、IPv6 通告和委派子网，也可配置 DNS 监听、上游和系统搜索域。[地址分发与 DNS](../../user/programs/network-manager/README.md#地址分发与-dns)
 
 ### 双栈主机网络
 
+- **查询应用所在的网络**。应用可查看默认网络或自行创建的 Linux 网络命名空间中的接口、双栈地址、路由、邻居和规则，并按接口和地址查询邻居的可达状态。[网络查询](../architecture-contract/packet-netlink.md)
 - **接口配置**。设置 IPv4 和多个静态 IPv6 地址、DNS、搜索域、MTU 与 IPv4 默认路由。IPv4 可续租并在失败后重试。[路由配置](../architecture-contract/router-configuration.md)
 - **IPv6 主机网络**。可与本机、同链路和静态网关后的设备通信。接口可自动取得链路本地地址并检测地址冲突。
   可按接口选择是否从通告取得地址、路由、DNS 和链路参数，查看地址寿命和邻居状态。[IPv6 链路](../architecture-contract/ipv6-link.md)
-- **双栈邻居查询**。应用可按接口和地址查询 IPv4、IPv6 邻居及其可达状态。[网络查询](../architecture-contract/packet-netlink.md)
-- **双栈 TCP**。应用可通过 IPv4 或 IPv6 建立连接，一个监听端口可接收两族连接。应用停止发送后仍可接收。连接可适应路径 MTU 变化，并在部分丢包时快速恢复传输。[TCP 连接](../architecture-contract/socket-transport.md#tcp-连接)
-- **原始报文**。获授权程序可收发双栈原始报文并筛选 ICMP。[原始 IP](../architecture-contract/raw-ip.md)
-- **应用组播**。UDP 与原始 IP 可按接口订阅组播并控制发送和本机回送。[IPv4](../architecture-contract/ipv4-transports.md#ipv4-组播监听)、[IPv6](../architecture-contract/ipv6-link.md#组播监听)
-- **双栈大报文**。应用可查询路径允许的报文大小、控制发送分片并接收分片报文。[分片接收](../architecture-contract/ip-reassembly.md)、[IPv4 传输](../architecture-contract/ipv4-transports.md)、[IPv6 链路](../architecture-contract/ipv6-link.md)
-- **双栈数据报错误**。UDP 与原始 IP 可查询已报告的发送错误及来源。[错误反馈](../architecture-contract/socket-transport.md#数据报错误队列)
+- **双栈 TCP 连接**。应用可通过 IPv4 或 IPv6 建立连接，并在同一端口接收两族连接。连接支持单向关闭，并可在路径 MTU 变化或部分丢包后继续传输。[TCP 连接](../architecture-contract/socket-transport.md#tcp-连接)
+- **从对端探测 LiteOS 的 IPv4 地址**。对端可以 `ping` LiteOS 的单播地址并收到应答，关闭 IPv4 转发后仍可探测本机。[IPv4 主机网络](../architecture-contract/ipv4-transports.md)
+- **为 TCP 连接启用 TCP-AO 认证**。客户端可为对端配置认证密钥，在连接期间轮换密钥并查看认证统计。[TCP 认证](../architecture-contract/tcp-authentication.md)
+- **收发原始报文**。获授权程序可收发 IPv4 和 IPv6 原始报文并筛选 ICMP。[原始 IP](../architecture-contract/raw-ip.md)
+- **应用组播**。使用 UDP 或原始 IP 的应用可按接口订阅组播、选择组播发送接口，并控制本机是否接收自己发出的组播。[IPv4](../architecture-contract/ipv4-transports.md#ipv4-组播监听)、[IPv6](../architecture-contract/ipv6-link.md#组播监听)
+- **收发双栈大报文**。应用可查询路径允许的报文大小、控制是否分片发送，并接收对端发来的分片报文。[分片接收](../architecture-contract/ip-reassembly.md)、[IPv4 传输](../architecture-contract/ipv4-transports.md)、[IPv6 链路](../architecture-contract/ipv6-link.md)
+- **定位双栈数据报发送失败**。UDP 与原始 IP 应用可查询报文超长、路由失效和邻居不可达等本机错误。
+  收到远端报错时，可查看原目的、报告方、接收接口、本地地址及扩展详情。[错误反馈](../architecture-contract/socket-transport.md#数据报错误队列)
 
 ### 多网卡与路由
 
+- **为转发分配专用 CPU**。管理员可在桌面或导入配置时指定、更换或释放转发专用 CPU。多个路由域可同时转发，桌面仍有 CPU 可用。设置在系统启动后继续生效。
+  [桌面转发 CPU 设置](../../user/programs/network-manager/README.md#转发专用-cpu)
+- **同时转发多个路由域的双栈流量**。在有多颗可用 CPU 的共享模式下，多个路由域可同时转发 IPv4 和 IPv6 流量。[转发行为](../architecture-contract/ip-forwarding.md#转发唤醒与共享-cpu-调度)
+- **提高单个路由域的双栈吞吐**。在网卡支持多队列时，管理员可增加转发专用 CPU，提高同一路由域并发转发 IPv4 和 IPv6 流量的总吞吐。[多核吞吐验证](../development/desktop-verification.md#单个路由域的多核吞吐)
+- **空闲时降低转发的 CPU 占用**。网络空闲时转发的 CPU 占用自动下降，收到流量后自动恢复转发。[转发行为](../architecture-contract/ip-forwarding.md#转发唤醒与共享-cpu-调度)
 - **静态路由**。可配置及查询 IPv4 和 IPv6 路由，指定直连或经其他路由可达的网关，为多个出口设置权重，或丢弃及拒绝匹配流量。[路由配置](../architecture-contract/router-configuration.md)、[查询](../architecture-contract/packet-netlink.md)
-- **主路由表准入**。可按路由来源和前缀决定是否采用 IPv4 和 IPv6 路由，并调整采用时的优先级。[路由准入](../architecture-contract/router-configuration.md#路由准入策略)
-- **双栈路径查询**。可用 `ip route get` 查询本机发送或指定入接口的报文使用的路由表、出口和网关。[网络查询](../architecture-contract/packet-netlink.md)
-- **双栈选路规则查询**。管理员可查看规则的生效顺序、匹配条件和目标路由表。[策略选路](../architecture-contract/ip-forwarding.md#策略选路)
+- **按来源和前缀选用路由**。管理员可决定哪些 IPv4 和 IPv6 路由进入主路由表，并调整采用时的优先级。[路由准入](../architecture-contract/router-configuration.md#路由准入策略)
+- **查询双栈选路结果**。管理员可查看生效的选路规则，并查询本机发送或从指定接口进入的报文将使用的路由表、出口和网关。
+  [网络查询](../architecture-contract/packet-netlink.md)、[策略选路](../architecture-contract/ip-forwarding.md#策略选路)
 - **IPv4 经 IPv6 网关**。IPv4 静态路由可指定直连 IPv6 网关，也可经其他 IPv6 路由选出出口。出口可只配置 IPv6。
-  IPv6 路径切换或撤回时，依赖它的 IPv4 路由随之更新，可用 `ip route` 查询实际网关。[静态路由配置](../architecture-contract/router-configuration.md#静态路由配置)
-- **双栈主备网关切换**。可配置主备静态网关。主网关失联时，受影响的流量可改走备用出口，主网关恢复后可自动切回。[递归选路](../architecture-contract/ipc-network.md#rib-候选目录)
-- **双栈跨网卡转发**。独立启停两族单播转发并保存设置，可报告跳数和 MTU 错误；关闭转发后仍可访问本机服务。[跨网卡转发](../architecture-contract/ip-forwarding.md)
+  IPv6 路径切换或撤回时，依赖它的 IPv4 路由随之更新，管理员可查询实际网关。[静态路由配置](../architecture-contract/router-configuration.md#静态路由配置)
+- **双栈主备网关切换**。可配置主备静态网关。主网关失联时，受影响的流量可改走备用出口，主网关恢复后可自动切回。[主备网关行为](../architecture-contract/ipc-network.md#rib-候选目录)
+- **双栈跨网卡转发**。可分别启停 IPv4 和 IPv6 转发并保存设置，关闭转发后仍可访问本机服务。链路或选路设置变化后，流量切换到可用出口，系统可报告跳数和 MTU 错误。[跨网卡转发](../architecture-contract/ip-forwarding.md)
+- **静态双栈组播转发**。管理员可按组及来源指定入接口和出口，让物理网段及 VLAN 中的订阅者接收跨网段的组播。撤销规则后停止跨网段转发，本机订阅仍可接收。[组播转发](../architecture-contract/ip-forwarding.md#静态组播转发)
 - **按流量来源选路**。管理员可按源网段为本机和转发流量选路，也可按转发流量的入接口选路。发往同一目的地的流量可使用不同出口，未匹配到可用路由时使用主路由表。[策略选路](../architecture-contract/ip-forwarding.md#策略选路)
 - **按流量标记选路**。获授权的应用可标记本机发出的流量，管理员可按入接口和目的网段标记转发流量。
   两种流量都可按标记选路，管理员可查询指定标记使用的路径。[策略选路](../architecture-contract/ip-forwarding.md#策略选路)、[入站规则](../architecture-contract/ip-forwarding.md#预路由规则)
+- **在桌面管理路由接口**。管理员可浏览网卡与已保存的配置，修改双栈地址、MTU、管理状态和默认路由优先级，并按地址族启停转发。[路由接口与双栈转发](../../user/programs/network-manager/README.md#路由接口与双栈转发)
+- **在桌面管理静态路由**。管理员可在主表和已有备选表内查找、新增、编辑和删除双栈静态路由，管理带权下一跳并审阅提交。[静态路由](../../user/programs/network-manager/README.md#静态路由)
+- **在桌面管理选路规则**。管理员可新建或删除备选表，调整选路规则的优先级、匹配条件和目标表，并与静态路由一同提交。[备选表与选路规则](../../user/programs/network-manager/README.md#备选表与选路规则)
+- **在桌面查看生效路由**。获授权的用户可实时查看所选路由域的 IPv4 和 IPv6 路由、出口、下一跳与权重。[路由表](../../user/programs/network-manager/README.md#路由表)
+- **在桌面查看双栈邻居**。获授权的用户可实时查看所选路由域的邻居、接口、地址与可达状态。[邻居](../../user/programs/network-manager/README.md#邻居)
 
-### BGP 与 OSPF
+### 网桥与 VLAN
 
-- **BGP 邻居**。配置、启停和查询双栈邻居，支持 TCP MD5 认证，连接不相容时可查看原因。[BGP](../architecture-contract/bgp.md)、[TCP 认证](../architecture-contract/tcp-authentication.md)
-- **BGP 路由学习与发布**。双栈路由可按网段及属性筛选和修改，可查询采用结果；可发布、撤回和重发本机及指定来源路由，支持路由反射和 AS 联盟。[BGP](../architecture-contract/bgp.md)、[AS 联盟](../architecture-contract/bgp-confederation.md)
+- **网桥与 VLAN**。管理员可让同一 VLAN 内的设备互通，配置接入口、带标签的上联和端口隔离。设备换端口后，流量会转到新端口。[网桥契约](../architecture-contract/switching.md)
+- **二层环路防护**。网桥默认抑制冗余链路造成的环路，主链路断开后可使用备用链路。管理员可指定优先使用的网桥和链路。[生成树](../architecture-contract/switching.md#生成树)
+- **静态双栈 VLAN 网关**。管理员可在各 VLAN 配置 IPv4 和 IPv6 网关，查询接口与邻居，并启停 VLAN 之间的双栈转发。[VLAN 网关](../architecture-contract/switching.md#vlan-网关)
+- **在 VLAN 自动分发网络设置**。管理员可按 VLAN 设置 IPv4 地址池和静态 IPv6 前缀。设备可自动取得地址、默认网关及 DNS，管理员可按 VLAN 查询 IPv4 租约。[VLAN 网关](../architecture-contract/switching.md#vlan-网关)
+- **按 VLAN 接口管理流量**。管理员可指定 VLAN 接口作为静态路由出口，按流量进入的 VLAN 选择路由表或过滤流量，并查询生效路径和规则命中数。[VLAN 网关](../architecture-contract/switching.md#vlan-网关)
+- **在桌面管理网桥与 VLAN**。管理员可配置网桥成员、快速生成树、端口隔离、VLAN 标签和双栈网关，与路由和地址分发一起提交。[网桥与 VLAN](../../user/programs/network-manager/README.md#网桥与-vlan)
+
+### BGP
+
+- **管理 BGP 邻居及认证**。管理员可配置、查询和单独启停双栈邻居。停用时保留该邻居的设置，系统重新选择受影响的路由，其余会话继续运行。
+  可使用 TCP MD5 或 TCP-AO 并查看连接失败原因。使用 TCP-AO 时可在会话保持期间轮换密钥并查询当前密钥 ID。
+  [BGP 配置](../../user/libraries/network-config/README.md#bgp-配置)、[TCP 认证](../architecture-contract/tcp-authentication.md#bgp-配置与操作)
+- **按 BGP 邻居筛选和修改路由**。管理员可分别设置从各邻居接收哪些路由、向各邻居发布哪些路由，以及如何调整这些路由的属性。
+  [入口策略](../architecture-contract/bgp.md#入口政策反馈选路与发表)、[出口策略](../architecture-contract/bgp.md#出口策略与实际发送)
+- **BGP 路由学习与发布**。管理员可查询学习到的双栈路由及选用结果，向邻居发布、撤回和重发本机及指定来源的路由，也可配置路由反射与 AS 联盟。[BGP](../architecture-contract/bgp.md)、[AS 联盟](../architecture-contract/bgp-confederation.md)
 - **BGP 跨地址族下一跳**。可与支持该能力的邻居交换使用 IPv6 下一跳的 IPv4 单播路由。IPv4 流量可经 IPv6 网关转发，路由撤回后停止使用失效出口。[BGP 下一跳](../architecture-contract/bgp-next-hop.md)
-- **BGP 路由自动恢复**。网关恢复可达后，系统可自动恢复此前因该网关失联而停用的 BGP 路由，即使期间没有业务流量或新的路由发布。[BGP 路由可达性](../architecture-contract/router-configuration.md#来源事务的安装后可达检查)
+- **网关恢复后继续使用 BGP 路由**。网关重新可达后，受影响的 BGP 路由自动恢复参与选路。管理员可查询最新的选用结果。[路由表](../../user/programs/network-manager/README.md#路由表)
 - **BGP 路由刷新**。管理员和邻居均可在保持连接的情况下请求重发 IPv4 或 IPv6 路由。双方支持增强刷新时，可清除对端已停止发布的路由。[路由刷新](../architecture-contract/bgp.md#邻居请求路由重发)
+- **与同一 BGP 邻居交换多条路径**。管理员可按邻居启用双栈多路径收发，查看已发布路径和选路结果。一条路径撤回后，其他合格路径仍可参与选路。[使用说明](../../user/libraries/network-config/README.md#bgp-多路径)
+- **在桌面配置 BGP 本机身份和宣告**。管理员可设置本地 AS、路由器 ID、反射簇和 AS 联盟，选择宣告的本机网段和允许重分发的来源。[BGP 设置](../../user/programs/network-manager/README.md#bgp-设置)
+- **在桌面管理 BGP 邻居与认证**。管理员可新增、编辑、删除和单独启停双栈邻居，设置地址族与多路径，管理认证密钥并换钥。
+  [BGP 设置](../../user/programs/network-manager/README.md#bgp-设置)、[BGP 会话和路由](../../user/programs/network-manager/README.md#bgp-会话和路由)
+- **在桌面配置 BGP 路由策略**。管理员可按邻居编辑入口和出口规则、调整顺序和默认动作，决定收发哪些路由及如何调整路由属性，再审阅提交。[BGP 路由策略](../../user/programs/network-manager/README.md#bgp-路由策略)
+- **在桌面查看 BGP 会话和路由交换**。获授权的用户可查看所选域的会话、认证和路由计数，按 IPv4 或 IPv6 网段查看收到的路径、选用结果和发布情况。
+  管理员可按邻居及地址族请求重发路由。[BGP 会话和路由](../../user/programs/network-manager/README.md#bgp-会话和路由)
+
+### OSPF
+
+- **建立并查看 OSPF 邻接**。管理员可在普通区域的点对点链路启用 OSPFv2 或 OSPFv3，查看邻居发现、同步进度和同步完成状态。邻居失联后会从列表消失。[使用说明](../../user/libraries/network-config/README.md#ospf-邻居发现)
+- **使用学到的区域内 OSPF 路由**。管理员可查询系统采用的 IPv4、IPv6 路由及出口。等价路径可同时使用，邻居或链路失效后撤回受影响的路径。[使用说明](../../user/libraries/network-config/README.md#ospf-邻居发现)
+- **在 OSPF 区域内发布本机网络**。管理员可让同区域路由器学习 LiteOS 的 IPv4 和 IPv6 直连网段，并将局域网接口设为仅通告。链路或地址撤销后，对端可更新转发路径。[使用说明](../../user/libraries/network-config/README.md#在-ospf-区域内通告本机网络)
+- **跨 OSPF 普通区域选路**。管理员可通过骨干连接多个普通区域并交换双栈路由。跨区路径失效后，系统更新转发，管理员可查询选用结果。[使用说明](../../user/libraries/network-config/README.md#跨-ospf-区域选路)
+- **启用 OSPF 邻居认证**。管理员可分别为 OSPFv2 和 OSPFv3 要求链路邻居通过认证，查询拒绝原因，并为轮换同时配置旧密钥和新密钥。[使用说明](../../user/libraries/network-config/README.md#ospf-邻居认证)
+- **在桌面配置 OSPF**。管理员可按接口启停 OSPFv2 和 OSPFv3，配置区域、代价和仅通告模式，管理认证密钥与换钥，审阅后提交。[OSPF 设置](../../user/programs/network-manager/README.md#ospf-设置)
+- **在桌面查看 OSPF 邻居**。获授权的用户可刷新所选域的 OSPFv2 和 OSPFv3 链路，查看邻居地址、同步状态、认证拒绝次数和最近的失败原因。[OSPF 邻居](../../user/programs/network-manager/README.md#ospf-邻居)
 
 ### 连接跟踪、NAT 与防火墙
 
-- **双栈入站转发过滤**。管理员可按入接口和目的网段设置放行或丢弃规则，并按顺序配置例外。规则可与报文赋标一起保存、替换和撤销。[预路由规则](../architecture-contract/ip-forwarding.md#预路由规则)
-- **查看防火墙命中次数**。管理员可按配置顺序查看每条预路由规则命中的报文数和 IP 字节数，识别未命中或因设备缺席而未生效的规则。[规则计数](../architecture-contract/ip-forwarding.md#查询防火墙命中次数)
-- **复用双栈目的地址集**。管理员可让多条规则引用同一组 IPv4、IPv6 网段。修改成员后，引用规则一起生效，原有命中次数继续累计。[地址集](../architecture-contract/ip-forwarding.md#复用目的地址集)
-- **按连接状态过滤**。管理员可针对双栈 TCP、UDP 和 ICMP Echo 分别过滤新连接、已有连接和相关的 ICMP 错误。连接关闭或空闲超时后，流量按当前连接状态重新判断。[转发连接状态](../architecture-contract/ip-forwarding.md#转发连接状态)
-- **查询转发连接**。管理员可分批查看当前跟踪的双栈 TCP、UDP 和 ICMP Echo 连接、双方地址、状态和剩余空闲时间。[连接查询](../architecture-contract/ip-forwarding.md#查询转发连接)
-- **清除转发连接**。管理员可清除列表中选定的一条连接，取消尚未发出的相关报文。旧列表中的标识不会影响后来建立的连接。[连接清除](../architecture-contract/ip-forwarding.md#清除转发连接)
-- **实时跟踪转发连接**。管理员可查看当前连接，并持续接收双栈 TCP、UDP 和 ICMP Echo 连接的新增、状态变化和移除通知。来不及接收时重新加载当前列表。[实时跟踪](../architecture-contract/ip-forwarding.md#实时跟踪转发连接)
+- **管理双栈防火墙规则**。管理员可按入接口及源、目的网段放行或丢弃流量，按顺序设置例外、复用目的地址集和规则组，并查看每条规则的命中次数。
+  [规则与计数](../architecture-contract/ip-forwarding.md#预路由规则)、[规则组](../architecture-contract/ip-forwarding.md#调用防火墙子链)
+- **按连接状态过滤流量**。管理员可分别过滤新连接、已有连接和关联错误，覆盖双栈 TCP、UDP、ICMP Echo 及其分片。修改规则时可决定是否重新判断已有连接的双向流量。
+  [连接状态](../architecture-contract/ip-forwarding.md#转发连接状态)、[策略更新](../architecture-contract/ip-forwarding.md#更新已有连接的策略)
+- **通过对外地址发布内网服务**。管理员可将双栈虚拟地址或指定的 TCP、UDP 端口转发给同族后端。内外网客户端均可通过对外地址访问已配置的服务，未转发的接口端口仍可提供本机服务。
+  [地址和端口转发](../architecture-contract/ip-forwarding.md#固定目的地址转换)、[内网访问对外地址](../architecture-contract/ip-forwarding.md#组合源和目的转换)
+- **让内网设备共用出口**。管理员可为双栈内网流量指定源地址及 TCP、UDP 源端口，或使用出口地址和自动分配的端口。路由器和内网设备可同时访问同一远端服务，回包与关联错误各自送达。
+  [固定源地址转换](../architecture-contract/ip-forwarding.md#固定源地址转换)、[自动源地址转换](../architecture-contract/ip-forwarding.md#自动源地址转换)
+- **查看和清除转发连接**。管理员可查看双栈 TCP、UDP 和 ICMP Echo 连接的双方地址、状态和剩余空闲时间，订阅变化，或清除指定连接。
+  [连接查询](../architecture-contract/ip-forwarding.md#查询转发连接)、[实时跟踪](../architecture-contract/ip-forwarding.md#实时跟踪转发连接)、[连接清除](../architecture-contract/ip-forwarding.md#清除转发连接)
+- **在桌面管理防火墙与 NAT**。管理员可编辑匹配条件、动作、地址集和子链，调整规则顺序，并选择新规则如何影响已有连接。[防火墙与 NAT](../../user/programs/network-manager/README.md#防火墙与-nat)
+- **在桌面查看防火墙命中统计**。获授权的用户可查看所选域的规则、匹配条件和动作，实时查看命中的报文数和 IP 流量。[防火墙计数](../../user/programs/network-manager/README.md#防火墙计数)
+- **在桌面查看转发连接**。获授权的用户可实时查看所选路由域的双栈连接、端点和状态。管理员可清除所选连接。[转发连接](../../user/programs/network-manager/README.md#转发连接)
 
-### 配置、管理与诊断
+### 配置与备份
 
-- **配置保存与备份**。保存、校验、对比、导入和导出当前配置。可定时备份，设置保留策略，查询、创建、导出、删除及恢复备份。[路由配置](../architecture-contract/router-configuration.md)
+- **通过命令行审阅和提交路由设置**。管理员可导出设置、校验修改、审阅差异和批量提交，断线或重启后仍可查询近期提交结果。[审阅配置](../../user/libraries/network-config/README.md#审阅配置)
+- **备份与恢复网络设置**。管理员可在桌面或命令行创建、导出、删除及恢复备份，设置自动备份间隔和保留份数，并查看下次运行时间。
+  [桌面](../../user/programs/network-manager/README.md#配置备份)、[命令行](../../user/libraries/network-config/README.md#备份与恢复)
+- **升级后继续使用已有网络设置**。升级后可继续使用原有网络设置。管理员也可在桌面或命令行审阅并恢复旧配置文件和较早导出的备份。[备份与恢复](../../user/libraries/network-config/README.md#备份与恢复)
+- **在桌面审阅和提交配置草稿**。管理员可导入、编辑和导出草稿，分页查看或查找改动，核对前后差异并提交，随后查看生效状态。[路由配置](../../user/programs/network-manager/README.md#路由配置)
+- **本地网络管理**。普通账户可查看接口状态，获授权的观察者可查看路由运行状态，管理员可修改设置。控制面板可调整本机 TCP/IP 属性。[网络管理](../architecture-contract/userspace-abi.md#网络管理入口)
+- **远程网络管理**。管理员可在指定地址启用加密管理。获授权的账户可从远端查看运行状态，管理员可审阅、修改及备份配置。[远程管理](../../user/libraries/network-config/README.md#远程管理)
+
+### 网络诊断
+
+- **在桌面查看接口流量**。获授权的用户可实时查看本机接口的收发速率、累计流量与丢包数，并查看所选接口的报文数和错误数。[接口流量](../../user/programs/network-manager/README.md#接口流量)
+- **在桌面查看实时流量分布**。获授权的用户可按接口查看主要流量的协议、源和目的、收发速率与字节占比，观察近期变化和采集丢包。[实时流量分析](../../user/programs/network-manager/README.md#实时流量分析)
+- **在桌面按接口抓包**。管理员可捕获所选接口的收发报文，停止后查看抓包丢弃数，并用常见分析工具打开保存的文件。[抓包](../../user/programs/network-manager/README.md#抓包)
+- **用 tcpdump 实时抓包**。获授权的用户可在命令行按接口查看和筛选报文，也可保存为抓包文件供后续分析。[命令行抓包](../../user/base/README.md#命令行抓包)
+- **命令行连通性与逐跳探测**。管理员可用 `ping` 查看目标应答、丢包率和延迟，用 `traceroute` 查看 IPv4 或 IPv6 路径上应答的各跳及往返时间。[使用说明](../../user/base/README.md#命令行网络诊断)
+- **桌面网络诊断**。管理员可在控制面板打开网络管理器，探测主机名或双栈地址，查看应答、丢包率、延迟及逐跳结果。可停止探测并保留已收到的结果。[使用说明](../../user/programs/network-manager/README.md)
+- **测试到指定对端的带宽**。可按地址和端口测试 TCP 上传或下载，查看逐秒速率和接收端平均速率，亦可在 LiteOS 上启动临时测速对端。[带宽测试](../../user/programs/network-manager/README.md#带宽测试)

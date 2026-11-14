@@ -325,6 +325,8 @@ pub(super) struct ReceiveContent {
     pub(super) internet_packet_info: Option<crate::net::InternetPacketInfo>,
     /// 实际帧状态及完整长度，仅启用 PACKET_AUXDATA 时提供。
     pub(super) packet_auxiliary: Option<(crate::net::PacketInformation, usize)>,
+    /// 已启用的纳秒时间戳 cmsg 类型及帧采集时的 UTC 纳秒。
+    pub(super) packet_timestamp: Option<(u8, u64)>,
     /// AF_UNIX transport 转交的 descriptor capabilities。
     pub(super) rights: Option<crate::net::UnixReceivedRights>,
     /// transport 保存的实际消息凭据；None 与 peer credentials 无关。
@@ -366,6 +368,7 @@ pub(super) fn write_receive(
         internet_error,
         internet_packet_info,
         packet_auxiliary,
+        packet_timestamp,
         rights,
         credentials,
         pass_credentials,
@@ -451,6 +454,20 @@ pub(super) fn write_receive(
             );
         }
     }
+    if let Some((kind, nanoseconds)) = packet_timestamp {
+        let mut data = [0; 16];
+        data[..8].copy_from_slice(&(nanoseconds / 1_000_000_000).to_ne_bytes());
+        data[8..].copy_from_slice(&(nanoseconds % 1_000_000_000).to_ne_bytes());
+        written += write_control(
+            task,
+            if control == 0 { 0 } else { control.wrapping_add(written) },
+            control_length.saturating_sub(written),
+            SOL_SOCKET,
+            i32::from(kind),
+            &data,
+            &mut output_flags,
+        );
+    }
     if let Some((information, full_length)) = packet_auxiliary {
         // Linux tpacket_auxdata：USER | 实际 checksum 状态，未启用 BPF 截短，snaplen 与原长相同。
         // 用户 iovec 的截断不改变 snaplen；VLAN 未剥离，TCI/TPID 和有效位均保持零。
@@ -493,6 +510,10 @@ pub(super) fn write_receive(
         data[5] = error.kind;
         data[6] = error.code;
         data[8..12].copy_from_slice(&error.info.to_ne_bytes());
+        if let Some(extension) = error.extension {
+            data[12..14].copy_from_slice(&extension.offset.to_ne_bytes());
+            data[14] = u8::from(extension.invalid);
+        }
         if let Some(offender) = error.offender {
             let (address, length) = encode_address(Some(SocketAddress::Inet(offender)));
             data[16..16 + length].copy_from_slice(&address[..length]);

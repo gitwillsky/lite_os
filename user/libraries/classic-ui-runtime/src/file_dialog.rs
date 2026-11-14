@@ -1,7 +1,7 @@
 //! 通用文件对话框：共享控件持有交互，专属有界 worker 执行目录扫描与路径检查。
 use super::{outline::Outline, property_sheet::add, toolbar::Button, widgets::Tree};
 use classic_ui::{Edit, EventKind, Resources};
-use classic_ui_abi::{self as abi, event, state, widget};
+use classic_ui_abi::{self as abi, event, file_mode, state, widget};
 use std::{
     ffi::OsString,
     fs,
@@ -353,7 +353,11 @@ impl FileDialog {
         let primary = button(
             &mut tree,
             row_name,
-            if mode == 0 { "打开(O)" } else { "保存(S)" },
+            if mode == file_mode::OPEN {
+                "打开(O)"
+            } else {
+                "保存(S)"
+            },
         )?;
         tree.nodes.get_mut(&primary).expect("primary button").state = state::DEFAULT;
         let row_type = row(&mut tree)?;
@@ -603,9 +607,14 @@ impl FileDialog {
                 return self.list_request(completion.window, path);
             }
             Ok(Reply::File(path, exists)) => {
-                if self.mode == 0 && !exists {
+                if self.mode == file_mode::OPEN && !exists {
                     self.status("找不到文件，请检查文件名是否正确。");
-                } else if self.mode == 1 && exists && self.overwrite.as_ref() != Some(&path) {
+                } else if self.mode == file_mode::SAVE_NEW && exists {
+                    self.status("文件已存在，请输入新的文件名。");
+                } else if self.mode == file_mode::SAVE
+                    && exists
+                    && self.overwrite.as_ref() != Some(&path)
+                {
                     self.status("文件已存在，再次点击“保存”以替换它。");
                     self.overwrite = Some(path);
                 } else {

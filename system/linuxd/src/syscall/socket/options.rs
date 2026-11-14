@@ -1,12 +1,15 @@
 use super::{SocketType, current_task, errno, socket_error, socket_ofd};
 use crate::net::{InternetOption, SocketIoDirection, SocketTimeout};
 
+mod packet;
+
 const IPPROTO_IP: usize = 0;
 const IP_PKTINFO: usize = 8;
 const IP_TTL: usize = 2;
 const IP_MTU_DISCOVER: usize = 10;
 const IP_MTU: usize = 14;
 const IP_RECVERR: usize = 11;
+const IP_RECVERR_RFC4884: usize = 26;
 const IP_ADD_MEMBERSHIP: usize = 35;
 const IP_DROP_MEMBERSHIP: usize = 36;
 const IP_MULTICAST_IF: usize = 32;
@@ -31,10 +34,12 @@ const IPV6_MULTICAST_ALL: usize = 29;
 const IPV6_MTU: usize = 24;
 const IPV6_DONTFRAG: usize = 62;
 const IPV6_RECVERR: usize = 25;
+const IPV6_RECVERR_RFC4884: usize = 31;
 const IPV6_V6ONLY: usize = 26;
 const IPV6_RECVPKTINFO: usize = 49;
 const TCP_NODELAY: usize = 1;
 const TCP_MAXSEG: usize = 2;
+const TCP_INFO: usize = 11;
 const TCP_MD5SIG: usize = 14;
 const TCP_MD5SIG_EXT: usize = 32;
 const TCP_KEEPIDLE: usize = 4;
@@ -45,7 +50,8 @@ const TCP_USER_TIMEOUT: usize = 18;
 const TCP_LINGER2: usize = 8;
 const SOL_SOCKET: usize = 1;
 const SOL_PACKET: usize = 263;
-const PACKET_AUXDATA: usize = 8;
+const SO_TIMESTAMPNS_OLD: usize = 35;
+const SO_TIMESTAMPNS_NEW: usize = 64;
 const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
 const SO_ACCEPTCONN: usize = 30;
@@ -143,7 +149,12 @@ pub(crate) fn sys_setsockopt(
                 .ipv4_membership(group, interface, address, option == IP_ADD_MEMBERSHIP)
                 .map_err(socket_error)
         }
-        (IPPROTO_IP, IP_RECVERR) | (IPPROTO_IPV6, IPV6_RECVERR) => {
+        (IPPROTO_IP, IP_RECVERR | IP_RECVERR_RFC4884)
+        | (IPPROTO_IPV6, IPV6_RECVERR | IPV6_RECVERR_RFC4884) => {
+            let extensions = matches!(
+                (level, option),
+                (IPPROTO_IP, IP_RECVERR_RFC4884) | (IPPROTO_IPV6, IPV6_RECVERR_RFC4884)
+            );
             let enabled = if level == IPPROTO_IP {
                 if length == 0 {
                     Ok(0)
@@ -154,8 +165,11 @@ pub(crate) fn sys_setsockopt(
                 read_i32(value, length)
             };
             enabled.and_then(|value| {
+                if extensions && !(0..=1).contains(&value) {
+                    return Err(-errno::EINVAL);
+                }
                 socket
-                    .set_receive_error(level == IPPROTO_IPV6, value != 0)
+                    .set_receive_error(level == IPPROTO_IPV6, extensions, value != 0)
                     .map_err(socket_error)
             })
         }
@@ -304,11 +318,15 @@ pub(crate) fn sys_setsockopt(
             }
             socket.set_ipv6_option(query, value).map_err(socket_error)
         }),
-        (SOL_PACKET, PACKET_AUXDATA) => read_i32(value, length).and_then(|value| {
-            socket
-                .set_packet_auxiliary(value != 0)
-                .map_err(socket_error)
-        }),
+        (SOL_PACKET, _) => packet::set(&socket, option, value, length),
+        (SOL_SOCKET, SO_TIMESTAMPNS_OLD | SO_TIMESTAMPNS_NEW)
+            if socket.domain() == super::SocketDomain::Packet =>
+        {
+            read_i32(value, length).and_then(|value| {
+                socket.set_packet_timestamp(if value == 0 { 0 } else { option as u8 })
+                    .map_err(socket_error)
+            })
+        }
         (IPPROTO_IP, IP_HDRINCL) => read_ip_i32(value, length)
             .and_then(|value| socket.set_header_included(value != 0).map_err(socket_error)),
         (IPPROTO_IP, IP_PKTINFO) => read_ip_i32(value, length).and_then(|value| {
@@ -401,6 +419,12 @@ pub(crate) fn sys_setsockopt(
         (IPPROTO_TCP, TCP_MD5SIG | TCP_MD5SIG_EXT) => {
             set_tcp_md5(&socket, value, length, option == TCP_MD5SIG_EXT)
         }
+        (
+            IPPROTO_TCP,
+            super::tcp_ao::TCP_AO_ADD_KEY
+            | super::tcp_ao::TCP_AO_DEL_KEY
+            | super::tcp_ao::TCP_AO_INFO,
+        ) => super::tcp_ao::set_option(&socket, option, value, length),
         (SOL_SOCKET, SO_RCVTIMEO | SO_RCVTIMEO_NEW) => {
             read_timeval(value, length).and_then(|timeout| {
                 socket
@@ -457,7 +481,7 @@ fn set_tcp_md5(
         return Err(-errno::EOPNOTSUPP);
     }
     let address = address.ip().to_canonical();
-    let mut selector = network_protocol::TcpMd5Selector::host(address, None);
+    let mut selector = network_protocol::TcpKeySelector::host(address, None);
     if extended && bytes[128] & 1 != 0 {
         selector.prefix_length = bytes[129];
     }
@@ -589,6 +613,9 @@ pub(crate) fn sys_getsockopt(
     ) {
         return get_icmp_filter(&socket, level, value, length).map_or_else(|error| error, |()| 0);
     }
+    if level == IPPROTO_TCP && option == super::tcp_ao::TCP_AO_INFO {
+        return super::tcp_ao::get_info(&socket, value, length).map_or_else(|error| error, |()| 0);
+    }
     let task = current_task().unwrap();
     let mut size = [0u8; 4];
     if task.copy_from_user(length, &mut size).is_err() {
@@ -605,10 +632,32 @@ pub(crate) fn sys_getsockopt(
     {
         return -errno::ENOPROTOOPT;
     }
+    if level == IPPROTO_TCP && option == TCP_INFO {
+        let info = match socket.tcp_information() {
+            Ok(info) => encode_tcp_information(info),
+            Err(error) => return socket_error(error),
+        };
+        let count = (capacity as usize).min(info.len());
+        if task
+            .copy_to_user(length, &(count as u32).to_ne_bytes())
+            .is_err()
+            || count != 0 && task.copy_to_user(value, &info[..count]).is_err()
+        {
+            return -errno::EFAULT;
+        }
+        return 0;
+    }
     let mut result = [0u8; 16];
     let result_length = match (level, option) {
-        (SOL_PACKET, PACKET_AUXDATA) => {
-            result[..4].copy_from_slice(&i32::from(socket.packet_auxiliary()).to_ne_bytes());
+        (SOL_PACKET, _) => match packet::get(&socket, option, value, capacity as usize, &mut result) {
+            Ok(count) => count,
+            Err(error) => return error,
+        },
+        (SOL_SOCKET, SO_TIMESTAMPNS_OLD | SO_TIMESTAMPNS_NEW) => {
+            let Some(kind) = socket.packet_timestamp() else {
+                return -errno::ENOPROTOOPT;
+            };
+            result[..4].copy_from_slice(&i32::from(kind != 0).to_ne_bytes());
             4
         }
         (SOL_SOCKET, SO_TYPE) => {
@@ -685,14 +734,14 @@ pub(crate) fn sys_getsockopt(
         (SOL_SOCKET, SO_REUSEADDR | SO_BROADCAST | SO_KEEPALIVE | SO_MARK)
         | (
             IPPROTO_IP,
-            IP_TTL | IP_MTU_DISCOVER | IP_MTU | IP_RECVERR | IP_PKTINFO | IP_HDRINCL
-            | IP_MULTICAST_ALL | IP_MULTICAST_TTL | IP_MULTICAST_LOOP,
+            IP_TTL | IP_MTU_DISCOVER | IP_MTU | IP_RECVERR | IP_RECVERR_RFC4884 | IP_PKTINFO
+            | IP_HDRINCL | IP_MULTICAST_ALL | IP_MULTICAST_TTL | IP_MULTICAST_LOOP,
         )
         | (
             IPPROTO_IPV6,
             IPV6_V6ONLY | IPV6_UNICAST_HOPS | IPV6_RECVPKTINFO | IPV6_MTU | IPV6_MULTICAST_ALL
             | IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP | IPV6_DONTFRAG
-            | IPV6_RECVERR,
+            | IPV6_RECVERR | IPV6_RECVERR_RFC4884,
         )
         | (IPPROTO_IPV6 | IPPROTO_RAW, IPV6_CHECKSUM | IPV6_HDRINCL)
         | (
@@ -719,6 +768,8 @@ pub(crate) fn sys_getsockopt(
                 (IPPROTO_IP, IP_MTU) => InternetOption::Ipv4Mtu,
                 (IPPROTO_IP, IP_RECVERR) => InternetOption::Ipv4ReceiveError,
                 (IPPROTO_IPV6, IPV6_RECVERR) => InternetOption::Ipv6ReceiveError,
+                (IPPROTO_IP, IP_RECVERR_RFC4884) => InternetOption::Ipv4ReceiveErrorExtensions,
+                (IPPROTO_IPV6, IPV6_RECVERR_RFC4884) => InternetOption::Ipv6ReceiveErrorExtensions,
                 (IPPROTO_IP, IP_TTL) => InternetOption::HopLimit,
                 (IPPROTO_IP, IP_HDRINCL) => InternetOption::HeaderIncluded,
                 (IPPROTO_IP, IP_PKTINFO) => InternetOption::PacketInfo,
@@ -792,6 +843,52 @@ pub(crate) fn sys_getsockopt(
         return -errno::EFAULT;
     }
     0
+}
+
+/// Linux tcp_info 稳定的 104 字节前缀，至 tcpi_total_retrans。
+/// 未维护的 Linux 专用统计不通过其他计数估算。
+fn encode_tcp_information(info: network_protocol::TcpInformation) -> [u8; 104] {
+    use network_protocol::TcpPhase;
+
+    let mut output = [0; 104];
+    output[0] = match info.phase {
+        TcpPhase::Established => 1,
+        TcpPhase::SynSent => 2,
+        TcpPhase::SynReceived => 3,
+        TcpPhase::FinWait1 => 4,
+        TcpPhase::FinWait2 => 5,
+        TcpPhase::TimeWait => 6,
+        TcpPhase::Closed => 7,
+        TcpPhase::CloseWait => 8,
+        TcpPhase::LastAck => 9,
+        TcpPhase::Listen => 10,
+        TcpPhase::Closing => 11,
+    };
+    if matches!(info.phase, TcpPhase::Listen) {
+        output[24..28].copy_from_slice(&info.accept_ready.to_ne_bytes());
+        output[28..32].copy_from_slice(&info.accept_limit.to_ne_bytes());
+        return output;
+    }
+    output[2] = info.timeout_retries;
+    output[5] = u8::from(info.timestamps) | u8::from(info.sack) << 1;
+    if let Some([send, receive]) = info.window_scale {
+        output[5] |= 4;
+        output[6] = send | receive << 4;
+    }
+    let slow_start_threshold = info.slow_start_threshold.min(i32::MAX as u32);
+    for (offset, number) in [
+        (8, info.rto_us),
+        (16, info.send_mss),
+        (68, info.rtt_us),
+        (72, info.rtt_variance_us),
+        (76, slow_start_threshold),
+        (80, info.congestion_window),
+        (84, info.advertised_mss),
+        (100, info.retransmitted_segments),
+    ] {
+        output[offset..offset + 4].copy_from_slice(&number.to_ne_bytes());
+    }
+    output
 }
 
 /// 先核对不可变协议身份，再访问用户缓冲，保持原生 RAW 的错误优先级。

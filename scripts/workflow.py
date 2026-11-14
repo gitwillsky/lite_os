@@ -110,7 +110,7 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     cargo_profile = ["--release"] if profile == "release" else []
     run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "dhcp-server", "-p", "dns-cache", "-p", "bgp", "-p", "router-config", "-p", "routing-rib", "-p", "audio-core", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        ["cargo", "build", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "dhcp-server", "-p", "dns-cache", "-p", "bgp", "-p", "ospf", "-p", "router-config", "-p", "routing-rib", "-p", "audio-core", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
         cwd=ROOT,
         # 启动画面编入 driver-host；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
@@ -298,7 +298,10 @@ def _qemu_command(
     if mode == "run":
         if target.arch == "aarch64":
             command.extend(("-audiodev", "none,id=audio0", "-device", "virtio-sound-device,audiodev=audio0,streams=1"))
-    command.extend(("-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"))
+    if device_config := source.get("QEMU_DEVICE_CONFIG"):
+        command.extend(("-net", "none", "-readconfig", str(Path(device_config).expanduser().resolve())))
+    else:
+        command.extend(("-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"))
     if mode == "gdb":
         command.extend(("-S", "-s"))
     return command
@@ -402,6 +405,8 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "boot-scene",
             "-p",
             "kernel-unit",
+            "-p",
+            "device-model",
             "-p",
             "device-protocol",
             "-p",
@@ -632,6 +637,8 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "kernel-unit",
             "-p",
+            "device-model",
+            "-p",
             "ext4-unit",
             "-p",
             "netstack-unit",
@@ -679,7 +686,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
     )
     # 原生 RIB 同时提供宿主候选库与服务；host 检查库/测试，裸机 bin 沿下面的服务 gate。
     run(["cargo", "clippy", "-p", "routing-rib", "-p", "bgp", "--lib", "--tests", "--", "-D", "warnings"], environment=environment)
-    run(["cargo", "clippy", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "dhcp-server", "-p", "dns-cache", "-p", "bgp", "-p", "router-config", "-p", "routing-rib", "-p", "audio-core", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
+    run(["cargo", "clippy", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "dhcp-server", "-p", "dns-cache", "-p", "bgp", "-p", "ospf", "-p", "router-config", "-p", "routing-rib", "-p", "audio-core", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
     if target.requires_bootloader:
         run(["cargo", "clippy", "--release", "--", "-D", "warnings"], cwd=ROOT / "bootloader", environment=environment)
     verify_unit(environment)

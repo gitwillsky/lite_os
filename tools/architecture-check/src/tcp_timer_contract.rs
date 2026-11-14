@@ -88,27 +88,30 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     };
     let poll = source("system/netstack/src/inet/poll.rs");
     let timing = source("system/netstack/src/inet/timing.rs");
-    let owner = source("system/netstack/src/inet/tcp/io.rs");
+    let worker = source("system/netstack/src/worker.rs");
     let options = source("system/netstack/src/inet/options.rs");
     let lifecycle = source("system/netstack/src/inet/tcp/lifecycle.rs");
     let packets = source("system/netstack/src/inet/tcp/packet.rs");
     let connection = source("system/netstack/src/inet/tcp.rs");
-    if !matches!((poll.find("tcp::maintain_clocks(self,timestamp)"), poll.find("if!interface.state.up")), (Some(a), Some(b)) if a < b)
-        || !timing.contains("network.tcp_due(timestamp)")
-        || !packets.contains("entry.transport.maintenance_deadline()")
-        || !owner.contains("entry.transport.maintain(super::at(timestamp))")
+    if !matches!((poll.find("self.maintain_tcp_clocks(timestamp)"), poll.find("if!interface.state.up")), (Some(a), Some(b)) if a < b)
+        || !timing.contains("self.tcp_deadline(timestamp)")
+        || !timing.contains("stack.poll_deadline(timestamp)")
+        || !worker.contains("crate::inet::network_poll_deadline(index,lanes,")
+        || !packets.contains("entry.transport.maintenance_deadline(entry.transmit_at)")
+        || !packets.contains("entry.transport.maintain(timestamp);}super::io::maintain_state(state);queue_resets(state);")
         || !connection.contains("tcp.failure_reason()==Some(transport::FailureReason::TimedOut)")
         || !options.contains("socket.set_keep_alive_policy(")
         || !options.contains("socket.set_user_timeout(")
         || !options.contains("socket.set_syn_retries(self.syn_retries)")
         || !options.contains("socket.set_linger2(self.linger2)")
-        || !lifecycle.contains("entry.transport.close_orphan(at(super::super::now()))")
-        || !lifecycle.contains("network.queue_tcp_resets(super::super::now())")
-        || !poll.contains("self.queue_tcp_resets(timestamp)")
-        || !packets.contains("entry.transport.output_unavailable(at(timestamp),transport::OutputFailure::PathUnavailable,)")
+        || !lifecycle.contains("entry.transport.close_orphan(super::super::now())")
+        || !lifecycle.contains("network.queue_tcp_resets(id,super::super::now())")
+        || !packets.contains("queue_resets(endpoints.get_mut(&id)")
+        || !packets.contains("entry.transport.output_unavailable(timestamp,transport::OutputFailure::PathUnavailable,)")
         || !packets.contains("entry.transport.take_reset()")
-        || !packets.contains("replies.enqueue_tcp(ip,segment,entry.egress(state.options.mark),route.interface_index,timestamp,")
-        || !packets.contains("self.transport.bound_interface(),self.passive.as_ref().map_or(endpoint_mark,|policy|policy.options.mark),")
+        || !packets.contains("letegress=entry.egress(state.options.mark);letmutao=entry.ao.take();")
+        || !packets.contains("replies.enqueue_tcp(ip,segment,egress,route.interface_index,timestamp,")
+        || !packets.contains("self.transport.bound_interface().or_else(||self.ao.as_ref().and_then(|ao|ao.output_scope())),self.passive.as_ref().map_or(endpoint_mark,|policy|policy.options.mark),")
         || lifecycle.contains("retain_transport(")
         || lifecycle.contains("slot.fill(orphan_id,orphan)")
         || !options.contains(
@@ -155,10 +158,14 @@ mod tests {
             .iter_mut()
             .find(|file| file.relative == "system/netstack/src/inet/tcp/packet.rs")
             .unwrap();
-        assert!(file.text.contains(".maintenance_deadline()"));
-        file.text = file
-            .text
-            .replace(".maintenance_deadline()", ".removed_deadline()");
+        assert!(
+            file.text
+                .contains(".maintenance_deadline(entry.transmit_at)")
+        );
+        file.text = file.text.replace(
+            ".maintenance_deadline(entry.transmit_at)",
+            ".removed_deadline()",
+        );
         file.syntax = syn::parse_file(&file.text).unwrap();
         let mut errors = Vec::new();
         check(&root, &sources, &mut errors);
@@ -186,7 +193,7 @@ mod tests {
             .iter_mut()
             .find(|file| file.relative == "system/netstack/src/inet/tcp/lifecycle.rs")
             .unwrap();
-        let old = "network.queue_tcp_resets(super::super::now())";
+        let old = "network.queue_tcp_resets(id, super::super::now())";
         assert!(file.text.contains(old));
         file.text = file.text.replace(old, "network.plan_egress_routes()");
         syn::parse_file(&file.text).unwrap();

@@ -1,6 +1,6 @@
 //! 协议服务端：把控制、域与 socket channel 的请求映射到协议引擎。
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
@@ -17,6 +17,7 @@ use network_protocol::{
     PacketReceived, PacketSocketService, RouteChange, ServedSocket, SocketEndpoint, SocketError,
     SocketPollState,
 };
+use router_protocol::configuration::Name;
 
 use crate::dispatcher::{self, Served};
 use crate::inet::{self, InetSocket};
@@ -24,13 +25,15 @@ use crate::namespace::Namespace;
 use crate::packet::PacketSocket;
 use crate::receive::ReceiveBuffer;
 
-/// 控制面：默认网络与网卡事件分派。
+/// 控制面：网络域与网卡事件分派。
 pub(crate) struct Network {
-    interface_events: Arc<Event>,
     hub: Arc<EventHub>,
-    // OWNER: 默认网络（对应 Fuchsia netstack 的默认栈）：持有 router_config 安装的全部网卡，随 netstack 存续，
+    forwarding: crate::worker::ForwardingWorker,
+    // OWNER: 默认网络随 netstack 存续，
     // 不随任何使用者的连接退休；linuxd 重启后重新连上同一网络，接口配置不丢失。
     default: Arc<Namespace>,
+    // OWNER: 稳定名称到存活域的弱索引。只在授权安装入口查询，socket/installer 寿命决定域的退休。
+    managed: Mutex<fallible_tree::FallibleMap<Name, Weak<Namespace>>>,
     // OWNER: 已安装设备身份到其实际接口/寿命能力的登记；控制面重连可重新取得能力，不复制地址/FIB 或在线状态。
     // 仅安装冷路径持此锁；NET/设备事件不反向取得它。缺失登记会在配置服务单独重启后重复打开仍被 NET 独占的硬件。
     installed: Mutex<Vec<InstalledInterface>>,
@@ -38,6 +41,7 @@ pub(crate) struct Network {
 
 struct InstalledInterface {
     entry: device_protocol::directory::Entry,
+    scope: Weak<Namespace>,
     index: u32,
     lifetime: Channel,
     link_changed: Event,
@@ -48,21 +52,26 @@ struct InstalledInterface {
 /// # Errors
 ///
 /// 事件分派或默认网络创建失败。
-pub(crate) fn start() -> Result<Arc<Network>, Status> {
-    let namespace = Namespace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;
+pub(crate) fn start(forwarding: crate::worker::ForwardingWorker) -> Result<Arc<Network>, Status> {
+    let default = managed_namespace()?;
+    Arc::try_new(Network {
+        hub: EventHub::start(Some(device_protocol::network::FORWARDING_WORKER_PRIORITY))?,
+        forwarding,
+        default,
+        managed: Mutex::new(fallible_tree::FallibleMap::new()),
+        installed: Mutex::new(Vec::new()),
+    })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)
+}
+
+fn managed_namespace() -> Result<Arc<Namespace>, Status> {
+    let namespace = Namespace::create_managed().map_err(|()| native_abi::ERR_NO_MEMORY)?;
     let owner =
         inet::prepare_network(&namespace, &[], true).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     namespace.install_protocol(owner);
     let interface_events = Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    inet::observe_interfaces(&namespace, interface_events.clone())
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    Arc::try_new(Network {
-        interface_events,
-        hub: EventHub::start()?,
-        default: namespace,
-        installed: Mutex::new(Vec::new()),
-    })
-    .map_err(|_| native_abi::ERR_NO_MEMORY)
+    inet::observe_interfaces(&namespace, interface_events).map_err(installation_status)?;
+    Ok(namespace)
 }
 
 /// 以执行安装服务承载原生 RIB 的一条连接。
@@ -71,16 +80,28 @@ pub(crate) fn start() -> Result<Arc<Network>, Status> {
 ///
 /// 服务线程创建失败。
 pub(crate) fn serve_installer(network: Arc<Network>, channel: Channel) -> Result<(), Status> {
-    let handler = Arc::try_new(
-        move |ordinal: u32,
-              request: &mut network_protocol::Reader<'_>,
-              handles: Vec<Handle>,
-              reply: &mut network_protocol::Writer| {
-            network_protocol::dispatch_installer(&*network, ordinal, request, handles, reply)
-        },
-    )
-    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    service_rpc::serve(channel, 1, b"netstack-installer", handler)
+    let scope = network.default.clone();
+    Installer { network, scope }.serve(channel)
+}
+
+struct Installer {
+    network: Arc<Network>,
+    scope: Arc<Namespace>,
+}
+
+impl Installer {
+    fn serve(self, channel: Channel) -> Result<(), Status> {
+        let handler = Arc::try_new(
+            move |ordinal: u32,
+                  request: &mut network_protocol::Reader<'_>,
+                  handles: Vec<Handle>,
+                  reply: &mut network_protocol::Writer| {
+                network_protocol::dispatch_installer(&self, ordinal, request, handles, reply)
+            },
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        service_rpc::serve(channel, 1, b"netstack-installer", handler)
+    }
 }
 
 /// 以控制服务服务一条使用者连接；全部连接共享同一控制面。
@@ -101,34 +122,106 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
     service_rpc::serve(control, 1, b"netstack-control", handler)
 }
 
-impl InstallerService for Network {
-    fn firewall_counters(&self, cursor: router_protocol::firewall::counters::Cursor) -> Result<Vec<u8>, Status> {
-        inet::firewall_counters(&self.default, cursor)?.encode().map_err(|_| native_abi::ERR_BAD_STATE)
+fn installation_status(error: SocketError) -> Status {
+    match error {
+        SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+        SocketError::Again => native_abi::ERR_SHOULD_WAIT,
+        SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
+        SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
+        SocketError::AddressInUse => native_abi::ERR_INVALID_ARGS,
+        _ => native_abi::ERR_BAD_STATE,
+    }
+}
+
+impl InstallerService for Installer {
+    fn set_forwarding_cpus(&self, mask: u64) -> Result<(), Status> {
+        if !Arc::ptr_eq(&self.scope, &self.network.default) {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        self.network.forwarding.place(mask)
     }
 
-    fn connection_changes(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Vec<u8>, Status> {
-        inet::connection_changes(&self.default, cursor)?.encode().map_err(|_| native_abi::ERR_BAD_STATE)
+    fn open_routing_domain(&self, name: Name) -> Result<(Channel, Channel), Status> {
+        if !Arc::ptr_eq(&self.scope, &self.network.default) {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        let scope = {
+            let mut managed = self.network.managed.lock();
+            if let Some(scope) = managed.get(&name).and_then(Weak::upgrade) {
+                scope
+            } else {
+                managed.retain(|_, scope| scope.strong_count() != 0);
+                let scope = managed_namespace()?;
+                managed
+                    .try_insert(name, Arc::downgrade(&scope))
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                scope
+            }
+        };
+        let namespace = serve_namespace(scope.clone())?;
+        let (client, server) = Channel::create()?;
+        Self {
+            network: self.network.clone(),
+            scope,
+        }
+        .serve(server)?;
+        Ok((client, namespace))
+    }
+    fn project_bridges(
+        &self,
+        ports: router_protocol::switching::Ports<'_>,
+        plans: router_protocol::interface::InterfaceConfigurationBatch<'_>,
+    ) -> Result<Vec<u8>, Status> {
+        inet::project_bridges(&self.scope, ports, plans).map_err(installation_status)
     }
 
-    fn arm_connection_watch(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Option<Event>, Status> {
-        let event = inet::arm_connection_watch(&self.default, cursor, || {
+    fn firewall_counters(
+        &self,
+        cursor: router_protocol::firewall::counters::Cursor,
+    ) -> Result<Vec<u8>, Status> {
+        inet::firewall_counters(&self.scope, cursor)?
+            .encode()
+            .map_err(|_| native_abi::ERR_BAD_STATE)
+    }
+
+    fn connection_changes(
+        &self,
+        cursor: router_protocol::connections::changes::Cursor,
+    ) -> Result<Vec<u8>, Status> {
+        inet::connection_changes(&self.scope, cursor)?
+            .encode()
+            .map_err(|_| native_abi::ERR_BAD_STATE)
+    }
+
+    fn arm_connection_watch(
+        &self,
+        cursor: router_protocol::connections::changes::Cursor,
+    ) -> Result<Option<Event>, Status> {
+        let event = inet::arm_connection_watch(&self.scope, cursor, || {
             Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)
         })?;
-        event.map(|event| event.duplicate(rights::WAIT | rights::TRANSFER)).transpose()
+        event
+            .map(|event| event.duplicate(rights::WAIT | rights::TRANSFER))
+            .transpose()
     }
 
-    fn clear_connection(&self, identity: router_protocol::connections::Identity) -> Result<(), Status> {
-        inet::clear_connection(&self.default, identity)
+    fn clear_connection(
+        &self,
+        identity: router_protocol::connections::Identity,
+    ) -> Result<(), Status> {
+        inet::clear_connection(&self.scope, identity)
     }
 
     fn connections(&self, cursor: router_protocol::connections::Cursor) -> Result<Vec<u8>, Status> {
-        inet::connection_page(&self.default, cursor)?
+        inet::connection_page(&self.scope, cursor)?
             .encode()
             .map_err(|_| native_abi::ERR_BAD_STATE)
     }
 
     fn watch_routing_inputs(&self) -> Result<Event, Status> {
-        self.interface_events.duplicate(rights::SAME)
+        inet::routing_inputs(&self.scope)
+            .map_err(installation_status)?
+            .duplicate(rights::SAME)
     }
     fn prepare_next_hop(
         &self,
@@ -136,13 +229,7 @@ impl InstallerService for Network {
     ) -> Result<Channel, Status> {
         let (client, server) = Channel::create()?;
         let configuration =
-            inet::prepare_next_hop(&self.default, definition).map_err(|error| match error {
-                SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-                SocketError::Again => native_abi::ERR_SHOULD_WAIT,
-                SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
-                SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
-                _ => native_abi::ERR_BAD_STATE,
-            })?;
+            inet::prepare_next_hop(&self.scope, definition).map_err(installation_status)?;
         dispatcher::serve(server, Served::Configuration(configuration))?;
         Ok(client)
     }
@@ -152,16 +239,8 @@ impl InstallerService for Network {
         forwarding: Option<network_protocol::Forwarding>,
     ) -> Result<Channel, Status> {
         let (client, server) = Channel::create()?;
-        let configuration =
-            inet::prepare_configuration(&self.default, batch, forwarding).map_err(|error| {
-                match error {
-                    SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-                    SocketError::Again => native_abi::ERR_SHOULD_WAIT,
-                    SocketError::NoDevice => native_abi::ERR_NOT_FOUND,
-                    SocketError::Invalid => native_abi::ERR_INVALID_ARGS,
-                    _ => native_abi::ERR_BAD_STATE,
-                }
-            })?;
+        let configuration = inet::prepare_configuration(&self.scope, batch, forwarding)
+            .map_err(installation_status)?;
         dispatcher::serve(server, Served::Configuration(configuration))?;
         Ok(client)
     }
@@ -169,33 +248,63 @@ impl InstallerService for Network {
     fn install_device(
         &self,
         device_id: u64,
+        domain: Option<Name>,
         description: Vec<u8>,
         mut handles: Vec<Handle>,
     ) -> Result<(u32, Channel, native_runtime::Event), Status> {
+        if !Arc::ptr_eq(&self.scope, &self.network.default) {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
         if device_id == 0 || handles.len() != 1 {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
+        let scope = match domain {
+            Some(name) => self
+                .network
+                .managed
+                .lock()
+                .get(&name)
+                .and_then(Weak::upgrade)
+                .ok_or(native_abi::ERR_BAD_STATE)?,
+            None => self.scope.clone(),
+        };
         let directory = device_protocol::directory::DirectoryClient::new(Channel::from_handle(
             service_rpc::take_handle(&mut handles, 0)?,
         ));
-        let mut installed = self.installed.lock();
+        let mut installed = self.network.installed.lock();
         // 寿命来自实际 NET 接口；关闭立即使旧登记不可复用。只在安装时退休，不添加空闲轮询或设备状态副本。
         installed.retain(|interface| {
             interface.lifetime.wait_one(signals::PEER_CLOSED, 0) == Err(native_abi::ERR_TIMED_OUT)
         });
-        if let Some(interface) = installed
+        if let Some(position) = installed
             .iter()
-            .find(|interface| interface.entry.id == device_id)
+            .position(|interface| interface.entry.id == device_id)
         {
+            let interface = &installed[position];
             if interface.entry.description != description {
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
-            // Installer 已授予默认网络管理权；重连只重交原接口的只观测寿命，不再次打开物理目录/队列。
-            return Ok((
-                interface.index,
-                interface.lifetime.duplicate(rights::SAME)?,
-                interface.link_changed.duplicate(rights::SAME)?,
-            ));
+            if let Some(previous) = interface.scope.upgrade() {
+                if Arc::ptr_eq(&previous, &scope) {
+                    return Ok((
+                        interface.index,
+                        interface.lifetime.duplicate(rights::SAME)?,
+                        interface.link_changed.duplicate(rights::SAME)?,
+                    ));
+                }
+                // 先验证目录能力，再撤下旧域的接口和路由。目录独占会话保证新域打开的是新队列，
+                // 不会收到旧域尚未处理的报文。队列未退休时打开返回可重试的 AlreadyBound。
+                let (_, entries) = directory.list(device_id - 1)?;
+                if !entries.iter().any(|entry| {
+                    entry.id == device_id
+                        && entry.class == Class::Network
+                        && entry.description == description
+                }) {
+                    return Err(native_abi::ERR_NOT_FOUND);
+                }
+                inet::release_interface(&previous, interface.index).map_err(installation_status)?;
+            }
+            installed.remove(position);
         }
         installed
             .try_reserve(1)
@@ -205,18 +314,25 @@ impl InstallerService for Network {
             class: Class::Network,
             description,
         };
-        // 当前协议引擎由单一 worker 推进；队列策略属于使用者，不能由驱动按 CPU 数猜测。
+        // 接受设备已公布的自动分流队列。显式 RSS 的队列数还受可编码的间接表长度约束。
+        let cpus = u16::try_from(native_runtime::system::basic().cpu_count)
+            .unwrap_or(u16::MAX)
+            .max(1);
         let device = device_protocol::network::connect(
             &directory,
             &entry,
-            device_model::network::NetworkQueueConfiguration {
-                queue_pairs: 1,
-                transmit_bytes: 1514,
+            |maximum_pairs, rss, transmit| device_model::network::NetworkQueueConfiguration {
+                queue_pairs: cpus.min(maximum_pairs).min(
+                    rss.filter(|cap| cap.hash_types != 0)
+                        .map_or(u16::MAX, |cap| 1 << cap.maximum_table_entries.ilog2()),
+                ),
+                transmit_bytes: transmit.maximum_frame_length,
             },
-            &self.hub,
+            &self.network.hub,
         )?;
-        // 单 worker 无须逐包计算 RSS 散列；多队列时由使用者选择稳定表与随机密钥。
+        // 多队列使用同一租约内固定的表和密钥，流量入队后不因运行时 CPU 调整重新散列。
         if let Some(cap) = device.receive_scaling()
+            && cap.hash_types != 0
             && device.queue_count() > 1
         {
             let count = device.queue_count();
@@ -243,28 +359,16 @@ impl InstallerService for Network {
                     indirection,
                     key,
                 })
-                .map_err(|error| match error {
-                    device_model::network::NetworkError::NoMemory => native_abi::ERR_NO_MEMORY,
-                    device_model::network::NetworkError::NoResources => {
-                        native_abi::ERR_NO_RESOURCES
-                    }
-                    device_model::network::NetworkError::InvalidConfiguration => {
-                        native_abi::ERR_INVALID_ARGS
-                    }
-                    _ => native_abi::ERR_IO,
-                })?;
+                .map_err(device_protocol::network::encode_error)?;
         }
-        let activity = crate::worker::device_activity()?;
-        for queue in 0..device.queue_count() {
-            device.bind_activity(queue, activity.clone());
-        }
+        let queues = crate::worker::DeviceQueues::bind(&scope, &device)?;
         let (lifetime, held) = Channel::create()?;
         let retained = lifetime.duplicate(rights::SAME)?;
         let link_changed = Event::create()?;
         let publisher = link_changed.duplicate(rights::SAME)?;
         let observer = link_changed.duplicate(rights::SAME)?;
         let index =
-            inet::install_interface(&self.default, device, held, publisher).map_err(|error| {
+            inet::install_interface(&scope, device, held, publisher, queues).map_err(|error| {
                 match error {
                     SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
                     _ => native_abi::ERR_NO_RESOURCES,
@@ -273,6 +377,7 @@ impl InstallerService for Network {
         // 容量与能力均已在接口安装前准备；发表后登记不再分配，回复丢失也可安全重试。
         installed.push(InstalledInterface {
             entry,
+            scope: Arc::downgrade(&scope),
             index,
             lifetime: retained,
             link_changed: observer,
@@ -305,10 +410,14 @@ impl NetworkService for Network {
             namespace.install_protocol(owner);
             namespace
         };
-        let (client, server) = Channel::create()?;
-        dispatcher::serve(server, Served::Namespace(NamespaceServer(namespace)))?;
-        Ok(client)
+        serve_namespace(namespace)
     }
+}
+
+fn serve_namespace(namespace: Arc<Namespace>) -> Result<Channel, Status> {
+    let (client, server) = Channel::create()?;
+    dispatcher::serve(server, Served::Namespace(NamespaceServer(namespace)))?;
+    Ok(client)
 }
 
 /// 为新 socket 建立 channel 与就绪 Event，并登记到分派器。
@@ -378,6 +487,20 @@ impl NamespaceService for NamespaceServer {
         index: u32,
     ) -> Result<network_protocol::NeighborSnapshot, SocketError> {
         inet::neighbor_snapshot(&self.0, index)
+    }
+
+    fn neighbor_page(
+        &self,
+        after: Option<router_protocol::neighbors::Key>,
+    ) -> Result<Vec<u8>, SocketError> {
+        inet::neighbor_page(&self.0, after)
+    }
+
+    fn route_page(
+        &self,
+        cursor: router_protocol::route_view::Cursor,
+    ) -> Result<Vec<u8>, SocketError> {
+        inet::route_page(&self.0, cursor)
     }
 
     fn address_snapshot(
@@ -584,6 +707,10 @@ impl InetSocketService for InetSocket {
             InetOptionChange::ReceiveError { ipv6, enabled } => {
                 self.set_receive_error(ipv6, enabled)
             }
+            InetOptionChange::ReceiveErrorExtensions { ipv6, enabled } => {
+                self.set_receive_error_extensions(ipv6, enabled)
+            }
+            InetOptionChange::AoSelection(selection) => self.select_ao_keys(selection),
             InetOptionChange::Ipv4MtuDiscovery(value) => self.set_ipv4_mtu_discovery(value),
             InetOptionChange::Ipv6DontFragment(value) => {
                 self.set_ipv6_option(InternetOption::Ipv6DontFragment, i32::from(value))
@@ -631,10 +758,32 @@ impl InetSocketService for InetSocket {
     }
     fn set_md5_key(
         &self,
-        selector: network_protocol::TcpMd5Selector,
+        selector: network_protocol::TcpKeySelector,
         key: &[u8],
     ) -> Result<(), SocketError> {
         InetSocket::set_md5_key(self, selector, key)
+    }
+
+    fn set_ao_key(
+        &self,
+        config: network_protocol::TcpAoKey,
+        key: &[u8],
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        InetSocket::set_ao_key(self, config, key, selection)
+    }
+    fn ao_status(&self) -> Result<network_protocol::TcpAoStatus, SocketError> {
+        InetSocket::ao_status(self)
+    }
+    fn tcp_information(&self) -> Result<network_protocol::TcpInformation, SocketError> {
+        InetSocket::tcp_information(self)
+    }
+    fn replace_ao_keys(
+        &self,
+        keys: &[(network_protocol::TcpAoKey, &[u8])],
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        InetSocket::replace_ao_keys(self, keys, selection)
     }
 
     fn bind_to_device(&self, name: &[u8], privileged: bool) -> Result<(), SocketError> {
@@ -651,6 +800,16 @@ impl InetSocketService for InetSocket {
 }
 
 impl PacketSocketService for PacketSocket {
+    fn take_statistics(&self) -> Result<[u32; 2], SocketError> {
+        PacketSocket::take_statistics(self)
+    }
+
+    fn set_receive_ring(
+        &self,
+        ring: Option<network_protocol::CaptureRing>,
+    ) -> Result<(), SocketError> {
+        PacketSocket::set_receive_ring(self, ring)
+    }
     fn bind(&self, address: PacketAddress) -> Result<(), SocketError> {
         PacketSocket::bind(self, address)
     }

@@ -30,7 +30,7 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(
             target.qemu_machine(acceleration),
             "virt,accel=hvf,gic-version=3,its=on,secure=off,"
-            "virtualization=off,acpi=off",
+            "virtualization=off,acpi=off,kernel-irqchip=off",
         )
         self.assertEqual(target.musl_loader, "/lib/ld-musl-aarch64.so.1")
         self.assertEqual(target.alpine_arch, "aarch64")
@@ -106,7 +106,7 @@ class BuildTargetTests(unittest.TestCase):
         self.assertEqual(
             variables["QEMU_MACHINE"],
             "virt,accel=hvf,gic-version=3,its=on,secure=off,"
-            "virtualization=off,acpi=off",
+            "virtualization=off,acpi=off,kernel-irqchip=off",
         )
         self.assertEqual(variables["BOOTLOADER_REQUIRED"], "0")
         self.assertEqual(variables["KERNEL_BOOT_NAME"], "Image")

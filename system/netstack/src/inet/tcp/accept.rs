@@ -82,6 +82,14 @@ pub(in crate::inet) fn accept(
     } else {
         None
     };
+    let ao_counters = policy
+        .ao_keys
+        .is_some()
+        .then(|| {
+            alloc::boxed::Box::try_new(network_protocol::TcpAoCounters::default())
+                .map_err(|_| SocketError::NoMemory)
+        })
+        .transpose()?;
     let id = allocate_endpoint_id(&mut network)?;
     if network.socket_count() + network.udp_endpoints.len() >= super::super::SOCKET_STORAGE_CAPACITY
     {
@@ -128,12 +136,15 @@ pub(in crate::inet) fn accept(
             family,
             endpoint: Weak::new(),
             handles: accepted_handles,
+            output_handle: 0,
             mode: TcpMode::Connected(policy.connection),
             pending_error: policy.pending_error,
             port_lease: Some(accepted_lease),
             orphaned: false,
             options,
             md5_keys: policy.md5_keys,
+            ao_keys: policy.ao_keys,
+            ao_counters,
             readiness: network_protocol::SocketPollState::error(),
             notification_pending: false,
         },

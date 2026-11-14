@@ -2,81 +2,53 @@
 mod conntrack;
 mod ipv4;
 mod ipv6;
+pub(super) mod multicast;
+mod nat;
+mod ports;
+pub(super) use ports::Ports;
+mod receive;
+pub(super) use receive::ReceiveHeader;
+mod transit;
 use super::{
     NetworkStack,
     device::ProtocolDevice,
-    firewall::Firewall,
+    firewall::{Firewall, Inspection, NatAction, PolicySnapshot},
     interface::NetworkInterface,
-    route::{InterfaceFacts, RoutingTable, SelectionRules},
+    reassembly::{Fragments, Reassembly, Transit},
+    route::{Ipv4Interfaces, Ipv6Interfaces, Ipv6Routes, RoutingTable, SelectionRules},
 };
 use alloc::{sync::Arc, vec::Vec};
 use conntrack::{Flows, Observation, Packet, Tracked};
+pub(super) use conntrack::{PolicySlot, RetainedPolicies};
+pub(super) use conntrack::{ReceiveFlow, ReceiveFlows, prepare_transport};
 use core::net::{IpAddr, Ipv4Addr};
+use device_model::network::ReceiveChecksum;
 use fallible_tree::{FallibleMap, VacantEntry};
-use native_runtime::{Event, native_abi::{self, Status}};
+use nat::{Rewrite, SocketPorts};
+use native_runtime::{Event, native_abi::Status};
 use network_protocol::{RouteKind, SocketError, routes::RoutePath};
-use packet_wire::ipv4::Ipv4Packet;
+use packet_wire::{ipv4::Ipv4Packet, ipv6::Ipv6Datagram};
 use router_protocol::connections::{Cursor, Identity, Page, changes};
-use smoltcp::time::{Duration, Instant};
+use router_protocol::firewall::NatSource;
+use ::tcp::time::{Duration, Instant};
+use transit::{TransitPacket, TransitPath, TransitPolicy};
 
 const PACKETS: usize = 64;
 const BYTES: usize = 256 * 1024;
 const BURST: usize = 32;
+// 按原始数据报检查软截止，避免逐包读内核时钟。一个数据报仍受本轮分片发送额度约束。
+const RETRY_CLOCK_INTERVAL: usize = 8;
 const RETRY: Duration = Duration::from_millis(1000);
 const EXPIRY: Duration = Duration::from_millis(5000);
-
-/// 捕获默认域的一页连接；编码与 IPC 均在释放 NET guard 之后执行。
-/// # Errors
-/// 网络域不可用、游标属于另一执行实例或分页缓冲分配失败。
-pub(crate) fn connection_page(
-    scope: &crate::namespace::Namespace,
-    cursor: Cursor,
-) -> Result<Page, Status> {
-    let network = super::stack(scope)
-        .map_err(|_| native_abi::ERR_BAD_STATE)?
-        .lock()
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    network.connections_at(cursor, super::now())
-}
-
-/// 读取同域连接增量，并在首次观察时建立有界历史。
-/// # Errors
-/// 网络域不可用或分配失败。
-pub(crate) fn connection_changes(scope: &crate::namespace::Namespace, cursor: changes::Cursor) -> Result<changes::Batch, Status> {
-    super::stack(scope).map_err(|_| native_abi::ERR_BAD_STATE)?
-        .lock().map_err(|_| native_abi::ERR_NO_MEMORY)?
-        .connection_changes_after(cursor)
-}
-
-/// 仅在客户端已读到末尾时返回等待能力。锁内核对游标，锁外才等待。
-/// # Errors
-/// 网络域不可用或等待能力创建失败。
-pub(crate) fn arm_connection_watch(
-    scope: &crate::namespace::Namespace,
-    cursor: changes::Cursor,
-    create: impl FnOnce() -> Result<Arc<Event>, Status>,
-) -> Result<Option<Arc<Event>>, Status> {
-    super::stack(scope).map_err(|_| native_abi::ERR_BAD_STATE)?
-        .lock().map_err(|_| native_abi::ERR_NO_MEMORY)?
-        .arm_connection_watch(cursor, create)
-}
-
-/// 在默认域清除一条活动连接及其尚未发出的报文。
-/// # Errors
-/// 网络域不可用，或指定身份已失效。
-pub(crate) fn clear_connection(scope: &crate::namespace::Namespace, identity: Identity) -> Result<(), Status> {
-    let mut network = super::stack(scope)
-        .map_err(|_| native_abi::ERR_BAD_STATE)?
-        .lock()
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    network.clear_connection_at(identity, super::now())
-}
 
 impl NetworkStack {
     /// 返回已确认的连接增量；游标失效时提供重新同步起点。
     /// # Errors
     /// 变更历史或回复存储分配失败。
-    pub(super) fn connection_changes_after(&mut self, cursor: changes::Cursor) -> Result<changes::Batch, Status> {
+    pub(super) fn connection_changes_after(
+        &mut self,
+        cursor: changes::Cursor,
+    ) -> Result<changes::Batch, Status> {
         self.forwarding.flows.changes(cursor)
     }
 
@@ -94,29 +66,21 @@ impl NetworkStack {
     /// 清除 `now` 时仍有效的指定连接，并退休同一双向流的待发报文。
     /// # Errors
     /// 实例已更换、连接已到期或身份不存在。
-    pub(super) fn clear_connection_at(&mut self, identity: Identity, now: Instant) -> Result<(), Status> {
+    pub(super) fn clear_connection_at(
+        &mut self,
+        identity: Identity,
+        now: Instant,
+    ) -> Result<(), Status> {
         let forwarding = &mut self.forwarding;
         let key = forwarding.flows.clear(identity, now)?;
-        let used = &mut forwarding.used;
-        forwarding.packets.retain(|_, packet| {
-            if packet.flow.is_some_and(|observation| observation.key() == key) {
-                *used -= packet.packet.capacity() + VacantEntry::<u64, Pending>::allocation_size();
-                false
-            } else {
-                true
-            }
-        });
+        forwarding.retain_packets(|packet| packet.flow.is_none_or(|flow| flow.key() != key));
         Ok(())
     }
 
     /// 查询当前域内到 `now` 仍有效的连接，按 `cursor` 接续。
     /// # Errors
     /// 游标属于另一执行实例或分页缓冲分配失败。
-    pub(super) fn connections_at(
-        &self,
-        cursor: Cursor,
-        now: Instant,
-    ) -> Result<Page, Status> {
+    pub(super) fn connections_at(&self, cursor: Cursor, now: Instant) -> Result<Page, Status> {
         self.forwarding.flows.page(cursor, now)
     }
 
@@ -147,33 +111,124 @@ impl NetworkStack {
     }
 }
 
+enum PacketData<Bytes> {
+    Single(Bytes),
+    Fragments(Fragments),
+}
+impl<Bytes: AsRef<[u8]>> PacketData<Bytes> {
+    fn first(&self) -> &[u8] {
+        match self {
+            Self::Single(bytes) => bytes.as_ref(),
+            Self::Fragments(pieces) => pieces.first(),
+        }
+    }
+    fn advance(&mut self) -> bool {
+        match self {
+            Self::Single(_) => false,
+            Self::Fragments(pieces) => pieces.advance(),
+        }
+    }
+    fn send(
+        &mut self,
+        ports: &mut Ports<'_>,
+        routes: Routes<'_>,
+        (mut offset, rewrite, path): (usize, Option<Rewrite>, Option<TransitPath>),
+        now: Instant,
+        budget: &mut usize,
+    ) -> SendResult {
+        let mut packet = TransitPacket::from_validated(self.first());
+        let path = match packet.select(ports, routes, (rewrite, path), now) {
+            Ok(path) => path,
+            Err(result) => return result,
+        };
+        loop {
+            let result = packet.transmit(ports, path, (offset, rewrite), now, budget);
+            if !matches!(result, SendResult::Done) || !self.advance() {
+                return result;
+            }
+            offset = 0;
+            if *budget == 0 {
+                return SendResult::Yield(offset);
+            }
+            packet = TransitPacket::from_validated(self.first());
+        }
+    }
+}
 struct Pending {
-    packet: Vec<u8>,
+    data: PacketData<Vec<u8>>,
     ingress: u32,
+    // 队列亲和从实际 RX 借用取得；背压或分片续发不能改走队列 0。
+    ingress_queue: u16,
     // 入站分类只执行一次，解析或背压后的重试保留原包的标记。
     mark: u32,
     flow: Option<Observation>,
+    rewrite: Option<Rewrite>,
     offset: usize,
-    hop_limit: u8,
-    retry_at: Instant,
     expires: Instant,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PendingKey {
+    generation: u64,
+    deadline: Instant,
+    sequence: u64,
+}
+
+impl Pending {
+    fn charge(&self) -> usize {
+        let bytes = match &self.data {
+            PacketData::Single(bytes) => bytes.capacity(),
+            PacketData::Fragments(pieces) => pieces.charge(),
+        };
+        bytes + VacantEntry::<PendingKey, Self>::allocation_size()
+    }
+}
+type Routes<'a> = (&'a RoutingTable, &'a Ipv6Routes);
+#[derive(Default)]
+struct Admission {
+    flow: Option<Tracked>,
+    rewrite: Option<Rewrite>,
+    path: Option<TransitPath>,
 }
 /// 同一网络域唯一的转发待发队列与错误限速；不保存 FIB/ARP 的副本。
 pub(super) struct Forwarding {
-    packets: FallibleMap<u64, Pending>,
+    packets: [FallibleMap<PendingKey, Pending>; 2],
     used: usize,
+    // 一次实际可写/邻居事件使此前等待的报文到期。更新一次 generation，避免遍历并重排整表。
+    retry_generation: u64,
+    retry_wakeup: Instant,
     flows: Flows,
+    fragments: Reassembly,
     // OWNER: RFC 1812/4443 双栈错误限速的本域 token bucket；无错误不设置 timer 或轮询。
     tokens: u8,
     refill: Instant,
 }
 impl Forwarding {
+    pub(super) fn preserve_policy(
+        &mut self,
+        snapshot: PolicySnapshot,
+        slot: PolicySlot,
+    ) -> Option<u64> {
+        self.flows.preserve_policy(snapshot, slot)
+    }
+
+    pub(super) fn forget_policy(&mut self, boundary: u64) {
+        self.flows.forget_policy(boundary);
+    }
+
+    pub(super) fn take_policies(&mut self) -> RetainedPolicies {
+        self.flows.take_policies()
+    }
+
     /// 返回不预分配报文存储的空队列及初始错误限速状态。
     pub(super) fn new() -> Self {
         Self {
-            packets: FallibleMap::new(),
+            packets: [FallibleMap::new(), FallibleMap::new()],
             used: 0,
+            retry_generation: 0,
+            retry_wakeup: Instant::from_millis(0),
             flows: Flows::new(),
+            fragments: Reassembly::new(),
             tokens: 10,
             refill: Instant::from_millis(0),
         }
@@ -181,53 +236,387 @@ impl Forwarding {
     /// `now` 是本轮单调时刻；返回是否存在已到重试截止的真实待办，不消费或分配。
     pub(super) fn due(&self, now: Instant, policy: network_protocol::Forwarding) -> bool {
         self.flows.due(now)
+            || self.fragments.due(now)
             || self
-                .packets
-                .values()
-                .any(|packet| packet.retry_at <= now && family_enabled(&packet.packet, policy))
+                .next_pending(policy)
+                .is_some_and(|(_, _, deadline)| deadline <= now)
+    }
+
+    pub(super) fn next_deadline(&self, policy: network_protocol::Forwarding) -> Option<Instant> {
+        self.flows
+            .next_deadline()
+            .into_iter()
+            .chain(self.fragments.next_deadline())
+            .chain(self.next_pending(policy).map(|(_, _, deadline)| deadline))
+            .min()
+    }
+
+    fn next_pending(
+        &self,
+        policy: network_protocol::Forwarding,
+    ) -> Option<(usize, PendingKey, Instant)> {
+        if self.used == 0 {
+            return None;
+        }
+        [policy.ipv4, policy.ipv6]
+            .into_iter()
+            .zip(&self.packets)
+            .enumerate()
+            .filter(|(_, (enabled, _))| *enabled)
+            .filter_map(|(family, (_, packets))| {
+                let (&key, _) = packets.first_key_value()?;
+                let deadline = if key.generation < self.retry_generation {
+                    self.retry_wakeup
+                } else {
+                    key.deadline
+                };
+                Some((family, key, deadline))
+            })
+            .min_by_key(|(_, key, deadline)| (*deadline, key.sequence))
     }
     /// 确认策略后只退休被禁用地址族；同一原生事务中的另一族与错误限速保持。
     pub(super) fn retain(&mut self, policy: network_protocol::Forwarding) {
-        loop {
-            let next = self.packets.iter().find_map(|(key, packet)| {
-                (!family_enabled(&packet.packet, policy)).then_some(*key)
-            });
-            let Some(key) = next else {
-                break;
-            };
-            let packet = self.packets.remove(&key).expect("selected packet exists");
-            self.used -= packet.packet.capacity() + VacantEntry::<u64, Pending>::allocation_size();
+        for (packets, enabled) in self.packets.iter_mut().zip([policy.ipv4, policy.ipv6]) {
+            if !enabled {
+                self.used -= packets.values().map(Pending::charge).sum::<usize>();
+                *packets = FallibleMap::new();
+            }
         }
     }
-    pub(super) fn retire_flows(&mut self, now: Instant) -> bool {
-        self.flows.retire(now)
+
+    fn retain_packets(&mut self, mut keep: impl FnMut(&Pending) -> bool) {
+        let used = &mut self.used;
+        for packets in &mut self.packets {
+            packets.retain(|_, packet| {
+                let retained = keep(packet);
+                if !retained {
+                    *used -= packet.charge();
+                }
+                retained
+            });
+        }
+    }
+    /// 回收本轮到期的连接和分片。达到软截止后保留其余到期项，下轮继续推进。
+    pub(super) fn retire_state(&mut self, now: Instant, work_until: u64) -> bool {
+        let fragments = self.fragments.retire_transit(now, work_until);
+        self.flows.retire(now, work_until) || fragments
+    }
+
+    /// 接口移除时释放从该接口进入的待发报文及尚未收齐的分片。
+    pub(super) fn forget_ingress(&mut self, interface: u32) {
+        self.retain_packets(|packet| packet.ingress != interface);
+        self.forget_fragments(interface);
+    }
+
+    /// 入接口失去链路资格时只退休未收齐的分片，已准入的待发包仍可按原策略重试。
+    pub(super) fn forget_fragments(&mut self, interface: u32) {
+        self.fragments.forget(interface);
+    }
+
+    /// 配置变更时保留仍启用连接状态过滤的地址族的未完成分片。
+    pub(super) fn retain_fragments(
+        &mut self,
+        policy: network_protocol::Forwarding,
+        tracking: (bool, bool),
+    ) {
+        self.fragments.retain_families(
+            policy.ipv4 && (tracking.0 || self.flows.translates(false)),
+            policy.ipv6 && (tracking.1 || self.flows.translates(true)),
+        );
+    }
+
+    pub(super) fn inspection(&self, firewall: &Firewall, ipv6: bool) -> Inspection {
+        let mut inspection = firewall.inspection(ipv6);
+        inspection.connections |= self.flows.translates(ipv6);
+        inspection
+    }
+
+    pub(super) fn receive_flows(&self) -> ReceiveFlows {
+        self.flows.receive_flows()
+    }
+
+    pub(super) fn receive_udp(&self) -> [bool; 2] {
+        self.flows.receive_udp()
+    }
+
+    /// 某族有本机目的转换的可能时，保留原始物理分片供实际转发。
+    pub(super) fn local_translation(&self, firewall: &Firewall, ipv6: bool) -> bool {
+        firewall.inspection(ipv6).destination_nat || self.flows.translates(ipv6)
     }
 
     fn admit(
         &mut self,
         ports: &mut Ports<'_>,
-        firewall: &mut Firewall,
-        (destination, bytes): (IpAddr, usize),
-        packet: impl FnOnce() -> Option<Packet>,
+        (routes, firewall): (Routes<'_>, &mut Firewall),
+        (source, destination, bytes): (IpAddr, IpAddr, &[u8]),
+        (first_fragment, local): (Option<&[u8]>, bool),
+        packet: impl FnOnce(Option<ReceiveFlow>) -> Option<Packet>,
         now: Instant,
-    ) -> Result<Option<Tracked>, ()> {
-        let observed = if firewall.tracks(destination.is_ipv6()) {
-            packet().and_then(|packet| self.flows.observe(packet, now))
+    ) -> Result<Option<Admission>, ()> {
+        let inspection = self.inspection(firewall, destination.is_ipv6());
+        if !local
+            && !inspection.connections
+            && let Some(frame) = ports.receive_frame
+            && (!inspection.transport || frame.transport_checksum().verified())
+            && let Some(mark) = firewall.apply_prepared(
+                ports.current.index,
+                bytes.len(),
+                (&frame.annotation()[super::protocol_owner::RECEIVE_FIREWALL])
+                    .try_into()
+                    .expect("fixed firewall annotation"),
+            )
+        {
+            ports.mark = mark.ok_or(())?;
+            return Ok(Some(Admission::default()));
+        }
+        let packet = if inspection.required() {
+            packet(ports.receive_flow)
         } else {
             None
         };
-        ports.mark = firewall
+        let transport = if inspection.transport {
+            packet.as_ref().and_then(Packet::transport)
+        } else {
+            None
+        };
+        let related = matches!(packet, Some(Packet::Error(..)));
+        let mut observed = if inspection.connections {
+            match packet {
+                Some(packet) => self.flows.observe(packet, ports.receive_flow.take(), now)?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let classification = (observed.as_ref().map(|(state, _)| *state), transport);
+        let existing = if local {
+            let Some((_, flow)) = observed.as_mut() else {
+                return Ok(None);
+            };
+            let existing = self.flows.translation(flow, [None, None])?;
+            if existing.is_none()
+                && (related
+                    || !inspection.destination_nat
+                    || !firewall.selects_translation(
+                        ports.current.index,
+                        (source, destination),
+                        classification,
+                    ))
+            {
+                self.flows.retire_local_restart(flow);
+                return Ok(None);
+            }
+            existing
+        } else {
+            None
+        };
+        let retained = if firewall.preserves_connections() {
+            observed
+                .as_ref()
+                .and_then(|(_, flow)| flow.existing_generation())
+                .and_then(|generation| self.flows.retained_policy(generation))
+        } else {
+            None
+        };
+        let (mark, target) = firewall
             .evaluate(
-                ports.current.index,
-                destination,
-                observed.as_ref().map(|(state, _)| *state),
-                bytes,
+                ((ports.current.index, (source, destination), classification), bytes.len()),
+                retained,
             )
             .ok_or(())?;
+        ports.mark = mark;
         match observed {
-            Some((_, flow)) => self.flows.reserve(flow, now).map(Some).ok_or(()),
-            None => Ok(None),
+            Some((_, mut flow)) => {
+                let (edit, masquerade) = match (existing, target) {
+                    (Some(edit), _) => (Some(edit), None),
+                    (
+                        None,
+                        Some(NatAction {
+                            source: Some(NatSource::Masquerade),
+                            destination: target,
+                        }),
+                    ) if flow.existing_generation().is_none() => {
+                        let (interface, address, path) = ports
+                            .masquerade_source(
+                                routes,
+                                (source, target.map_or(destination, |target| target.address)),
+                                now,
+                            )
+                            .map_err(|result| {
+                                if let SendResult::Error(kind, code, parameter) = result {
+                                    self.report_error(
+                                        ports,
+                                        routes,
+                                        first_fragment.unwrap_or(bytes),
+                                        (kind, code, parameter),
+                                        now,
+                                    );
+                                }
+                            })?;
+                        let edit = self.flows.masquerade(
+                            &mut flow,
+                            (address, target),
+                            |original, key, wire| {
+                                ports.socket_source_taken(wire)
+                                    || self.packets[usize::from(source.is_ipv6())]
+                                        .values()
+                                        .any(|packet| {
+                                            packet.expires > now
+                                                && packet.flow.is_some_and(|pending| {
+                                                    pending.key() != original
+                                                        && pending.conflicts_with_translation(key)
+                                                })
+                                        })
+                            },
+                        )?;
+                        (edit, Some((interface, path)))
+                    }
+                    (None, Some(target)) => {
+                        let source = match target.source {
+                            Some(NatSource::Fixed(source)) => Some(source),
+                            _ => None,
+                        };
+                        (
+                            self.flows
+                                .translation(&mut flow, [source, target.destination])?,
+                            None,
+                        )
+                    }
+                    (None, None) => (self.flows.translation(&mut flow, [None, None])?, None),
+                };
+                let rewrite = match edit {
+                    Some(address) => {
+                        let mut rewrite = Rewrite::new(bytes, first_fragment, address).ok_or(())?;
+                        rewrite.masquerade_interface = masquerade.map(|(interface, _)| interface);
+                        Some(rewrite)
+                    }
+                    None => None,
+                };
+                if local && rewrite.is_none() {
+                    self.flows.retire_local_restart(&flow);
+                    return Ok(None);
+                }
+                if masquerade.is_none()
+                    && flow
+                        .observation
+                        .pending_wire()
+                        .is_some_and(|wire| ports.socket_source_taken(wire))
+                {
+                    return Err(());
+                }
+                Ok(Some(Admission {
+                    flow: Some(self.flows.reserve(flow, now).ok_or(())?),
+                    rewrite,
+                    path: masquerade.map(|(_, path)| path),
+                }))
+            }
+            None if target.is_some() => Err(()),
+            None => Ok(Some(Admission::default())),
         }
+    }
+
+    /// 在本机交付前选择实际要转换的物理单播。返回 false 时调用者继续原本机交付。
+    /// `release_reply` 只在已接管且准备发送时归还配对 TX，防止同口转发自占发送窗口。
+    pub(super) fn translate_local(
+        &mut self,
+        ports: &mut Ports<'_>,
+        routes: Routes<'_>,
+        firewall: &mut Firewall,
+        (frame, fragments, reassembled, checksum): (
+            &[u8],
+            Option<Fragments>,
+            bool,
+            ReceiveChecksum,
+        ),
+        (now, budget, enabled): (Instant, &mut usize, bool),
+        release_reply: impl FnOnce(),
+    ) -> bool {
+        if fragments.is_none()
+            && !super::device::physical_unicast(frame, ports.device.mac_address())
+        {
+            return false;
+        }
+        let Ok(link) = packet_wire::ethernet::EthernetFrame::parse(frame) else {
+            return false;
+        };
+        let bytes = link.payload();
+        let first = fragments.as_ref().map(Fragments::first);
+        let (bytes, admission) = match bytes.first().map(|byte| byte >> 4) {
+            Some(4) => {
+                let Ok(ip) = Ipv4Packet::parse(bytes) else {
+                    return false;
+                };
+                let source = ip.source();
+                if !ipv4::unicast(ip.destination())
+                    || !ipv4::valid_source(routes.0, (source, ports.source_prefix(source)), ports.facts())
+                {
+                    return false;
+                }
+                let admission = self.admit(
+                    ports,
+                    (routes, firewall),
+                    (ip.source().into(), ip.destination().into(), ip.bytes()),
+                    (first, true),
+                    |receive| Packet::ipv4(ip, checksum, receive),
+                    now,
+                );
+                (ip.bytes(), admission)
+            }
+            Some(6) => {
+                let Ok(ip) = Ipv6Datagram::parse(bytes) else {
+                    return false;
+                };
+                if !ipv6::unicast(ip.destination())
+                    || !ipv6::valid_source(ip.source(), ports.current.index, ports.ipv6_facts())
+                {
+                    return false;
+                }
+                let admission = self.admit(
+                    ports,
+                    (routes, firewall),
+                    (ip.source().into(), ip.destination().into(), ip.bytes()),
+                    (first, true),
+                    |receive| Packet::ipv6(ip, checksum, receive),
+                    now,
+                );
+                (ip.bytes(), admission)
+            }
+            _ => return false,
+        };
+        let Admission {
+            flow,
+            rewrite,
+            path,
+        } = match admission {
+            Ok(None) => return false,
+            Ok(Some(admission)) => admission,
+            Err(()) => {
+                ports.device.record_receive_drop();
+                return true;
+            }
+        };
+        if !enabled
+            || reassembled
+                && fragments
+                    .as_ref()
+                    .is_none_or(|pieces| pieces.ingress != Some(ports.current.index))
+        {
+            ports.device.record_receive_drop();
+            return true;
+        }
+        release_reply();
+        let mut data = fragments.map_or(PacketData::Single(bytes), PacketData::Fragments);
+        let hop_options = if bytes[0] >> 4 == 6 {
+            ipv6::hop_options(Ipv6Datagram::parse(bytes).expect("validated IPv6"))
+        } else {
+            Ok(())
+        };
+        let result = match hop_options {
+            Ok(()) => data.send(ports, routes, (0, rewrite, path), now, budget),
+            Err(result) => result,
+        };
+        self.finish_ingress(ports, routes, data, (result, flow, rewrite), now);
+        true
     }
 
     fn spend_error(&mut self, now: Instant) -> bool {
@@ -245,101 +634,241 @@ impl Forwarding {
     }
     /// 同一轮实际 ARP 消费或 TX 容量转换后重试；不猜测解析已成功，发送仍查询唯一邻居 owner。
     pub(super) fn retry(&mut self, now: Instant) {
-        self.packets.for_each_mut(|_, packet| packet.retry_at = now);
+        if self.used != 0 {
+            self.retry_generation = self
+                .retry_generation
+                .checked_add(1)
+                .expect("pending retry generation exhausted");
+            self.retry_wakeup = now;
+        }
     }
     fn enqueue(
         &mut self,
-        bytes: &[u8],
-        (ingress, mark, flow): (u32, u32, Option<Observation>),
-        hop_limit: u8,
+        data: PacketData<&[u8]>,
+        ports: &Ports<'_>,
+        (flow, rewrite): (Option<Observation>, Option<Rewrite>),
         offset: usize,
         now: Instant,
         retry_at: Instant,
     ) -> bool {
-        let overhead = VacantEntry::<u64, Pending>::allocation_size();
-        if self.packets.len() >= PACKETS
-            || bytes
-                .len()
-                .checked_add(overhead)
-                .and_then(|size| size.checked_add(self.used))
-                .is_none_or(|size| size > BYTES)
-        {
-            return false;
-        }
-        let mut packet = Vec::new();
-        if packet.try_reserve_exact(bytes.len()).is_err() {
-            return false;
-        }
-        let Some(charge) = packet.capacity().checked_add(overhead) else {
-            return false;
+        let overhead = VacantEntry::<PendingKey, Pending>::allocation_size();
+        let data = match data {
+            PacketData::Single(bytes) => {
+                if !self.can_enqueue(bytes.len() + overhead) {
+                    return false;
+                }
+                let mut packet = Vec::new();
+                if packet.try_reserve_exact(bytes.len()).is_err() {
+                    return false;
+                }
+                packet.extend_from_slice(bytes);
+                PacketData::Single(packet)
+            }
+            PacketData::Fragments(pieces) => PacketData::Fragments(pieces),
         };
-        if self
-            .used
-            .checked_add(charge)
-            .is_none_or(|size| size > BYTES)
-        {
+        let packet = Pending {
+            data,
+            ingress: ports.current.index,
+            ingress_queue: ports.ingress_queue,
+            mark: ports.mark,
+            flow,
+            rewrite,
+            offset,
+            expires: now + EXPIRY,
+        };
+        let charge = packet.charge();
+        if !self.can_enqueue(charge) {
             return false;
         }
-        packet.extend_from_slice(bytes);
-        if let Ok(slot) = FallibleMap::try_prepare(
-            crate::identity::next(),
-            Pending {
-                packet,
-                ingress,
-                mark,
-                flow,
-                offset,
-                hop_limit,
-                retry_at,
-                expires: now + EXPIRY,
-            },
-        ) {
-            self.packets.commit_vacant(slot);
+        let family = usize::from(packet.data.first()[0] >> 4 == 6);
+        let key = PendingKey {
+            generation: self.retry_generation,
+            deadline: retry_at,
+            sequence: crate::identity::next(),
+        };
+        if let Ok(slot) = FallibleMap::try_prepare(key, packet) {
+            self.packets[family].commit_vacant(slot);
             self.used += charge;
             true
         } else {
             false
         }
     }
-    /// 按 `now` 推进同域 `interfaces`/`routing` 的到期报文，共享本轮 `budget`；返回是否仍有立即工作。
+    fn can_enqueue(&self, charge: usize) -> bool {
+        self.packets[0].len() + self.packets[1].len() < PACKETS && charge <= BYTES - self.used
+    }
+
+    /// 仅完整报文参与规则与连接状态判断。放行后仍逐片提交原始报文，全部提交才确认连接。
+    fn accept_fragments(
+        &mut self,
+        ports: &mut Ports<'_>,
+        routes: Routes<'_>,
+        firewall: &mut Firewall,
+        bytes: &[u8],
+        now: Instant,
+        budget: &mut usize,
+    ) -> bool {
+        let ingress = ports.current.index;
+        let (whole, fragments) = match self.fragments.transit(bytes, ingress, now) {
+            Transit::Whole => return false,
+            Transit::Pending => return true,
+            Transit::Drop => {
+                ports.device.record_receive_drop();
+                return true;
+            }
+            Transit::Complete(whole, fragments) => (whole, fragments),
+        };
+        ports.receive_frame = None;
+        ports.receive_destination = None;
+        let flow = match whole[0] >> 4 {
+            4 => {
+                let ip = Ipv4Packet::parse_header(&whole).expect("normalized IPv4");
+                self.admit(
+                    ports,
+                    (routes, firewall),
+                    (ip.source().into(), ip.destination().into(), &whole),
+                    (Some(fragments.first()), false),
+                    |_| Packet::ipv4(ip, ReceiveChecksum::Unchecked, None),
+                    now,
+                )
+            }
+            6 => {
+                let ip = Ipv6Datagram::parse(&whole).expect("normalized IPv6");
+                self.admit(
+                    ports,
+                    (routes, firewall),
+                    (ip.source().into(), ip.destination().into(), &whole),
+                    (Some(fragments.first()), false),
+                    |_| Packet::ipv6(ip, ReceiveChecksum::Unchecked, None),
+                    now,
+                )
+            }
+            _ => unreachable!("only IP enters reassembly"),
+        };
+        // 完整包只用于分类和 checksum。原片在排队前已经持有所有需要的线上字节。
+        drop(whole);
+        let Ok(Some(Admission {
+            flow,
+            rewrite,
+            path,
+        })) = flow
+        else {
+            ports.device.record_receive_drop();
+            return true;
+        };
+        let mut data = PacketData::Fragments(fragments);
+        let result = data.send(ports, routes, (0, rewrite, path), now, budget);
+        self.finish_ingress(ports, routes, data, (result, flow, rewrite), now);
+        true
+    }
+
+    fn finish_ingress(
+        &mut self,
+        ports: &mut Ports<'_>,
+        routes: Routes<'_>,
+        data: PacketData<&[u8]>,
+        (result, flow, rewrite): (SendResult, Option<Tracked>, Option<Rewrite>),
+        now: Instant,
+    ) {
+        let retained = match result {
+            SendResult::Done => {
+                if let Some(flow) = flow {
+                    self.flows.confirm(flow, now);
+                }
+                true
+            }
+            SendResult::Pending(offset) | SendResult::Yield(offset) => self.enqueue(
+                data,
+                ports,
+                (flow.map(|flow| flow.observation), rewrite),
+                offset,
+                now,
+                if matches!(result, SendResult::Yield(_)) {
+                    now
+                } else {
+                    now + RETRY
+                },
+            ),
+            SendResult::Error(kind, code, parameter) => {
+                self.report_error(ports, routes, data.first(), (kind, code, parameter), now);
+                false
+            }
+            SendResult::Discard => false,
+        };
+        if !retained {
+            ports.device.record_receive_drop();
+        }
+    }
+
+    fn report_error(
+        &mut self,
+        ports: &mut Ports<'_>,
+        routes: Routes<'_>,
+        bytes: &[u8],
+        reason: (u8, u8, u32),
+        now: Instant,
+    ) {
+        match bytes[0] >> 4 {
+            4 => self.error_ipv4(
+                ports,
+                routes.0,
+                Ipv4Packet::parse_header(bytes).expect("validated IPv4"),
+                reason,
+                now,
+            ),
+            6 => self.error_ipv6(
+                ports,
+                routes.1,
+                Ipv6Datagram::parse(bytes).expect("validated IPv6"),
+                reason,
+                now,
+            ),
+            _ => unreachable!("only IP enters forwarding"),
+        }
+    }
+    /// 按 `now` 推进同域的到期报文。两个阶段共享已处理数和微秒软截止，发送额度由调用者分配。
+    /// 一轮至少可尝试一小批到期报文。返回是否仍有立即工作。
     /// 失败退休原包或按真实停顿安排重试，不改 FIB/ARP，不把错误转成任意 socket 的 SO_ERROR。
     pub(super) fn poll(
         &mut self,
         interfaces: &mut [NetworkInterface],
         routes: (&RoutingTable, &super::route::Ipv6Routes, &SelectionRules),
-        replies: &mut super::route_reply::RouteReplies,
+        (replies, sockets): (&mut super::route_reply::RouteReplies, SocketPorts<'_>),
         policy: network_protocol::Forwarding,
         now: Instant,
-        budget: &mut usize,
+        (budget, attempted, work_until): (&mut usize, &mut usize, u64),
     ) -> bool {
         let (routing, ipv6_routing, selection_rules) = routes;
+        let routes = (routing, ipv6_routing);
         let mut work = 0;
         while work < BURST {
             if *budget == 0 {
                 return self.due(now, policy);
             }
-            let next = self
-                .packets
-                .iter()
-                .find(|(_, packet)| {
-                    packet.retry_at <= now && family_enabled(&packet.packet, policy)
-                })
-                .map(|(key, _)| *key);
-            let Some(key) = next else {
+            let Some((family, key, _)) = self
+                .next_pending(policy)
+                .filter(|(_, _, deadline)| *deadline <= now)
+            else {
                 return false;
             };
-            let mut slot = self
-                .packets
+            if *attempted != 0
+                && work.is_multiple_of(RETRY_CLOCK_INTERVAL)
+                && work_until != u64::MAX
+                && crate::time::get_time_us() >= work_until
+            {
+                return true;
+            }
+            let mut slot = self.packets[family]
                 .take_entry(&key)
                 .expect("selected pending datagram exists");
             work += 1;
+            *attempted += 1;
             let packet = slot.value_mut();
-            let Some(position) = interfaces
-                .iter()
-                .position(|interface| interface.index == packet.ingress && interface.state.up)
+            let charge = packet.charge();
+            let Some(position) = NetworkInterface::position(interfaces, packet.ingress)
+                .filter(|&position| interfaces[position].link_active())
             else {
-                self.used -=
-                    packet.packet.capacity() + VacantEntry::<u64, Pending>::allocation_size();
+                self.used -= charge;
                 continue;
             };
             let (before, rest) = interfaces.split_at_mut(position);
@@ -349,58 +878,50 @@ impl Forwarding {
                 before,
                 after,
                 replies,
-                (selection_rules, packet.mark),
+                (selection_rules, sockets, packet.mark, packet.ingress_queue),
             );
-            let tracked = packet.flow.map(|flow| self.flows.retry(flow, now));
+            let tracked = packet.flow.map(|flow| {
+                if self
+                    .flows
+                    .unconfirmed_wire(flow, now)
+                    .is_some_and(|wire| ports.socket_source_taken(wire))
+                {
+                    return None;
+                }
+                self.flows.retry(flow, now)
+            });
             let result = if matches!(tracked, Some(None)) {
                 SendResult::Discard
-            } else {
-                match packet.packet[0] >> 4 {
-                    4 => {
-                        let ip = Ipv4Packet::parse(&packet.packet).expect("queued validated IPv4");
-                        if now >= packet.expires {
-                            SendResult::Error(3, 1, 0)
-                        } else {
-                            ipv4::send(
-                                &mut ports,
-                                routing,
-                                ip,
-                                packet.hop_limit,
-                                packet.offset,
-                                now,
-                                budget,
-                            )
-                        }
-                    }
-                    6 => {
-                        let ip = packet_wire::ipv6::Ipv6Datagram::parse(&packet.packet)
-                            .expect("queued validated IPv6");
-                        if now >= packet.expires {
-                            SendResult::Error(1, 3, 0)
-                        } else {
-                            ipv6::send(
-                                &mut ports,
-                                ipv6_routing,
-                                ip,
-                                packet.hop_limit,
-                                packet.ingress,
-                                now,
-                                budget,
-                            )
-                        }
-                    }
-                    _ => unreachable!("only IP enters forwarding"),
+            } else if now >= packet.expires {
+                if packet.data.first()[0] >> 4 == 4 {
+                    SendResult::Error(3, 1, 0)
+                } else {
+                    SendResult::Error(1, 3, 0)
                 }
+            } else {
+                packet.data.send(
+                    &mut ports,
+                    routes,
+                    (packet.offset, packet.rewrite, None),
+                    now,
+                    budget,
+                )
             };
             match result {
                 SendResult::Pending(offset) | SendResult::Yield(offset) => {
                     packet.offset = offset;
-                    packet.retry_at = if matches!(result, SendResult::Yield(_)) {
+                    let deadline = if matches!(result, SendResult::Yield(_)) {
                         now
                     } else {
                         now + RETRY
                     };
-                    self.packets.commit_vacant(slot);
+                    self.used -= charge - packet.charge();
+                    slot.set_key(PendingKey {
+                        generation: self.retry_generation,
+                        deadline,
+                        ..key
+                    });
+                    self.packets[family].commit_vacant(slot);
                     if matches!(result, SendResult::Yield(_)) {
                         // 预算耗尽或 ND owner 已有就绪工作；先让调度器服务，不在此反复重试同一原包。
                         return true;
@@ -415,128 +936,25 @@ impl Forwarding {
                         ports.device.record_receive_drop();
                     }
                     if let SendResult::Error(kind, code, parameter) = result {
-                        match packet.packet[0] >> 4 {
-                            4 => self.error_ipv4(
-                                &mut ports,
-                                routing,
-                                Ipv4Packet::parse(&packet.packet).expect("queued IPv4"),
-                                (kind, code, parameter),
-                                now,
-                            ),
-                            6 => self.error_ipv6(
-                                &mut ports,
-                                ipv6_routing,
-                                packet_wire::ipv6::Ipv6Datagram::parse(&packet.packet)
-                                    .expect("queued IPv6"),
-                                (kind, code, parameter),
-                                now,
-                            ),
-                            _ => unreachable!("only IP enters forwarding"),
-                        }
+                        self.report_error(
+                            &mut ports,
+                            routes,
+                            packet.data.first(),
+                            (kind, code, parameter),
+                            now,
+                        );
                     }
-                    self.used -=
-                        packet.packet.capacity() + VacantEntry::<u64, Pending>::allocation_size();
+                    self.used -= charge;
                 }
             }
         }
         self.due(now, policy)
     }
 }
-/// 当前接收接口与同一域其他接口的短寿命借用；不复制设备/ARP/FIB。
-pub(super) struct Ports<'a> {
-    current: InterfaceFacts,
-    ipv4: (
-        &'a mut super::neighbor::NeighborCache<Ipv4Addr>,
-        super::InterfaceState,
-    ),
-    ipv6: &'a mut Option<super::ipv6::InterfaceAddresses>,
-    device: &'a ProtocolDevice,
-    before: &'a mut [NetworkInterface],
-    after: &'a mut [NetworkInterface],
-    replies: &'a mut super::route_reply::RouteReplies,
-    rules: &'a SelectionRules,
-    mark: u32,
-}
-impl<'a> Ports<'a> {
-    fn new(
-        current: &'a mut NetworkInterface,
-        before: &'a mut [NetworkInterface],
-        after: &'a mut [NetworkInterface],
-        replies: &'a mut super::route_reply::RouteReplies,
-        (rules, mark): (&'a SelectionRules, u32),
-    ) -> Self {
-        let facts = InterfaceFacts::capture(current);
-        Self {
-            current: facts,
-            ipv4: (&mut current.arp, current.state),
-            ipv6: &mut current.ipv6,
-            device: &current.device,
-            before,
-            after,
-            replies,
-            rules,
-            mark,
-        }
-    }
-    /// 捕获当前帧的设备借用；`current`、IPv4/IPv6 邻接和 `device` 必须属于同一接口。
-    /// 返回仅存续于原 NET guard 内的视图；不分配或接管设备寿命。
-    pub(super) fn borrowed(
-        current: InterfaceFacts,
-        ipv4: (
-            &'a mut super::neighbor::NeighborCache<Ipv4Addr>,
-            super::InterfaceState,
-        ),
-        ipv6: &'a mut Option<super::ipv6::InterfaceAddresses>,
-        device: &'a ProtocolDevice,
-        (before, after): (&'a mut [NetworkInterface], &'a mut [NetworkInterface]),
-        replies: &'a mut super::route_reply::RouteReplies,
-        rules: &'a SelectionRules,
-    ) -> Self {
-        Self {
-            current,
-            ipv4,
-            ipv6,
-            device,
-            before,
-            after,
-            replies,
-            rules,
-            mark: 0,
-        }
-    }
-    fn facts(&self) -> impl Clone + Iterator<Item = InterfaceFacts> + '_ {
-        self.before
-            .iter()
-            .chain(self.after.iter())
-            .map(InterfaceFacts::capture)
-            .chain(core::iter::once(self.current))
-    }
-    fn ipv6_facts(&self) -> impl Iterator<Item = super::route::Ipv6InterfaceFacts<'_>> + Clone {
-        self.before
-            .iter()
-            .chain(self.after.iter())
-            .map(super::route::Ipv6InterfaceFacts::capture)
-            .chain(core::iter::once(super::route::Ipv6InterfaceFacts {
-                index: self.current.index,
-                up: self.current.up,
-                mtu: self.device.ip_mtu(),
-                addresses: self.ipv6.as_ref(),
-            }))
-    }
-}
-
 enum SendResult {
     Done,
     Pending(usize),
     Yield(usize),
     Error(u8, u8, u32),
     Discard,
-}
-
-fn family_enabled(packet: &[u8], policy: network_protocol::Forwarding) -> bool {
-    match packet[0] >> 4 {
-        4 => policy.ipv4,
-        6 => policy.ipv6,
-        _ => unreachable!("only validated IP datagrams enter forwarding"),
-    }
 }

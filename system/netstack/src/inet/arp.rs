@@ -10,7 +10,7 @@ use packet_wire::{
     arp::{ArpHeader, ArpPacket},
     ethernet::{EthernetFrame, EthernetHeader},
 };
-use smoltcp::time::Instant;
+use ::tcp::time::Instant;
 
 const ARP: u16 = 0x0806;
 const REQUEST: u16 = 1;
@@ -102,9 +102,8 @@ pub(super) fn probe(
     local: Ipv4Addr,
     target: Ipv4Addr,
     mac: Option<[u8; 6]>,
-    now: Instant,
 ) -> bool {
-    device.reserve(now).is_ok_and(|tx| {
+    device.reserve(|_| 0).is_ok_and(|tx| {
         send(
             tx,
             (device.mac_address(), local),
@@ -125,7 +124,7 @@ fn send(
     } else {
         destination
     };
-    let (_, error) = tx.consume_committed(42, ARP, |frame| {
+    tx.consume_committed(42, ARP, |frame| {
         EthernetHeader {
             source,
             destination,
@@ -145,8 +144,9 @@ fn send(
         }
         .emit(&mut frame[14..])
         .expect("exact ARP address widths");
-    });
-    error.is_none()
+        true
+    })
+    .is_ok()
 }
 
 fn unicast(address: Ipv4Addr) -> bool {

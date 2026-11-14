@@ -17,17 +17,26 @@ pub mod configuration;
 pub mod connections;
 pub mod delegation;
 pub mod dhcp_server;
-pub mod dns_cache;
 pub mod dns;
+pub mod dns_cache;
 pub mod firewall;
 pub mod interface;
+pub mod multicast;
+pub mod neighbors;
+pub mod ospf;
 pub mod policy;
 pub mod policy_routing;
+mod revision;
+pub mod route_view;
 pub mod routing;
+mod secret;
+pub mod switching;
 pub mod tracking;
 
 /// 设置/租约消息的固定线版本；解码不接受旧布局或未知版本。
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
+
+pub use revision::Revision;
 
 use alloc::{collections::BTreeSet, string::String, vec::Vec};
 use core::net::{Ipv4Addr, SocketAddr};
@@ -69,6 +78,9 @@ pub mod ordinal {
                 | BACKUP_EXPORT
                 | BACKUP_DELETE
                 | BGP_STATUS
+                | OSPF_STATUS
+                | OPEN_NETWORK_NAMESPACE
+                | ROUTING_DOMAINS
                 | BGP_ROUTES
                 | BGP_REFRESH
                 | DHCP_SERVER_BINDINGS
@@ -76,13 +88,16 @@ pub mod ordinal {
                 | CLEAR_CONNECTION
                 | CONNECTION_CHANGES
                 | FIREWALL_COUNTERS
+                | NEIGHBOR_PAGE
+                | ROUTE_PAGE
+                | COMMIT_RESULT
         )
     }
     /// 取当前快照（[`super::Snapshot`]）。
     pub const GET: u32 = 1;
     /// 原子更新接口配置或全局搜索列表（[`super::Update`]）。
     pub const SET: u32 = 2;
-    /// 等待代际超过给定值（`u64`）；回复新的代际。
+    /// 等待设置版本变化。回复当前版本，有界等待到期时可能与请求相同。
     pub const WAIT: u32 = 3;
     /// 操作指定接口的 DHCP 租约（名称 + [`super::DhcpAction`]）。
     pub const DHCP: u32 = 4;
@@ -124,6 +139,18 @@ pub mod ordinal {
     pub const WAIT_CONNECTION_CHANGES: u32 = 22;
     /// 读取当前预路由规则的命中计数。
     pub const FIREWALL_COUNTERS: u32 = 23;
+    /// 按提交身份查询已持久化的结果。
+    pub const COMMIT_RESULT: u32 = 24;
+    /// 按逻辑接口与地址读取一页双栈邻居。
+    pub const NEIGHBOR_PAGE: u32 = 25;
+    /// 按地址族和位置读取一页生效路由及下一跳。
+    pub const ROUTE_PAGE: u32 = 26;
+    /// 查询原生 OSPF 发现状态。
+    pub const OSPF_STATUS: u32 = 27;
+    /// 取得已配置具名域的真实网络命名空间能力。只允许本地特权设置端点调用。
+    pub const OPEN_NETWORK_NAMESPACE: u32 = 28;
+    /// 查询已保存的具名路由域名称，供获授权的观察者选择。
+    pub const ROUTING_DOMAINS: u32 = 29;
 }
 
 /// 有权限的用户请求 DHCP 会话立即续租或释放。
@@ -339,8 +366,8 @@ pub struct LeaseTiming {
 /// 设置快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// 每次状态变化递增；`WAIT` 以它判断是否有变化。
-    pub generation: u64,
+    /// 每次发布状态变化更新；`WAIT` 和 `IMPORT` 使用同一代际。
+    pub generation: Revision,
     /// 配置 owner 的提交进度；非 Ready 时不能把缓存的运行时事实视为最终已确认状态。
     pub configuration_status: ConfigurationStatus,
     pub interfaces: Vec<InterfaceState>,
@@ -513,9 +540,9 @@ impl Encoder {
             .map_or(0, |enabled| 1 + u8::from(enabled)))
     }
     pub fn snapshot(&mut self, snapshot: &Snapshot) -> &mut Self {
-        self.u32(VERSION)
-            .u64(snapshot.generation)
-            .u8(snapshot.configuration_status as u8)
+        self.u32(VERSION);
+        self.0.extend_from_slice(&snapshot.generation.to_bytes());
+        self.u8(snapshot.configuration_status as u8)
             .u32(snapshot.interfaces.len() as u32);
         for interface in &snapshot.interfaces {
             self.bytes(&interface.name)
@@ -723,7 +750,7 @@ impl<'a> Decoder<'a> {
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, Invalid> {
         self.version()?;
-        let generation = self.u64()?;
+        let generation = Revision::from_bytes(self.take(Revision::BYTES)?)?;
         let configuration_status = match self.u8()? {
             0 => ConfigurationStatus::Ready,
             1 => ConfigurationStatus::RollingBack,
@@ -811,17 +838,50 @@ impl<'a> Decoder<'a> {
 
 /// linuxd 把设置协议适配为 Linux datagram 时的帧格式。
 pub mod bridge {
-    /// 修改设置与订阅代际端点（root:netdev 0660）。
+    /// 单次设置或转发连接等待的服务端时限。到期后客户端可按当前版本重新登记。
+    pub const WATCH_SECONDS: u64 = 15;
+    /// 连接观察等待名额暂满时的桥接状态，稍后可用相同游标重试。
+    pub const CONNECTION_WATCH_BUSY: i32 = -3;
+    /// 网关向原生服务转发修改及订阅的私有端点。
     pub const PATH: &[u8] = b"/dev/network-settings";
-    /// 只读状态端点，普通用户可查询当前地址与 DNS。
+    /// 网关向原生服务读取状态的私有端点。
     pub const STATUS_PATH: &[u8] = b"/dev/network-status";
-    /// 允许修改网络设置的组（`netdev`）。
-    pub const GROUP: u32 = 28;
     /// 请求：`u32` 序号后接载荷；回复：`i32` 状态（0 成功，否则原生状态码）后接载荷。
     pub const HEADER_BYTES: usize = 4;
     /// 单个 datagram 的上限：请求与回复都必须装下。
     /// 包括帧头的设置投影消息容量；原生配置文档走独立文件能力，不受此值限制。
     pub const DATAGRAM_MAX: usize = 60 * 1024;
+}
+
+/// 配置管理 WebSocket 子协议。每次先传一个 bridge 控制消息，再按其长度传文档块。
+pub mod management {
+    /// 本地按接口抓包的控制帧与 PCAP 记录。
+    pub mod capture;
+    /// 单接口的流量构成及时间窗口统计。
+    pub mod flows;
+    pub(crate) mod page_delta;
+    /// 链路流量观察的版本化页与变化帧。
+    pub mod traffic;
+    /// 本地 Unix 监听地址。
+    pub const SOCKET_PATH: &str = "/run/router-api.sock";
+    /// WebSocket 握手资源路径。
+    pub const RESOURCE: &str = "/router";
+    /// RFC 6455 的子协议名称；控制帧继续使用各自版本。
+    pub const SUBPROTOCOL: &str = "liteos-router-v1";
+    /// WebSocket 网关的防火墙计数订阅。该操作不转发给原生设置端点。
+    pub const WATCH_FIREWALL_COUNTERS: u32 = 0x8000_0001;
+    /// WebSocket 网关的邻居页订阅。该操作不转发给原生设置端点。
+    pub const WATCH_NEIGHBORS: u32 = 0x8000_0002;
+    /// WebSocket 网关的生效路由页订阅。
+    pub const WATCH_ROUTES: u32 = 0x8000_0003;
+    /// WebSocket 网关的接口流量观察。
+    pub const WATCH_LINK_TRAFFIC: u32 = 0x8000_0004;
+    /// 管理员从本地网关抓取指定接口的报文。
+    pub const CAPTURE: u32 = 0x8000_0005;
+    /// 管理员观察本地接口的聚合流量，网关不向观察者发送报文。
+    pub const WATCH_FLOWS: u32 = 0x8000_0006;
+    /// 采样观察会话的空闲保活标签。
+    pub const OBSERVATION_HEARTBEAT: u8 = 0;
 }
 
 #[cfg(test)]
@@ -834,7 +894,7 @@ mod tests {
         let mut config = InterfaceConfig::dhcp();
         config.dns = (1..=8).map(|last| Ipv4Addr::new(10, 0, 0, last)).collect();
         let snapshot = Snapshot {
-            generation: 7,
+            generation: Revision::initial(core::num::NonZeroU128::MIN),
             configuration_status: ConfigurationStatus::Applying,
             search_list: (0..8)
                 .map(|index| alloc::format!("{}.zone{index}.test", "a".repeat(40)))
@@ -883,10 +943,10 @@ mod tests {
         bytes[..4].copy_from_slice(&(VERSION + 1).to_le_bytes());
         assert_eq!(Decoder::new(&bytes).snapshot(), Err(Invalid));
         bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
-        bytes[12] = 4;
+        bytes[4 + Revision::BYTES] = 4;
         assert_eq!(Decoder::new(&bytes).snapshot(), Err(Invalid));
         // 前缀长度位于两个名称、MAC、方法与地址之后。
-        let prefix = 4 + 8 + 1 + 4 + 4 + 4 + 4 + "办公网".len() + 6 + 1 + 4;
+        let prefix = 4 + Revision::BYTES + 1 + 4 + 4 + 4 + 4 + "办公网".len() + 6 + 1 + 4;
         let mut bytes = encoder.0;
         bytes[prefix] = 33;
         assert_eq!(Decoder::new(&bytes).snapshot(), Err(Invalid));

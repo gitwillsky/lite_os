@@ -70,7 +70,7 @@ FORBIDDEN_BOOT_MARKERS = (
 )
 
 # 既有开发镜像也需要获得这些 applet，不要求重建其 init 或账户数据。
-DEVELOPMENT_APPLETS = ("passwd", "adduser", "addgroup", "ip")
+DEVELOPMENT_APPLETS = ("passwd", "adduser", "addgroup", "ip", "ping6", "traceroute")
 
 BUSYBOX_LINKS = (
     *DEVELOPMENT_APPLETS,

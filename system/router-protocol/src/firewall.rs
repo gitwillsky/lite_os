@@ -4,19 +4,37 @@ use crate::{
     Decoder, Invalid, interface::LOOPBACK_INDEX, routing::EncodeError, tracking::IpPrefix,
 };
 use alloc::vec::Vec;
-use core::net::{IpAddr, Ipv6Addr};
+use core::{
+    net::{IpAddr, Ipv6Addr},
+    num::NonZeroU16,
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const VERSION: u32 = 7;
-const ROW: usize = 28;
+const VERSION: u32 = 14;
 const PREFIX_BYTES: usize = 18;
+const DESTINATION_END: usize = 28;
+const SOURCE_END: usize = DESTINATION_END + PREFIX_BYTES;
+const TARGET_END: usize = SOURCE_END + PREFIX_BYTES;
+const SOURCE_TARGET_END: usize = TARGET_END + PREFIX_BYTES;
+const ROW: usize = SOURCE_TARGET_END + 3;
 const MAX_NAME_BYTES: usize = 255;
 /// 最大子链嵌套深度，与 nftables 的固定跳转栈一致。
 pub const MAX_JUMP_DEPTH: usize = 16;
 
 pub mod counters;
+
+/// 新发布的防火墙规则如何影响正在跟踪的连接。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExistingConnections {
+    /// 新收到的报文按当前规则判断。
+    #[default]
+    Reevaluate,
+    /// 已跟踪连接继续使用本次发布前适用的规则。
+    Preserve,
+}
 
 /// 预路由规则动作。赋标继续评估，放行与丢弃结束本链。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -32,6 +50,144 @@ pub enum PreroutingAction<T = u32> {
     Jump { chain: T },
     /// 结束本链，回到调用者；入口链使用默认放行。
     Return,
+    /// 在选路前为新连接改写目的地址，回包沿同一映射还原。
+    DestinationNat {
+        /// 选路使用的后端地址。
+        #[schemars(schema_with = "crate::configuration::address_schema")]
+        address: IpAddr,
+        /// 后端端口。省略时保留原端口。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<NonZeroU16>,
+        /// 同一连接的可选源地址转换。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<NatSource>,
+    },
+    /// 为新连接选择固定源地址。选路使用原始源地址，提交出口时改写。
+    SourceNat(NatTarget),
+    /// 为新连接使用实际出口的地址，源端口冲突时自动分配。
+    Masquerade,
+}
+
+/// 目的转换同时使用的源转换。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NatSource {
+    /// 使用指定源地址和可选端口。
+    Fixed(NatTarget),
+    /// 使用选定出口地址并自动处理源端口冲突。
+    Masquerade,
+}
+
+/// 同族 NAT 目标。省略端口时沿用该连接的原端口。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NatTarget {
+    /// 改写后的 IP 地址。
+    #[schemars(schema_with = "crate::configuration::address_schema")]
+    pub address: IpAddr,
+    /// 改写后的 TCP 或 UDP 端口，零无效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<NonZeroU16>,
+}
+
+/// 可按端口分类的传输协议。
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportProtocol {
+    Tcp,
+    Udp,
+}
+
+/// 已验证的传输协议与可选目的端口条件。
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct TransportMatch {
+    /// 报文的外层传输协议。
+    pub protocol: TransportProtocol,
+    /// 省略时匹配该协议的所有端口。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_port: Option<NonZeroU16>,
+}
+
+impl<T> PreroutingAction<T> {
+    pub(crate) fn translation_valid(
+        &self,
+        source: Option<IpPrefix>,
+        destination: Destination,
+        transport: Option<TransportMatch>,
+    ) -> bool {
+        let (primary, secondary) = match *self {
+            Self::DestinationNat {
+                address,
+                port,
+                source,
+            } => (
+                NatTarget { address, port },
+                match source {
+                    Some(NatSource::Fixed(target)) => Some(target),
+                    _ => None,
+                },
+            ),
+            Self::SourceNat(target) => (target, None),
+            _ => return true,
+        };
+        [Some(primary), secondary]
+            .into_iter()
+            .flatten()
+            .all(|target| {
+                target.address.is_ipv6() == primary.address.is_ipv6()
+                    && target.valid(source, destination, transport)
+            })
+    }
+}
+
+impl NatTarget {
+    fn valid(
+        self,
+        source: Option<IpPrefix>,
+        destination: Destination,
+        transport: Option<TransportMatch>,
+    ) -> bool {
+        let Self { address, port } = self;
+        let unicast = match address {
+            IpAddr::V4(address) => {
+                matches!(address.octets()[0], 1..=126 | 128..=223) && !address.is_link_local()
+            }
+            IpAddr::V6(address) => {
+                !address.is_unspecified()
+                    && !address.is_loopback()
+                    && !address.is_multicast()
+                    && !address.is_unicast_link_local()
+                    && address.to_ipv4_mapped().is_none()
+            }
+        };
+        unicast
+            && (port.is_none() || transport.is_some())
+            && source.is_none_or(|prefix| prefix.network.is_ipv6() == address.is_ipv6())
+            && !matches!(destination, Destination::Prefix(prefix) if prefix.network.is_ipv6() != address.is_ipv6())
+    }
+
+    fn decode(bytes: &[u8], port: u16) -> Result<Self, Invalid> {
+        let address = decode_prefix(bytes[0], bytes[1], &bytes[2..])?;
+        if address.length != if address.network.is_ipv4() { 32 } else { 128 } {
+            return Err(Invalid);
+        }
+        Ok(Self {
+            address: address.network,
+            port: NonZeroU16::new(port),
+        })
+    }
+
+    fn encode(self) -> [u8; PREFIX_BYTES] {
+        encode_prefix(IpPrefix {
+            network: self.address,
+            length: if self.address.is_ipv4() { 32 } else { 128 },
+        })
+    }
 }
 
 /// 转发报文在本网络域内的连接状态。
@@ -70,7 +226,8 @@ pub enum Destination {
     Set(u32),
 }
 
-pub(crate) fn valid_prefix(prefix: IpPrefix) -> bool {
+/// 校验防火墙前缀的规范地址，IPv4 映射地址须直接使用 IPv4 表示。
+pub fn valid_prefix(prefix: IpPrefix) -> bool {
     prefix.valid()
         && !matches!(prefix.network, IpAddr::V6(address) if address.to_ipv4_mapped().is_some())
 }
@@ -103,11 +260,13 @@ fn encode_prefix(prefix: IpPrefix) -> [u8; PREFIX_BYTES] {
     bytes
 }
 
-pub(crate) fn valid_name(name: &str) -> bool {
+/// 检查规则对象名称的长度及字符范围。
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control)
 }
 
-pub(crate) fn valid_chain_name(name: &str) -> bool {
+/// 检查子链名称。预路由入口链名称保留。
+pub fn valid_chain_name(name: &str) -> bool {
     valid_name(name) && name != "prerouting"
 }
 
@@ -116,20 +275,33 @@ pub(crate) fn valid_chain_name(name: &str) -> bool {
 pub struct Rule {
     /// 实际入接口或设备缺席状态。
     pub ingress: Ingress,
+    /// 来源网段。None 匹配两族的任意源地址。
+    pub source: Option<IpPrefix>,
     /// 目的网段或同一链内的地址集下标。
     pub destination: Destination,
     /// 匹配时执行的动作。
     pub action: PreroutingAction,
     /// 缺席匹配任意状态，也允许无连接状态的报文。
     pub connection_state: Option<ConnectionState>,
+    /// 可选 TCP 或 UDP 目的服务。
+    pub transport: Option<TransportMatch>,
 }
 
 impl Rule {
     pub(crate) fn valid(self) -> bool {
         !matches!(self.ingress, Ingress::Interface(index) if index <= LOOPBACK_INDEX)
             && !matches!(self.action, PreroutingAction::Jump { chain: 0 })
+            && self
+                .action
+                .translation_valid(self.source, self.destination, self.transport)
+            && self.source.is_none_or(valid_prefix)
             && match self.destination {
-                Destination::Prefix(prefix) => valid_prefix(prefix),
+                Destination::Prefix(prefix) => {
+                    valid_prefix(prefix)
+                        && self.source.is_none_or(|source| {
+                            source.network.is_ipv6() == prefix.network.is_ipv6()
+                        })
+                }
                 Destination::Any | Destination::Set(_) => true,
             }
     }
@@ -144,14 +316,7 @@ impl Rule {
         let mark = input.u32()?;
         let family = input.u8()?;
         let prefix_length = input.u8()?;
-        let action = match input.u8()? {
-            0 => PreroutingAction::SetMark { value: mark },
-            1 if mark == 0 => PreroutingAction::Accept,
-            2 if mark == 0 => PreroutingAction::Drop,
-            3 if mark != 0 => PreroutingAction::Jump { chain: mark },
-            4 if mark == 0 => PreroutingAction::Return,
-            _ => return Err(Invalid),
-        };
+        let action = input.u8()?;
         let connection_state = match input.u8()? {
             0 => None,
             1 => Some(ConnectionState::New),
@@ -159,18 +324,85 @@ impl Rule {
             3 => Some(ConnectionState::Related),
             _ => return Err(Invalid),
         };
-        let destination = if family == 255 && prefix_length == 0 && bytes[12..] == [0; 16] {
+        let address = input.take(16)?;
+        let destination = if family == 255 && prefix_length == 0 && address == [0; 16] {
             Destination::Any
-        } else if family == 0 && prefix_length == 0 && bytes[16..] == [0; 12] {
-            Destination::Set(input.u32()?)
+        } else if family == 0 && prefix_length == 0 && address[4..] == [0; 12] {
+            Destination::Set(Decoder::new(address).u32()?)
         } else {
-            Destination::Prefix(decode_prefix(family, prefix_length, input.take(16)?)?)
+            Destination::Prefix(decode_prefix(family, prefix_length, address)?)
+        };
+        let prefix = input.take(PREFIX_BYTES)?;
+        let source = if prefix == [0; PREFIX_BYTES] {
+            None
+        } else {
+            Some(decode_prefix(prefix[0], prefix[1], &prefix[2..])?)
+        };
+        let target = input.take(PREFIX_BYTES)?;
+        let source_target = input.take(PREFIX_BYTES)?;
+        let source_port = (mark >> 16) as u16;
+        if action != 5 && source_target != [0; PREFIX_BYTES] {
+            return Err(Invalid);
+        }
+        let action = if matches!(action, 5 | 6) {
+            let target = NatTarget::decode(target, mark as u16)?;
+            if action == 5 {
+                let source = match source_target {
+                    [0, ..] if source_target == [0; PREFIX_BYTES] && source_port == 0 => None,
+                    [255, tail @ ..] if tail == [0; PREFIX_BYTES - 1] && source_port == 0 => {
+                        Some(NatSource::Masquerade)
+                    }
+                    _ => Some(NatSource::Fixed(NatTarget::decode(
+                        source_target,
+                        source_port,
+                    )?)),
+                };
+                PreroutingAction::DestinationNat {
+                    address: target.address,
+                    port: target.port,
+                    source,
+                }
+            } else if source_port == 0 {
+                PreroutingAction::SourceNat(target)
+            } else {
+                return Err(Invalid);
+            }
+        } else if target == [0; PREFIX_BYTES] {
+            match action {
+                0 => PreroutingAction::SetMark { value: mark },
+                1 if mark == 0 => PreroutingAction::Accept,
+                2 if mark == 0 => PreroutingAction::Drop,
+                3 if mark != 0 => PreroutingAction::Jump { chain: mark },
+                4 if mark == 0 => PreroutingAction::Return,
+                7 if mark == 0 => PreroutingAction::Masquerade,
+                _ => return Err(Invalid),
+            }
+        } else {
+            return Err(Invalid);
+        };
+        let protocol = input.u8()?;
+        let destination_port = NonZeroU16::new(u16::from_le_bytes(
+            input.take(2)?.try_into().map_err(|_| Invalid)?,
+        ));
+        let transport = match protocol {
+            0 if destination_port.is_none() => None,
+            6 => Some(TransportMatch {
+                protocol: TransportProtocol::Tcp,
+                destination_port,
+            }),
+            17 => Some(TransportMatch {
+                protocol: TransportProtocol::Udp,
+                destination_port,
+            }),
+            _ => return Err(Invalid),
         };
         let rule = Self {
             ingress,
+            source,
             destination,
             action,
             connection_state,
+            transport,
         };
         rule.valid().then_some(rule).ok_or(Invalid)
     }
@@ -198,15 +430,54 @@ impl Rule {
                 row[10] = 3;
             }
             PreroutingAction::Return => row[10] = 4,
+            PreroutingAction::Masquerade => row[10] = 7,
+            PreroutingAction::DestinationNat {
+                address,
+                port,
+                source,
+            } => {
+                row[10] = 5;
+                row[4..6].copy_from_slice(&port.map_or(0, NonZeroU16::get).to_le_bytes());
+                row[SOURCE_END..TARGET_END].copy_from_slice(&NatTarget { address, port }.encode());
+                match source {
+                    Some(NatSource::Fixed(target)) => {
+                        row[6..8]
+                            .copy_from_slice(&target.port.map_or(0, NonZeroU16::get).to_le_bytes());
+                        row[TARGET_END..SOURCE_TARGET_END].copy_from_slice(&target.encode());
+                    }
+                    Some(NatSource::Masquerade) => row[TARGET_END] = 255,
+                    None => {}
+                }
+            }
+            PreroutingAction::SourceNat(target) => {
+                row[10] = 6;
+                row[4..6].copy_from_slice(&target.port.map_or(0, NonZeroU16::get).to_le_bytes());
+                row[SOURCE_END..TARGET_END].copy_from_slice(&target.encode());
+            }
         }
         match self.destination {
             Destination::Any => row[8] = 255,
             Destination::Prefix(prefix) => {
                 let encoded = encode_prefix(prefix);
                 row[8..10].copy_from_slice(&encoded[..2]);
-                row[12..].copy_from_slice(&encoded[2..]);
+                row[12..DESTINATION_END].copy_from_slice(&encoded[2..]);
             }
             Destination::Set(index) => row[12..16].copy_from_slice(&index.to_le_bytes()),
+        }
+        if let Some(source) = self.source {
+            row[DESTINATION_END..SOURCE_END].copy_from_slice(&encode_prefix(source));
+        }
+        if let Some(transport) = self.transport {
+            row[SOURCE_TARGET_END] = match transport.protocol {
+                TransportProtocol::Tcp => 6,
+                TransportProtocol::Udp => 17,
+            };
+            row[SOURCE_TARGET_END + 1..].copy_from_slice(
+                &transport
+                    .destination_port
+                    .map_or(0, NonZeroU16::get)
+                    .to_le_bytes(),
+            );
         }
         row
     }
@@ -249,7 +520,9 @@ pub struct Chain<'a> {
 impl<'a> Chain<'a> {
     /// 按声明顺序解码已验证的规则，无分配。
     pub fn rules(self) -> impl Clone + ExactSizeIterator<Item = Rule> + 'a {
-        self.rows.iter().map(|row| Rule::decode(row).expect("validated firewall rule"))
+        self.rows
+            .iter()
+            .map(|row| Rule::decode(row).expect("validated firewall rule"))
     }
 }
 
@@ -263,6 +536,7 @@ pub struct Prerouting<'a> {
     named_count: usize,
     sets: &'a [u8],
     set_count: u32,
+    existing_connections: ExistingConnections,
 }
 
 impl<'a> Prerouting<'a> {
@@ -277,6 +551,11 @@ impl<'a> Prerouting<'a> {
         let length = (input.u32()? as usize).checked_mul(ROW).ok_or(Invalid)?;
         let set_count = input.u32()?;
         let named_count = input.u32()? as usize;
+        let existing_connections = match input.u32()? {
+            0 => ExistingConnections::Reevaluate,
+            1 => ExistingConnections::Preserve,
+            _ => return Err(Invalid),
+        };
         let (rows, _) = input.take(length)?.as_chunks::<ROW>();
         for row in rows {
             let rule = Rule::decode(row)?;
@@ -314,7 +593,16 @@ impl<'a> Prerouting<'a> {
             previous = set.name;
         }
         input.finish()?;
-        Ok(Self { bytes, rows, base_count, chains, named_count, sets, set_count })
+        Ok(Self {
+            bytes,
+            rows,
+            base_count,
+            chains,
+            named_count,
+            sets,
+            set_count,
+            existing_connections,
+        })
     }
 
     /// 返回完整的版本化正文，不分配。
@@ -322,15 +610,25 @@ impl<'a> Prerouting<'a> {
         self.bytes
     }
 
+    /// 返回生效配置更新时对已跟踪连接的策略。
+    pub fn existing_connections(self) -> ExistingConnections {
+        self.existing_connections
+    }
+
     /// 按各链的声明顺序借用所有规则，不分配。
     pub fn rules(self) -> impl Clone + ExactSizeIterator<Item = Rule> + 'a {
-        Chain { name: None, rows: self.rows }.rules()
+        Chain {
+            name: None,
+            rows: self.rows,
+        }
+        .rules()
     }
 
     /// 按稳定下标借用各地址集，不分配。
     pub fn address_sets(self) -> impl ExactSizeIterator<Item = AddressSet<'a>> {
         let mut input = Decoder::new(self.sets);
-        (0..self.set_count).map(move |_| AddressSet::take(&mut input).expect("validated address set"))
+        (0..self.set_count)
+            .map(move |_| AddressSet::take(&mut input).expect("validated address set"))
     }
 
     /// 按下标借用各链，入口为零；后续为具名子链。
@@ -356,16 +654,23 @@ impl<'a> Prerouting<'a> {
     /// # Errors
     /// 跳转循环、越界、嵌套过深或校验空间不足。
     pub fn validate_jumps(self) -> Result<(), EncodeError> {
-        check_jump_graph(self.chains().len(), self.chains().map(|chain| {
-            chain.rules().filter_map(|rule| match rule.action {
-                PreroutingAction::Jump { chain } => Some(chain),
-                _ => None,
-            })
-        }))
+        if self.named_count == 0 {
+            return Ok(());
+        }
+        check_jump_graph(
+            self.chains().len(),
+            self.chains().map(|chain| {
+                chain.rules().filter_map(|rule| match rule.action {
+                    PreroutingAction::Jump { chain } => Some(chain),
+                    _ => None,
+                })
+            }),
+        )
     }
 }
 
 pub(crate) fn encode<'a>(
+    existing_connections: ExistingConnections,
     rule_count: usize,
     base_count: usize,
     chains: impl ExactSizeIterator<Item = (&'a str, usize)>,
@@ -376,14 +681,23 @@ pub(crate) fn encode<'a>(
     let base_count = u32::try_from(base_count).map_err(|_| EncodeError::Invalid)?;
     let named_count = u32::try_from(chains.len()).map_err(|_| EncodeError::Invalid)?;
     let set_count = u32::try_from(sets.len()).map_err(|_| EncodeError::Invalid)?;
-    let length = (rule_count as usize).checked_mul(ROW)
-        .and_then(|size| size.checked_add(20)).ok_or(EncodeError::Invalid)?;
+    let length = (rule_count as usize)
+        .checked_mul(ROW)
+        .and_then(|size| size.checked_add(24))
+        .ok_or(EncodeError::Invalid)?;
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(length).map_err(|_| EncodeError::NoMemory)?;
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| EncodeError::NoMemory)?;
     bytes.extend_from_slice(&VERSION.to_le_bytes());
     bytes.extend_from_slice(&rule_count.to_le_bytes());
     bytes.extend_from_slice(&set_count.to_le_bytes());
     bytes.extend_from_slice(&named_count.to_le_bytes());
+    let existing = match existing_connections {
+        ExistingConnections::Reevaluate => 0u32,
+        ExistingConnections::Preserve => 1u32,
+    };
+    bytes.extend_from_slice(&existing.to_le_bytes());
     for rule in rules {
         let rule = rule?;
         if !rule.valid()
@@ -404,7 +718,9 @@ pub(crate) fn encode<'a>(
             return Err(EncodeError::Invalid);
         }
         let count = u32::try_from(count).map_err(|_| EncodeError::Invalid)?;
-        bytes.try_reserve(8 + name.len()).map_err(|_| EncodeError::NoMemory)?;
+        bytes
+            .try_reserve(8 + name.len())
+            .map_err(|_| EncodeError::NoMemory)?;
         bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
@@ -415,9 +731,14 @@ pub(crate) fn encode<'a>(
             return Err(EncodeError::Invalid);
         }
         let count = u32::try_from(members.len()).map_err(|_| EncodeError::Invalid)?;
-        let capacity = members.len().checked_mul(PREFIX_BYTES)
-            .and_then(|size| size.checked_add(8 + name.len())).ok_or(EncodeError::Invalid)?;
-        bytes.try_reserve(capacity).map_err(|_| EncodeError::NoMemory)?;
+        let capacity = members
+            .len()
+            .checked_mul(PREFIX_BYTES)
+            .and_then(|size| size.checked_add(8 + name.len()))
+            .ok_or(EncodeError::Invalid)?;
+        bytes
+            .try_reserve(capacity)
+            .map_err(|_| EncodeError::NoMemory)?;
         bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
@@ -470,7 +791,9 @@ pub(crate) fn check_jump_graph(
     // 1. 只复制跳转边，所有定义包括暂未调用的链都要接受验证。
     let mut links = Vec::new();
     let mut targets = Vec::new();
-    links.try_reserve_exact(count).map_err(|_| EncodeError::NoMemory)?;
+    links
+        .try_reserve_exact(count)
+        .map_err(|_| EncodeError::NoMemory)?;
     for edges in chains {
         let start = targets.len();
         for target in edges {
@@ -481,7 +804,10 @@ pub(crate) fn check_jump_graph(
             targets.try_reserve(1).map_err(|_| EncodeError::NoMemory)?;
             targets.push(target);
         }
-        links.push(ChainLinks { edges: start..targets.len(), visit: Visit::Unseen });
+        links.push(ChainLinks {
+            edges: start..targets.len(),
+            visit: Visit::Unseen,
+        });
     }
     if links.len() != count {
         return Err(EncodeError::Invalid);

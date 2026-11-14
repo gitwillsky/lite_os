@@ -29,23 +29,6 @@ impl PreparedRouteChange {
     }
 }
 
-pub(super) fn configuration_facts<'a>(
-    interfaces: &'a [NetworkInterface],
-    changes: &'a [InterfaceChange],
-) -> impl Clone + Iterator<Item = InterfaceFacts> + 'a {
-    interfaces.iter().map(|interface| {
-        let change = changes
-            .iter()
-            .find(|change| change.index == interface.index);
-        let state = change.map_or(interface.state, |change| change.next);
-        InterfaceFacts {
-            index: interface.index,
-            address: state.address,
-            up: state.up,
-            mtu: change.map_or_else(|| interface.device.ip_mtu(), InterfaceChange::next_mtu),
-        }
-    })
-}
 pub(super) fn replaced(record: &Record, changes: &[InterfaceChange], fib: &Fib) -> bool {
     changes.iter().any(|change| {
         let index = change.index;
@@ -80,7 +63,7 @@ impl RoutingTable {
             candidate,
             |record| replaced(record, changes, &self.fib),
             interfaces,
-            configuration_facts(interfaces, changes),
+            Ipv4Interfaces::configured(interfaces, changes),
         )
     }
 
@@ -98,7 +81,7 @@ impl RoutingTable {
         candidate: Draft,
         replace: impl Fn(&Record) -> bool,
         interfaces: &[NetworkInterface],
-        facts: impl Clone + Iterator<Item = InterfaceFacts>,
+        facts: Ipv4Interfaces<'_>,
     ) -> Result<PreparedRouteChange, SocketError> {
         let fib = self.fib.prepare(candidate, replace)?;
         let mut candidate = Self { fib };
@@ -127,15 +110,15 @@ impl RoutingTable {
         interfaces: &[NetworkInterface],
         replace_forwarding: bool,
     ) -> Option<Record> {
-        let facts = configuration_facts(interfaces, changes);
-        let candidates = self.fib.matching(flow.destination);
+        let facts = Ipv4Interfaces::configured(interfaces, changes);
+        let candidates = self.fib.matching(flow.destination, 0);
         for table in [TABLE_LOCAL, TABLE_MAIN] {
             let old = self.matching(
                 table,
                 flow,
                 candidates.clone(),
                 minimum_scope,
-                facts.clone(),
+                facts,
                 |record| {
                     (!replace_forwarding || record.origin != Origin::Forwarding)
                         && !replaced(record, changes, &self.fib)
@@ -149,7 +132,7 @@ impl RoutingTable {
                         })
                 },
             );
-            let new = candidate.lookup_record(table, flow, minimum_scope, facts.clone());
+            let new = candidate.lookup_record(table, flow, minimum_scope, facts);
             let selected = match (old, new) {
                 (Some(old), Some(new)) => Some(
                     if (

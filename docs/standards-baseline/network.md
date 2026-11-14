@@ -1,12 +1,20 @@
 # 网络与报文固定基线
 
+带宽诊断使用 [ESnet iperf 3.22](https://github.com/esnet/iperf/releases/tag/3.22) 的原版命令和逐行 JSON 报告。源码归档及 SHA-256 在 `scripts/userland/iperf.py` 固定，随产品镜像发布命令和许可证。
+构建沿目标 musl，静态包含 libiperf，关闭 OpenSSL 认证和 SCTP。产品默认无测速监听端口。
+
 本文件从[固定规范总表](../standards-baseline.md)进入；只维护网络规范与对照源码，不声明路由计划已经完成。
+
+实时抓包沿 [Linux 7.1 PACKET_MMAP](https://docs.kernel.org/7.1/networking/packet_mmap.html) 的 TPACKET_V2 接收布局。
+产品使用 Alpine v3.22 的 [tcpdump 4.99.5-r1](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/tcpdump) 与 libpcap 1.10.7-r0。
+包摘要由 `scripts/userland/artifacts.py` 固定，版本探测与过滤行为对照 [libpcap 1.10.7 的 Linux 后端](https://github.com/the-tcpdump-group/libpcap/blob/libpcap-1.10.7/pcap-linux.c)。
+实时流量的有界统计采用 [Metwally 等人的 Space-Saving](https://cs.ucsb.edu/sites/default/files/documents/2005-23.pdf)，用帧字节数作为更新权重。最小项替换时保留原估计作为误差上界。
 
 ## 配置格式与字段元数据
 
 - 配置类型复用 [Serde 1.0.229](https://docs.rs/serde/1.0.229/serde/)、[serde_json 1.0.154](https://docs.rs/serde_json/1.0.154/serde_json/)
   与 [Schemars 1.2.3](https://docs.rs/schemars/1.2.3/schemars/)，Cargo 精确固定版本并禁用默认 std；Serde 开启 alloc/derive，serde_json 开启 alloc，Schemars 开启 derive。
-- 持久格式是 JSON；元数据显式选择 [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12)，不依赖库的默认 draft。
+- 配置正文是 JSON。元数据显式选择 [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12)。
   字段类型、枚举、范围和描述由相同 Rust 声明生成。设备匹配重叠、跨对象唯一性等语义仍由配置类型验证，不能把生成元数据当成完整策略执行器。
 - no_std 的 Schemars 不自带 core::net IP 格式：仅在 Schema 中声明同一标准 IPv4 字符串格式，实际编码/解析继续使用 Serde 的 core::net 实现，不引入另一套地址类型或解析器。
 - 原生 DNS 容量不取自 Linux libc；只有 resolvd 消费者按固定 musl 1.2.6 的 MAXNS/行缓冲容量投影。
@@ -19,18 +27,17 @@
   [ULID 规范](https://github.com/ulid/spec)定义 48-bit 时间与 80-bit 随机位；备份使用现有存量的逻辑高水位避免墙钟回退，实际时刻仍归文件系统。
   from_parts 会截断溢出位，调用方先拒绝超出 48-bit 的时间；不依赖默默截断。创建使用同一固定 Linux/FUSE 的 RENAME2_NOREPLACE 语义，不覆盖已有目标。
 
-## smoltcp
+- 导入身份使用 [RFC 9562 §5.4](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.4) UUIDv4。[uuid 1.29.0](https://docs.rs/uuid/1.29.0/uuid/) 禁用默认特性，由客户端提供操作系统随机字节。
+- 管理入口按 [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) 握手与传输，使用固定 [tungstenite 0.30.0](https://docs.rs/tungstenite/0.30.0/tungstenite/) 的 handshake 特性。
+  本地身份使用 [Linux unix(7) 的 SO_PEERCRED](https://man7.org/linux/man-pages/man7/unix.7.html)，会话与原生端点边界见[管理入口](../architecture-contract/userspace-abi.md#网络管理入口)。
+- 远程管理使用 [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html) 内的 [HTTP Basic](https://www.rfc-editor.org/rfc/rfc7617.html)，固定 `rustls 0.23.46` 与 `ring 0.17.14`，沿产品 musl 工具链编译。
+
+## 宿主报文格式对照
 
 - crate `0.13.1`；source commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897`。
 - 来源：[release 文档](https://docs.rs/crate/smoltcp/0.13.1)、[固定源码](https://github.com/smoltcp-rs/smoltcp/tree/e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897)。
-- netstack、netstack-unit 与 architecture-bench 对 smoltcp 的引用固定为 `vendor/smoltcp`；原 release 每个文件的 SHA-256
-  记录于 `UPSTREAM.sha256.json`，保留原许可证与 upstream commit。Cargo 不保留 registry 备选路径。
-- 本地变化限定UDP/TCP/raw transport、UDP ingress及interface dispatch与IPv4地址mechanism十个文件（第十个只是 `wire/udp.rs` 里 6LoWPAN 专用函数的 feature 门控）：connected peer 在 ingress admission 前匹配，canonical local
-  endpoint 修改保留已有 queue，bind/rehash order 选择单播目标，广播/组播交付实际匹配集合，
-  TX packet 在 enqueue 时冻结source port/address/TTL/oif；TCP实际MSS cache约束广告及分段。
-  bound device在ingress准入前筛选，kernel唯一route selector在dispatch前选设备；IPv4
-  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI 归 linuxd；netstack 只拥有协议机制与 endpoint 状态。
-- 只启用 alloc、Ethernet、IP-medium 实际 loopback、IPv4 与保留空 SocketSet 所需的 raw 类型；实际 TCP/UDP/RAW 收发均归原生 owner；Linux socket UAPI 不由 smoltcp 定义；原生 IPv6 链路地址独立实现，完整 IPv6 socket 仍待补齐。
+- `netstack-unit` 使用固定 `vendor/smoltcp` 构造和解码独立测试报文。原 release 的 SHA-256 记录于 `UPSTREAM.sha256.json`，保留许可证与固定源码版本。
+- 生产 `netstack`、`dhcp-client`、`dhcp-server` 均使用 `packet-wire`。
 
 ## 双栈本机重组
 
@@ -51,8 +58,12 @@
   与 [sha2 0.10.9](https://docs.rs/sha2/0.10.9/sha2/)，禁用默认特性并固定软件 SHA-256；秘密及路径所有权见 TCP 契约。
 - RTO 对照 [RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)；Reno 对照 [RFC 5681](https://www.rfc-editor.org/rfc/rfc5681.html) 的字节计数、实际 FlightSize、快速恢复和超时丢失窗口。
 - 选择确认及发送恢复对照 [RFC 2018](https://www.rfc-editor.org/rfc/rfc2018.html) 和 [RFC 6675](https://www.rfc-editor.org/rfc/rfc6675.html) §4–5.1；实际发送 MSS 按 [RFC 6691](https://www.rfc-editor.org/rfc/rfc6691.html) 扣除选项占用。
-- MD5 报文依据 [RFC 2385](https://www.rfc-editor.org/rfc/rfc2385.html)，双栈伪头与密钥选择/UAPI 对照固定 Linux v6.12 的 tcp_ipv4.c/tcp_ipv6.c；AO 仍未实现。
+- MD5 报文依据 [RFC 2385](https://www.rfc-editor.org/rfc/rfc2385.html)，双栈伪头与密钥选择/UAPI 对照固定 Linux v6.12 的 tcp_ipv4.c/tcp_ipv6.c。
 - MAC 使用固定 [md-5 0.10.6](https://docs.rs/md-5/0.10.6/md5/)，禁用默认特性并启用 force-soft；常数时间比较用 subtle 2.6.1，秘密退休用 zeroize 1.9.1，均禁用默认特性。所有权与验证边界见 [认证契约](../architecture-contract/tcp-authentication.md)。
+- TCP-AO 报文与方向密钥依 [RFC 5925](https://www.rfc-editor.org/rfc/rfc5925.html) 和 [RFC 5926](https://www.rfc-editor.org/rfc/rfc5926.html)，对照 [RFC 9235](https://www.rfc-editor.org/rfc/rfc9235.html) 的互通向量。
+  序号扩展参照 [RFC 9187](https://www.rfc-editor.org/rfc/rfc9187.html) 的半序号空间约束及 [Linux v6.12 TCP-AO](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp_ao.c) 的累计检查点。
+  两种必需算法复用工程固定的 RustCrypto `hmac 0.13.0`、`sha1 0.11.0`、`aes 0.9.3` 与 `cmac 0.8.0`。默认特性关闭，启用密钥状态清理。
+  原生 AArch64 soft-float 目标固定软件 AES/SHA-1，以保持调用 ABI。参见 [TCP 认证](../architecture-contract/tcp-authentication.md#tcp-ao-报文认证)。
 - 初始窗口采用 [RFC 6928](https://www.rfc-editor.org/rfc/rfc6928.html) 的实验性 IW10；超时回退至一个 SMSS。机制/调用者及当前验证范围见 [TCP 契约](../architecture-contract/ipv4-transports.md#tcp-连接机制)。
 
 ## 报文字节格式
@@ -63,6 +74,13 @@
   [2020-05 protocol identification](https://www.ieee802.org/1/files/public/docs2020/maint-seaman-protocol-ids-in-std-802-0520-v01.pdf)。
   C/S VLAN tag 使用 [IEEE 802.1Q-2022](https://1.ieee802.org/maintenance/p802-1q-rev/)；
   固定 Linux revision 的 `include/uapi/linux/if_ether.h`、`include/linux/if_vlan.h` 作为成熟格式对照，不把 Linux VLAN 配置 UAPI 带进 codec。
+- BPDU 格式、单树选路、端口状态和定时规则使用 [IEEE 802.1D-2004](https://www.ieee802.org/1/pages/802.1D-2003.html) 第 9、17 章。当前实现和验证范围见[网桥契约](../architecture-contract/switching.md#生成树)。
+- OSPF 基础报文与 LSA 公共头采用 [RFC 2328 附录 A](https://www.rfc-editor.org/rfc/rfc2328.html#appendix-A) 和 [RFC 5340 附录 A](https://www.rfc-editor.org/rfc/rfc5340.html#appendix-A)。
+  `packet-wire` 校验报文边界、读取五类正文，并按各版本处理 Router/Network-LSA 及 v3 Link/Intra-Area-Prefix-LSA。
+  基础校验和分别排除 v2 的认证数据字段及包含 v3 的 IPv6 伪头。LSA Fletcher 独立于外层报文校验和，排除 LS age。基础报文与 LLS 的边界按 [RFC 5613 §2](https://www.rfc-editor.org/rfc/rfc5613.html#section-2) 验证。
+  输入按报文字节线性验证，定宽行直接借用。变长列表先验证长度再迭代，无逐条分配。独立向量覆盖校验和、截断、TOS 行与 IPv6 前缀字填充。协议接入范围见[OSPF 契约](../architecture-contract/ospf.md)。
+  跨区前缀格式按 [RFC 2328 附录 A.4.4](https://www.rfc-editor.org/rfc/rfc2328.html#appendix-A.4.4) 和 [RFC 5340 附录 A.4.5](https://www.rfc-editor.org/rfc/rfc5340.html#appendix-A.4.5)。
+  HMAC-SHA-256 认证按 [RFC 5709](https://www.rfc-editor.org/rfc/rfc5709.html) 和 [RFC 7166](https://www.rfc-editor.org/rfc/rfc7166.html)。[密钥与序列寿命](../architecture-contract/ospf.md#邻居认证)
 - ARP 可变宽地址与网络字节序取自 [RFC 826](https://www.rfc-editor.org/rfc/rfc826)；
   独立 host 对照使用固定 smoltcp 的 `wire/arp.rs`，不复制其邻居状态机。
 - IPv4 缓存更新与探测节奏对照 [RFC 1122 §2.3.2](https://www.rfc-editor.org/rfc/rfc1122.html#section-2.3.2)。
@@ -161,6 +179,9 @@
 
 ## BGP
 
+- 多路径 NLRI 依据 [RFC 7911](https://www.rfc-editor.org/rfc/rfc7911.html)。收发按共同 AFI/SAFI 的互补方向协商，发布使用本端编号，替换和撤回以编号加前缀定位。
+  方向元组、接收身份与发送编号参考 FRR 10.0 的 [OPEN 接纳](https://raw.githubusercontent.com/FRRouting/frr/frr-10.0/bgpd/bgp_open.c)、
+  [接收表](https://raw.githubusercontent.com/FRRouting/frr/frr-10.0/bgpd/bgp_route.c)及[多路径发布](https://raw.githubusercontent.com/FRRouting/frr/frr-10.0/bgpd/bgp_addpath.c)。
 - eBGP 没有显式入口/出口政策时不采用或发布路由，依据 [RFC 8212](https://www.rfc-editor.org/rfc/rfc8212)；该要求不扩大到 iBGP。
 - 消息、UPDATE 与基本属性固定采用 [RFC 4271](https://www.rfc-editor.org/rfc/rfc4271)，独立错误处理以
   [RFC 7606](https://www.rfc-editor.org/rfc/rfc7606) 为约束；格式库不把单个坏属性自动升级为 session reset，整批裁决属于 BGP 协议 owner。
@@ -256,8 +277,7 @@ SO_ERROR消费不解除拥塞，实际queue排空后恢复。
 接口MTU继续使用上述固定dev_ioctl.c的dev_set_mtu调用与devinet.c的
 inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备允许68..1500
 （本驱动frame storage上限1514）。低于IPv4最低68时销毁地址成员；仅恢复MTU不还原旧
-地址，lo再次DOWN→UP才发表127.0.0.1/8。smoltcp interface caps只是该实际设备配置的
-分段mechanism投影，同一NET事务同步刷新，不作为第二份可配置状态。
+地址，lo 再次 DOWN→UP 才发表 127.0.0.1/8。分段和报文准入直接读取实际设备 MTU。
 
 
 ## IPv6 自动链路地址
@@ -322,7 +342,7 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 
 - 原生 UDP 的接收长度、IPv4 可选/IPv6 必须 checksum、报文原子性以 [RFC 768](https://www.rfc-editor.org/rfc/rfc768) 与
   [RFC 1122 §4.1](https://www.rfc-editor.org/rfc/rfc1122#section-4.1) 为约束；零 datagram 保留实际 source，队列满不能伪造无人监听。
-  netstack 生命周期与重用选择仍按上文固定 Linux 版本。收发格式由 packet-wire 提供，固定 smoltcp 保留部分 IPv4 接收适配，不注册 RAW endpoint。
+  netstack 生命周期与重用选择仍按上文固定 Linux 版本。收发格式由 packet-wire 提供。
 
 - IPv4 RAW 的协议范围、创建授权顺序及 RAW255 默认 HDRINCL 按 [Linux v6.12 inet_create](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/af_inet.c)；
   精确协议/地址/接口匹配与完整 IP 头交付按 [同版 raw_v4_match/raw_rcv](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/raw.c)。

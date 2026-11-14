@@ -206,8 +206,7 @@ impl Session {
     }
 
     pub(super) fn run(mut self) -> Result<(), Status> {
-        self.control
-            .wait_async(&self.port, CONTROL, signals::PEER_CLOSED)?;
+        self.arm_control()?;
         loop {
             let now = monotonic();
             self.expire(now)?;

@@ -13,6 +13,8 @@ pub(super) struct ErrorQueue {
     bytes: usize,
     ipv4: bool,
     ipv6: bool,
+    // 两族分别记录 RFC 4884 选项。只在错误入队时决定是否提供扩展位置，关闭选项不会改写旧记录。
+    extensions: [bool; 2],
 }
 
 impl ErrorQueue {
@@ -23,6 +25,7 @@ impl ErrorQueue {
             bytes: 0,
             ipv4: false,
             ipv6: false,
+            extensions: [false; 2],
         }
     }
     pub(super) fn enabled(&self, ipv6: bool) -> bool {
@@ -43,17 +46,21 @@ impl ErrorQueue {
         self.pending.is_some() || !self.records.is_empty()
     }
     /// 记录已匹配的发送错误。未启用扩展错误时只保留原有的关联硬错误语义。
-    pub(super) fn report(&mut self, error: InternetError, quote: &[u8], hard: bool) -> bool {
-        let enabled = self.enabled(match error.origin {
+    pub(super) fn report(&mut self, mut error: InternetError, quote: &[u8], hard: bool) -> bool {
+        let ipv6 = match error.origin {
             InternetErrorOrigin::Local => error.destination.ip().to_canonical().is_ipv6(),
             InternetErrorOrigin::Icmpv4 => false,
             InternetErrorOrigin::Icmpv6 => true,
-        });
+        };
+        let enabled = self.enabled(ipv6);
         if hard || enabled && error.origin != InternetErrorOrigin::Local {
             self.pending = Some(error.error);
         }
         if !enabled || self.records.len() == MAX_RECORDS || quote.len() > MAX_BYTES - self.bytes {
             return false;
+        }
+        if !self.extensions[usize::from(ipv6)] {
+            error.extension = None;
         }
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(quote.len()).is_err()
@@ -69,18 +76,31 @@ impl ErrorQueue {
     }
     /// 本机长度检查失败。同步 errno 仍由发送调用返回，队列记录携带实际上限。
     pub(super) fn local_mtu(&mut self, destination: InetAddress, mtu: usize) -> bool {
+        self.local_error(destination, SocketError::MessageTooLarge, mtu as u32, false)
+    }
+
+    /// 将本机发送失败记录到原目的。延迟失败可同时通知与原目的仍关联的 socket。
+    pub(super) fn local_error(
+        &mut self,
+        destination: InetAddress,
+        error: SocketError,
+        info: u32,
+        connected: bool,
+    ) -> bool {
         self.report(
             InternetError {
-                error: SocketError::MessageTooLarge,
+                error,
                 origin: InternetErrorOrigin::Local,
                 kind: 0,
                 code: 0,
-                info: mtu as u32,
+                info,
                 destination,
                 offender: None,
+                extension: None,
+                packet_info: None,
             },
             &[],
-            false,
+            connected,
         )
     }
     /// 取队首及实际可见长度。弹出 ICMP 后用下一条 ICMP 更新 SO_ERROR。
@@ -116,21 +136,69 @@ impl InetSocket {
     ) -> Result<(usize, InternetError), SocketError> {
         let _operation = self.open_operation()?;
         let mut network = self.stack()?.lock()?;
-        network.error_queue_mut(self.endpoint)?.receive(output)
+        let (queue, options) = network.error_queue_mut(self.endpoint)?;
+        let (length, mut error) = queue.receive(output)?;
+        error.packet_info = options.receive_packet_info(error.packet_info);
+        Ok((length, error))
     }
 
     pub(crate) fn set_receive_error(&self, ipv6: bool, enabled: bool) -> Result<(), SocketError> {
+        self.set_error_option(ipv6, enabled, false)
+    }
+
+    /// 控制同族错误记录的扩展位置及校验标志；不启用或清除错误队列。
+    /// # Errors
+    /// 端点关闭、地址族不适用或传输不支持数据报错误。
+    pub(crate) fn set_receive_error_extensions(
+        &self,
+        ipv6: bool,
+        enabled: bool,
+    ) -> Result<(), SocketError> {
+        self.set_error_option(ipv6, enabled, true)
+    }
+
+    fn set_error_option(
+        &self,
+        ipv6: bool,
+        enabled: bool,
+        extensions: bool,
+    ) -> Result<(), SocketError> {
         let _operation = self.open_operation()?;
         let mut network = self.stack()?.lock()?;
         network.check_receive_error_family(self.endpoint, ipv6)?;
-        network
-            .error_queue_mut(self.endpoint)?
-            .set_enabled(ipv6, enabled);
+        let (queue, _) = network.error_queue_mut(self.endpoint)?;
+        if extensions {
+            queue.extensions[usize::from(ipv6)] = enabled;
+        } else {
+            queue.set_enabled(ipv6, enabled);
+        }
         Ok(())
     }
 }
 
 impl NetworkStack {
+    /// 每接口同一批失败只扫描一次发送队列，保留当前仍有其他路径的报文。
+    /// # Returns
+    /// 有探测失败时返回 true，让轮询者继续推进等待备用路径的报文。
+    pub(super) fn retire_failed_neighbor_datagrams<A: Into<core::net::IpAddr>, const N: usize>(
+        &mut self,
+        position: usize,
+        failed: [Option<A>; N],
+        timestamp: Instant,
+    ) -> bool {
+        if !failed.iter().any(Option::is_some) {
+            return false;
+        }
+        let failed = failed.map(|address| address.map(Into::into));
+        let interface = self.interfaces[position].index;
+        let dropped = super::udp::neighbor_failed(self, interface, &failed, timestamp)
+            + self.raw_neighbor_failed(interface, &failed, timestamp);
+        for _ in 0..dropped {
+            self.interfaces[position].device.record_transmit_drop();
+        }
+        true
+    }
+
     pub(super) fn check_receive_error_family(
         &self,
         endpoint: InetEndpoint,
@@ -158,16 +226,16 @@ impl NetworkStack {
     pub(super) fn error_queue_mut(
         &mut self,
         endpoint: InetEndpoint,
-    ) -> Result<&mut ErrorQueue, SocketError> {
+    ) -> Result<(&mut ErrorQueue, &super::options::InetSocketOptions), SocketError> {
         match endpoint {
             InetEndpoint::Udp(id) => self
                 .udp_endpoints
                 .get_mut(&id)
-                .map(|state| &mut state.errors),
+                .map(|state| (&mut state.errors, &state.options)),
             InetEndpoint::Raw(id) => self
                 .raw_endpoints
                 .get_mut(&id)
-                .map(|state| &mut state.errors),
+                .map(|state| (&mut state.errors, &state.options)),
             InetEndpoint::Tcp(_) => return Err(SocketError::OperationNotSupported),
         }
         .ok_or(SocketError::NotConnected)
@@ -177,6 +245,7 @@ impl NetworkStack {
         &self,
         endpoint: InetEndpoint,
         ipv6: bool,
+        extensions: bool,
     ) -> Result<bool, SocketError> {
         self.check_receive_error_family(endpoint, ipv6)?;
         let errors = match endpoint {
@@ -184,6 +253,10 @@ impl NetworkStack {
             InetEndpoint::Raw(id) => &self.raw_endpoints[&id].errors,
             InetEndpoint::Tcp(_) => return Err(SocketError::OperationNotSupported),
         };
-        Ok(errors.enabled(ipv6))
+        Ok(if extensions {
+            errors.extensions[usize::from(ipv6)]
+        } else {
+            errors.enabled(ipv6)
+        })
     }
 }

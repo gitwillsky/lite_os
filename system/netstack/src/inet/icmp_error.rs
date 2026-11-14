@@ -1,8 +1,11 @@
 //! 本机 ICMP 错误准入、引用解析和真实发送端点分派。
 use super::*;
 use core::net::IpAddr;
-use network_protocol::{InternetError, InternetErrorOrigin};
+use network_protocol::{
+    IcmpErrorExtension, InternetError, InternetErrorOrigin, InternetPacketInfo,
+};
 use packet_wire::{
+    icmp::ErrorBody,
     icmpv4, icmpv6,
     ipv4::Ipv4Quote,
     ipv6::{Ipv6Packet, Ipv6Quote},
@@ -22,18 +25,29 @@ pub(super) struct Report<'a> {
     offender: IpAddr,
     kind: u8,
     code: u8,
+    packet_info: InternetPacketInfo,
+    multipart: Option<(IcmpErrorExtension, &'a [u8])>,
 }
-impl Report<'_> {
+impl<'a> Report<'a> {
     pub(super) fn too_big(&self) -> bool {
         self.status == SocketError::MessageTooLarge
+    }
+
+    /// ICMP errors suppressed by default for synchronized TCP-AO connections.
+    pub(super) fn ao_hard_error(&self) -> bool {
+        matches!(
+            (self.source.is_ipv6(), self.kind, self.code),
+            (false, 3, 2..=4) | (true, 1, 1 | 4)
+        )
     }
 
     pub(super) fn record(
         &self,
         port: u16,
         info: u32,
+        (visible, skip): (&'a [u8], usize),
         present: impl Fn(InetAddress) -> InetAddress,
-    ) -> InternetError {
+    ) -> (InternetError, &'a [u8]) {
         let scoped = |ip: IpAddr, port| {
             let mut address = InetAddress::new(ip, port);
             if let InetAddress::V6(value) = &mut address
@@ -43,20 +57,50 @@ impl Report<'_> {
             }
             present(address)
         };
-        InternetError {
-            error: self.status,
-            origin: if self.source.is_ipv4() {
-                InternetErrorOrigin::Icmpv4
-            } else {
-                InternetErrorOrigin::Icmpv6
+        // UDP 和 RAW 剥离的头长度不同。应用收到填充与扩展原字节，偏移以实际交付起点为准。
+        let (extension, bytes) = self
+            .multipart
+            .and_then(|(mut extension, wire)| {
+                extension.offset = extension.offset.checked_sub(u16::try_from(skip).ok()?)?;
+                Some((Some(extension), wire.get(skip..)?))
+            })
+            .unwrap_or((None, visible));
+        (
+            InternetError {
+                error: self.status,
+                origin: if self.source.is_ipv4() {
+                    InternetErrorOrigin::Icmpv4
+                } else {
+                    InternetErrorOrigin::Icmpv6
+                },
+                kind: self.kind,
+                code: self.code,
+                info,
+                destination: scoped(self.destination, port),
+                offender: Some(scoped(self.offender, 0)),
+                extension,
+                packet_info: Some(self.packet_info),
             },
-            kind: self.kind,
-            code: self.code,
-            info,
-            destination: scoped(self.destination, port),
-            offender: Some(scoped(self.offender, 0)),
-        }
+            bytes,
+        )
     }
+
+    pub(super) fn transport_offset(&self) -> usize {
+        self.quote.len() - self.transport.len()
+    }
+}
+
+fn multipart(body: ErrorBody<'_>) -> Option<(IcmpErrorExtension, &[u8])> {
+    let offset = body.quoted_bytes().ok()?.len();
+    let wire = body.bytes();
+    if wire.len() - offset < 4 {
+        return None;
+    }
+    let extension = IcmpErrorExtension {
+        offset: u16::try_from(offset).ok()?,
+        invalid: body.extensions().is_err(),
+    };
+    Some((extension, wire))
 }
 
 fn status(ipv6: bool, kind: u8, code: u8) -> Option<(SocketError, bool)> {
@@ -87,19 +131,19 @@ type ErrorEndpoints<'a> = (
 /// 校验 IPv4 外层及引用，再由实际发送端点确认路由与错误。
 pub(super) fn receive_ipv4(
     paths: &mut super::path_mtu::PathMtu,
-    packet: smoltcp::iface::Ipv4Ingress<'_>,
+    packet: crate::inet::ingress::Ipv4Ingress<'_>,
     endpoints: ErrorEndpoints<'_>,
     (routing, rules): (
         &super::route::RoutingTable,
         &[router_protocol::policy_routing::Rule],
     ),
-    facts: impl Clone + Iterator<Item = super::route::InterfaceFacts>,
+    facts: super::route::Ipv4Interfaces<'_>,
     now: Instant,
 ) {
-    if packet.multicast || !matches!(packet.payload.first(), Some(3 | 11 | 12)) {
+    if packet.multicast || !matches!(packet.ip.payload().first(), Some(3 | 11 | 12)) {
         return;
     }
-    let Ok(icmp) = icmpv4::Icmpv4Packet::parse(packet.payload) else {
+    let Ok(icmp) = icmpv4::Icmpv4Packet::parse(packet.ip.payload()) else {
         return;
     };
     let kind = icmp.message_type();
@@ -116,10 +160,10 @@ pub(super) fn receive_ipv4(
     let source = quote.source();
     let destination = quote.destination();
     let interface = packet.interface_index;
-    if source != super::from_ip(packet.destination)
+    if source != packet.ip.destination()
         || status == SocketError::MessageTooLarge && !quote.dont_fragment()
         || !facts
-            .clone()
+            .iter()
             .any(|fact| fact.up && fact.address == Some(source))
         || destination.is_unspecified()
         || destination.is_multicast()
@@ -143,9 +187,15 @@ pub(super) fn receive_ipv4(
         interface,
         hard,
         status,
-        offender: super::from_ip(packet.source).into(),
+        offender: packet.ip.source().into(),
         kind,
         code,
+        packet_info: InternetPacketInfo::Ipv4 {
+            interface_index: interface,
+            specific_address: packet.facts.specific_destination.unwrap_or(source),
+            destination: source,
+        },
+        multipart: multipart(body),
     };
     let path = super::path_mtu::Path {
         interface,
@@ -155,7 +205,7 @@ pub(super) fn receive_ipv4(
     let now = now.total_millis().max(0) as u64;
     let accept = |(bound, mark), mode| {
         let route = routing
-            .select_output(source, destination, bound, (mark, rules), facts.clone())
+            .select_output(source, destination, bound, (mark, rules), facts)
             .ok()?;
         if route.kind != network_protocol::RouteKind::Unicast || route.interface_index != interface
         {
@@ -176,7 +226,7 @@ pub(super) fn receive_ipv4(
         } else {
             usize::from(reported)
         };
-        if mtu < 68 || mtu >= route.transport.mtu || mtu >= quote.original_length() {
+        if mtu < 68 || mtu >= route.mtu || mtu >= quote.original_length() {
             return None;
         }
         if mode < 4 {
@@ -236,6 +286,11 @@ pub(super) fn receive_ipv6(
         offender: ip.source().into(),
         kind,
         code,
+        packet_info: InternetPacketInfo::Ipv6 {
+            interface_index: interface,
+            destination: ip.destination(),
+        },
+        multipart: multipart(body),
     };
     if report.too_big() && (parameter < 1280 || parameter as usize >= quote.original_length()) {
         return;
@@ -266,14 +321,10 @@ fn deliver(
     mut accept: impl FnMut((Option<u32>, u32), u8) -> Option<u32>,
 ) {
     match report.protocol {
-        6 if report.too_big() => {
-            super::tcp::match_too_big(
-                tcp,
-                (report.source, report.destination),
-                report.transport,
-                report.interface,
-                |egress| accept(egress, 1).is_some(),
-            );
+        6 if report.too_big() || report.ao_hard_error() => {
+            if super::tcp::receive_icmp_error(tcp, report, |egress| accept(egress, 1).is_some()) {
+                return;
+            }
         }
         17 => super::udp::receive_icmp_error(udp, report, &mut accept),
         _ => {}

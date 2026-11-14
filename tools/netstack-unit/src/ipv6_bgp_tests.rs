@@ -36,8 +36,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
       }}}"#).unwrap();
     let neighbor = parameters.neighbors.values().next().unwrap();
     let mut routes = RoutingDomain::try_new(
-        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     let facts = routing_facts(&net);
     let export_addresses: Vec<_> = (0..facts.addresses.len()).filter_map(|index| {
@@ -101,10 +100,10 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     routes
         .receive(peer.id, &receive(&mut session, &input))
         .unwrap();
-    let raw = routes.peer_routes(peer.id).unwrap().get(prefix).unwrap();
+    let raw = routes.peer_routes(peer.id).unwrap().get(prefix, None).unwrap();
     let decision = ::bgp::import_route(neighbor.import.as_ref(), prefix, &peer, raw).unwrap();
     let bytes = routes
-        .propose(Family::Ipv6, |_, _, route| {
+        .propose(Family::Ipv6, |_, _, _, route| {
             Ok((
                 decision.next_hop,
                 Some(decision.preference),
@@ -178,7 +177,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     let outcome = outcomes[0];
     assert!(outcome.reachable);
     let selected = routes
-        .prepare(Family::Ipv6, |_, _, route| {
+        .prepare(Family::Ipv6, |_, _, _, route| {
             Ok((
                 decision.next_hop,
                 Some(decision.preference),
@@ -265,9 +264,9 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
         width: packet_wire::bgp::attributes::AsnWidth::Four,
         interval_ns: 0,
     };
-    let mut output = ::bgp::AdjRibOut::new();
+    let mut output = ::bgp::AdjRibOut::default();
     for prefix in prefixes {
-        output.changed(prefix, 0).unwrap();
+        output.changed(&routes, prefix, 0).unwrap();
     }
     let bytes = output
         .prepare(&mut routes, neighbor.export.as_ref(), target, 0)
@@ -277,7 +276,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     let received = receive(&mut receiver, &bytes);
     assert_eq!(received.changes().count(), prefixes.len());
     assert!(
-        matches!(received.changes().next(), Some(::bgp::Change::Announce {prefix:actual, next_hop}) if actual == prefix && next_hop.address == GLOBAL && next_hop.link_local == Some(LOCAL))
+        matches!(received.changes().next(), Some(::bgp::Change::Announce {prefix:actual, path_id: None, next_hop}) if actual == prefix && next_hop.address == GLOBAL && next_hop.link_local == Some(LOCAL))
     );
     let mp = packet_wire::bgp::update::Update::parse(&bytes[19..]).unwrap().attributes().unwrap().find(|attribute| attribute.code == 14).unwrap();
     assert_eq!(mp.data.len(), 37 + prefixes.len() * 9);
@@ -318,15 +317,15 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     routes.add_peer(scoped_peer, SourcePeer { preference: scoped.preference,
         next_hop_interface: core::num::NonZeroU32::new(2) }).unwrap();
     let scoped_context = ::bgp::ExportContext { target: scoped_peer, local_address: LOCAL.into(), ..target };
-    let mut scoped_output = ::bgp::AdjRibOut::new();
-    scoped_output.changed(prefix, 2).unwrap();
+    let mut scoped_output = ::bgp::AdjRibOut::default();
+    scoped_output.changed(&routes, prefix, 2).unwrap();
     let bytes = scoped_output.prepare(&mut routes, scoped.export.as_ref(), scoped_context, 2).unwrap().unwrap();
     assert!(matches!(receive(&mut receiver, &bytes).changes().next(), Some(::bgp::Change::Announce {next_hop,..}) if next_hop.address == GLOBAL && next_hop.link_local == Some(LOCAL)));
     let wrong_scope = Peer { id: 4, ..scoped_peer };
     routes.add_peer(wrong_scope, SourcePeer { preference: scoped.preference,
         next_hop_interface: core::num::NonZeroU32::new(77) }).unwrap();
-    let mut invalid_scope = ::bgp::AdjRibOut::new();
-    invalid_scope.changed(prefix, 2).unwrap();
+    let mut invalid_scope = ::bgp::AdjRibOut::default();
+    invalid_scope.changed(&routes, prefix, 2).unwrap();
     assert!(invalid_scope.prepare(&mut routes, scoped.export.as_ref(), ::bgp::ExportContext {
         target: wrong_scope, ..scoped_context
     }, 2).unwrap().is_none());
@@ -339,16 +338,16 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     let mut internal_session = crate::bgp_peer::established_with(::bgp::Config {
         local_as: 65000, peer_as: 65000, ..crate::bgp_peer::config(true)
     }, true);
-    let mut third_party = ::bgp::AdjRibOut::new();
-    third_party.changed(prefix, 2).unwrap();
+    let mut third_party = ::bgp::AdjRibOut::default();
+    third_party.changed(&routes, prefix, 2).unwrap();
     let bytes = third_party.prepare(&mut routes, neighbor.export.as_ref(), internal, 2).unwrap().unwrap();
     assert!(matches!(receive(&mut internal_session, &bytes).changes().next(), Some(::bgp::Change::Announce {next_hop,..}) if next_hop.address == GLOBAL_PEER && next_hop.link_local == Some(PEER)));
     // 发往另一个链路的邻居只携全局地址；不传播没有同链路意义的上游辅助地址。
     let remote_target = ::bgp::ExportContext { target: Peer {
         address: "2001:db8:77::2".parse().unwrap(), ..internal.target
     }, ..internal };
-    let mut remote_output = ::bgp::AdjRibOut::new();
-    remote_output.changed(prefix, 2).unwrap();
+    let mut remote_output = ::bgp::AdjRibOut::default();
+    remote_output.changed(&routes, prefix, 2).unwrap();
     let bytes = remote_output.prepare(&mut routes, neighbor.export.as_ref(), remote_target, 2).unwrap().unwrap();
     assert!(matches!(receive(&mut internal_session, &bytes).changes().next(), Some(::bgp::Change::Announce {next_hop,..}) if next_hop.address == GLOBAL_PEER && next_hop.link_local.is_none()));
     // 辅助地址单独变化也要 UPDATE，不能只比较全局地址；接收端看到的值直接来自生产 codec。
@@ -366,7 +365,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     assert!(routes.observe_export_network(export_addresses.iter().copied().filter(|row| row.address != LOCAL)).unwrap());
     output.reconsider(Family::Ipv6);
     let bytes = output.prepare(&mut routes, neighbor.export.as_ref(), target, 3).unwrap().unwrap();
-    assert_eq!(receive(&mut receiver, &bytes).changes().next(), Some(::bgp::Change::Withdraw(prefix)));
+    assert_eq!(receive(&mut receiver, &bytes).changes().next(), Some(::bgp::Change::Withdraw(prefix, None)));
     output.sent(3);
     assert!(routes.observe_export_network(export_addresses.iter().copied()).unwrap());
     output.reconsider(Family::Ipv6);
@@ -379,7 +378,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     let rib = prepared.next;
     routes.remove_peer(peer.id).unwrap();
     let selected = routes
-        .prepare(Family::Ipv6, |_, _, _| unreachable!("removed peer"))
+        .prepare(Family::Ipv6, |_, _, _, _| unreachable!("removed peer"))
         .unwrap();
     let bytes = selected.encode_source(neighbor.preference).unwrap();
     let withdrawn = routing_rib::sources::Routes::capture_source(
@@ -408,7 +407,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
         Err(SocketError::NetworkUnreachable)
     );
     for prefix in prefixes {
-        output.changed(prefix, 5).unwrap();
+        output.changed(&routes, prefix, 5).unwrap();
     }
     let bytes = output
         .prepare(&mut routes, neighbor.export.as_ref(), target, 5)
@@ -418,7 +417,7 @@ fn bgp6_learning_installs_a_proven_route_sends_udp_and_withdraws_the_same_family
     assert_eq!(withdrawn.changes().count(), prefixes.len());
     assert_eq!(
         withdrawn.changes().next(),
-        Some(::bgp::Change::Withdraw(prefix))
+        Some(::bgp::Change::Withdraw(prefix, None))
     );
     output.sent(5);
     output.finish_initial(Family::Ipv6);
@@ -477,8 +476,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
     .unwrap();
     let neighbor = parameters.neighbors.values().next().unwrap();
     let mut routes = RoutingDomain::try_new(
-        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     let peer = Peer {
         id: 1,
@@ -521,7 +519,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
             && !negotiated.ipv6_unicast
     );
     routes.receive(peer.id, &receive(&mut session, &input)).unwrap();
-    let raw = routes.peer_routes(peer.id).unwrap().get(prefix).unwrap();
+    let raw = routes.peer_routes(peer.id).unwrap().get(prefix, None).unwrap();
     let decision = ::bgp::import_route(neighbor.import.as_ref(), prefix, &peer, raw).unwrap();
     let probe = routes.installation(prefix, peer.id, decision.next_hop, false).unwrap();
     assert_eq!((probe.interface, probe.next_hop.address), (Some(interface), PEER.into()));
@@ -545,7 +543,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
         prepared.next
     };
     let proposal = routes
-        .propose(Family::Ipv4, |_, _, route| {
+        .propose(Family::Ipv4, |_, _, _, route| {
             Ok((decision.next_hop, Some(decision.preference), route.attributes()))
         })
         .unwrap()
@@ -571,7 +569,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
         installation::decode_outcomes(&proof, source, snapshot.generation(), probes.len()).unwrap();
     assert!(verdicts.iter().map(|outcome| outcome.reachable).eq([true, false, false]));
     let selection = routes
-        .prepare(Family::Ipv4, |_, _, route| {
+        .prepare(Family::Ipv4, |_, _, _, route| {
             Ok((
                 decision.next_hop,
                 Some(decision.preference),
@@ -599,7 +597,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
             && Ipv4Packet::parse(ethernet.payload()).is_ok_and(|ip| ip.destination() == destination)
     }));
 
-    let mut output = AdjRibOut::new();
+    let mut output = AdjRibOut::default();
     let context = ExportContext {
         local_as: parameters.local_as.get(),
         local_address: GLOBAL.into(),
@@ -617,7 +615,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
         width: AsnWidth::Four,
         interval_ns: 0,
     };
-    output.changed(prefix, 0).unwrap();
+    output.changed(&routes, prefix, 0).unwrap();
     assert!(
         output
             .prepare(
@@ -629,7 +627,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
             .unwrap()
             .is_none()
     );
-    output.changed(prefix, 0).unwrap();
+    output.changed(&routes, prefix, 0).unwrap();
     let mut receiver = established_with_receiver();
     let announcement =
         output.prepare(&mut routes, neighbor.export.as_ref(), context, 0).unwrap().unwrap();
@@ -638,7 +636,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
     assert_eq!(frame.scan_attributes().next().unwrap().unwrap().code, 14);
     assert!(receive(&mut receiver, &announcement).changes().eq([Change::Announce {
         prefix,
-        next_hop: ::bgp::NextHop { address: GLOBAL.into(), link_local: None },
+        path_id: None, next_hop: ::bgp::NextHop { address: GLOBAL.into(), link_local: None },
     }]));
     output.sent(0);
 
@@ -651,7 +649,7 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
     );
     routes.receive(peer.id, &receive(&mut session, &input)).unwrap();
     let selection =
-        routes.prepare(Family::Ipv4, |_, _, _| unreachable!("withdrawn prefix")).unwrap();
+        routes.prepare(Family::Ipv4, |_, _, _, _| unreachable!("withdrawn prefix")).unwrap();
     let withdrawal = selection.encode_source(neighbor.preference).unwrap();
     rib = install(
         rib.prepare_sources(&routing_facts(&net), Some(capture(&withdrawal)), &[]).unwrap(),
@@ -662,13 +660,13 @@ fn bgp_ipv4_via_ipv6_uses_the_negotiated_hop_for_forwarding_and_withdrawal() {
         socket.send_to(b"withdrawn", Some(target), &[]),
         Err(SocketError::NetworkUnreachable)
     );
-    output.changed(prefix, 1).unwrap();
+    output.changed(&routes, prefix, 1).unwrap();
     let withdrawal =
         output.prepare(&mut routes, neighbor.export.as_ref(), context, 1).unwrap().unwrap();
     let frame = Update::parse(&withdrawal[19..]).unwrap();
     assert!(frame.withdrawn().unwrap().bytes().is_empty());
     assert_eq!(frame.scan_attributes().next().unwrap().unwrap().code, 15);
-    assert!(receive(&mut receiver, &withdrawal).changes().eq([Change::Withdraw(prefix)]));
+    assert!(receive(&mut receiver, &withdrawal).changes().eq([Change::Withdraw(prefix, None)]));
     output.sent(1);
     socket.close_description();
 }
@@ -754,8 +752,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
         "export":{"default":"deny","rules":[{"action":{"kind":"permit","next_hop":"2001:db8:1::abcd"}}]}}}
     }"#).unwrap();
     let mut routes = RoutingDomain::try_new(
-        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(65000, parameters.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     let queries = routes
         .configure_networks(parameters.networks.clone())
@@ -888,10 +885,8 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
         .unwrap()
         .export
         .as_ref();
-    let mut output = AdjRibOut::new();
-    for changed in routes.announcement_prefixes() {
-        output.changed(changed, 0).unwrap();
-    }
+    let mut output = AdjRibOut::default();
+    output.reconsider(packet_wire::bgp::nlri::Family::Ipv6);
     let bytes = output
         .prepare(&mut routes, policy, context, 0)
         .unwrap()
@@ -938,7 +933,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
         RouteState::Prohibit
     );
     assert_eq!(routes.network_is_available(prefix(rejected)), Some(false));
-    output.changed(prefix(GLOBAL), 1).unwrap();
+    output.changed(&routes, prefix(GLOBAL), 1).unwrap();
     let bytes = output
         .prepare(&mut routes, policy, context, 1)
         .unwrap()
@@ -947,7 +942,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
         crate::bgp_peer::receive(&mut receiver, &bytes)
             .changes()
             .collect::<Vec<_>>(),
-        [Change::Withdraw(prefix(GLOBAL))]
+        [Change::Withdraw(prefix(GLOBAL), None)]
     );
     output.sent(1);
     assert_eq!(output.len(), 1);
@@ -956,7 +951,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
             .unwrap(),
     );
     assert_eq!(qualify(&mut routes, &rib), [prefix(local)]);
-    output.changed(prefix(local), 2).unwrap();
+    output.changed(&routes, prefix(local), 2).unwrap();
     let bytes = output
         .prepare(&mut routes, policy, context, 2)
         .unwrap()
@@ -965,7 +960,7 @@ fn local_host_routes_publish_only_usable_addresses_and_never_prove_recursive_nex
         crate::bgp_peer::receive(&mut receiver, &bytes)
             .changes()
             .collect::<Vec<_>>(),
-        [Change::Withdraw(prefix(local))]
+        [Change::Withdraw(prefix(local), None)]
     );
     output.sent(2);
     assert!(output.is_empty());

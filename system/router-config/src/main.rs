@@ -4,7 +4,7 @@
 
 //! router-config：接口配置的唯一 owner，持有设备授权、租约与持久数据能力。
 //!
-//! 1. 从根服务路由来的网卡目录打开每块网卡，经 netstack 的安装协议装进默认网络；
+//! 1. 按持久域归属将网卡装入相应网络，未分配的网卡属于默认域；
 //! 2. 按“用户设置 → bootfs 默认策略 → DHCP”决定每个接口的配置：静态地址直接配置，DHCP 经 dhcp-client
 //!    取得租约后配置；用户设置持久化在 fshost 派生的私有数据目录；
 //! 3. 一个事件循环线程以一个 Port 等待：netstack 断开（重连、重新安装网卡、重新配置）、设备目录变化
@@ -23,8 +23,10 @@ mod delegation;
 mod dhcp_server;
 mod dns_cache;
 mod leases;
+mod ospf;
 mod policy;
 mod routing;
+mod routing_domains;
 mod transaction;
 use transaction::{StageError, StorageRollback};
 
@@ -39,6 +41,8 @@ use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Port, Startup, Vmo};
 use network_protocol::routing::RoutingConfigurator;
 use network_protocol::{NetworkClient, PreparedConfiguration, RemoteNamespace, SocketError};
+use router_protocol::Revision;
+use router_protocol::administration::CommitId;
 use router_protocol::configuration::Configuration;
 use router_protocol::interface::InterfaceConfiguration;
 use router_protocol::{
@@ -63,6 +67,8 @@ const KEY_ROUTING: u64 = 5;
 const KEY_BGP: u64 = 6;
 /// 通告 DNS 集合变更，唤醒设置快照观察者。
 const KEY_DNS: u64 = 7;
+/// OSPF 实例终止时重放持久配置，由相同的配置循环重试。
+const KEY_OSPF: u64 = 8;
 /// Port key 的起点：各接口 DHCP 会话的租约事件 channel 与接口 lifetime channel（每个一个新 key）。
 const KEY_DHCP_FIRST: u64 = 1 << 32;
 /// dhcp-client 的 DHCP 请求序号（与 dhcp-client 一致）。
@@ -89,6 +95,7 @@ struct Lease {
 
 /// 一个已安装的接口。
 struct Interface {
+    device_id: u64,
     name: Vec<u8>,
     mac: [u8; 6],
     index: u32,
@@ -104,7 +111,6 @@ struct Interface {
     retry_at: Option<i64>,
     // OWNER: 本接口的 DHCP 会话（Port key 与租约事件 channel）；丢弃即关闭 channel，dhcp-client 随之停止。
     dhcp: Option<(u64, Channel)>,
-    dhcp_server: Option<dhcp_server::PoolSession>,
     // netstack 交出的接口 lifetime（Port key 与 channel）：网卡会话关闭、接口被移除时 `PEER_CLOSED`。
     // 缺失时网卡热拔后本记录与 DHCP 会话残留，重新出现的网卡被当作第二个接口。
     lifetime: (u64, Channel),
@@ -168,21 +174,30 @@ impl Interface {
 }
 
 struct Inner {
-    generation: u64,
+    generation: Revision,
     // OWNER: 已决定的配置；只有持久化成功后替换。None 表示加载失败：保留管理查询，所有设备禁用，禁止局部覆盖未知配置。
     saved: Option<Arc<Configuration>>,
+    // OWNER: 与 saved 同一持久决定的成功导入记录。文件失败时二者均保留前像。
+    committed_imports: Vec<CommitId>,
     // OWNER: 失败写入尚未确认撤销的原始文件；恢复前不允许另一次持久配置提交。
     rollback: Option<StorageRollback>,
     // OWNER: 尚未确认的完整路由意图工作（静态来源/准入策略）；无接口时也必须推进，不是链路/下一跳状态缓存。
     source_retry_at: Option<i64>,
+    // OWNER: 持久专核配置尚未由当前转发 worker 确认的重试截止，配置仍只保存在 saved。
+    forwarding_cpu_retry_at: Option<i64>,
     // OWNER: 当前 BGP 域能力及实际未完成的应用截止；期望配置只从 saved 借用，不保存同步副本。
     bgp: Option<network_protocol::bgp::BgpInstance>,
     bgp_retry_at: Option<i64>,
+    // OWNER: OSPF 能力与未应用的截止时间。期望配置只在 saved 中。
+    ospf: Option<network_protocol::ospf::OspfInstance>,
+    ospf_retry_at: Option<i64>,
     delegation: delegation::Delegation,
     dns: dns_cache::DnsExecution,
+    pools: dhcp_server::PoolExecution,
     // OWNER: 安装失败的目录声明与唯一重试截止；没有此队列，推进发现游标会永久漏掉 OOM/回复丢失的设备。
     pending_devices: Vec<device_protocol::directory::Entry>,
     device_retry_at: Option<i64>,
+    domains: routing_domains::Domains,
     // OWNER: 目录等待的独立登记句柄；重装前关闭会取消原 observer，None 代表有实际重登记工作，不能复制 bool 在线状态。
     watch_wait: Option<Event>,
     link: Option<Link>,
@@ -220,20 +235,37 @@ fn main(mut startup: Startup) -> i64 {
     let defaults = policy::parse_defaults(&read_config(&Vmo::from_handle(
         startup.take(router_config::CONFIG),
     )));
-    let saved = match storage.read(policy::SETTINGS_FILE) {
+    let (saved, committed_imports) = match storage.read(policy::SETTINGS_FILE) {
         Ok(Some(bytes)) => match policy::decode_settings(&bytes) {
-            Ok(configuration) => Some(configuration),
+            Ok((configuration, commits)) => {
+                // 上次进程可能在 rename 后、目录同步前退出。先确认恢复所见的持久决定，再提供回执。
+                if !commits.is_empty()
+                    && let Err(status) = storage.sync()
+                {
+                    error!("router-config: persisted configuration sync failed: {status}");
+                    (None, Vec::new())
+                } else {
+                    (Some(configuration), commits)
+                }
+            }
             Err(error) => {
                 // 配置错误不能退回 DHCP：这会在错误网络上启用接口，改变持久配置的安全决定。
                 // 保留管理查询，不让关键服务的配置错误触发整机重启；授权整份导入可修复并恢复。
                 error!("router-config: persisted configuration rejected: {error}");
-                None
+                (None, Vec::new())
             }
         },
-        Ok(None) => Some(Configuration::default()),
+        Ok(None) => (Some(Configuration::default()), Vec::new()),
         Err(status) => {
             error!("router-config: persisted configuration unavailable: {status}");
-            None
+            (None, Vec::new())
+        }
+    };
+    let instance = loop {
+        let mut bytes = [0; 16];
+        native_runtime::system::cprng_draw(&mut bytes);
+        if let Some(instance) = core::num::NonZeroU128::new(u128::from_ne_bytes(bytes)) {
+            break instance;
         }
     };
     let router_config = Arc::new(RouterConfig {
@@ -246,17 +278,23 @@ fn main(mut startup: Startup) -> i64 {
         backup: Mutex::new(backup::Scheduler::default()),
         port: Port::create().expect("router-config port"),
         inner: Mutex::new(Inner {
-            generation: 1,
+            generation: Revision::initial(instance),
             saved: saved
                 .map(|saved| Arc::try_new(saved).expect("router-config saved configuration")),
+            committed_imports,
             rollback: None,
             pending_devices: Vec::new(),
             device_retry_at: None,
+            domains: Default::default(),
             source_retry_at: None,
+            forwarding_cpu_retry_at: None,
             bgp: None,
             bgp_retry_at: None,
+            ospf: None,
+            ospf_retry_at: None,
             delegation: Default::default(),
             dns: Default::default(),
+            pools: Default::default(),
             watch_wait: None,
             link: None,
             interfaces: Vec::new(),
@@ -282,7 +320,7 @@ fn main(mut startup: Startup) -> i64 {
             if protocol != service_directory::NETWORK_SETTINGS {
                 return Err(native_abi::ERR_NOT_FOUND);
             }
-            serve_settings(settings.clone(), channel)
+            administration::serve(settings.clone(), channel)
         }),
     )
     .expect("router-config outgoing service");
@@ -376,6 +414,7 @@ impl RouterConfig {
                     }
                     KEY_DIRECTORY => self.devices_changed(),
                     KEY_BGP => self.bgp_closed(),
+                    KEY_OSPF => self.ospf_closed(),
                     KEY_DNS => {
                         let mut inner = self.inner.lock();
                         if let Some(link) = &inner.link
@@ -393,6 +432,7 @@ impl RouterConfig {
                                 error!("router-config: DNS observer rearm failed: {status}");
                                 return -1;
                             }
+                            self.queue_dns(&mut inner);
                             Self::changed(&mut inner);
                         }
                     }
@@ -417,11 +457,16 @@ impl RouterConfig {
             warn!("router-config: netstack connection closed; reinstalling interfaces");
             let mut inner = self.inner.lock();
             inner.link = None;
+            inner.forwarding_cpu_retry_at = None;
             inner.pending_devices.clear();
             inner.device_retry_at = None;
             inner.interfaces.clear();
+            inner.domains = Default::default();
             inner.delegation = Default::default();
             inner.dns = Default::default();
+            inner.pools = Default::default();
+            inner.ospf = None;
+            inner.ospf_retry_at = None;
             inner.last_device = 0;
             Self::changed(&mut inner);
         }
@@ -443,8 +488,17 @@ impl RouterConfig {
         {
             let mut inner = self.inner.lock();
             inner.link = Some(link);
+            self.queue_forwarding_cpus(&mut inner);
+            if inner
+                .saved
+                .as_ref()
+                .is_some_and(|saved| !saved.routing_domains.is_empty())
+            {
+                self.queue_domains(&mut inner);
+            }
             self.queue_sources(&mut inner);
             self.queue_bgp(&mut inner);
+            self.queue_ospf(&mut inner);
             self.queue_dns(&mut inner);
         }
         self.devices_changed();
@@ -487,10 +541,18 @@ impl RouterConfig {
             .as_mut()
             .ok_or(native_abi::ERR_BAD_STATE)?
             .installer = installer;
+        self.queue_forwarding_cpus(&mut inner);
         for interface in &mut inner.interfaces {
             self.queue_application(interface);
         }
         self.queue_sources(&mut inner);
+        if inner
+            .saved
+            .as_ref()
+            .is_some_and(|saved| !saved.routing_domains.is_empty())
+        {
+            self.queue_domains(&mut inner);
+        }
         Ok(())
     }
 
@@ -518,7 +580,12 @@ impl RouterConfig {
         let mut pending = {
             let mut inner = self.inner.lock();
             inner.device_retry_at = None;
-            core::mem::take(&mut inner.pending_devices)
+            let mut pending = core::mem::take(&mut inner.pending_devices);
+            if core::mem::take(&mut inner.domains.rescan) {
+                inner.last_device = 0;
+                pending.clear();
+            }
+            pending
         };
         pending.retain(|entry| match self.install(entry) {
             Ok(()) | Err(native_abi::ERR_NOT_FOUND) => false,
@@ -580,7 +647,15 @@ impl RouterConfig {
     }
 
     fn install(&self, entry: &device_protocol::directory::Entry) -> Result<(), Status> {
+        let mac = device_protocol::network::mac_address(entry)?;
         let mut inner = self.inner.lock();
+        let saved = inner.saved.clone();
+        if let Some(domain) = saved
+            .as_ref()
+            .and_then(|saved| saved.routing_domain_for_mac(mac))
+        {
+            return self.install_in_domain(&mut inner, entry, domain, mac);
+        }
         inner
             .interfaces
             .try_reserve(1)
@@ -598,11 +673,11 @@ impl RouterConfig {
         };
         let (index, lifetime, link_changed) =
             link.installer
-                .install_device(entry.id, &entry.description, delegated)?;
+                .install_device(entry.id, None, &entry.description, delegated)?;
         if inner
             .interfaces
             .iter()
-            .any(|interface| interface.index == index)
+            .any(|interface| interface.device_id == entry.id && interface.index == index)
         {
             return Ok(());
         }
@@ -623,7 +698,7 @@ impl RouterConfig {
             .unwrap_or(16);
         name.extend_from_slice(&snapshot.name[..length]);
         let config = match &inner.saved {
-            Some(saved) => policy::resolve(saved, &self.defaults, &name, snapshot.mac)
+            Some(saved) => policy::resolve(saved, &self.defaults, &name, mac)
                 .map(|(config, _)| config)
                 // 设备有效但当前持久策略不能匹配；保留发现工作，配置修正后能继续，不当作坏设备永久跳过。
                 .map_err(|_| native_abi::ERR_BAD_STATE)?,
@@ -637,8 +712,9 @@ impl RouterConfig {
             core::str::from_utf8(&name).unwrap_or("<non-utf8>")
         );
         inner.interfaces.push(Interface {
+            device_id: entry.id,
             name,
-            mac: snapshot.mac,
+            mac,
             index,
             config,
             address: Ipv4Addr::UNSPECIFIED,
@@ -648,7 +724,6 @@ impl RouterConfig {
             lease: None,
             retry_at: None,
             dhcp: None,
-            dhcp_server: None,
             lifetime: (key, lifetime),
             link_changed,
         });
@@ -672,9 +747,10 @@ impl RouterConfig {
             .iter()
             .position(|interface| interface.lifetime.0 == key)
         else {
-            return false;
+            return self.domain_interface_removed(&mut inner, key);
         };
         let interface = inner.interfaces.remove(position);
+        inner.pools.remove_interface(interface.index);
         self.delegation_interface_removed(&mut inner, interface.index);
         self.queue_dns(&mut inner);
         info!(
@@ -694,7 +770,7 @@ impl RouterConfig {
     fn prepare_notification(inner: &Inner) -> Result<Arc<Event>, Status> {
         inner
             .generation
-            .checked_add(1)
+            .checked_next()
             .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
         Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)
     }
@@ -702,7 +778,7 @@ impl RouterConfig {
     fn publish_notification(inner: &mut Inner, next: Arc<Event>) {
         inner.generation = inner
             .generation
-            .checked_add(1)
+            .checked_next()
             .expect("notification generation prepared");
         let previous = core::mem::replace(&mut inner.changed, next);
         let _ = previous.signal(0, signals::USER_0);
@@ -725,8 +801,14 @@ impl RouterConfig {
             } else if inner.rollback.is_some() {
                 router_protocol::ConfigurationStatus::RollingBack
             } else if inner.source_retry_at.is_some()
+                || inner.forwarding_cpu_retry_at.is_some()
+                || inner.domains.retry_at.is_some()
+                || inner.domains.rescan
+                || !inner.pending_devices.is_empty()
                 || inner.bgp_retry_at.is_some()
+                || inner.ospf_retry_at.is_some()
                 || inner.dns.retry_at.is_some()
+                || inner.pools.retry_at.is_some()
                 || inner.delegation.retry_at.is_some()
                 || inner
                     .interfaces
@@ -804,17 +886,20 @@ impl RouterConfig {
         })
     }
 
-    /// 等待代际超过 `generation`，返回新的代际。
-    fn wait(&self, generation: u64) -> Result<u64, Status> {
-        loop {
-            let event = {
-                let inner = self.inner.lock();
-                if inner.generation > generation {
-                    return Ok(inner.generation);
-                }
-                inner.changed.clone()
-            };
-            event.wait_one(signals::USER_0, DEADLINE_INFINITE)?;
+    /// 等待当前快照变化。旧实例的版本立即返回最新值，放弃接收的 datagram 最迟在时限后退出。
+    fn wait(&self, generation: Revision) -> Result<Revision, Status> {
+        let event = {
+            let inner = self.inner.lock();
+            if inner.generation != generation {
+                return Ok(inner.generation);
+            }
+            inner.changed.clone()
+        };
+        let deadline = native_runtime::system::monotonic()
+            .saturating_add(router_protocol::bridge::WATCH_SECONDS as i64 * 1_000_000_000);
+        match event.wait_one(signals::USER_0, deadline) {
+            Ok(_) | Err(native_abi::ERR_TIMED_OUT) => Ok(self.inner.lock().generation),
+            Err(status) => Err(status),
         }
     }
 
@@ -847,71 +932,4 @@ impl RouterConfig {
             Err(status)
         }
     }
-}
-
-fn serve_settings(router_config: Arc<RouterConfig>, channel: Channel) -> Result<(), Status> {
-    service_rpc::serve(
-        channel,
-        2,
-        b"router-config-settings",
-        Arc::new(
-            move |ordinal: u32,
-                  request: &mut service_rpc::Reader<'_>,
-                  handles: Vec<native_runtime::Handle>,
-                  reply: &mut service_rpc::Writer| {
-                if router_protocol::ordinal::is_configuration(ordinal) {
-                    return administration::handle(
-                        &router_config,
-                        ordinal,
-                        request,
-                        handles,
-                        reply,
-                    );
-                }
-                if !handles.is_empty() {
-                    return Err(native_abi::ERR_INVALID_ARGS);
-                }
-                match ordinal {
-                    router_protocol::ordinal::GET => {
-                        request.finish()?;
-                        let mut encoder = Encoder::default();
-                        encoder.snapshot(&RouterConfig::snapshot(&router_config.inner.lock())?);
-                        reply.bytes(&encoder.0);
-                    }
-                    router_protocol::ordinal::SET => {
-                        let mut decoder = Decoder::new(request.bytes()?);
-                        request.finish()?;
-                        let update = decoder.update().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                        decoder.finish().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                        router_config.set(update)?;
-                    }
-                    router_protocol::ordinal::WAIT => {
-                        let generation = request.u64()?;
-                        request.finish()?;
-                        reply.u64(router_config.wait(generation)?);
-                    }
-                    router_protocol::ordinal::WAIT_CONNECTION_CHANGES => {
-                        let cursor = request.bytes()?;
-                        request.finish()?;
-                        administration::wait_connection_changes(&router_config, cursor)?;
-                    }
-                    router_protocol::ordinal::DHCP => {
-                        let name = request.bytes()?;
-                        let action = DhcpAction::decode(request.u8()?)
-                            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                        request.finish()?;
-                        router_config.dhcp_command(name, action)?;
-                    }
-                    router_protocol::ordinal::RENAME => {
-                        let interface = request.bytes()?;
-                        let name = request.bytes()?;
-                        request.finish()?;
-                        router_config.rename(interface, name)?;
-                    }
-                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                }
-                Ok(Vec::new())
-            },
-        ),
-    )
 }

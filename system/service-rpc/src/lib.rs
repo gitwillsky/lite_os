@@ -277,6 +277,7 @@ struct PoolState {
 struct Activity {
     events: Vec<Event>,
     handler: Arc<dyn Fn(usize) -> Result<(), Status> + Send + Sync>,
+    worker_priority: Option<u32>,
 }
 enum Work {
     Message(native_runtime::Message),
@@ -291,7 +292,11 @@ impl Pool {
         let stop = self.stop.duplicate(native_abi::rights::SAME)?;
         stop.wait_async(&self.port, 1, native_abi::signals::SIGNALED)?;
         let next = self.clone();
-        native_runtime::thread::spawn(&self.name, move || serve_loop(&next, stop)).map(drop)
+        let worker = native_runtime::thread::prepare(&self.name, move || serve_loop(&next, stop))?;
+        if let Some(priority) = self.activity.as_ref().and_then(|activity| activity.worker_priority) {
+            worker.descriptor().handle().set_priority(priority)?;
+        }
+        worker.start().map(drop)
     }
     fn stop(&self) {
         self.state.lock().stopped = true;
@@ -340,15 +345,15 @@ impl Pool {
                 },
                 1 => return Err(native_abi::ERR_CANCELED),
                 key => {
+                    let source = (key - 2) as usize;
                     let event = self
                         .activity
                         .as_ref()
-                        .and_then(|activity| activity.events.get((key - 2) as usize))
+                        .and_then(|activity| activity.events.get(source))
                         .ok_or(native_abi::ERR_BAD_STATE)?;
-                    // clear -> arm -> drain；保留来源索引，不能迫使 handler 扫描所有独立队列。
+                    // clear -> drain -> arm。处理期间没有同源登记，后续置位保留到重新登记时。
                     event.signal(native_abi::signals::SIGNALED, 0)?;
-                    event.wait_async(&self.port, key, native_abi::signals::SIGNALED)?;
-                    return Ok(Work::Activity((key - 2) as usize));
+                    return Ok(Work::Activity(source));
                 }
             }
         }
@@ -404,15 +409,18 @@ pub fn serve_messages(
 ///
 /// # Parameters
 /// - `channel`/`workers`/`name`/`handler`: 与 [`serve`] 相同的控制连接、并发上限、名称和控制处理器。
-/// - `events`: 非空的数据面通知集合；收到后先清除并重新武装，再调用 `activity`。至少需要两个工作者。
+/// - `worker_priority`: 启动前设置的公平调度等级，None 使用系统默认。适用于首次启动及后续弹性增长的线程。
+/// - `events`: 非空的独立数据面通知集合。收到后先清除，处理成功后再登记该事件。至少需要两个工作者。
+///   生产者只置位。处理期间的置位在重新登记时立即投递，同源处理不会重叠。
 /// - `activity`: 接收 events 中的源索引，只排空对应数据；失败停止接收新工作，所有在途处理结束后才释放会话。
 ///
 /// # Errors
-/// 空事件集合或并发不足返回参数错误；port、异步登记、内存或初始线程创建失败不发表服务。
+/// 空事件集合、并发不足或调度等级非法返回参数错误；port、登记、内存或初始线程创建失败不发表服务。
 pub fn serve_events(
     channel: Channel,
     workers: usize,
     name: &[u8],
+    worker_priority: Option<u32>,
     handler: Arc<Handler<'static>>,
     events: Vec<Event>,
     activity: Arc<dyn Fn(usize) -> Result<(), Status> + Send + Sync>,
@@ -428,6 +436,7 @@ pub fn serve_events(
         Some(Activity {
             events,
             handler: activity,
+            worker_priority,
         }),
     )
 }
@@ -537,11 +546,16 @@ fn serve_loop(pool: &Arc<Pool>, _stop: Event) {
                         }
                     })
                 }
-                Work::Activity(source) => (pool
-                    .activity
-                    .as_ref()
-                    .expect("activity source was selected")
-                    .handler)(source),
+                Work::Activity(source) => {
+                    let activity = pool.activity.as_ref().expect("activity source was selected");
+                    (activity.handler)(source).and_then(|()| {
+                        activity.events[source].wait_async(
+                            &pool.port,
+                            source as u64 + 2,
+                            native_abi::signals::SIGNALED,
+                        )
+                    })
+                }
             }
         };
         pool.state.lock().idle += 1;

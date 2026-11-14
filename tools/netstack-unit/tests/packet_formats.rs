@@ -26,8 +26,8 @@ const TRANSACTION: u32 = 0x1934_a5f6;
 
 #[test]
 fn batch_headers_keep_independent_lanes_padding_and_protocol_validation_boundaries() {
-    use packet_wire::batch::{FrameError, NetworkPacket, parse_ethernet};
-    let mut ipv4 = [0u8; 34];
+    use packet_wire::batch::{FrameError, IngressIp, NetworkPacket, parse_ethernet};
+    let mut ipv4 = [0u8; 60];
     ipv4[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
     Ipv4Header {
         source: SERVER,
@@ -39,11 +39,11 @@ fn batch_headers_keep_independent_lanes_padding_and_protocol_validation_boundari
         fragment: 0,
         options: &[],
     }
-    .emit(&mut ipv4[14..])
+    .emit(&mut ipv4[14..34])
     .unwrap();
     let mut tagged = [0u8; 38];
     tagged[12..14].copy_from_slice(&CUSTOMER_TAG.to_be_bytes());
-    tagged[16..].copy_from_slice(&ipv4[12..]);
+    tagged[16..].copy_from_slice(&ipv4[12..34]);
     let mut llc = [0u8; 28];
     llc[12..14].copy_from_slice(&3u16.to_be_bytes());
     let mut invalid_ipv6 = [0u8; 54];
@@ -89,6 +89,25 @@ fn batch_headers_keep_independent_lanes_padding_and_protocol_validation_boundari
         Ipv4Packet::parse(&bad_checksum[14..]),
         Err(PacketError::Checksum)
     ));
+    for index in [0, 5] {
+        let frame = input[index];
+        let facts = IngressIp::from_ethernet(frame).unwrap();
+        assert_eq!(facts.addresses(), Some((SERVER, CLIENT)));
+        assert_eq!(facts.ipv4_protocol(), Some(17));
+        assert!(!facts.may_need_reassembly());
+        // SAFETY: facts 与本次借用来自同一不可变帧。
+        let NetworkPacket::Ipv4(ip) = (unsafe { facts.borrow_direct(frame) }) else {
+            panic!("expected IPv4")
+        };
+        assert_eq!(ip.bytes(), &frame[14..34]);
+        assert_eq!(
+            ip.check_header_checksum(),
+            Ipv4Packet::parse(&frame[14..]).map(|_| ())
+        );
+    }
+    for index in [1, 2, 3, 4] {
+        assert!(IngressIp::from_ethernet(input[index]).is_none());
+    }
     let original = parsed[0].unwrap().ethernet.header().as_ptr();
     assert_eq!(
         parse_ethernet(input.into_iter(), &mut parsed[..1]),

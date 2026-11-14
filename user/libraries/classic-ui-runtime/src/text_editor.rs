@@ -199,8 +199,8 @@ impl TextEditor {
             _ => {}
         })
     }
-    fn key(&mut self, rect: Rect, p: &Painter<'_>, key: Key) -> (bool, bool) {
-        if key.modifiers.alt || key.modifiers.super_key {
+    fn key(&mut self, rect: Rect, p: &Painter<'_>, key: Key, read_only: bool) -> (bool, bool) {
+        if key.modifiers.alt || key.modifiers.super_key || (read_only && key.code == 15) {
             return (false, false);
         }
         let shift = key.modifiers.shift;
@@ -230,6 +230,7 @@ impl TextEditor {
                 109 => document.move_vertical(page, shift),
                 102 => document.home(shift),
                 107 => document.end(shift),
+                _ if read_only => {}
                 14 => document.backspace(),
                 111 => document.delete(),
                 28 => document.insert("\n"),
@@ -432,7 +433,8 @@ impl Tree {
                     .wheel(*horizontal, 16, editor.width() - g.text.width);
             }
             EventKind::Key(key) if key.pressed => {
-                let (handled, edited) = editor.key(node.rect, p, *key);
+                let (handled, edited) =
+                    editor.key(node.rect, p, *key, node.state & abi::state::READ_ONLY != 0);
                 if !handled {
                     return false;
                 }

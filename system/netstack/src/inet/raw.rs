@@ -254,24 +254,23 @@ pub(super) fn drop_endpoint(network: &mut NetworkStack, id: u64) {
 /// IP 已完成头部/目的准入；RAW 在上层协议校验之前接收完整 IPv4 包，队列满仍视为有接收者。
 pub(super) fn ingress_ipv4(
     endpoints: &mut FallibleMap<u64, RawEndpointState>,
-    packet: smoltcp::iface::Ipv4Ingress<'_>,
+    packet: crate::inet::ingress::Ipv4Ingress<'_>,
 ) -> bool {
-    let Some(bytes) = packet.packet else {
-        return false;
-    };
+    let bytes = packet.ip.bytes();
     let mut handled = false;
     endpoints.for_each_mut(|_, state| {
         if state.accepts(
-            packet.protocol,
-            from_ip(packet.source).into(),
-            from_ip(packet.destination).into(),
+            packet.ip.protocol(),
+            packet.ip.source().into(),
+            packet.ip.destination().into(),
             packet.interface_index,
         ) {
             handled = true;
             if state.protocol == 1
-                && (packet.payload.len() < 8
+                && (packet.ip.payload().len() < 8
                     || packet
-                        .payload
+                        .ip
+                        .payload()
                         .first()
                         .is_some_and(|kind| *kind < 32 && state.filter[0] & (1 << kind) != 0))
             {
@@ -279,14 +278,13 @@ pub(super) fn ingress_ipv4(
             }
             let _ = state.receive.push(
                 Receive {
-                    source: InetAddress::new(from_ip(packet.source).into(), 0),
+                    source: InetAddress::new(packet.ip.source().into(), 0),
                     packet_info: InternetPacketInfo::Ipv4 {
                         interface_index: packet.interface_index,
-                        specific_address: packet
+                        specific_address: packet.facts
                             .specific_destination
-                            .map(from_ip)
                             .unwrap_or(Ipv4Addr::UNSPECIFIED),
-                        destination: from_ip(packet.destination),
+                        destination: packet.ip.destination(),
                     },
                 },
                 bytes,
@@ -314,17 +312,16 @@ pub(super) fn receive_icmp_error(
         let Some(info) = accept((state.options.bound_to_device, state.options.mark), mode) else {
             return;
         };
-        let bytes = if state.options.header_included {
-            report.quote
+        let payload = if state.options.header_included {
+            (report.quote, 0)
         } else {
-            report.transport
+            (report.transport, report.transport_offset())
         };
         let hard = report.hard
             && state.peer.is_some()
             && (report.source.is_ipv6() || !report.too_big() || mode != 0);
-        state
-            .errors
-            .report(report.record(0, info, |address| address), bytes, hard);
+        let (error, bytes) = report.record(0, info, payload, |address| address);
+        state.errors.report(error, bytes, hard);
     });
 }
 

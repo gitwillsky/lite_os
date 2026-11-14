@@ -1,26 +1,24 @@
 //! 单 actor 的原生邻居运行；会话、流字节和域路由各沿唯一 owner，配置能力关闭即停止。
+mod observation;
+
 use crate::connection::{
-    Connection, Io, Transport, WORK_BUDGET, export_error, next_key, route_error, status, time,
+    Connection, Io, PeerScope, Transport, WORK_BUDGET, export_error, install_ao, next_key,
+    route_error, status, time,
 };
 use ::bgp::{
     Config, Input, Notice, OpenOffer, RoutingDomain, SelectionContext, State, prefer_outgoing,
 };
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::String, vec::Vec};
 use core::{net::Ipv6Addr, num::NonZeroU32};
 use native_runtime::{
     Channel, Port, Vmo,
     native_abi::{self, Status, signals},
 };
-use network_protocol::{InetAddress, InetProtocol, NetworkClient, RemoteNamespace, SocketError};
+use network_protocol::{InetAddress, InetProtocol, RemoteNamespace, SocketError, TcpKeySelector};
 use router_protocol::{
-    bgp::{Configuration, Neighbor, NeighborStatus, Snapshot},
+    bgp::{Configuration, Neighbor},
     configuration::Name,
 };
-use service_directory::ServiceDirectory;
 
 const CONTROL: u64 = 0;
 const NETWORK: u64 = 1;
@@ -33,6 +31,7 @@ const ROUTE_BATCH_NS: u64 = 50_000_000;
 struct NeighborState {
     name: Name,
     parameters: Neighbor,
+    scope: PeerScope,
     outgoing: Connection,
     incoming: Option<Connection>,
     // OWNER: 只保留最后一个实际连接错误供观察；Session 只拥有协议状态/截止，不拥有历史诊断。
@@ -40,6 +39,35 @@ struct NeighborState {
     // OWNER: 下一条主动/被动 TCP 共享此协商决定；None 表示能力不相容，等待配置重建。
     // 不能放入短寿命 incoming Connection，否则每次入站都遗忘对端拒绝并重复原 OPEN。
     open_offer: Option<OpenOffer>,
+    // A durable desired key set may have reached only some sockets. Replay the complete
+    // replacement on retry even if the newest desired parameters are identical.
+    ao_pending: bool,
+}
+impl NeighborState {
+    fn stop(
+        &mut self,
+        network: &RemoteNamespace,
+        port: &Port,
+        key: &mut u64,
+        routes: &mut RoutingDomain,
+    ) -> Result<(), Status> {
+        let mut io = Io {
+            network,
+            port,
+            key,
+            routes,
+            parameters: &self.parameters,
+            scope: self.scope,
+            error: &mut self.error,
+            open_offer: &mut self.open_offer,
+        };
+        let outgoing = self.outgoing.stop(&mut io);
+        if let Some(incoming) = &mut self.incoming {
+            incoming.stop(&mut io)?;
+            self.incoming = None;
+        }
+        outgoing
+    }
 }
 pub(super) struct Sessions {
     control: Channel,
@@ -57,17 +85,19 @@ pub(super) struct Sessions {
 }
 impl Sessions {
     pub(super) fn new(
-        configuration: Configuration,
+        settings: network_protocol::bgp::SessionConfiguration,
         control: Channel,
-        services: &ServiceDirectory,
+        network: RemoteNamespace,
         source: network_protocol::routing::RoutingSource,
         minimum: NonZeroU32,
     ) -> Result<Self, Status> {
+        let network_protocol::bgp::SessionConfiguration {
+            configuration,
+            scopes,
+        } = settings;
         configuration
             .validate()
             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        let network = NetworkClient::new(services.connect(service_directory::NETWORK)?)
-            .create_namespace(true)?;
         let port = Port::create()?;
         let changes = source.watch_routes()?;
         source
@@ -98,21 +128,27 @@ impl Sessions {
             .bind(InetAddress::new(Ipv6Addr::UNSPECIFIED.into(), 179))
             .map_err(status)?;
         // 所有邻居的策略必须在 listen 之前安装，不能先接受未受保护的 SYN。
-        for neighbor in configuration.neighbors.values() {
-            if let Some(password) = &neighbor.md5_password {
-                let scope = neighbor
-                    .interface
-                    .as_ref()
-                    .map(|name| network.interface_index(name.as_str().as_bytes()))
-                    .transpose()
-                    .map_err(status)?;
-                listener
-                    .socket
-                    .set_md5_key(
-                        network_protocol::TcpMd5Selector::host(neighbor.address, scope),
-                        password.as_bytes(),
-                    )
-                    .map_err(status)?;
+        let peer_scope = |position| {
+            scopes.as_ref().map_or(PeerScope::InterfaceName, |rows| {
+                PeerScope::Installed(rows[position])
+            })
+        };
+        for (position, neighbor) in configuration.neighbors.values().enumerate() {
+            if neighbor.md5_password.is_some() || neighbor.tcp_ao.is_some() {
+                let scope = peer_scope(position);
+                if scope.unavailable(neighbor) {
+                    continue;
+                }
+                let scope = scope.index(&network, neighbor).map_err(status)?;
+                let selector = TcpKeySelector::host(neighbor.address, scope);
+                if let Some(ao) = &neighbor.tcp_ao {
+                    install_ao(&listener.socket, selector, ao, true).map_err(status)?;
+                } else if let Some(password) = &neighbor.md5_password {
+                    listener
+                        .socket
+                        .set_md5_key(selector, password.as_bytes())
+                        .map_err(status)?;
+                }
             }
         }
         listener
@@ -129,7 +165,15 @@ impl Sessions {
                 .map(|confederation| confederation.identifier.get()),
         )
         .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        let mut routes = RoutingDomain::try_new(context).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let mut retain_paths = [false; 2];
+        for neighbor in configuration.neighbors.values() {
+            if neighbor.send_add_path && neighbor.export.is_some() {
+                retain_paths[0] |= neighbor.ipv4_unicast;
+                retain_paths[1] |= neighbor.ipv6_unicast;
+            }
+        }
+        let mut routes =
+            RoutingDomain::try_new(context, retain_paths).map_err(|_| native_abi::ERR_NO_MEMORY)?;
         if configuration
             .neighbors
             .values()
@@ -152,7 +196,7 @@ impl Sessions {
         peers
             .try_reserve_exact(configuration.neighbors.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for (name, parameters) in configuration.neighbors {
+        for (position, (name, parameters)) in configuration.neighbors.into_iter().enumerate() {
             let settings = Config {
                 local_as: configuration.confederation.as_ref().map_or_else(
                     || configuration.local_as.get(),
@@ -170,6 +214,8 @@ impl Sessions {
                 passive: parameters.passive,
                 ipv4_unicast: parameters.ipv4_unicast,
                 ipv6_unicast: parameters.ipv6_unicast,
+                receive_add_path: parameters.receive_add_path,
+                send_add_path: parameters.send_add_path,
                 route_refresh: true,
                 extended_messages: false,
             };
@@ -177,9 +223,11 @@ impl Sessions {
                 name,
                 outgoing: Connection::new(settings)?,
                 incoming: None,
-                parameters,
+                scope: peer_scope(position),
                 error: None,
+                parameters,
                 open_offer: Some(OpenOffer::Capabilities),
+                ao_pending: false,
             });
         }
         Ok(Self {
@@ -196,170 +244,81 @@ impl Sessions {
             routes_at,
         })
     }
-    fn observe_routes(
-        peers: &[NeighborState],
-        routes: &RoutingDomain,
-        pending: bool,
-        query: router_protocol::tracking::IpPrefix,
-    ) -> Result<router_protocol::bgp::Routes, Status> {
-        use router_protocol::bgp::{RouteDecision, RouteObservation, Routes, Selected};
-        let prefix = packet_wire::bgp::nlri::Prefix {
-            address: query.network,
-            length: query.length,
-        };
-        let mut received = Vec::new();
-        received
-            .try_reserve_exact(peers.len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    fn update_neighbors(
+        peers: &mut [NeighborState],
+        listener: &Transport,
+        network: &RemoteNamespace,
+        port: &Port,
+        key: &mut u64,
+        routes: &mut RoutingDomain,
+        mut configuration: Configuration,
+    ) -> Result<(), Status> {
+        if configuration.neighbors.len() != peers.len()
+            || peers.iter().any(|peer| {
+                configuration
+                    .neighbors
+                    .get(&peer.name)
+                    .is_none_or(|next| !peer.parameters.supports_live_update(next))
+            })
+        {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let mut failure = None;
         for peer in peers {
-            for connection in core::iter::once(&peer.outgoing).chain(peer.incoming.iter()) {
-                let Some(route) = connection
-                    .transport
-                    .as_ref()
-                    .and_then(|transport| routes.peer_routes(transport.key))
-                    .and_then(|routes| routes.get(prefix))
-                else {
+            let mut next = configuration
+                .neighbors
+                .remove(&peer.name)
+                .expect("validated peer");
+            let starting = peer.parameters.shutdown && !next.shutdown;
+            if next.shutdown || starting {
+                // 关闭失败时先封住主动重连和入站接纳，原配置重试仍持有尚待退休的连接。
+                peer.parameters.shutdown = true;
+                if let Err(error) = peer.stop(network, port, key, routes) {
+                    failure.get_or_insert(error);
                     continue;
-                };
-                received
-                    .try_reserve(1)
-                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                received.push(RouteObservation {
-                    neighbor: peer.name.as_str().to_string(),
-                    address: peer.parameters.address,
-                    decision: if pending {
-                        RouteDecision::Pending
-                    } else {
-                        route.decision()
-                    },
-                    next_hop: route.next_hop().address,
-                    attributes: route
-                        .attributes()
-                        .observe()
-                        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-                });
+                }
+            }
+            if peer.parameters.tcp_ao != next.tcp_ao {
+                peer.parameters.tcp_ao = next.tcp_ao.take();
+                peer.ao_pending = true;
+            }
+            if peer.ao_pending {
+                let result = (|| {
+                    if peer.scope.unavailable(&peer.parameters) {
+                        return Ok(());
+                    }
+                    let scope = peer.scope.index(network, &peer.parameters)?;
+                    let selector = TcpKeySelector::host(peer.parameters.address, scope);
+                    let ao = peer
+                        .parameters
+                        .tcp_ao
+                        .as_ref()
+                        .expect("pending AO update has keys");
+                    install_ao(&listener.socket, selector, ao, true)?;
+                    for connection in core::iter::once(&peer.outgoing).chain(peer.incoming.iter()) {
+                        if let Some(transport) = &connection.transport {
+                            install_ao(&transport.socket, selector, ao, false)?;
+                        }
+                    }
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => peer.ao_pending = false,
+                    Err(error) => {
+                        failure.get_or_insert_with(|| status(error));
+                        continue;
+                    }
+                }
+            }
+            if starting {
+                peer.parameters.shutdown = false;
+                peer.open_offer = Some(OpenOffer::Capabilities);
+                peer.error = None;
             }
         }
-        let mut exported = Vec::new();
-        exported
-            .try_reserve_exact(peers.len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for peer in peers {
-            let advertised = core::iter::once(&peer.outgoing)
-                .chain(peer.incoming.iter())
-                .filter_map(|connection| connection.output.as_ref())
-                .any(|(_, output)| output.is_advertised(prefix));
-            exported.push(router_protocol::bgp::ExportObservation {
-                neighbor: peer.name.as_str().to_string(),
-                address: peer.parameters.address,
-                advertised,
-            });
-        }
-        let selected = routes
-            .export_route(prefix)
-            .map(|route| {
-                Ok::<_, Status>(Selected {
-                    local: route.peer.is_none(),
-                    next_hop: route.next_hop.address,
-                    preference: route.preference,
-                    attributes: route
-                        .attributes
-                        .observe()
-                        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-                })
-            })
-            .transpose()?;
-        Ok(Routes {
-            query,
-            pending,
-            received,
-            exported,
-            originated: routes.network_is_available(prefix),
-            redistributed: routes.redistributed_route(prefix),
-            selected,
-        })
+        failure.map_or(Ok(()), Err)
     }
-    fn snapshot(
-        peers: &[NeighborState],
-        routes: &RoutingDomain,
-        pending: bool,
-    ) -> Result<Snapshot, Status> {
-        let mut neighbors = Vec::new();
-        neighbors
-            .try_reserve_exact(peers.len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        for peer in peers {
-            let connection = core::iter::once(&peer.outgoing)
-                .chain(peer.incoming.iter())
-                .max_by_key(|connection| match connection.session.state() {
-                    State::Idle => 0,
-                    State::Active => 1,
-                    State::Connect => 2,
-                    State::OpenSent => 3,
-                    State::OpenConfirm => 4,
-                    State::Established => 5,
-                })
-                .expect("outgoing session always exists");
-            neighbors.push(NeighborStatus {
-                name: peer.name.as_str().to_string(),
-                address: peer.parameters.address,
-                interface: peer.parameters.interface.clone(),
-                state: format!("{:?}", connection.session.state()),
-                received_routes: connection
-                    .transport
-                    .as_ref()
-                    .and_then(|transport| routes.peer_routes(transport.key))
-                    .map_or(0, |routes| routes.len()),
-                import_policy_configured: peer.parameters.import.is_some(),
-                export_policy_configured: peer.parameters.export.is_some(),
-                tcp_md5: peer.parameters.md5_password.is_some(),
-                route_reflector_client: peer.parameters.route_reflector_client,
-                ipv4_unicast: connection.session.state() == State::Established
-                    && connection
-                        .session
-                        .negotiated()
-                        .is_some_and(|peer| peer.ipv4_unicast),
-                ipv6_unicast: connection.session.state() == State::Established
-                    && connection
-                        .session
-                        .negotiated()
-                        .is_some_and(|peer| peer.ipv6_unicast),
-                retry_blocked: peer.open_offer.is_none(),
-                advertised_routes: connection
-                    .output
-                    .as_ref()
-                    .map_or(0, |(_, output)| output.len()),
-                error: if connection.session.state() == State::Established {
-                    connection
-                        .output
-                        .as_ref()
-                        .and_then(|(_, output)| output.rejected_route())
-                        .map(|(prefix, reason)| {
-                            format!(
-                                "route {}/{} cannot be advertised: {}",
-                                prefix.address,
-                                prefix.length,
-                                if reason == packet_wire::PacketError::Unsupported {
-                                    "confederation AS cannot be represented by this peer"
-                                } else {
-                                    "peer message limit exceeded"
-                                }
-                            )
-                        })
-                } else {
-                    peer.error.clone()
-                },
-            });
-        }
-        Ok(Snapshot {
-            cluster_id: routes.cluster_id(),
-            neighbors,
-            selected_routes: routes.selected().len(),
-            originated_routes: routes.originated_len(),
-            redistributed_routes: routes.redistributed_len(),
-            routing_pending: pending,
-        })
-    }
+
     fn control(&mut self) -> Result<bool, Status> {
         loop {
             match self.control.read() {
@@ -367,7 +326,7 @@ impl Sessions {
                     &self.control,
                     message,
                     |ordinal, reader, handles, reply| {
-                        use network_protocol::bgp::{REFRESH, ROUTES, SNAPSHOT};
+                        use network_protocol::bgp::{REFRESH, ROUTES, SNAPSHOT, UPDATE_NEIGHBORS};
                         if reader.u32()? != router_protocol::bgp::VERSION {
                             return Err(native_abi::ERR_INVALID_ARGS);
                         }
@@ -378,11 +337,11 @@ impl Sessions {
                                 if !handles.is_empty() {
                                     return Err(native_abi::ERR_INVALID_ARGS);
                                 }
-                                Self::snapshot(&self.peers, &self.routes, pending)?
+                                observation::snapshot(&self.peers, &self.routes, pending)?
                                     .encode()
                                     .map_err(|_| native_abi::ERR_BAD_STATE)?
                             }
-                            ROUTES | REFRESH => {
+                            ROUTES | REFRESH | UPDATE_NEIGHBORS => {
                                 let length = reader.u64()?;
                                 reader.finish()?;
                                 if handles.len() != 1 {
@@ -392,6 +351,20 @@ impl Sessions {
                                 let content =
                                     Vmo::from_handle(service_rpc::take_handle(&mut handles, 0)?)
                                         .read_bytes(length)?;
+                                if ordinal == UPDATE_NEIGHBORS {
+                                    let configuration = Configuration::parse(&content)
+                                        .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                                    Self::update_neighbors(
+                                        &mut self.peers,
+                                        &self.listener,
+                                        &self.network,
+                                        &self.port,
+                                        &mut self.key,
+                                        &mut self.routes,
+                                        configuration,
+                                    )?;
+                                    return Ok(Vec::new());
+                                }
                                 if ordinal == REFRESH {
                                     let request =
                                         router_protocol::bgp::RefreshRequest::parse(&content)
@@ -404,7 +377,8 @@ impl Sessions {
                                     let connection = core::iter::once(&mut peer.outgoing)
                                         .chain(peer.incoming.iter_mut())
                                         .find(|connection| {
-                                            connection.session.state() == State::Established
+                                            !peer.parameters.shutdown
+                                                && connection.session.state() == State::Established
                                         })
                                         .ok_or(native_abi::ERR_SHOULD_WAIT)?;
                                     let family = match request.family {
@@ -420,9 +394,14 @@ impl Sessions {
                                 }
                                 let query = router_protocol::tracking::IpPrefix::parse(&content)
                                     .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                                Self::observe_routes(&self.peers, &self.routes, pending, query)?
-                                    .encode()
-                                    .map_err(|_| native_abi::ERR_BAD_STATE)?
+                                observation::observe_routes(
+                                    &self.peers,
+                                    &self.routes,
+                                    pending,
+                                    query,
+                                )?
+                                .encode()
+                                .map_err(|_| native_abi::ERR_BAD_STATE)?
                             }
                             _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                         };
@@ -475,13 +454,21 @@ impl Sessions {
                     .unwrap_or(interface.name.len())]
             });
             let Some(peer) = self.peers.iter_mut().find(|peer| {
-                peer.parameters.address == address
-                    && peer
-                        .parameters
-                        .interface
-                        .as_ref()
-                        .map(|name| name.as_str().as_bytes())
-                        == interface_name
+                !peer.parameters.shutdown
+                    && peer.parameters.address == address
+                    && match peer.scope {
+                        PeerScope::InterfaceName => {
+                            peer.parameters
+                                .interface
+                                .as_ref()
+                                .map(|name| name.as_str().as_bytes())
+                                == interface_name
+                        }
+                        PeerScope::Installed(index) => {
+                            !peer.scope.unavailable(&peer.parameters)
+                                && scope == (index != 0).then_some(index)
+                        }
+                    }
                     && peer.incoming.is_none()
                     && peer.open_offer.is_some()
             }) else {
@@ -495,6 +482,19 @@ impl Sessions {
                 );
                 continue;
             };
+            if let Some(ao) = &peer.parameters.tcp_ao
+                && let Err(error) = install_ao(
+                    &candidate.socket,
+                    TcpKeySelector::host(address, scope),
+                    ao,
+                    false,
+                )
+            {
+                // SYN may have been accepted before the listener's latest key change.
+                // Establish the desired policy before this stream can carry a BGP OPEN.
+                peer.error = Some(format!("TCP-AO: {error:?}"));
+                continue;
+            }
             let offer = peer.open_offer.expect("eligible peer can negotiate");
             let mut settings = peer.outgoing.session.config();
             settings.passive = true;
@@ -506,6 +506,7 @@ impl Sessions {
                 key: &mut self.key,
                 routes: &mut self.routes,
                 parameters: &peer.parameters,
+                scope: peer.scope,
                 error: &mut peer.error,
                 open_offer: &mut peer.open_offer,
             };
@@ -537,12 +538,15 @@ impl Sessions {
     }
     fn apply_routes(&mut self) -> Result<(), Status> {
         // 1. 接口/DAD 变化与选路同走原图通知；捕获成功后再接管，不能按旧地址资格继续发布。
-        if self.peers.iter().any(|peer| peer.parameters.export.is_some())
+        if self
+            .peers
+            .iter()
+            .any(|peer| peer.parameters.export.is_some())
             && Self::observe_network(&mut self.routes, &self.network)?
         {
             // 2. 只登记有界游标，不在接口事件中遍历全表；包含先前因范围而不能发布的目标。
             for peer in &mut self.peers {
-                if peer.parameters.export.is_none() {
+                if peer.parameters.shutdown || peer.parameters.export.is_none() {
                     continue;
                 }
                 for connection in
@@ -593,7 +597,9 @@ impl Sessions {
         };
         self.routes_at = None;
         // 先登记已来源确认的学习变化；随后本机证明暂不可读时不能丢失这些出口义务。
-        Self::queue_exports(&mut self.peers, &self.port, || changed.iter().copied())?;
+        Self::queue_exports(&mut self.peers, &self.port, &self.routes, || {
+            changed.iter().copied()
+        })?;
         if self.routes.has_networks() {
             match self.changes.snapshot() {
                 Ok(snapshot) => {
@@ -601,7 +607,9 @@ impl Sessions {
                         .routes
                         .update_networks(snapshot.view())
                         .map_err(route_error)?;
-                    Self::queue_exports(&mut self.peers, &self.port, || changed.iter().copied())?;
+                    Self::queue_exports(&mut self.peers, &self.port, &self.routes, || {
+                        changed.iter().copied()
+                    })?;
                 }
                 // 首个 RIB 图尚未发表时等已有 ROUTES Event；不为未就绪的网段启动周期轮询。
                 Err(native_abi::ERR_SHOULD_WAIT) => {}
@@ -615,7 +623,9 @@ impl Sessions {
                         .routes
                         .apply_redistribution(&changes)
                         .map_err(route_error)?;
-                    Self::queue_exports(&mut self.peers, &self.port, || changed.iter().copied())?;
+                    Self::queue_exports(&mut self.peers, &self.port, &self.routes, || {
+                        changed.iter().copied()
+                    })?;
                 }
                 Err(native_abi::ERR_SHOULD_WAIT) => {} // 等原已确认图 Event，不增加周期轮询。
                 Err(error) => return Err(error),
@@ -626,11 +636,12 @@ impl Sessions {
     fn queue_exports<I: Iterator<Item = packet_wire::bgp::nlri::Prefix>>(
         peers: &mut [NeighborState],
         port: &Port,
+        routes: &RoutingDomain,
         changed: impl Fn() -> I,
     ) -> Result<(), Status> {
         let now = time();
         for peer in peers {
-            if peer.parameters.export.is_none() {
+            if peer.parameters.shutdown || peer.parameters.export.is_none() {
                 continue;
             }
             for connection in core::iter::once(&mut peer.outgoing).chain(peer.incoming.iter_mut()) {
@@ -647,7 +658,7 @@ impl Sessions {
                         } {
                             continue;
                         }
-                        output.changed(prefix, now).map_err(export_error)?;
+                        output.changed(routes, prefix, now).map_err(export_error)?;
                     }
                     if let Some(transport) = &mut connection.transport {
                         transport.schedule(port)?;
@@ -661,20 +672,11 @@ impl Sessions {
     fn stop(mut self) -> Result<(), Status> {
         let mut failure = None;
         for peer in &mut self.peers {
-            let mut io = Io {
-                network: &self.network,
-                port: &self.port,
-                key: &mut self.key,
-                routes: &mut self.routes,
-                parameters: &peer.parameters,
-                error: &mut peer.error,
-                open_offer: &mut peer.open_offer,
-            };
             // 所有连接都尝试发送行政关闭通知；一个连接清理失败不能阻止其他 TCP 和路由域最终释放。
-            for connection in core::iter::once(&mut peer.outgoing).chain(peer.incoming.iter_mut()) {
-                if let Err(error) = connection.event(Input::Stop, &mut io) {
-                    failure.get_or_insert(error);
-                }
+            if let Err(error) =
+                peer.stop(&self.network, &self.port, &mut self.key, &mut self.routes)
+            {
+                failure.get_or_insert(error);
             }
         }
         failure.map_or(Ok(()), Err)
@@ -691,12 +693,16 @@ impl Sessions {
             }
             let mut deadline = native_abi::DEADLINE_INFINITE;
             for peer in &mut self.peers {
+                if peer.parameters.shutdown || peer.scope.unavailable(&peer.parameters) {
+                    continue;
+                }
                 let mut io = Io {
                     network: &self.network,
                     port: &self.port,
                     key: &mut self.key,
                     routes: &mut self.routes,
                     parameters: &peer.parameters,
+                    scope: peer.scope,
                     error: &mut peer.error,
                     open_offer: &mut peer.open_offer,
                 };
@@ -727,9 +733,9 @@ impl Sessions {
                         .unwrap_or(false);
                     if io.open_offer.is_none() {
                         // 必需能力缺失时停掉同邻居其余半开连接，不能由启动循环或另一方向重新连接。
-                        peer.outgoing.event(Input::Stop, &mut io)?;
+                        peer.outgoing.stop(&mut io)?;
                         if let Some(incoming) = &mut peer.incoming {
-                            incoming.event(Input::Stop, &mut io)?;
+                            incoming.stop(&mut io)?;
                         }
                     }
                     if let Some(incoming) = &mut peer.incoming {

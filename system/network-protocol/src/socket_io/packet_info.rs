@@ -68,6 +68,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<InternetSendPacketInfo, Status> {
     }
 }
 pub(super) fn receive_info(record: &mut Record, info: Option<InternetPacketInfo>) {
+    record[8..12].copy_from_slice(&encode_receive_info(info));
+}
+
+pub(super) fn encode_receive_info(info: Option<InternetPacketInfo>) -> [u64; 4] {
+    let mut fields = [0; 4];
     match info {
         Some(InternetPacketInfo::Ipv4 {
             interface_index,
@@ -79,48 +84,54 @@ pub(super) fn receive_info(record: &mut Record, info: Option<InternetPacketInfo>
             specific_address,
             destination,
         }) => {
-            record[8] = if matches!(info, Some(InternetPacketInfo::DualStack { .. })) {
+            fields[0] = if matches!(info, Some(InternetPacketInfo::DualStack { .. })) {
                 3
             } else {
                 1
             };
-            record[9] = u64::from(interface_index);
-            record[10] = u64::from(u32::from_be_bytes(specific_address.octets()));
-            record[11] = u64::from(u32::from_be_bytes(destination.octets()));
+            fields[1] = u64::from(interface_index);
+            fields[2] = u64::from(u32::from_be_bytes(specific_address.octets()));
+            fields[3] = u64::from(u32::from_be_bytes(destination.octets()));
         }
         Some(InternetPacketInfo::Ipv6 {
             interface_index,
             destination,
         }) => {
-            record[8] = 2;
-            record[9] = u64::from(interface_index);
+            fields[0] = 2;
+            fields[1] = u64::from(interface_index);
             let bytes = destination.octets();
-            record[10] = u64::from_be_bytes(bytes[..8].try_into().expect("fixed IPv6 half"));
-            record[11] = u64::from_be_bytes(bytes[8..].try_into().expect("fixed IPv6 half"));
+            fields[2] = u64::from_be_bytes(bytes[..8].try_into().expect("fixed IPv6 half"));
+            fields[3] = u64::from_be_bytes(bytes[8..].try_into().expect("fixed IPv6 half"));
         }
         None => {}
     }
+    fields
 }
+
 pub(in super::super) fn get_receive_info(
     record: &Record,
 ) -> Result<Option<InternetPacketInfo>, Status> {
-    let interface_index = narrow(record[9])?;
-    let info = match record[8] {
-        0 if record[9..12] == [0; 3] => return Ok(None),
+    decode_receive_info(record[8..12].try_into().expect("fixed packet-info fields"))
+}
+
+pub(super) fn decode_receive_info(fields: &[u64; 4]) -> Result<Option<InternetPacketInfo>, Status> {
+    let interface_index = narrow(fields[1])?;
+    let info = match fields[0] {
+        0 if fields[1..] == [0; 3] => return Ok(None),
         1 => InternetPacketInfo::Ipv4 {
             interface_index,
-            specific_address: ipv4(record[10])?,
-            destination: ipv4(record[11])?,
+            specific_address: ipv4(fields[2])?,
+            destination: ipv4(fields[3])?,
         },
         3 => InternetPacketInfo::DualStack {
             interface_index,
-            specific_address: ipv4(record[10])?,
-            destination: ipv4(record[11])?,
+            specific_address: ipv4(fields[2])?,
+            destination: ipv4(fields[3])?,
         },
         2 => {
             let mut bytes = [0; 16];
-            bytes[..8].copy_from_slice(&record[10].to_be_bytes());
-            bytes[8..].copy_from_slice(&record[11].to_be_bytes());
+            bytes[..8].copy_from_slice(&fields[2].to_be_bytes());
+            bytes[8..].copy_from_slice(&fields[3].to_be_bytes());
             InternetPacketInfo::Ipv6 {
                 interface_index,
                 destination: bytes.into(),

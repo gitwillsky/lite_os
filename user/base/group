@@ -1,4 +1,5 @@
 root:x:0:
 adm:x:4:root
 netdev:x:28:root
+netview:x:987:
 nobody:x:65534:

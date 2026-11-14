@@ -1,5 +1,6 @@
 //! IPv4 单播执行、选项/分片及错误回复；队列、预算与限速仍属于父级唯一 owner。
 use super::*;
+use crate::inet::device::ReceivedPayload;
 use packet_wire::ipv4::Ipv4Header;
 
 impl Forwarding {
@@ -9,61 +10,51 @@ impl Forwarding {
     pub(in crate::inet) fn ingress_ipv4(
         &mut self,
         ports: &mut Ports<'_>,
-        routing: &RoutingTable,
-        (ip, checksum_valid): (Ipv4Packet<'_>, bool),
+        routes: Routes<'_>,
+        (ip, checksum): (Ipv4Packet<'_>, ReceiveChecksum),
         firewall: &mut Firewall,
         now: Instant,
         budget: &mut usize,
     ) {
-        if !unicast(ip.destination()) || !valid_source(routing, ip.source(), ports.facts()) {
+        let routing = routes.0;
+        let source = ip.source();
+        if !unicast(ip.destination())
+            || !valid_source(routing, (source, ports.source_prefix(source)), ports.facts())
+        {
             ports.device.record_receive_drop();
+            return;
+        }
+        if ip.fragmented()
+            && self.inspection(firewall, false).required()
+            && self.accept_fragments(ports, routes, firewall, ip.bytes(), now, budget)
+        {
             return;
         }
 
-        let Ok(flow) = self.admit(ports, firewall, (ip.destination().into(), ip.bytes().len()), || Packet::ipv4(ip, checksum_valid), now) else {
+        let Ok(Some(Admission {
+            flow,
+            rewrite,
+            path,
+        })) = self.admit(
+            ports,
+            (routes, firewall),
+            (ip.source().into(), ip.destination().into(), ip.bytes()),
+            (None, false),
+            |receive| Packet::ipv4(ip, checksum, receive),
+            now,
+        )
+        else {
             ports.device.record_receive_drop();
             return;
         };
-        let retained = match send(
+        let result = TransitPacket::Ipv4(ip).forward(ports, routes, (rewrite, path), now, budget);
+        self.finish_ingress(
             ports,
-            routing,
-            ip,
-            ip.hop_limit().saturating_sub(1),
-            0,
+            routes,
+            PacketData::Single(ip.bytes()),
+            (result, flow, rewrite),
             now,
-            budget,
-        ) {
-            SendResult::Done => {
-                if let Some(flow) = flow {
-                    self.flows.confirm(flow, now);
-                }
-                true
-            }
-            SendResult::Pending(offset) => self.enqueue(
-                ip.bytes(),
-                (ports.current.index, ports.mark, flow.map(|flow| flow.observation)),
-                ip.hop_limit().saturating_sub(1),
-                offset,
-                now,
-                now + RETRY,
-            ),
-            SendResult::Yield(offset) => self.enqueue(
-                ip.bytes(),
-                (ports.current.index, ports.mark, flow.map(|flow| flow.observation)),
-                ip.hop_limit().saturating_sub(1),
-                offset,
-                now,
-                now,
-            ),
-            SendResult::Error(kind, code, parameter) => {
-                self.error_ipv4(ports, routing, ip, (kind, code, parameter), now);
-                false
-            }
-            SendResult::Discard => false,
-        };
-        if !retained {
-            ports.device.record_receive_drop();
-        }
+        );
     }
     pub(super) fn error_ipv4(
         &mut self,
@@ -97,7 +88,7 @@ impl Forwarding {
         let Some(source) = route.preferred_source.or_else(|| {
             ports
                 .facts()
-                .find(|facts| facts.index == route.interface_index)
+                .get(route.interface_index)
                 .and_then(|facts| facts.address)
         }) else {
             return;
@@ -133,19 +124,19 @@ impl Forwarding {
             .enqueue_copy(bytes, ports.current.index, None, now);
     }
 }
-fn unicast(address: Ipv4Addr) -> bool {
+pub(super) fn unicast(address: Ipv4Addr) -> bool {
     let bytes = address.octets();
     bytes[0] != 0 && bytes[0] != 127 && bytes[0] < 224
 }
 
-fn valid_source(
+pub(super) fn valid_source(
     routing: &RoutingTable,
-    source: Ipv4Addr,
-    interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+    (source, probe): (Ipv4Addr, u64),
+    interfaces: Ipv4Interfaces<'_>,
 ) -> bool {
     unicast(source)
         && !matches!(
-            routing.destination_kind(Ipv4Addr::UNSPECIFIED, source, interfaces),
+            routing.destination_kind(Ipv4Addr::UNSPECIFIED, (source, probe), interfaces),
             Some(RouteKind::Broadcast | RouteKind::Local)
         )
 }
@@ -160,18 +151,18 @@ pub(super) fn input_path(
     if destination.is_broadcast() {
         return Err(SocketError::OperationNotSupported);
     }
-    let facts = network.interfaces.iter().map(InterfaceFacts::capture);
+    let facts = Ipv4Interfaces::live(&network.interfaces);
     let loopback = matches!(ingress.device, ProtocolDevice::Loopback(_));
     if loopback {
         if !network.has_local_address(source) {
             return Err(SocketError::Invalid);
         }
-    } else if !unicast(destination) || !valid_source(&network.routing, source, facts.clone()) {
+    } else if !unicast(destination) || !valid_source(&network.routing, (source, 0), facts) {
         return Err(SocketError::Invalid);
     }
     let route = network.routing.select_transit(
         source,
-        destination,
+        (destination, 0, None),
         (ingress.index, mark, network.selection_rules.transit()),
         facts,
     );
@@ -190,26 +181,35 @@ pub(super) fn input_path(
     })
 }
 
+pub(super) fn select(
+    routing: &RoutingTable,
+    source: Ipv4Addr,
+    destination: (Ipv4Addr, u64, Option<&super::super::route::ReceiveDestination>),
+    policy: TransitPolicy<'_>,
+    interfaces: Ipv4Interfaces<'_>,
+) -> Result<super::super::route::RouteSelection, SendResult> {
+    let route = routing.select_transit(source, destination, policy, interfaces);
+    match route {
+        Ok(route) => Ok(route),
+        Err(RouteKind::Blackhole) => Err(SendResult::Discard),
+        Err(RouteKind::Prohibit) => Err(SendResult::Error(3, 13, 0)),
+        Err(_) => Err(SendResult::Error(3, 0, 0)),
+    }
+}
+
 pub(super) fn send(
     ports: &mut Ports<'_>,
-    routing: &RoutingTable,
+    route: super::super::route::RouteSelection,
     ip: Ipv4Packet<'_>,
-    hop: u8,
-    mut offset: usize,
+    (mut offset, rewrite): (usize, Option<Rewrite>),
     now: Instant,
     budget: &mut usize,
 ) -> SendResult {
-    let route = match routing.select_transit(
-        ip.source(),
-        ip.destination(),
-        (ports.current.index, ports.mark, ports.rules.transit()),
-        ports.facts(),
-    ) {
-        Ok(route) => route,
-        Err(RouteKind::Blackhole) => return SendResult::Discard,
-        Err(RouteKind::Prohibit) => return SendResult::Error(3, 13, 0),
-        Err(_) => return SendResult::Error(3, 0, 0),
-    };
+    let receive = (ports.device, ports.ingress_queue);
+    let receive_frame = ports.receive_frame;
+    let (source, destination) =
+        rewrite.map_or_else(|| (ip.source(), ip.destination()), |edit| edit.ipv4(ip));
+    let hop = ip.hop_limit().saturating_sub(1);
     if hop == 0 {
         return SendResult::Error(11, 0, 0);
     }
@@ -224,12 +224,7 @@ pub(super) fn send(
             &mut *ports.ipv6,
         )
     } else {
-        let Some(output) = ports
-            .before
-            .iter_mut()
-            .chain(ports.after.iter_mut())
-            .find(|interface| interface.index == route.interface_index && interface.state.up)
-        else {
+        let Some(output) = ports.other_output(route.interface_index) else {
             return SendResult::Error(3, 0, 0);
         };
         (
@@ -239,6 +234,12 @@ pub(super) fn send(
             &mut output.ipv6,
         )
     };
+    if rewrite
+        .and_then(|edit| edit.masquerade_interface)
+        .is_some_and(|index| index.get() != route.interface_index || state.address != Some(source))
+    {
+        return SendResult::Discard;
+    }
     let mtu = device.ip_mtu();
     let header_length = ip.bytes().len() - ip.payload().len();
     if ip.bytes().len() > mtu && ip.bytes()[6] & 0x40 != 0 {
@@ -247,41 +248,75 @@ pub(super) fn send(
     if mtu < header_length + 8 {
         return SendResult::Error(3, 4, mtu.min(65535) as u32);
     }
+    let direct_header = if offset == 0 && rewrite.is_none() && ip.bytes().len() <= mtu {
+        ip.forwarded_base_header()
+    } else {
+        None
+    };
     let mut header = [0; 60];
-    header[..header_length].copy_from_slice(&ip.bytes()[..header_length]);
-    header[8] = hop;
-    if let Err(error) = options(&mut header[..header_length], state.address, now) {
-        return match error {
-            OptionsError::SourceRoute => SendResult::Error(3, 5, 0),
-            OptionsError::Parameter(pointer) => SendResult::Error(12, 0, u32::from(pointer) << 24),
-        };
+    if direct_header.is_none() {
+        header[..header_length].copy_from_slice(&ip.bytes()[..header_length]);
+        header[8] = hop;
+        if rewrite.is_some() {
+            header[12..16].copy_from_slice(&source.octets());
+            header[16..20].copy_from_slice(&destination.octets());
+        }
+        if let Err(error) = options(&mut header[..header_length], state.address, now) {
+            return match error {
+                OptionsError::SourceRoute => SendResult::Error(3, 5, 0),
+                OptionsError::Parameter(pointer) => {
+                    SendResult::Error(12, 0, u32::from(pointer) << 24)
+                }
+            };
+        }
     }
     loop {
         if *budget == 0 {
             return SendResult::Yield(offset);
         }
         let mut fragment = [0; 60];
-        let range = match packet_wire::ipv4::fragment::header(
-            &header[..header_length],
-            ip.payload().len(),
-            offset,
-            mtu,
-            &mut fragment,
-        ) {
-            Ok(range) => range,
-            Err(_) => return SendResult::Discard,
+        let (wire_header, length) = if let Some(header) = &direct_header {
+            (&header[..], ip.payload().len())
+        } else {
+            let Ok(range) = packet_wire::ipv4::fragment::header(
+                &header[..header_length],
+                ip.payload().len(),
+                offset,
+                mtu,
+                &mut fragment,
+            ) else {
+                return SendResult::Discard;
+            };
+            (&fragment[..header_length], range.len())
         };
-        let length = range.len();
         *budget -= 1;
+        let bytes = &ip.payload()[offset..offset + length];
+        let edit_offset = ip.fragment_offset() + offset;
+        let original = receive_frame
+            .filter(|_| offset == 0 && length == ip.payload().len())
+            .map(|frame| ReceivedPayload {
+                frame,
+                bytes,
+                render_prefix: rewrite.map_or(0, |edit| edit.payload_prefix_len(edit_offset, length)),
+            });
         match device.transmit_ipv4(
             (arp, state, ipv6),
-            &fragment[..header_length],
-            (length, |body| {
-                body.copy_from_slice(&ip.payload()[offset..offset + length])
-            }),
+            wire_header,
+            (
+                length,
+                |body: &mut [u8]| {
+                    body.copy_from_slice(&bytes[..body.len()]);
+                    if let Some(edit) = rewrite {
+                        edit.payload(body, edit_offset);
+                    }
+                },
+                original,
+            ),
             (route.next_hop, route.logical_interface_index),
             now,
-            false,
+            (false, |count| {
+                TransitPacket::Ipv4(ip).transmit_queue(receive, count)
+            }),
         ) {
             Ok(()) => {}
             Err(device_model::network::NetworkError::WouldBlock) => {
@@ -295,11 +330,11 @@ pub(super) fn send(
         }
     }
 }
-enum OptionsError {
+pub(super) enum OptionsError {
     SourceRoute,
     Parameter(u8),
 }
-fn options(
+pub(super) fn options(
     header: &mut [u8],
     address: Option<Ipv4Addr>,
     now: Instant,

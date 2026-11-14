@@ -14,9 +14,12 @@ pub(super) struct Dns {
 }
 
 impl Dns {
-    pub(super) fn due(&self, now: u64) -> bool {
-        self.servers.iter().any(|entry| entry.1 <= now)
-            || self.domains.iter().any(|entry| entry.1 <= now)
+    pub(super) fn next_deadline(&self) -> Option<u64> {
+        self.servers
+            .iter()
+            .map(|entry| entry.1)
+            .chain(self.domains.iter().map(|entry| entry.1))
+            .min()
     }
 
     pub(super) fn expire(&mut self, now: u64) -> bool {

@@ -48,7 +48,7 @@ mod nsfs;
 pub(crate) mod pidfs;
 mod shared_memory_file;
 mod xattr;
-pub(crate) use nsfs::namespace_opened;
+pub(crate) use nsfs::{namespace_device, namespace_opened};
 pub(crate) use xattr::{XattrChange, XattrError};
 mod file_information;
 pub(crate) mod mount_options;

@@ -46,6 +46,20 @@ impl Family {
     }
 }
 
+/// 路由类型的领域语义。Linux 数值由 Linux 投影层拥有。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouteKind {
+    Unicast,
+    Local,
+    Broadcast,
+    Unreachable,
+    Throw,
+    /// 静默丢弃；本机发送按 ABI 映射为 Invalid。
+    Blackhole,
+    /// 管理策略禁止；本机发送按 ABI 映射为 PermissionDenied。
+    Prohibit,
+}
+
 /// 共享选路属性；代价只允许在同一来源内比较，不携带权限或生产者身份。
 #[derive(
     Clone,

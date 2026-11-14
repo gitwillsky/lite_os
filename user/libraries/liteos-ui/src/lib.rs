@@ -21,7 +21,7 @@ mod toplevel;
 mod window;
 pub use background::{Background, Blocking};
 use classic_ui_abi::{self as abi, event};
-pub use classic_ui_abi::{Date, Layout, Range, Rect, state};
+pub use classic_ui_abi::{Date, Layout, MAX_TEXT_BYTES, Range, Rect, state};
 pub use clipboard::{Clipboard, ClipboardRead};
 use connection::Connection;
 pub use connection::{Error, Result};

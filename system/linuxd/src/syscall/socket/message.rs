@@ -696,6 +696,9 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                         .packet_information
                         .filter(|_| socket.packet_auxiliary())
                         .map(|info| (info, received.full_length)),
+                    packet_timestamp: socket.packet_timestamp().filter(|&kind| kind != 0)
+                        .zip(received.packet_information)
+                        .map(|(kind, info)| (kind, info.timestamp_ns)),
                     rights: received.rights,
                     credentials: received.credentials,
                     pass_credentials: socket.pass_credentials(),

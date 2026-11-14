@@ -97,10 +97,15 @@ impl InterfaceConfiguration<'_> {
 /// 整批验证后的借用输入；资源与逆向状态由执行 owner 准备，不在 codec 中分配地址数组。
 #[derive(Clone, Copy, Default)]
 pub struct InterfaceConfigurationBatch<'a> {
-    body: &'a [u8],
+    bytes: &'a [u8],
     count: usize,
 }
 impl<'a> InterfaceConfigurationBatch<'a> {
+    /// 已校验的原始正文。缺席批次返回空切片。
+    pub fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// 返回完整批次的精确尺寸，含可变 IPv6 地址正文。
     /// # Errors
     /// 空批次、项数或长度溢出。
@@ -194,16 +199,6 @@ impl<'a> InterfaceConfigurationBatch<'a> {
                     .to_le_bytes(),
             );
             bytes[28..32].copy_from_slice(&(count as u32).to_le_bytes());
-            bytes[32..36].fill(0);
-            if let Some(RouterAdvertisements::Enabled {
-                max_interval_seconds,
-                router_lifetime_seconds,
-                ..
-            }) = entry.advertise
-            {
-                bytes[32..34].copy_from_slice(&max_interval_seconds.to_le_bytes());
-                bytes[34..36].copy_from_slice(&router_lifetime_seconds.to_le_bytes());
-            }
             bytes[36..40].copy_from_slice(&(delegated_count as u32).to_le_bytes());
             bytes[40..44].copy_from_slice(&(dns.as_slice().len() as u32).to_le_bytes());
             if let Some(addresses) = entry.ipv6 {
@@ -212,13 +207,12 @@ impl<'a> InterfaceConfigurationBatch<'a> {
             if let Some(prefixes) = entry.delegated {
                 prefixes.emit(&mut bytes[delegated_offset..dns_offset]);
             }
-            for (address, bytes) in dns
-                .as_slice()
-                .iter()
-                .zip(bytes[dns_offset..].as_chunks_mut::<16>().0)
-            {
-                *bytes = address.octets();
-            }
+            let (fields, dns_rows) = bytes.split_at_mut(dns_offset);
+            emit_advertisement(
+                entry.advertise.unwrap_or_default(),
+                &mut fields[32..36],
+                dns_rows,
+            );
             offset = end;
         }
         Ok(size)
@@ -253,18 +247,22 @@ impl<'a> InterfaceConfigurationBatch<'a> {
             if entry[4] & 16 != 0 {
                 Ipv6Addresses::parse(&entry[ENTRY_BYTES..delegated_start(entry)])?;
             }
-            decode(entry, decode_dns(entry)?).validate()?;
+            decode(
+                entry,
+                parse_advertisement(&entry[32..36], &entry[dns_start(entry)..])?,
+            )
+            .validate()?;
             rest = &rest[size..];
         }
         if !rest.is_empty() {
             return Err(Invalid);
         }
-        Ok(Self { body, count })
+        Ok(Self { bytes, count })
     }
     /// 惰性借用已验证输入，数量准确且不再分配或检查可变 framing。
     pub fn iter(self) -> impl ExactSizeIterator<Item = InterfaceConfiguration<'a>> + Clone + 'a {
         Entries {
-            body: self.body,
+            body: self.bytes.get(HEADER_BYTES..).unwrap_or_default(),
             remaining: self.count,
         }
     }
@@ -286,7 +284,8 @@ impl<'a> Iterator for Entries<'a> {
         self.remaining -= 1;
         Some(decode(
             entry,
-            decode_dns(entry).expect("validated DNS advertisement"),
+            parse_advertisement(&entry[32..36], &entry[dns_start(entry)..])
+                .expect("validated advertisement"),
         ))
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -318,22 +317,57 @@ fn dns_start(bytes: &[u8]) -> usize {
     delegated_start(bytes) + u32_at(bytes, 36) as usize * delegated::ROW
 }
 
-fn decode_dns(bytes: &[u8]) -> Result<AdvertisedDns, Invalid> {
-    let count = u32_at(bytes, 40) as usize;
-    if count > MAX_ADVERTISED_DNS {
+/// Encode the two RA timer fields and the same RDNSS rows used in both interface plans.
+pub(crate) fn emit_advertisement(
+    policy: RouterAdvertisements,
+    fields: &mut [u8],
+    dns_rows: &mut [u8],
+) {
+    fields.fill(0);
+    if let RouterAdvertisements::Enabled {
+        max_interval_seconds,
+        router_lifetime_seconds,
+        dns,
+    } = policy
+    {
+        fields[..2].copy_from_slice(&max_interval_seconds.to_le_bytes());
+        fields[2..4].copy_from_slice(&router_lifetime_seconds.to_le_bytes());
+        for (address, row) in dns.as_slice().iter().zip(dns_rows.as_chunks_mut::<16>().0) {
+            *row = address.octets();
+        }
+    }
+}
+
+pub(crate) fn parse_advertisement(
+    fields: &[u8],
+    dns_rows: &[u8],
+) -> Result<RouterAdvertisements, Invalid> {
+    let max_interval_seconds = u16::from_le_bytes([fields[0], fields[1]]);
+    let router_lifetime_seconds = u16::from_le_bytes([fields[2], fields[3]]);
+    if max_interval_seconds == 0 {
+        return if router_lifetime_seconds == 0 && dns_rows.is_empty() {
+            Ok(RouterAdvertisements::Disabled)
+        } else {
+            Err(Invalid)
+        };
+    }
+    let (rows, remainder) = dns_rows.as_chunks::<16>();
+    if !remainder.is_empty() || rows.len() > MAX_ADVERTISED_DNS {
         return Err(Invalid);
     }
     let mut addresses = [Ipv6Addr::UNSPECIFIED; MAX_ADVERTISED_DNS];
-    for (output, input) in addresses
-        .iter_mut()
-        .zip(bytes[dns_start(bytes)..].as_chunks::<16>().0)
-    {
+    for (output, input) in addresses.iter_mut().zip(rows) {
         *output = Ipv6Addr::from(*input);
     }
-    AdvertisedDns::new(&addresses[..count])
+    let policy = RouterAdvertisements::Enabled {
+        max_interval_seconds,
+        router_lifetime_seconds,
+        dns: AdvertisedDns::new(&addresses[..rows.len()])?,
+    };
+    policy.valid().then_some(policy).ok_or(Invalid)
 }
 
-fn decode(bytes: &[u8], dns: AdvertisedDns) -> InterfaceConfiguration<'_> {
+fn decode(bytes: &[u8], advertise: RouterAdvertisements) -> InterfaceConfiguration<'_> {
     InterfaceConfiguration {
         index: u32_at(bytes, 0),
         up: bytes[4] & 1 != 0,
@@ -349,18 +383,7 @@ fn decode(bytes: &[u8], dns: AdvertisedDns) -> InterfaceConfiguration<'_> {
             3 => Some(RouterAdvertisementPolicy::Always),
             _ => unreachable!("validated RA policy"),
         },
-        advertise: (bytes[4] & 32 != 0).then(|| {
-            let max_interval_seconds = u16::from_le_bytes([bytes[32], bytes[33]]);
-            if max_interval_seconds == 0 {
-                RouterAdvertisements::Disabled
-            } else {
-                RouterAdvertisements::Enabled {
-                    max_interval_seconds,
-                    router_lifetime_seconds: u16::from_le_bytes([bytes[34], bytes[35]]),
-                    dns,
-                }
-            }
-        }),
+        advertise: (bytes[4] & 32 != 0).then_some(advertise),
         mtu: (bytes[4] & 8 != 0).then(|| u32_at(bytes, 16)),
         address: (bytes[4] & 2 != 0).then(|| Ipv4Addr::from(u32_at(bytes, 8).to_le_bytes())),
         prefix_length: bytes[5],

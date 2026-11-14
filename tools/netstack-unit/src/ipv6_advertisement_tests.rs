@@ -336,3 +336,153 @@ fn delegated_prefix_route_and_advertisement_expire_together() {
     assert!(!routed());
     assert_eq!(prefix_lifetimes(), [(0, 0)]);
 }
+
+// 独立接口测试无法覆盖候选 VLAN 的身份合并及实际出站标签。
+#[test]
+fn vlan_prefix_delegation_announces_and_retires_distinct_subnets() {
+    use packet_wire::ethernet::EthernetFrame;
+    use router_protocol::{
+        configuration::Configuration, delegation::DelegatedPrefix, interface::DelegatedPrefixes,
+        switching::Ports,
+    };
+
+    let _serial = SERIAL.lock().unwrap();
+    initialize();
+    let (net, device) = domain();
+    let config = Configuration::decode(br#"{
+        "version":1,
+        "interfaces":{
+            "wan":{"device":{"kind":"name","value":"eth9"}},
+            "trunk":{"device":{"kind":"name","value":"eth0"}}
+        },
+        "prefix_delegation":{
+            "upstream":"wan","duid_mac":[2,0,0,0,0,1],"downstream":{"office":1,"guests":2}
+        },
+        "bridges":{"lan":{"rstp":false,"ports":{"trunk":{"vlans":{"10":"tagged","20":"tagged"}}},
+            "gateways":{
+                "10":{"name":"office","advertise":{"mode":"enabled","max_interval_seconds":4,"router_lifetime_seconds":12}},
+                "20":{"name":"guests","advertise":{"mode":"enabled","max_interval_seconds":4,"router_lifetime_seconds":12}}
+            }
+        }}
+    }"#).unwrap();
+    let source = config.bridge_source(|_| Ok(Some(2))).unwrap();
+    let projected =
+        crate::inet::project_bridges(&net, Ports::parse(&source).unwrap(), Default::default())
+            .unwrap();
+    let ports = Ports::parse(&projected).unwrap();
+    let policy = config.prefix_delegation.unwrap();
+    let parent = DelegatedPrefix {
+        address: "2001:db8:1234:5600::".parse().unwrap(),
+        length: 56,
+        preferred_until: 30_000_000_000,
+        valid_until: 60_000_000_000,
+    };
+    let subnets = |parent| [1, 2].map(|id| policy.subnets(&[parent], id, 0).unwrap());
+    let original = subnets(parent);
+    let current = subnets(DelegatedPrefix {
+        address: "2001:db8:4321:1200::".parse().unwrap(),
+        ..parent
+    });
+    let apply = |subnets: &[Vec<DelegatedPrefix>; 2], topology| {
+        let plans = ports
+            .gateways()
+            .zip(subnets)
+            .map(|(gateway, rows)| InterfaceConfiguration {
+                ipv6: None,
+                delegated: Some(DelegatedPrefixes::new(rows).unwrap()),
+                ..plan(gateway.binding.index, &[])
+            })
+            .collect::<Vec<_>>();
+        let mut facts = routing_facts(&net);
+        if topology {
+            facts.project_bridges(ports).unwrap();
+        }
+        let prepared = routing_rib::sources::Routes::default()
+            .prepare_configuration(&facts, &plans, &[], None, None)
+            .unwrap();
+        let batch = network_protocol::ConfigurationBatch::parse(&prepared.encoded).unwrap();
+        let batch = if topology {
+            batch.with_bridges(ports)
+        } else {
+            batch
+        };
+        let change = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
+        change.activate().unwrap();
+        change.confirm().unwrap();
+    };
+    let route = |prefix| {
+        crate::inet::configuration::route_snapshot::<Ipv6Addr>(&net)
+            .unwrap()
+            .iter()
+            .find(|row| row.route.destination == prefix && row.route.prefix_length == 64)
+            .and_then(|row| row.single_path().and_then(|path| path.interface_index))
+    };
+    let advertisements = || {
+        frames(&device)
+            .iter()
+            .filter_map(|bytes| {
+                let ethernet = EthernetFrame::parse(bytes).unwrap().network().unwrap();
+                if ethernet.type_or_length() != 0x86dd {
+                    return None;
+                }
+                let ip = Ipv6Packet::parse(ethernet.payload()).unwrap();
+                let icmp =
+                    Icmpv6Packet::parse(ip.upper_layer()?, ip.source(), ip.destination()).ok()?;
+                if ip.upper_protocol() != 58 || icmp.message_type() != 134 {
+                    return None;
+                }
+                let vid = ethernet.tags().next().unwrap().id();
+                let nd = NdPacket::parse(icmp).unwrap();
+                Some(
+                    nd.options()
+                        .filter_map(move |option| match option.decode().unwrap() {
+                            OptionValue::Prefix {
+                                prefix,
+                                length: 64,
+                                valid_lifetime,
+                                ..
+                            } => Some((vid, prefix, valid_lifetime != 0)),
+                            _ => None,
+                        }),
+                )
+            })
+            .flatten()
+            .collect::<Vec<_>>()
+    };
+    apply(&original, true);
+    for time in (0..=7000).step_by(250) {
+        poll(&net, time);
+    }
+    let announced = advertisements();
+    for (at, gateway) in ports.gateways().enumerate() {
+        let prefix = original[at][0].address;
+        assert_eq!(route(prefix), Some(gateway.binding.index));
+        assert!(announced.contains(&(gateway.vid, prefix, true)));
+        assert!(
+            announced
+                .iter()
+                .all(|&(vid, address, _)| address != prefix || vid == gateway.vid)
+        );
+    }
+
+    apply(&current, false);
+    for time in (7250..=12_000).step_by(250) {
+        poll(&net, time);
+    }
+    let announced = advertisements();
+    for (at, gateway) in ports.gateways().enumerate() {
+        let retired = original[at][0].address;
+        let renewed = current[at][0].address;
+        assert_eq!(route(retired), None);
+        assert_eq!(route(renewed), Some(gateway.binding.index));
+        assert!(announced.contains(&(gateway.vid, retired, false)));
+        assert!(announced.contains(&(gateway.vid, renewed, true)));
+    }
+    let [office, guests] = current;
+    apply(&[Vec::new(), guests], true);
+    for time in (12_250..=17_000).step_by(250) {
+        poll(&net, time);
+    }
+    assert_eq!(route(office[0].address), None);
+    assert!(advertisements().contains(&(10, office[0].address, false)));
+}

@@ -195,8 +195,8 @@ impl<'a> Socket<'a> {
         Some(start + timeout)
     }
 
-    /// 与route/neighbor/设备独立的纯时间deadline；阻塞输出不得冻结退出与TIME_WAIT。
-    pub fn maintenance_deadline(&self) -> Option<Instant> {
+    /// 读取下一次协议时钟。`output_after` 约束探测发包，超时和退休仍独立于输出。
+    pub fn maintenance_deadline(&self, output_after: Instant) -> Option<Instant> {
         if self.state == State::TimeWait {
             return match self.timer {
                 Timer::Close { expires_at } => Some(expires_at),
@@ -214,7 +214,16 @@ impl<'a> Socket<'a> {
                 .map_or(Instant::ZERO, |last| last + timeout)
         });
         let keepalive = if self.keep_alive_eligible() {
-            self.keep_alive_at
+            self.keep_alive_at.map(|at| {
+                let probe = at.max(output_after);
+                match self.user_timeout {
+                    Some(timeout) if self.keep_alive_probes != 0 => self
+                        .activity_at
+                        .map_or(probe, |last| probe.min(at.max(last + timeout))),
+                    None if self.keep_alive_probes >= self.keep_alive_count => at,
+                    _ => probe,
+                }
+            })
         } else {
             None
         };

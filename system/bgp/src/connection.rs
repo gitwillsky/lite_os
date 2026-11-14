@@ -10,10 +10,47 @@ use native_runtime::{
 };
 use network_protocol::{
     InetAddress, InetProtocol, RemoteInetSocket, RemoteNamespace, SocketEndpoint, SocketError,
+    TcpAoAlgorithm, TcpAoKey, TcpAoSelection, TcpKeySelector,
 };
 use packet_wire::bgp::attributes::AsnWidth;
 use packet_wire::bgp::{self as wire, Frame, HeaderError, Kind};
-use router_protocol::bgp::Neighbor;
+use router_protocol::bgp::{AoAlgorithm, Neighbor, TcpAo};
+
+pub(super) fn install_ao(
+    socket: &RemoteInetSocket,
+    selector: TcpKeySelector,
+    ao: &TcpAo,
+    listening: bool,
+) -> Result<(), SocketError> {
+    let mut keys = Vec::new();
+    keys.try_reserve_exact(ao.keys.len())
+        .map_err(|_| SocketError::NoMemory)?;
+    keys.extend(ao.keys.iter().map(|key| {
+        let algorithm = match key.algorithm {
+            AoAlgorithm::HmacSha1 => TcpAoAlgorithm::HmacSha1,
+            AoAlgorithm::Aes128Cmac => TcpAoAlgorithm::Aes128Cmac,
+        };
+        (
+            TcpAoKey {
+                selector,
+                algorithm,
+                send_id: key.send_id,
+                receive_id: key.receive_id,
+                cover_options: !key.exclude_options,
+            },
+            key.secret.as_bytes(),
+        )
+    }));
+    let selection = if listening {
+        TcpAoSelection::default()
+    } else {
+        TcpAoSelection {
+            current: Some(ao.send_id),
+            receive: Some(ao.receive_id),
+        }
+    };
+    socket.replace_ao_keys(&keys, selection)
+}
 
 enum Encoded {
     Control([u8; 128]),
@@ -267,9 +304,41 @@ pub(super) struct Io<'a> {
     pub(super) key: &'a mut u64,
     pub(super) routes: &'a mut RoutingDomain,
     pub(super) parameters: &'a Neighbor,
+    pub(super) scope: PeerScope,
     pub(super) error: &'a mut Option<String>,
     /// 邻居 owner 的下一次协商方式；None 暂停此邻居，绝不改变当前 TCP 冻结的 offer。
     pub(super) open_offer: &'a mut Option<OpenOffer>,
+}
+
+/// 链路本地邻居使用域内索引。固定索引随接口寿命退休，不能随同名设备漂移。
+#[derive(Clone, Copy)]
+pub(super) enum PeerScope {
+    InterfaceName,
+    Installed(u32),
+}
+
+impl PeerScope {
+    pub(super) fn unavailable(self, parameters: &Neighbor) -> bool {
+        matches!(self, Self::Installed(0)) && parameters.interface.is_some()
+    }
+
+    pub(super) fn index(
+        self,
+        network: &RemoteNamespace,
+        parameters: &Neighbor,
+    ) -> Result<Option<u32>, SocketError> {
+        let Some(name) = &parameters.interface else {
+            return Ok(None);
+        };
+        let index = match self {
+            Self::InterfaceName => network.interface_index(name.as_str().as_bytes())?,
+            Self::Installed(index) => index,
+        };
+        if index == 0 {
+            return Err(SocketError::NoDevice);
+        }
+        Ok(Some(index))
+    }
 }
 /// 当前 actor 的单调协议时钟。
 pub(super) fn time() -> u64 {
@@ -325,6 +394,22 @@ impl Connection {
             output: None,
         })
     }
+    /// 先登记路由撤回，再提交行政关闭。失败时保留当前会话与端点供重试。
+    pub(super) fn stop(&mut self, io: &mut Io<'_>) -> Result<(), Status> {
+        // Stop 只产生 Close。预备的 FSM 只在撤回登记成功后接管，避免失败后丢失已建立连接的撤回义务。
+        let mut next = self.session.clone();
+        let effects = next.on(time(), Input::Stop);
+        Self::effects(
+            &mut next,
+            &mut self.transport,
+            &mut self.output,
+            effects,
+            io,
+        )?;
+        self.session = next;
+        self.input = InputBuffer::default();
+        Ok(())
+    }
     /// 执行同一协议事件并清理已退休字节/发送状态。
     /// # Errors
     /// 网络/路由服务退出、资源不足或协议副作用无效，父 actor 须结束域并清理能力。
@@ -373,36 +458,20 @@ impl Connection {
                     let candidate = Transport::new(endpoint, next_key(io.key)?)?;
                     let result = (|| {
                         let mut peer = InetAddress::new(io.parameters.address, 179);
-                        if let Some(interface) = &io.parameters.interface {
-                            candidate
-                                .socket
-                                .bind_to_device(interface.as_str().as_bytes(), false)?;
-                            let index = candidate
-                                .socket
-                                .option(network_protocol::InternetOption::BoundToDevice)?
-                                as u32;
-                            if index == 0 {
-                                return Err(SocketError::NoDevice);
-                            }
+                        let scope = io.scope.index(io.network, io.parameters)?;
+                        if let Some(index) = scope {
                             let InetAddress::V6(ref mut address) = peer else {
                                 unreachable!("validated scoped peer is IPv6")
                             };
                             address.set_scope_id(index);
                         }
-                        if let Some(password) = &io.parameters.md5_password {
-                            let scope = match peer {
-                                InetAddress::V6(address) if address.scope_id() != 0 => {
-                                    Some(address.scope_id())
-                                }
-                                _ => None,
-                            };
-                            candidate.socket.set_md5_key(
-                                network_protocol::TcpMd5Selector::host(
-                                    io.parameters.address,
-                                    scope,
-                                ),
-                                password.as_bytes(),
-                            )?;
+                        let selector = TcpKeySelector::host(io.parameters.address, scope);
+                        if let Some(ao) = &io.parameters.tcp_ao {
+                            install_ao(&candidate.socket, selector, ao, false)?;
+                        } else if let Some(password) = &io.parameters.md5_password {
+                            candidate
+                                .socket
+                                .set_md5_key(selector, password.as_bytes())?;
                         }
                         candidate.socket.connect(peer)
                     })();
@@ -434,10 +503,10 @@ impl Connection {
                 Effect::OpenRejected { retry } => {
                     // 只改变该邻居的下一次尝试；并发输家的握手错误不能停掉已正常建立的连接。
                     let interface = io
-                        .parameters
-                        .interface
-                        .as_ref()
-                        .and_then(|name| io.network.interface_index(name.as_str().as_bytes()).ok())
+                        .scope
+                        .index(io.network, io.parameters)
+                        .ok()
+                        .flatten()
                         .and_then(core::num::NonZeroU32::new);
                     if !io
                         .routes
@@ -508,23 +577,18 @@ impl Connection {
                             },
                         )) * 1_000_000_000,
                     };
-                    let mut advertised = AdjRibOut::new();
-                    if io.parameters.export.is_some() {
-                        for prefix in io.routes.announcement_prefixes() {
-                            if if prefix.address.is_ipv4() {
-                                peer.ipv4_unicast
-                            } else {
-                                peer.ipv6_unicast
-                            } {
-                                advertised.changed(prefix, time()).map_err(export_error)?;
+                    use packet_wire::bgp::nlri::Family;
+                    let mut advertised = AdjRibOut::new(peer.send_add_path);
+                    for (enabled, family) in [
+                        (peer.ipv4_unicast, Family::Ipv4),
+                        (peer.ipv6_unicast, Family::Ipv6),
+                    ] {
+                        if enabled {
+                            if io.parameters.export.is_some() {
+                                advertised.reconsider(family);
                             }
+                            advertised.finish_initial(family);
                         }
-                    }
-                    if peer.ipv4_unicast {
-                        advertised.finish_initial(packet_wire::bgp::nlri::Family::Ipv4);
-                    }
-                    if peer.ipv6_unicast {
-                        advertised.finish_initial(packet_wire::bgp::nlri::Family::Ipv6);
                     }
                     *output = Some((context, advertised));
                     *io.open_offer = Some(session.open_offer());
@@ -540,6 +604,10 @@ impl Connection {
                     withdraw_routes,
                     send_extended,
                 } => {
+                    if withdraw_routes {
+                        let id = transport.as_ref().ok_or(native_abi::ERR_BAD_STATE)?.key;
+                        io.routes.remove_peer(id).map_err(route_error)?;
+                    }
                     retired = true;
                     if let Some(reason) = received.or_else(|| {
                         notice.filter(|reason| {
@@ -554,14 +622,8 @@ impl Connection {
                     {
                         transport.notify(notice, send_extended);
                     }
-                    let id = transport.as_ref().map(|transport| transport.key);
                     *transport = None;
                     *output = None;
-                    if withdraw_routes {
-                        io.routes
-                            .remove_peer(id.ok_or(native_abi::ERR_BAD_STATE)?)
-                            .map_err(route_error)?;
-                    }
                 }
                 Effect::Refresh { family, enhanced } => {
                     output
@@ -592,7 +654,7 @@ impl Connection {
     /// 资源不足、服务退出或不可恢复的编码/副作用错误；未完整发送不更新宣告记录。
     pub(super) fn pump(&mut self, io: &mut Io<'_>, ready: bool) -> Result<bool, Status> {
         if io.open_offer.is_none() && self.session.state() != State::Idle {
-            self.event(Input::Stop, io)?;
+            self.stop(io)?;
             return Ok(false);
         }
         let due = self

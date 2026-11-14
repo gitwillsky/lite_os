@@ -51,7 +51,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
       }}}"#).unwrap();
     let parameters = configured.neighbors.values().next().unwrap();
     let source = *domain.peer(1).unwrap();
-    let received = domain.peer_routes(1).unwrap().get(prefix()).unwrap();
+    let received = domain.peer_routes(1).unwrap().get(prefix(), None).unwrap();
     let original = received.attributes().clone();
     let decision =
         bgp::import_route(parameters.import.as_ref(), prefix(), &source, received).unwrap();
@@ -81,7 +81,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
     assert_eq!(original.communities(), &[1, 2, 3]);
     domain.reconsider([prefix()]).unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, _, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, _, _, route| {
             Ok((
                 route.next_hop(),
                 Some(decision.preference),
@@ -93,8 +93,8 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
         })
         .unwrap()
         .commit();
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 0).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
     let message = outgoing
         .prepare(&mut domain, parameters.export.as_ref(), context(), 0)
         .unwrap()
@@ -128,8 +128,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
     );
     // 出口新加 NO_EXPORT 随公告送达，但收件路由器不得把它继续传到另一个外部 AS。
     let mut downstream = RoutingDomain::try_new(
-        SelectionContext::new(context().target.asn, context().target.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(context().target.asn, context().target.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     downstream
         .add_peer(
@@ -161,8 +160,8 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
         },
         ..context()
     };
-    let mut beyond = AdjRibOut::new();
-    beyond.changed(prefix(), 0).unwrap();
+    let mut beyond = AdjRibOut::default();
+    beyond.changed(&downstream, prefix(), 0).unwrap();
     assert!(
         beyond
             .prepare(&mut downstream, Some(&policy()), next, 0)
@@ -177,7 +176,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
         },
         ..next
     };
-    beyond.changed(prefix(), 0).unwrap();
+    beyond.changed(&downstream, prefix(), 0).unwrap();
     assert!(
         beyond
             .prepare(&mut downstream, Some(&policy()), internal, 0)
@@ -196,8 +195,8 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
         edit.add.clear();
         edit.remove.clear();
     }
-    let mut blocked = AdjRibOut::new();
-    blocked.changed(prefix(), 0).unwrap();
+    let mut blocked = AdjRibOut::default();
+    blocked.changed(&downstream, prefix(), 0).unwrap();
     assert!(
         blocked
             .prepare(&mut downstream, Some(&rewrite), next, 0)
@@ -212,7 +211,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
     {
         edit.replace = Some((0..17000).collect());
     }
-    outgoing.changed(prefix(), 31).unwrap();
+    outgoing.changed(&domain, prefix(), 31).unwrap();
     let withdrawn = outgoing
         .prepare(&mut domain, Some(&rewrite), context(), 31)
         .unwrap()
@@ -231,7 +230,7 @@ fn all_community_edits_reach_the_peer_and_outbound_scope_marks_apply_to_the_reci
         domain
             .peer_routes(1)
             .unwrap()
-            .get(prefix())
+            .get(prefix(), None)
             .unwrap()
             .attributes(),
         &original
@@ -285,7 +284,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
     let original = domain
         .peer_routes(first.id)
         .unwrap()
-        .get(prefix())
+        .get(prefix(), None)
         .unwrap()
         .attributes()
         .clone();
@@ -293,7 +292,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
         parameters.import.as_ref(),
         prefix(),
         &first,
-        domain.peer_routes(first.id).unwrap().get(prefix()).unwrap(),
+        domain.peer_routes(first.id).unwrap().get(prefix(), None).unwrap(),
     )
     .unwrap();
     // 实际入口必须按完整 AS 边界筛选，不能把数字子串当成 ASN，编辑前后也不能混淆。
@@ -311,7 +310,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
                 Some(&filtered),
                 prefix(),
                 &first,
-                domain.peer_routes(first.id).unwrap().get(prefix()).unwrap()
+                domain.peer_routes(first.id).unwrap().get(prefix(), None).unwrap()
             )
             .is_some(),
             permitted
@@ -321,7 +320,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
         .project_attributes(&original, decision.changes())
         .unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, peer, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, peer, _, route| {
             Ok((
                 route.next_hop(),
                 Some(100),
@@ -356,7 +355,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
         .unwrap();
     domain.reconsider([prefix()]).unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, _, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, _, _, route| {
             Ok((
                 route.next_hop(),
                 Some(100),
@@ -372,7 +371,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
     assert!(
         domain
             .peers()
-            .all(|(_, routes)| routes.get(prefix()).unwrap().decision()
+            .all(|(_, routes)| routes.get(prefix(), None).unwrap().decision()
                 == router_protocol::bgp::RouteDecision::AsLoop)
     );
     let observed = edited.observe().unwrap();
@@ -389,8 +388,8 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
     assert_eq!(domain.selected().get(prefix()).unwrap().peer(), first.id);
     for width in [AsnWidth::Two, AsnWidth::Four] {
         let target = bgp::ExportContext { width, ..context() };
-        let mut outgoing = AdjRibOut::new();
-        outgoing.changed(prefix(), 0).unwrap();
+        let mut outgoing = AdjRibOut::default();
+        outgoing.changed(&domain, prefix(), 0).unwrap();
         let bytes = outgoing
             .prepare(&mut domain, parameters.export.as_ref(), target, 0)
             .unwrap()
@@ -424,7 +423,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
                 from,
                 to: NonZeroU32::new(90000).unwrap(),
             }));
-            outgoing.changed(prefix(), 31).unwrap();
+            outgoing.changed(&domain, prefix(), 31).unwrap();
             if let Some(bytes) = outgoing
                 .prepare(&mut domain, Some(&replaced_policy), target, 31)
                 .unwrap()
@@ -451,7 +450,7 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
             unreachable!()
         };
         *as_path_replace = None;
-        outgoing.changed(prefix(), 61).unwrap();
+        outgoing.changed(&domain, prefix(), 61).unwrap();
         let bytes = outgoing
             .prepare(&mut domain, Some(&replaced_policy), target, 61)
             .unwrap()
@@ -465,6 +464,34 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
                 .eq([target.local_as, 80000, 80000, 65001])
         );
         outgoing.sent(61);
+        let mut loop_policy = replaced_policy.clone();
+        let RouteAction::Permit {
+            as_path_prepend, ..
+        } = &mut loop_policy.rules[0].action
+        else {
+            unreachable!()
+        };
+        *as_path_prepend = Some(Box::new([NonZeroU32::new(target.target.asn).unwrap()]));
+        outgoing.changed(&domain, prefix(), 91).unwrap();
+        let bytes = outgoing
+            .prepare(&mut domain, Some(&loop_policy), target, 91)
+            .unwrap()
+            .unwrap();
+        let withdrawal = Update::parse(&bytes[19..]).unwrap();
+        assert_eq!(withdrawal.withdrawn().unwrap().prefixes().count(), 1);
+        assert_eq!(withdrawal.announced().unwrap().prefixes().count(), 0);
+        outgoing.sent(91);
+
+        outgoing.changed(&domain, prefix(), 121).unwrap();
+        let bytes = outgoing
+            .prepare(&mut domain, Some(&replaced_policy), target, 121)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            receive(&mut session, &bytes).changes().next(),
+            Some(bgp::Change::Announce { prefix: restored, .. }) if restored == prefix()
+        ));
+        outgoing.sent(121);
         // 巨型合法编辑应只撤回此前路由，不能把容量问题升级为整个会话的格式错误。
         let mut excessive = parameters.export.clone().unwrap();
         let RouteAction::Permit {
@@ -474,20 +501,57 @@ fn path_edits_change_selection_and_wire_without_poisoning_original_routes() {
             unreachable!()
         };
         *as_path_prepend = Some(vec![NonZeroU32::new(80000).unwrap(); 17000].into_boxed_slice());
-        outgoing.changed(prefix(), 91).unwrap();
+        outgoing.changed(&domain, prefix(), 151).unwrap();
         let withdrawal = outgoing
-            .prepare(&mut domain, Some(&excessive), target, 91)
+            .prepare(&mut domain, Some(&excessive), target, 151)
             .unwrap()
             .unwrap();
         let withdrawal = Update::parse(&withdrawal[19..]).unwrap();
         assert_eq!(withdrawal.withdrawn().unwrap().prefixes().count(), 1);
         assert_eq!(withdrawal.announced().unwrap().prefixes().count(), 0);
     }
+    let target = bgp::ExportContext {
+        local_as: 65000,
+        target: Peer {
+            asn: 65000,
+            kind: bgp::PeerKind::Internal,
+            ..context().target
+        },
+        ..context()
+    };
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
+    assert!(
+        outgoing
+            .prepare(&mut domain, parameters.export.as_ref(), target, 0)
+            .unwrap()
+            .is_some()
+    );
+    outgoing.sent(0);
+    let mut loop_policy = parameters.export.clone().unwrap();
+    let RouteAction::Permit {
+        as_path_exclude,
+        as_path_replace,
+        ..
+    } = &mut loop_policy.rules[0].action
+    else {
+        unreachable!()
+    };
+    *as_path_exclude = None;
+    *as_path_replace = Some(Box::new(loop_replace));
+    outgoing.changed(&domain, prefix(), 31).unwrap();
+    let bytes = outgoing
+        .prepare(&mut domain, Some(&loop_policy), target, 31)
+        .unwrap()
+        .unwrap();
+    let withdrawal = Update::parse(&bytes[19..]).unwrap();
+    assert_eq!(withdrawal.withdrawn().unwrap().prefixes().count(), 1);
+    assert_eq!(withdrawal.announced().unwrap().prefixes().count(), 0);
     assert_eq!(
         domain
             .peer_routes(first.id)
             .unwrap()
-            .get(prefix())
+            .get(prefix(), None)
             .unwrap()
             .attributes(),
         &original
@@ -516,8 +580,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
     assert_eq!(selector.protocols, [4, 89]);
     assert!(router_protocol::bgp::Configuration::parse(br#"{"local_as":65000,"identifier":"192.0.2.1","neighbors":{},"redistribute":{"protocols":[186]}}"#).is_err());
     let mut domain = RoutingDomain::try_new(
-        SelectionContext::new(65000, configuration.identifier, None, None).unwrap(),
-    )
+        SelectionContext::new(65000, configuration.identifier, None, None).unwrap(), [false; 2])
     .unwrap();
     domain
         .configure_redistribution(configuration.redistribute.clone())
@@ -530,6 +593,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
         index: 2,
         name: [0; 16],
         loopback: false,
+        vlan: false,
         mtu: 1500,
         mac: [2, 0, 0, 0, 0, 2],
         address: Some("10.0.0.2".parse().unwrap()),
@@ -613,9 +677,9 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
         interval_ns: 0,
         ..context()
     };
-    let mut outgoing = AdjRibOut::new();
+    let mut outgoing = AdjRibOut::default();
     for prefix in &changed {
-        outgoing.changed(*prefix, 0).unwrap();
+        outgoing.changed(&domain, *prefix, 0).unwrap();
     }
     assert!(
         outgoing
@@ -624,9 +688,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
             .is_none(),
         "no peer export policy must remain deny"
     );
-    for prefix in domain.announcement_prefixes() {
-        outgoing.changed(prefix, 0).unwrap();
-    }
+    outgoing.reconsider(wire::nlri::Family::Ipv4);
     let mut peer = receiver(target);
     let policy = configuration
         .neighbors
@@ -714,7 +776,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
     let changed = domain.apply_redistribution(&delta).unwrap();
     assert_eq!(domain.redistributed_route(prefix).unwrap().metric, 23);
     for prefix in changed {
-        outgoing.changed(prefix, 2).unwrap();
+        outgoing.changed(&domain, prefix, 2).unwrap();
     }
     let bytes = outgoing
         .prepare(&mut domain, Some(policy), target, 2)
@@ -753,7 +815,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
             .all(|change| matches!(change, Change::Withdraw(_)))
     );
     for prefix in domain.apply_redistribution(&delta).unwrap() {
-        outgoing.changed(prefix, 4).unwrap();
+        outgoing.changed(&domain, prefix, 4).unwrap();
     }
     let bytes = outgoing
         .prepare(&mut domain, Some(policy), target, 4)
@@ -780,7 +842,7 @@ fn selected_sources_follow_rib_changes_preserve_metrics_and_never_feed_back_to_b
     )
     .unwrap();
     for prefix in domain.apply_redistribution(&delta).unwrap() {
-        outgoing.changed(prefix, 6).unwrap();
+        outgoing.changed(&domain, prefix, 6).unwrap();
     }
     let bytes = outgoing
         .prepare(&mut domain, Some(policy), target, 6)

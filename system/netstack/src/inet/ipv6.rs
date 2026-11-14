@@ -136,11 +136,11 @@ impl InterfaceAddresses {
         destination: Ipv6Addr,
         now: u64,
     ) -> Result<Option<[u8; 6]>, network_protocol::SocketError> {
-        if self.control_source().is_none() {
-            return Err(network_protocol::SocketError::NetworkUnreachable);
-        }
         if destination.is_multicast() {
             return Ok(Some(packet::multicast_mac(destination)));
+        }
+        if self.control_source().is_none() {
+            return Err(network_protocol::SocketError::NetworkUnreachable);
         }
         self.neighbors.resolve(destination, now)
     }
@@ -153,28 +153,33 @@ impl InterfaceAddresses {
     pub(super) fn neighbors(
         &self,
         index: u32,
+        after: Option<Ipv6Addr>,
     ) -> impl Iterator<Item = network_protocol::Neighbor> + Clone {
-        self.neighbors.rows(index)
+        self.neighbors.rows(index, after)
     }
-    pub(super) fn due(&self, now: u64) -> bool {
-        self.advertiser.due(now, || self.preferred_link().is_some())
-            || self
-                .delegated
-                .iter()
-                .any(|prefix| !delegation_valid(prefix, now))
-            || self.discovery.due(now)
-            || self.mld.due(now)
-            || self.all_addresses().any(|address| {
-                address
-                    .deadline(Self::joined(&self.listener, &self.groups, address.address))
-                    .is_some_and(|at| at <= now)
-            })
-            || self
-                .listener
-                .iter()
-                .chain(self.groups.iter())
-                .any(|listener| listener.due(now))
-            || self.neighbors.due(now)
+    pub(super) fn next_deadline(&self, now: u64) -> Option<u64> {
+        self.advertiser
+            .next_deadline(now, || self.preferred_link().is_some())
+            .into_iter()
+            .chain(
+                self.delegated
+                    .iter()
+                    .filter(|prefix| prefix.valid_until != i64::MAX)
+                    .map(|prefix| prefix.valid_until as u64 / 1_000_000),
+            )
+            .chain(self.discovery.next_deadline())
+            .chain(self.mld.next_deadline())
+            .chain(self.all_addresses().filter_map(|address| {
+                address.deadline(Self::joined(&self.listener, &self.groups, address.address))
+            }))
+            .chain(
+                self.listener
+                    .iter()
+                    .chain(self.groups.iter())
+                    .filter_map(Listener::next_deadline),
+            )
+            .chain(self.neighbors.next_deadline(now))
+            .min()
     }
     /// 返回地址变化与因控制提交预算耗尽产生的续调度；背压只等设备活动。
     pub(super) fn poll(

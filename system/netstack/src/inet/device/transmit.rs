@@ -1,6 +1,17 @@
-//! 原生 IP 发送必须观察实际 reservation/commit 结果；标准 Device 的 Option 只用于其既定适配边界。
+//! 原生 IP 发送使用最终窗口与真实提交结果。
 use super::*;
+use ::tcp::time::Instant;
 use core::net::{IpAddr, Ipv6Addr};
+
+/// 原 RX 载荷及其必须重新编码的前缀，供物理出口保留不变的后缀。
+pub(in crate::inet) struct ReceivedPayload<'a, 'frame> {
+    /// 保有原始 RX 槽的帧票据。
+    pub(in crate::inet) frame: &'a NetworkReceiveFrame<'frame>,
+    /// 本次发送所引用的完整原始载荷，必须位于 `frame` 内。
+    pub(in crate::inet) bytes: &'a [u8],
+    /// 原始载荷中最后一个可能被改写的字节之后的位置。
+    pub(in crate::inet) render_prefix: usize,
+}
 
 fn ipv6_neighbor(
     owner: &mut Option<crate::inet::ipv6::InterfaceAddresses>,
@@ -21,44 +32,85 @@ fn ipv6_neighbor(
         .ok_or(NetworkError::WouldBlock)
 }
 impl EthernetDevice {
-    /// 取得当前硬件队列的唯一 reservation。
+    /// 按调用者的亲和策略取得 reservation；越界队列号按活动队列数映射。
     /// # Returns
     /// 尚未提交的 ticket，未使用时由其 Drop 取消。
     /// # Errors
     /// 硬件原错误原样返回并沿既有设备诊断记录；WouldBlock 不记成硬故障。
-    pub(super) fn reserve(&self) -> Result<EthernetTxToken<'_>, NetworkError> {
+    pub(super) fn reserve(
+        &self,
+        select: impl FnOnce(u16) -> u16,
+    ) -> Result<EthernetTxToken<'_>, NetworkError> {
         let reservation = self
-            .device
-            .reserve_transmit(0)
+            .reserve_frame(select)
             .inspect_err(|error| self.record_transmit_error(*error))?;
-        Ok(EthernetTxToken {
+        Ok(self.transmit_token(Some(reservation)))
+    }
+
+    /// 取得物理或 VLAN 发送槽。调用方记录队列背压及设备错误。
+    pub(super) fn reserve_frame(
+        &self,
+        select: impl FnOnce(u16) -> u16,
+    ) -> Result<EthernetReservation<'_>, NetworkError> {
+        Ok(match &self.link {
+            EthernetLink::Physical(nic) => {
+                let count = nic.queue_count();
+                let queue = select(count);
+                let queue = if queue < count { queue } else { queue % count };
+                EthernetReservation::Physical(nic.reserve_transmit(queue)?)
+            }
+            EthernetLink::Vlan(link) => {
+                EthernetReservation::Vlan(link.reserve().ok_or(NetworkError::WouldBlock)?)
+            }
+        })
+    }
+
+    pub(super) fn transmit_token<'a>(
+        &'a self,
+        reservation: Option<EthernetReservation<'a>>,
+    ) -> EthernetTxToken<'a> {
+        EthernetTxToken {
             net_id: self.net_id,
+            queues: &self.queues,
+            packets: &self.packets,
             interface_index: self.interface_index,
-            reservation: Some(reservation),
+            reservation,
             checksum: false,
             maximum_frame_length: self.mtu + 14,
-            dropped_transmits: &self.dropped_transmits,
             transmitted_errors: &self.transmitted_errors,
             pending_error: &self.pending_error,
-        })
+        }
     }
 }
 impl ProtocolDevice {
+    /// 只有物理出口声明硬件传输层校验和卸载。
+    pub(in crate::inet) fn transmit_checksum(&self) -> bool {
+        matches!(self, Self::Ethernet(device) if device.nic().is_some_and(|nic| nic.transmit_capabilities().checksum))
+    }
+
+    /// 当前发送路径的活动队列数。逻辑接口与回环各使用自己的单队列。
+    pub(in crate::inet) fn transmit_queue_count(&self) -> u16 {
+        match self {
+            Self::Ethernet(device) => device.nic().map_or(1, NetworkDevice::queue_count),
+            Self::Loopback(_) => 1,
+        }
+    }
+
     /// 取得真实发送 reservation；硬件错误仍归原设备诊断 owner。
     /// # Parameters
-    /// `timestamp` 为本轮冻结时刻，不重新读取时间。
+    /// `select` 在物理出口以活动队列数选择发送队列。
     /// # Returns
     /// 独占的 NIC/lo TX token，未消费则取消 reservation。
     /// # Errors
     /// 返回实际硬件错误或 WouldBlock，不能归并为编码成功。
     pub(in crate::inet) fn reserve(
         &self,
-        timestamp: Instant,
+        select: impl FnOnce(u16) -> u16,
     ) -> Result<ProtocolTxToken<'_>, NetworkError> {
         match self {
-            Self::Ethernet(device) => device.reserve().map(ProtocolTxToken::Ethernet),
+            Self::Ethernet(device) => device.reserve(select).map(ProtocolTxToken::Ethernet),
             Self::Loopback(device) => device
-                .transmit_shared(timestamp)
+                .reserve()
                 .map(ProtocolTxToken::Loopback)
                 .ok_or(NetworkError::WouldBlock),
         }
@@ -66,7 +118,7 @@ impl ProtocolDevice {
     /// 在最终 NIC/lo 窗口提交 IPv4 header 与借用载荷；ARP 和提交背压均不会提前推进调用者游标。
     /// # Parameters
     /// `link` 借用出口的 ARP/ND owner 及接口状态；`header` 已完成 IPv4 编码。
-    /// `body` 为长度及最终窗口 emitter，`path` 为实际下一跳/逻辑出口；`now` 为本轮时刻，`offload` 请求标准校验卸载。
+    /// `body` 为长度及最终窗口 emitter，`path` 为实际下一跳/逻辑出口；`now` 为本轮时刻，末项为校验卸载和队列亲和。
     /// # Returns
     /// 只有实际提交成功才返回 unit，调用者此时才能推进游标。
     /// # Errors
@@ -79,10 +131,14 @@ impl ProtocolDevice {
             &mut Option<crate::inet::ipv6::InterfaceAddresses>,
         ),
         header: &[u8],
-        body: (usize, impl FnOnce(&mut [u8])),
+        body: (
+            usize,
+            impl FnOnce(&mut [u8]),
+            Option<ReceivedPayload<'_, '_>>,
+        ),
         path: (IpAddr, u32),
         now: Instant,
-        offload: bool,
+        (offload, select): (bool, impl FnOnce(u16) -> u16),
     ) -> Result<(), NetworkError> {
         if header.len() < 20
             || header.len() > 60
@@ -109,15 +165,12 @@ impl ProtocolDevice {
         } else {
             None
         };
-        let token = self.reserve(now)?;
-        let mut meta = smoltcp::phy::PacketMeta::default();
-        meta.interface_index = Some(path.1);
-        meta.tx_checksum = offload;
+        let token = self.reserve(select)?;
         token.submit_ip(
             destination.map(|destination| (self.mac_address(), destination)),
             header,
             body,
-            meta,
+            (path.1, offload),
         )
     }
 }
@@ -151,44 +204,84 @@ impl ProtocolDevice {
         if header.len() + body.0 > owner.as_ref().map_or(mtu, |owner| owner.link_mtu(mtu)) {
             return Err(NetworkError::FrameTooLarge);
         }
-        let token = self.reserve(now)?;
+        let token = self.reserve(|_| 0)?;
         let link = if matches!(self, Self::Ethernet(_)) {
             Some((self.mac_address(), ipv6_neighbor(owner, path.0, now)?))
         } else {
             None
         };
-        let mut meta = smoltcp::phy::PacketMeta::default();
-        meta.interface_index = Some(path.1);
-        meta.tx_checksum = offload;
-        token.submit_ip(link, header, body, meta)
+        token.submit_ip(link, header, (body.0, body.1, None), (path.1, offload))
     }
 }
 impl ProtocolTxToken<'_> {
-    fn submit_ip(
+    /// 编码并提交 IP 帧。若 `original` 提供原始载荷及改写前缀长度，
+    /// `render_body` 可只收到该前缀。后缀由独立的物理出口线程从原 RX 槽复制。
+    /// # Errors
+    /// 载荷票据、帧边界或实际设备提交失败时返回原错误。
+    pub(in crate::inet) fn submit_ip(
         mut self,
         link: Option<([u8; 6], [u8; 6])>,
         header: &[u8],
-        body: (usize, impl FnOnce(&mut [u8])),
-        meta: smoltcp::phy::PacketMeta,
+        (body_length, render_body, original): (
+            usize,
+            impl FnOnce(&mut [u8]),
+            Option<ReceivedPayload<'_, '_>>,
+        ),
+        (interface, offload): (u32, bool),
     ) -> Result<(), NetworkError> {
-        self.set_meta(meta);
+        self.set_delivery(interface, offload);
         let protocol = if header[0] >> 4 == 4 { 0x0800 } else { 0x86dd };
         let offset = if link.is_some() { 14 } else { 0 };
-        let (_, error) =
-            self.consume_committed(offset + header.len() + body.0, protocol, |frame| {
-                if let Some((source, destination)) = link {
-                    packet_wire::ethernet::EthernetHeader {
-                        source,
-                        destination,
-                        type_or_length: protocol,
-                        tags: &[],
-                    }
-                    .emit(frame)
-                    .expect("exact IP Ethernet window");
+        let prefix = offset + header.len();
+        let length = prefix + body_length;
+        let render_header = |frame: &mut [u8]| {
+            if let Some((source, destination)) = link {
+                packet_wire::ethernet::EthernetHeader {
+                    source,
+                    destination,
+                    type_or_length: protocol,
+                    tags: &[],
                 }
-                frame[offset..offset + header.len()].copy_from_slice(header);
-                body.1(&mut frame[offset + header.len()..]);
-            });
-        error.map_or(Ok(()), Err)
+                .emit(frame)
+                .expect("exact IP Ethernet window");
+            }
+            frame[offset..prefix].copy_from_slice(header);
+        };
+        if let Some(ReceivedPayload {
+            frame,
+            bytes,
+            render_prefix,
+        }) = original
+            && bytes.len() == body_length
+            && render_prefix < body_length
+            && link.is_some()
+            && !offload
+            && let Self::Ethernet(token) = &mut self
+            && let Some(EthernetReservation::Physical(reservation)) = &token.reservation
+            && length <= token.maximum_frame_length
+            && length <= reservation.capacity()
+            && token.queues.separate_transmit_worker(reservation.queue())
+            && !token.packets.has_endpoints()
+            && let Some(payload) = frame.retain_payload(&bytes[render_prefix..])?
+        {
+            let Some(EthernetReservation::Physical(mut reservation)) = token.reservation.take()
+            else {
+                unreachable!("physical TX reservation checked above");
+            };
+            let ready = prefix + render_prefix;
+            let output = &mut reservation.buffer_mut()[..ready];
+            render_header(output);
+            if render_prefix != 0 {
+                render_body(&mut output[prefix..]);
+            }
+            let result = reservation.submit_payload(ready, payload);
+            token.record_transmit_error(result.as_ref().err().copied());
+            return result;
+        }
+        self.consume_committed(length, protocol, |frame| {
+            render_header(frame);
+            render_body(&mut frame[prefix..]);
+            true
+        })
     }
 }

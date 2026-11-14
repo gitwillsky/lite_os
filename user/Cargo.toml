@@ -13,6 +13,7 @@ members = [
     "libraries/desktop-entry",
     "libraries/desktop-settings",
     "libraries/network-config",
+    "programs/network-manager",
     "libraries/network-drive",
     "programs/smbfs",
     "programs/file-explorer",

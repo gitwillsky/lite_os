@@ -8,9 +8,6 @@ pub(in crate::inet) fn sequence_key() -> SequenceKey {
     native_runtime::system::cprng_draw(&mut key);
     SequenceKey::new_from_slice(&key).expect("HMAC-SHA256 accepts any key length")
 }
-pub(super) fn at(timestamp: Instant) -> transport::time::Instant {
-    transport::time::Instant::from_micros(timestamp.total_micros())
-}
 pub(super) struct Path<'a> {
     now: transport::time::Instant,
     logical: u32,
@@ -27,7 +24,7 @@ impl<'a> Path<'a> {
         secret: &'a SequenceKey,
     ) -> Self {
         Self {
-            now: at(timestamp),
+            now: timestamp,
             logical,
             route,
             source,

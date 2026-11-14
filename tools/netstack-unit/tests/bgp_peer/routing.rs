@@ -21,8 +21,7 @@ pub(super) fn prefix() -> Prefix {
 }
 pub(super) fn domain() -> (RoutingDomain, Session) {
     let mut domain = RoutingDomain::try_new(
-        SelectionContext::new(65000, "192.0.2.1".parse().unwrap(), None, None).unwrap(),
-    )
+        SelectionContext::new(65000, "192.0.2.1".parse().unwrap(), None, None).unwrap(), [false; 2])
     .unwrap();
     domain
         .add_peer(
@@ -52,7 +51,7 @@ pub(super) fn learn(domain: &mut RoutingDomain, session: &mut Session, extra: &[
 pub(super) fn choose(domain: &mut RoutingDomain) {
     // 这里只隔离出口行为；真实候选图/NET 证明及确认次序由既有 routing_compilation_tests 覆盖。
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, _, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, _, _, route| {
             Ok((
                 route.next_hop(),
                 Some(100),
@@ -107,6 +106,8 @@ pub(super) fn receiver(context: ExportContext) -> Session {
         ipv4_unicast: true,
         ipv6_unicast: false,
         route_refresh: true,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     };
     let mut session = Session::new(config).unwrap();

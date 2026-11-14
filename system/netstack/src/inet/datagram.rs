@@ -1,4 +1,4 @@
-//! UDP/RAW 共用的有界 datagram ring；完整报文连续存放，wrap padding 由所属记录记账，不额外占槽。
+//! UDP、RAW 和回环共用的有界 datagram ring；完整报文连续存放，wrap padding 由所属记录记账，不额外占槽。
 use alloc::vec::Vec;
 use network_protocol::SocketError;
 
@@ -13,19 +13,19 @@ struct Record<M> {
 }
 
 /// 同一 endpoint owner 借出/归还的实际队列；存储只在 bind/send 准备，报文路径不分配。
-pub(super) struct Queue<M: Copy> {
+pub(super) struct Queue<M: Copy, const SLOTS: usize = PACKETS> {
     bytes: Vec<u8>,
-    records: [Option<Record<M>>; PACKETS],
+    records: [Option<Record<M>>; SLOTS],
     front: usize,
     length: usize,
     write: usize,
     used: usize,
 }
-impl<M: Copy> Queue<M> {
+impl<M: Copy, const SLOTS: usize> Queue<M, SLOTS> {
     pub(super) fn new() -> Self {
         Self {
             bytes: Vec::new(),
-            records: [None; PACKETS],
+            records: [None; SLOTS],
             front: 0,
             length: 0,
             write: 0,
@@ -47,7 +47,11 @@ impl<M: Copy> Queue<M> {
         self.length == 0
     }
     pub(super) fn can_send(&self) -> bool {
-        self.length < PACKETS
+        self.length < SLOTS
+    }
+    /// 当前待收报文占用的载荷和回绕填充字节。
+    pub(super) fn used_bytes(&self) -> usize {
+        self.used
     }
     /// 复制完整报文或返回 Again；元数据与载荷同一次发布，零字节报文也占一槽。
     pub(super) fn push(&mut self, metadata: M, input: &[u8]) -> Result<(), SocketError> {
@@ -78,7 +82,7 @@ impl<M: Copy> Queue<M> {
         }
         let start = if padding != 0 { 0 } else { self.write };
         emit(&mut self.bytes[start..start + length])?;
-        let index = (self.front + self.length) % PACKETS;
+        let index = (self.front + self.length) % SLOTS;
         self.records[index] = Some(Record {
             metadata,
             start,
@@ -107,6 +111,20 @@ impl<M: Copy> Queue<M> {
             &mut self.bytes[record.start..record.start + record.length],
         ))
     }
+    pub(super) fn pop(&mut self) {
+        let record = self.records[self.front]
+            .take()
+            .expect("datagram queue popped without a datagram");
+        self.front = (self.front + 1) % SLOTS;
+        self.length -= 1;
+        self.used = self
+            .used
+            .checked_sub(record.charge)
+            .expect("datagram queue padding released twice");
+    }
+}
+
+impl<M: Copy> Queue<M> {
     /// 故障冷路径删除匹配报文；其余载荷原位压紧，复用原 metadata/storage，不在收发热路径执行。
     pub(super) fn discard(&mut self, mut matches: impl FnMut(M) -> bool) -> usize {
         let mask = (0..self.length).fold(0u8, |mask, offset| {
@@ -155,17 +173,6 @@ impl<M: Copy> Queue<M> {
         self.write = used % self.bytes.len();
         dropped
     }
-    pub(super) fn pop(&mut self) {
-        let record = self.records[self.front]
-            .take()
-            .expect("datagram queue popped without a datagram");
-        self.front = (self.front + 1) % PACKETS;
-        self.length -= 1;
-        self.used = self
-            .used
-            .checked_sub(record.charge)
-            .expect("datagram queue padding released twice");
-    }
 }
 
 #[cfg(test)]
@@ -175,7 +182,7 @@ mod tests {
     // 普通以太网 MTU 无法把八槽 ring 推过 128 KiB wrap；直接复用生产 owner 检查故障退休的载荷保全。
     #[test]
     fn failure_compaction_preserves_wrapped_payload_and_zero_length_records() {
-        let mut queue = Queue::new();
+        let mut queue = Queue::<_>::new();
         queue.prepare(128 * 1024).unwrap();
         let first = alloc::vec![0xa1; 60_000];
         let second = alloc::vec![0xb2; 40_000];

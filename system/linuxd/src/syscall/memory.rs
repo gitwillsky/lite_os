@@ -149,20 +149,26 @@ pub(crate) fn sys_mmap(
         if access_mode == O_WRONLY {
             return -errno::EACCES;
         }
-        if let OpenFileKind::Device(file) = &ofd.kind {
+        if matches!(ofd.kind, OpenFileKind::Device(_) | OpenFileKind::Socket(_)) {
             let request = super::device::map_request(
                 sharing == MAP_SHARED,
                 permission.contains(MapPermission::W),
                 permission.contains(MapPermission::X),
                 access_mode != O_RDONLY,
             );
-            match file.mmap(offset as u64, length, request) {
-                Ok(mut source) => {
-                    source.set_file(ofd.clone(), offset as u64);
-                    UserMappingSource::Device(source)
-                }
-                Err(error) => return super::device::device_error(error),
-            }
+            let mapped = match &ofd.kind {
+                OpenFileKind::Device(file) => file.mmap(offset as u64, length, request)
+                    .map_err(super::device::device_error),
+                OpenFileKind::Socket(socket) => socket.map_packet_ring(offset, length, request)
+                    .map_err(|error| -error),
+                _ => unreachable!(),
+            };
+            let mut source = match mapped {
+                Ok(source) => source,
+                Err(error) => return error,
+            };
+            source.set_file(ofd.clone(), offset as u64);
+            UserMappingSource::Device(source)
         } else {
             if !matches!(ofd.kind, OpenFileKind::Inode) {
                 return -errno::ENODEV;

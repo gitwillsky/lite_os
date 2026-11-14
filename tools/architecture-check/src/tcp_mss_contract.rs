@@ -42,8 +42,8 @@ fn check_transport(source: &str, errors: &mut Vec<String>) {
         || !source.contains("self.capture_mss(cx,local_endpoint.addr)")
         || !source.contains("self.capture_mss(cx,ip_repr.dst_addr())")
         || !source.contains("letmss=self.data_mss(cx);self.congestion_controller.set_mss(mss)")
-        || !source.contains("local_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.md5,)).min(self.effective_mss())")
-        || !source.contains("self.send_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.md5,))")
+        || !source.contains("local_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.authentication,)).min(self.effective_mss())")
+        || !source.contains("self.send_mss.saturating_sub(TcpRepr::data_option_space(self.tsval_generator.is_some(),self.authentication,))")
         || !source.contains(
             "letpath_payload=cx.ip_mtu().saturating_sub(ip_repr.header_len()+repr.header_len());",
         )

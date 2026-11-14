@@ -5,14 +5,19 @@
 //! Packet fields are captured and emitted exclusively through packet-wire. The caller owns
 //! routing, address qualification, entropy, clocks, buffer allocation and output completion.
 #![no_std]
+#![feature(allocator_ext)]
 extern crate alloc;
 
 macro_rules! net_trace { ($($arg:tt)*) => { if false { let _ = core::format_args!($($arg)*); } }; }
 macro_rules! net_debug { ($($arg:tt)*) => { net_trace!($($arg)*) }; }
 
 mod authentication;
+mod authentication_option;
 mod congestion;
 pub use authentication::Md5Key;
+pub use authentication_option::{
+    AoAlgorithm, AoKeyError, AoMasterKey, AoTrafficKey, SequenceExtension,
+};
 mod loss;
 mod reassembly;
 mod segment;
@@ -21,7 +26,10 @@ mod socket;
 mod stream_buffer;
 pub mod time;
 use core::net::IpAddr;
-pub use segment::{Control, IncomingSegment, IpPacket, Segment, Timestamp, TimestampGenerator};
+pub use segment::{
+    Authentication, Control, IncomingSegment, IpPacket, Segment, SigningKey, Timestamp,
+    TimestampGenerator,
+};
 pub use sequence::Sequence;
 pub use socket::{
     ConnectError, FailureReason, ListenError, OutputFailure, RecvError, SendError, Socket,

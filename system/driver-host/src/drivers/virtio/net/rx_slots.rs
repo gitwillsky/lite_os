@@ -14,7 +14,7 @@ struct ReceiveSlot<B> {
 
 pub(super) trait ReceiveQueue<B> {
     fn repost(&mut self, buffer: &B) -> Option<u16>;
-    fn publish(&mut self, head: u16);
+    fn publish(&mut self, heads: &[u16]);
     fn retire_unpublished(&mut self, head: u16);
 }
 
@@ -118,16 +118,25 @@ impl<B, const BUFFER_SIZE: usize> ReceiveSlots<B, BUFFER_SIZE> {
         self.slots.get(slot).map(|slot| &slot.buffer)
     }
 
-    /// 客户端已结束字节借用后归还槽；重复/未知归还不会触碰 ring。
-    pub(super) fn release<Q: ReceiveQueue<B>>(&mut self, queue: &mut Q, slot_index: u16) -> bool {
-        if self
-            .slots
-            .get(slot_index as usize)
-            .is_none_or(|slot| slot.state != SlotState::DriverOwned)
-        {
+    /// 将 `slots` 对应的接收缓冲放回队列，使用 `heads` 暂存待发布的描述符。
+    /// 返回 false 时没有发布描述符，部分准备的槽随终止复位退休，调用者不得继续使用队列。
+    pub(super) fn release<Q: ReceiveQueue<B>>(
+        &mut self,
+        queue: &mut Q,
+        slots: &[u16],
+        heads: &mut [u16],
+    ) -> bool {
+        let Some(heads) = heads.get_mut(..slots.len()) else {
             return false;
+        };
+        for (&slot, head) in slots.iter().zip(heads.iter_mut()) {
+            let Some(reposted) = self.repost(queue, slot) else {
+                return false;
+            };
+            *head = reposted;
         }
-        self.repost(queue, slot_index)
+        queue.publish(heads);
+        true
     }
 
     fn claim_head(&mut self, head: u16) -> Option<u16> {
@@ -140,26 +149,28 @@ impl<B, const BUFFER_SIZE: usize> ReceiveSlots<B, BUFFER_SIZE> {
         Some(slot_index)
     }
 
-    fn repost<Q: ReceiveQueue<B>>(&mut self, queue: &mut Q, slot_index: u16) -> bool {
-        let slot = &mut self.slots[slot_index as usize];
+    fn repost<Q: ReceiveQueue<B>>(&mut self, queue: &mut Q, slot_index: u16) -> Option<u16> {
+        let slot = self.slots.get_mut(slot_index as usize)?;
+        if slot.state != SlotState::DriverOwned {
+            return None;
+        }
         let Some(new_head) = queue.repost(&slot.buffer) else {
             slot.state = SlotState::Retired;
-            return false;
+            return None;
         };
         let Some(mapping) = self.by_head.get_mut(new_head as usize) else {
             slot.state = SlotState::Retired;
             queue.retire_unpublished(new_head);
-            return false;
+            return None;
         };
         if mapping.is_some() {
             slot.state = SlotState::Retired;
             queue.retire_unpublished(new_head);
-            return false;
+            return None;
         }
         slot.state = SlotState::Posted { head: new_head };
         *mapping = Some(slot_index);
-        queue.publish(new_head);
-        true
+        Some(new_head)
     }
 
     #[cfg(test)]
@@ -208,7 +219,7 @@ mod tests {
     }
     struct MockQueue {
         repost_heads: VecDeque<Option<u16>>,
-        published: Vec<u16>,
+        published: Vec<Vec<u16>>,
         retired: Vec<u16>,
     }
     impl MockQueue {
@@ -224,8 +235,8 @@ mod tests {
         fn repost(&mut self, _: &Box<[u8; 32]>) -> Option<u16> {
             self.repost_heads.pop_front().flatten()
         }
-        fn publish(&mut self, head: u16) {
-            self.published.push(head);
+        fn publish(&mut self, heads: &[u16]) {
+            self.published.push(heads.to_vec());
         }
         fn retire_unpublished(&mut self, head: u16) {
             self.retired.push(head);
@@ -242,21 +253,23 @@ mod tests {
     }
     #[test]
     fn normal_completion_holds_payload_until_explicit_release() {
-        let mut slots = TestSlots::try_new(1, 2).unwrap();
+        let mut slots = TestSlots::try_new(2, 4).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
-        let mut queue = MockQueue::returning([Some(1)]);
+        slots.insert_posted(1, buffer()).unwrap();
+        let mut queue = MockQueue::returning([Some(2), Some(3)]);
         let mut claim = slots.claim(0, 16, 12).unwrap();
         claim.buffer_mut()[12] = 42;
         let completion = claim.complete();
         assert_eq!(slots.buffer(completion.slot as usize).unwrap()[12], 42);
         assert_eq!((completion.slot, completion.length), (0, 4));
-        assert_eq!(slots.ownership_counts(), (0, 1, 0));
+        let other = slots.claim(1, 12, 12).unwrap().complete();
+        assert_eq!(slots.ownership_counts(), (0, 2, 0));
         assert!(queue.published.is_empty());
-        assert!(slots.release(&mut queue, completion.slot));
-        assert_eq!(slots.ownership_counts(), (1, 0, 0));
-        assert_eq!(queue.published, [1]);
-        assert!(!slots.release(&mut queue, completion.slot));
-        assert!(!slots.release(&mut queue, 9));
+        assert!(slots.release(&mut queue, &[completion.slot, other.slot], &mut [0; 2]));
+        assert_eq!(slots.ownership_counts(), (2, 0, 0));
+        assert_eq!(queue.published, [[2, 3]]);
+        assert!(!slots.release(&mut queue, &[completion.slot], &mut [0]));
+        assert!(!slots.release(&mut queue, &[9], &mut [0]));
         slots.assert_invariant();
     }
     #[test]
@@ -278,13 +291,15 @@ mod tests {
         assert_eq!(slots.ownership_counts(), (0, CAPACITY, 0));
     }
     #[test]
-    fn repost_capacity_failure_explicitly_retires_the_claimed_slot() {
-        let mut slots = TestSlots::try_new(1, 2).unwrap();
+    fn repost_capacity_failure_retires_the_slot_without_publishing_the_prefix() {
+        let mut slots = TestSlots::try_new(2, 4).unwrap();
         slots.insert_posted(0, buffer()).unwrap();
-        let mut queue = MockQueue::returning([None]);
-        let completion = slots.claim(0, 12, 12).unwrap().complete();
-        assert!(!slots.release(&mut queue, completion.slot));
-        assert_eq!(slots.ownership_counts(), (0, 0, 1));
+        slots.insert_posted(1, buffer()).unwrap();
+        let mut queue = MockQueue::returning([Some(2), None]);
+        let first = slots.claim(0, 12, 12).unwrap().complete();
+        let second = slots.claim(1, 12, 12).unwrap().complete();
+        assert!(!slots.release(&mut queue, &[first.slot, second.slot], &mut [0; 2]));
+        assert_eq!(slots.ownership_counts(), (1, 0, 1));
         assert!(queue.published.is_empty());
         slots.assert_invariant();
     }
@@ -294,10 +309,10 @@ mod tests {
         slots.insert_posted(0, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
         let completion = slots.claim(0, 12, 12).unwrap().complete();
-        assert!(slots.release(&mut queue, completion.slot));
+        assert!(slots.release(&mut queue, &[completion.slot], &mut [0]));
         assert!(slots.claim(0, 12, 12).is_none());
         assert_eq!(slots.ownership_counts(), (1, 0, 0));
-        assert_eq!(queue.published, [1]);
+        assert_eq!(queue.published, [[1]]);
         slots.assert_invariant();
     }
     #[test]
@@ -307,7 +322,7 @@ mod tests {
         slots.insert_posted(1, buffer()).unwrap();
         let mut queue = MockQueue::returning([Some(1)]);
         let completion = slots.claim(0, 12, 12).unwrap().complete();
-        assert!(!slots.release(&mut queue, completion.slot));
+        assert!(!slots.release(&mut queue, &[completion.slot], &mut [0]));
         assert_eq!(slots.ownership_counts(), (1, 0, 1));
         assert!(queue.published.is_empty());
         assert_eq!(queue.retired, [1]);

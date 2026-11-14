@@ -16,7 +16,6 @@
             let _serial = SERIAL.lock().unwrap();
             
             
-            crate::packet::init();
             initialize();
             configure_up(namespace(), 2, true).unwrap();
             let endpoint = crate::packet::PacketSocket::new(
@@ -26,9 +25,9 @@
             )
             .unwrap();
             endpoint.bind(packet_fixture_address()).unwrap();
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
+            crate::packet::deliver(namespace().packets(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert!(endpoint.poll_state().readable);
-            let pending = crate::packet::take_pending_notification(0).unwrap().1;
+            let pending = crate::packet::take_pending_notification(namespace().packets(), 0).unwrap().1;
             endpoint.close_description();
             assert_eq!(endpoint.poll_state(), SocketPollState::closed());
             assert_eq!(endpoint.bind(packet_fixture_address()), Err(SocketError::NotConnected));
@@ -41,8 +40,8 @@
                 receive(&endpoint, &mut output, false),
                 Err(SocketError::NotConnected)
             );
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
-            assert!(crate::packet::take_pending_notification(0).is_none());
+            crate::packet::deliver(namespace().packets(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
+            assert!(crate::packet::take_pending_notification(namespace().packets(), 0).is_none());
             let replacement = crate::packet::PacketSocket::new(
                 network_protocol::PacketKind::Datagram,
                 0x0800u16.to_be(),
@@ -53,7 +52,7 @@
             pending.close_description();
             drop(endpoint);
             drop(pending);
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
+            crate::packet::deliver(namespace().packets(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert_eq!(
                 receive(&replacement, &mut output, false)
                     .unwrap()
@@ -68,7 +67,6 @@
             let _serial = SERIAL.lock().unwrap();
             
             
-            crate::packet::init();
             initialize();
             configure_up(namespace(), 2, true).unwrap();
             let endpoints: Vec<_> = (0..8)
@@ -85,7 +83,7 @@
                 .collect();
             for fault in 0..2 {
                 crate::allocation_failure::fail_after(fault);
-                crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
+                crate::packet::deliver(namespace().packets(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
                 assert!(crate::allocation_failure::was_consumed());
                 assert!(
                     endpoints
@@ -95,9 +93,11 @@
             }
             // 同一 frame 只分配 payload Vec/Arc 两次，八个实际 endpoint queue publication 不分配。
             crate::allocation_failure::fail_after(2);
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
+            crate::packet::deliver(namespace().packets(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert!(!crate::allocation_failure::was_consumed());
             for endpoint in endpoints {
+                assert_eq!(endpoint.take_statistics(), Ok([3, 2]));
+                assert_eq!(endpoint.take_statistics(), Ok([0, 0]));
                 let mut peek = crate::receive::ReceiveBuffer::try_new(16).unwrap();
                 let mut consume = crate::receive::ReceiveBuffer::try_new(16).unwrap();
                 crate::allocation_failure::fail_next();
@@ -114,6 +114,7 @@
                     4
                 );
                 assert!(!crate::allocation_failure::was_consumed());
+                assert_eq!(endpoint.take_statistics(), Ok([0, 0]));
                 endpoint.close_description();
             }
         }

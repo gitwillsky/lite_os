@@ -8,6 +8,7 @@ use native_runtime::{
 use service_rpc::{Reader, Writer};
 
 use router_protocol::firewall::Prerouting;
+use router_protocol::switching::Ports;
 
 use super::SocketError;
 
@@ -17,9 +18,9 @@ pub use batch::ConfigurationBatch;
 /// 一次配置事务中的双栈转发策略；None 保持整组，Some 原子替换两族，不复制接口/FIB。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Forwarding {
-    /// 是否转发目的不是本机的 IPv4 单播。
+    /// 是否启用 IPv4 单播和已配置的组播转发。
     pub ipv4: bool,
-    /// 是否转发目的不是本机的 IPv6 单播；不授予跨 zone 转发权限。
+    /// 是否启用 IPv6 单播和已配置的组播转发。
     pub ipv6: bool,
 }
 
@@ -30,9 +31,13 @@ pub struct ExecutionPolicy<'a> {
     pub forwarding: Option<Forwarding>,
     /// 预路由规则；显式空链清除原规则。
     pub prerouting: Option<Prerouting<'a>>,
+    /// 物理二层成员；显式空集合清除网桥。
+    pub bridges: Option<Ports<'a>>,
+    /// 完整组播转发表正文；显式空表撤回全部组播路径。
+    pub multicast: Option<&'a [u8]>,
 }
 
-const PREPARE_VERSION: u32 = 4;
+const PREPARE_VERSION: u32 = 6;
 /// 冻结预备请求；正文由 RIB 意图或 NET 执行 codec 拥有，此处只拥有通用事务传输。
 /// 消费编码所有权并在返回前释放该副本，避免调用者等待 RPC 时仍保留全表。
 /// 只为非空正文创建 VMO，单改执行策略无需复制路由表。
@@ -42,11 +47,19 @@ pub(crate) fn prepare_request(
     encoded: Vec<u8>,
     policy: ExecutionPolicy<'_>,
 ) -> Result<(Writer, Vec<Handle>), Status> {
-    if encoded.is_empty() && policy.forwarding.is_none() && policy.prerouting.is_none() {
+    if policy.multicast.is_some_and(<[u8]>::is_empty) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    if encoded.is_empty()
+        && policy.forwarding.is_none()
+        && policy.prerouting.is_none()
+        && policy.bridges.is_none()
+        && policy.multicast.is_none()
+    {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let mut request = Writer::request(crate::installer::PREPARE_CONFIGURATION);
-    request.try_reserve(24)?;
+    request.try_reserve(40)?;
     request
         .u32(PREPARE_VERSION)
         .u32(match policy.forwarding {
@@ -54,10 +67,21 @@ pub(crate) fn prepare_request(
             Some(policy) => 4 | u32::from(policy.ipv4) | (u32::from(policy.ipv6) << 1),
         })
         .u64(encoded.len() as u64)
-        .u64(policy.prerouting.map_or(0, |chain| chain.bytes().len() as u64));
+        .u64(
+            policy
+                .prerouting
+                .map_or(0, |chain| chain.bytes().len() as u64),
+        )
+        .u64(policy.bridges.map_or(0, |ports| ports.bytes().len() as u64))
+        .u64(policy.multicast.map_or(0, |bytes| bytes.len() as u64));
     let mut handles = Vec::new();
     handles
-        .try_reserve_exact(usize::from(!encoded.is_empty()) + usize::from(policy.prerouting.is_some()))
+        .try_reserve_exact(
+            usize::from(!encoded.is_empty())
+                + usize::from(policy.prerouting.is_some())
+                + usize::from(policy.bridges.is_some())
+                + usize::from(policy.multicast.is_some()),
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     if !encoded.is_empty() {
         handles.push(Vmo::from_bytes(&encoded)?.into_handle());
@@ -65,12 +89,20 @@ pub(crate) fn prepare_request(
     if let Some(chain) = policy.prerouting {
         handles.push(Vmo::from_bytes(chain.bytes())?.into_handle());
     }
+    if let Some(ports) = policy.bridges {
+        handles.push(Vmo::from_bytes(ports.bytes())?.into_handle());
+    }
+    if let Some(bytes) = policy.multicast {
+        handles.push(Vmo::from_bytes(bytes)?.into_handle());
+    }
     Ok((request, handles))
 }
 pub(crate) struct CapturedPrepare {
     pub body: Option<Vec<u8>>,
     forwarding: Option<Forwarding>,
     prerouting: Option<Vec<u8>>,
+    bridges: Option<Vec<u8>>,
+    multicast: Option<Vec<u8>>,
 }
 
 impl CapturedPrepare {
@@ -83,6 +115,13 @@ impl CapturedPrepare {
                 .map(Prerouting::parse)
                 .transpose()
                 .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+            bridges: self
+                .bridges
+                .as_deref()
+                .map(Ports::parse)
+                .transpose()
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+            multicast: self.multicast.as_deref(),
         })
     }
 }
@@ -107,9 +146,13 @@ pub(crate) fn capture_prepare(
     };
     let length = request.u64()?;
     let firewall_length = request.u64()?;
+    let bridge_length = request.u64()?;
+    let multicast_length = request.u64()?;
     request.finish()?;
-    if handles.len() != usize::from(length != 0) + usize::from(firewall_length != 0)
-        || length == 0 && firewall_length == 0 && forwarding.is_none()
+    let previous_handles = usize::from(length != 0) + usize::from(firewall_length != 0);
+    let multicast_index = previous_handles + usize::from(bridge_length != 0);
+    if handles.len() != multicast_index + usize::from(multicast_length != 0)
+        || multicast_index == 0 && multicast_length == 0 && forwarding.is_none()
     {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
@@ -125,6 +168,8 @@ pub(crate) fn capture_prepare(
         body: capture(length, 0)?,
         forwarding,
         prerouting: capture(firewall_length, usize::from(length != 0))?,
+        bridges: capture(bridge_length, previous_handles)?,
+        multicast: capture(multicast_length, multicast_index)?,
     })
 }
 
@@ -228,7 +273,14 @@ mod tests {
     fn prepare_control_requires_canonical_intent_and_exact_body_capabilities() {
         for (ipv4, ipv6) in [(false, false), (false, true), (true, false), (true, true)] {
             let enabled = Forwarding { ipv4, ipv6 };
-            let (request, handles) = prepare_request(Vec::new(), ExecutionPolicy { forwarding: Some(enabled), prerouting: None }).unwrap();
+            let (request, handles) = prepare_request(
+                Vec::new(),
+                ExecutionPolicy {
+                    forwarding: Some(enabled),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert!(handles.is_empty());
             let bytes = &request.as_bytes()[8..];
             let captured = capture_prepare(&mut Reader::new(bytes), handles).unwrap();
@@ -249,9 +301,22 @@ mod tests {
             invalid[4..8].copy_from_slice(&0u32.to_le_bytes());
             assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
             invalid[4..8].copy_from_slice(&4u32.to_le_bytes());
-            invalid[8..16].copy_from_slice(&1u64.to_le_bytes());
-            assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+            for offset in (8..40).step_by(8) {
+                invalid[offset..offset + 8].copy_from_slice(&1u64.to_le_bytes());
+                assert!(capture_prepare(&mut Reader::new(&invalid), Vec::new()).is_err());
+                invalid[offset..offset + 8].fill(0);
+            }
         }
         assert!(prepare_request(Vec::new(), ExecutionPolicy::default()).is_err());
+        assert!(
+            prepare_request(
+                Vec::new(),
+                ExecutionPolicy {
+                    multicast: Some(&[]),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 }

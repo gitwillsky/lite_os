@@ -99,6 +99,7 @@ impl<'a> IntoIterator for Effects<'a> {
 }
 
 /// 当前连接唯一的协议状态与期限；所有时间为单调纳秒，调用者不得倒退时钟或并发投递事件。
+#[derive(Clone)]
 pub struct Session {
     config: Config,
     // OWNER: 本 TCP 已选定的实际 OPEN；邻居的后续重试变化不能追溯放宽此连接的能力授权。

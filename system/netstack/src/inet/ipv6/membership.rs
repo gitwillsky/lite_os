@@ -25,11 +25,11 @@ impl Parameters {
     pub(super) fn v1(&self, now: u64) -> bool {
         self.older_until.is_some_and(|at| at > now)
     }
-    pub(super) fn due(&self, now: u64) -> bool {
-        self.older_until.is_some_and(|at| at <= now)
+    pub(super) fn next_deadline(&self) -> Option<u64> {
+        self.older_until
     }
     pub(super) fn expire(&mut self, now: u64) -> bool {
-        if self.due(now) {
+        if self.next_deadline().is_some_and(|at| at <= now) {
             self.older_until = None;
             true
         } else {

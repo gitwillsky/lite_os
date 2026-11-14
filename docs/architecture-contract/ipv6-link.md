@@ -13,7 +13,7 @@
   新地址阶段变化通知既有接口观察者；设备链路回调同时唤醒 NET 与控制面，不持有 NET guard 或执行反向查询。
 - `ipv6::packet` 只装配/验证借用报文，全部头、选项和 checksum 经 `packet-wire`；`ipv6::membership::Listener` 拥有所属组的监听状态。
   `ipv6::neighbor::Neighbors` 唯一拥有当前接口的邻居/时钟索引与待解析载荷；未引入应用私有接口。
-  IPv4 仍沿原主机引擎，本模块不借用其 IPv6 实现；移除 smoltcp 的完整主机栈目标不变。
+  双栈主机共用设备的原生收发和报文归还机制。[IPv4 主机网络](ipv4-transports.md)
 
 ## 地址与邻居发现
 
@@ -300,7 +300,7 @@ IPv6 本机 /128 已按真实使用资格参与发布；双栈 TCP 邻居已接�
 
 ## 地址查询与版本
 
-- `InterfaceSnapshot` 仍是固定大小、可复制的轻量接口事实，接口 codec 版本为 3；不再携带自动链路地址，完整地址统一从 NamespaceService::address_snapshot 查询。
+- `InterfaceSnapshot` 是固定大小、可复制的轻量接口事实。接口 codec 版本 5 包含 VLAN 网关类型，完整地址统一从 NamespaceService::address_snapshot 查询。
   收发/AF_PACKET/路由事实不因多地址枚举增加分配或列表复制，没有新旧地址查询双轨。自动链路地址的阶段只由 Address 提供，不由投影层计时。
 - 原生查询 ordinal 15 携带 u32 接口（0 表示全部），严格拒绝尾部和输入句柄；未知非零接口返回 NoDevice。
   成功返回领域结果、u64 正文长度及唯一只读 VMO；当前 namespace 能力决定可见 NET，不增加应用私有入口。
@@ -332,7 +332,7 @@ IPv6 本机 /128 已按真实使用资格参与发布；双栈 TCP 邻居已接�
   原生接口身份是非零 u32；Linux 位宽属于投影层。普通探测失败项退休；承担复探义务的失败网关保留邻居记录和时钟，撤销义务后可按容量规则回收。
 - 域请求 ordinal 14 携带 u32 接口（0 表示全部），拒绝尾随数据与输入句柄；未知非零接口为 NoDevice。
   成功回复为领域结果、u64 正文长度及唯一 VMO；句柄/长度与完整正文验证成功后才生成快照，既有域能力决定可见 NET，不开放应用私有入口。
-- `network-protocol::namespace::neighbors` 拥有版本 3。8-byte 头含 u32 小端版本/行数，每行 32 字节。
+- `network-protocol::namespace::neighbors` 拥有版本 3 的快照封装，8 字节头含 u32 小端版本和行数。`router-protocol::neighbors` 拥有共用的 32 字节记录。
   行依次为 u32 接口、u8 状态（0 incomplete、1 reachable、2 stale、3 delay、4 probe、5 failed）、u8 Router、u8 当前阶段次数、u8 MAC 是否存在、
   16-byte 地址（IPv4 后补零）、6-byte MAC、u8 地址族 4/6、u8 零保留字段。Router 位仅限 IPv6。Incomplete 和 Failed 的 MAC 字节全零。非法长度、字段或状态组合均拒绝。
 - capture 在同一 guard 两次遍历（计数/编码），只准备一份正文存储；服务经 VMO 交接，linuxd 持不可变正文，dump 按游标逐条投影，不再复制行 Vec。
@@ -343,6 +343,14 @@ IPv6 本机 /128 已按真实使用资格参与发布；双栈 TCP 邻居已接�
 - benchmark 决策：查询按实际邻居数量线性捕获与验证，属于冷路径；普通收发不增加快照、扫描、锁或消息。
   NA 接收只更新所属记录的一个 Router 位；新增成本沿统一系统验收检查查询延迟/临时内存及并行流量，不设置脱离 IPC 的 host 墙钟阈值。
   现有 ND fixture 验证冻结、过滤、NET 隔离、Router 规则、OOM 与关闭；同一生产 netlink codec 验证双栈 UAPI，来宾 `ip neigh` 仍待验收。
+
+### 桌面邻居观察
+
+- 域操作码 20 和授权设置操作码 25 复用同一邻居记录。续页键由逻辑接口号和双栈地址组成。查询在同一 NET guard 按接口、IPv4、IPv6 顺序取最多 64 条及一条前瞻记录。
+  先在有序接口表定位，再从原邻居树按地址续读，编码在锁外完成。回复头包含版本 1、行数、后续页标志，每行先是 32 字节邻居记录，再是 16 字节接口名。查询不触发解析或续期。
+- 网关操作码 `0x80000002` 接受[按域内联请求](userspace-abi.md#网络管理入口)和同一个游标。正文首字节 0 为保活，1 为完整页，2 为行数、后续页标志、u64 变化位置及对应记录。接收方验证新页排序和游标后才替换旧页。
+- 可见页每秒采样，沿用[有界会话与保活](ip-forwarding.md#桌面计数订阅)，离页停止。界面按接口和地址保留选择。Linux 的邻居 dump 沿原入口读取全量，管理分页不引入 Linux 多播订阅。
+- benchmark 决策。窗口和网关只持有一页，报文处理没有新增工作。并行观察的锁持有时间、快照和消息开销纳入整机验收。[桌面入口](../../user/programs/network-manager/README.md#邻居)
 
 ## 验证、成本与边界
 

@@ -158,7 +158,7 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 
 ### 网络与报文
 
-报文格式、smoltcp 与 Linux 网络语义的固定来源见[网络基线](standards-baseline/network.md)。
+报文格式、宿主格式对照与 Linux 网络语义的固定来源见[网络基线](standards-baseline/network.md)。
 
 ### musl 与 BusyBox
 

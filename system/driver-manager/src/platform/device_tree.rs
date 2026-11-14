@@ -42,6 +42,7 @@ const MESSAGE_CELLS: u32 = 1;
 const MESSAGE_COMPATIBLE: &str = "riscv,imsics";
 #[cfg(target_arch = "riscv64")]
 const MESSAGE_CELLS: u32 = 0;
+const GIC_V2M_COMPATIBLE: &str = "arm,gic-v2m-frame";
 /// PCI `interrupt-map` 每项中父中断控制器的地址 cell 数（GICv3 为 2，APLIC 为 0）。
 #[cfg(target_arch = "aarch64")]
 const PARENT_ADDRESS_CELLS: usize = 2;
@@ -153,11 +154,17 @@ struct IommuScan {
 
 #[derive(Default)]
 struct MessageControllerScan {
-    compatible: bool,
+    kind: Option<MessageControllerKind>,
     controller: bool,
     cells: Option<u32>,
     phandle: Option<u32>,
     supervisor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageControllerKind {
+    Native,
+    GicV2m,
 }
 
 /// 把同一目标控制器的 phandle 映射归一；不复制控制器状态或假设 stream/message ID 相等。
@@ -211,23 +218,26 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
     let mut iommu = IommuScan::default();
     let mut iommu_found: Option<IommuFacts> = None;
     let mut messages = MessageControllerScan::default();
-    let mut message_phandle = None;
+    let mut message_controller = None;
     let mut commit =
         |pci: &mut PciScan, iommu: &mut IommuScan, messages: &mut MessageControllerScan| {
             let pending = core::mem::take(messages);
-            if pending.compatible && (MESSAGE_CELLS != 0 || pending.supervisor) {
+            if let Some(kind) = pending.kind
+                && (kind == MessageControllerKind::GicV2m || MESSAGE_CELLS != 0 || pending.supervisor)
+            {
+                let cells_match = match kind {
+                    MessageControllerKind::Native if MESSAGE_CELLS != 0 => {
+                        pending.cells == Some(MESSAGE_CELLS)
+                    }
+                    _ => pending.cells.is_none_or(|cells| cells == 0),
+                };
                 assert!(
-                    pending.controller
-                        && if MESSAGE_CELLS == 0 {
-                            pending.cells.is_none_or(|cells| cells == 0)
-                        } else {
-                            pending.cells == Some(MESSAGE_CELLS)
-                        },
+                    pending.controller && cells_match,
                     "invalid MSI controller binding"
                 );
                 let phandle = pending.phandle.expect("MSI controller lacks phandle");
                 assert!(
-                    message_phandle.replace(phandle).is_none(),
+                    message_controller.replace((phandle, kind)).is_none(),
                     "multiple MSI controllers are not supported"
                 );
             }
@@ -268,9 +278,15 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
             pci.is_host |= compatible
                 .clone()
                 .any(|value| value == Str::from("pci-host-ecam-generic"));
-            messages.compatible |= compatible
-                .clone()
-                .any(|value| value == Str::from(MESSAGE_COMPATIBLE));
+            messages.kind = compatible.clone().find_map(|value| {
+                if value == Str::from(MESSAGE_COMPATIBLE) {
+                    Some(MessageControllerKind::Native)
+                } else if cfg!(target_arch = "aarch64") && value == Str::from(GIC_V2M_COMPATIBLE) {
+                    Some(MessageControllerKind::GicV2m)
+                } else {
+                    None
+                }
+            });
             iommu.kind = iommu.kind.or_else(|| iommu_kind(compatible));
             WalkOperation::StepOver
         }
@@ -329,19 +345,25 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
                 "invalid direct MSI parent or overlapping msi-map"
             );
             assert_eq!(
-                Some(parent),
-                message_phandle,
+                message_controller,
+                Some((parent, MessageControllerKind::Native)),
                 "PCI MSI parent must be the supervisor controller"
             );
             MessageRouting::Direct
         } else if scan.message_map.is_empty() {
             MessageRouting::None
         } else {
-            MessageRouting::Remapped(requester_map(
+            let mapping = requester_map(
                 scan.message_map,
-                message_phandle,
+                message_controller.map(|(phandle, _)| phandle),
                 scan.message_mask,
-            ))
+            );
+            // Valid firmware can describe a GICv2m frame even though the kernel
+            // currently allocates ARM message interrupts only through an ITS.
+            match message_controller {
+                Some((_, MessageControllerKind::Native)) => MessageRouting::Remapped(mapping),
+                _ => MessageRouting::None,
+            }
         };
         Some(PciHost::new(
             scan.ecam.filter(|range| range.end > range.start)?,

@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(allocator_ext)]
 
 //! 六位 stride 的 Poptrie（SIGCOMM 2015）：vector/leafvec + rank，叶子引用前缀身份而不是复制路由。
 //! 调用者拥有排序的实际记录；本索引只持前缀身份、引用数和连续候选区间，不解释路由或服务状态。
@@ -21,7 +22,7 @@ mod sealed {
     impl Sealed for u32 {}
     impl Sealed for u128 {}
 }
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 /// 索引支持的固定宽地址；仅 u32/u128 可实现，确保 stride 与位移始终有界。
 pub trait Address: sealed::Sealed + Copy + Ord {
@@ -74,7 +75,6 @@ pub struct Prefix<A> {
     references: u32,
     // 与引用数构成调用者的同一连续候选区间；没有起点就必须重查全表才能找到候选。
     start: u32,
-    parent: u32,
 }
 impl<A> Prefix<A> {
     /// 同一排序的实际 alias 连续区间；范围只由 build/recount/add/remove 与引用数共同维护。
@@ -99,8 +99,35 @@ struct Branch {
 /// 冷编译、热 rank 查找的唯一前缀索引；没有地址结果 cache、锁或原始指针。
 pub struct Poptrie<A> {
     prefixes: Vec<Prefix<A>>,
+    // OWNER: 位图、压缩叶与祖先链只依赖有序前缀键。键相同的根共享布局，各自拥有 alias 区间。
+    layout: Option<Arc<Layout>>,
+}
+
+#[derive(Default)]
+struct Layout {
+    // OWNER: 结构身份在编译时取得，只用于比较跨线程的查找结果。0 表示身份空间用尽，
+    // 此后仍可本地查询。身份从不复用，因此已退休布局的结果不会被误认成新布局的下标。
+    stamp: u32,
     nodes: Vec<Node>,
     leaves: Vec<u32>,
+    parents: Vec<u32>,
+}
+
+// 只在编译新布局时访问。Relaxed 足以分配不重复的编号，布局的发布由其调用者负责。
+static NEXT_LAYOUT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// 只读的前缀布局。持有期间即使原根替换，结构下标仍有效。
+#[derive(Clone)]
+pub struct ReadLayout<A> {
+    layout: Arc<Layout>,
+    address: core::marker::PhantomData<A>,
+}
+
+impl<A: Address> ReadLayout<A> {
+    /// 为 `address` 查找最窄结构前缀，返回可随该次查询传递的提示。0 表示无可用提示。
+    pub fn probe(&self, address: A) -> u64 {
+        u64::from(self.layout.stamp) << 32 | u64::from(self.layout.identity(address))
+    }
 }
 /// 预备的一次引用增加；只能在原索引尚未修改时向该索引提交。
 pub enum Addition<A> {
@@ -121,8 +148,7 @@ impl<A: Address> Poptrie<A> {
     pub fn new() -> Self {
         Self {
             prefixes: Vec::new(),
-            nodes: Vec::new(),
-            leaves: Vec::new(),
+            layout: None,
         }
     }
     /// 从实际记录集预备新布局；重复前缀合并为引用数，区间按 (network, length) 顺序构建。
@@ -133,13 +159,41 @@ impl<A: Address> Poptrie<A> {
     /// # Errors
     /// 前缀错误、u32 身份/区间溢出或分配失败。
     pub fn build(entries: impl Iterator<Item = (A, u8)>) -> Result<Self, Error> {
-        Self::build_counted(entries.map(|(network, length)| (network, length, 1)))
+        Self::build_counted(entries.map(|(network, length)| (network, length, 1)), None)
     }
-    fn build_counted(entries: impl Iterator<Item = (A, u8, u32)>) -> Result<Self, Error> {
+
+    /// 从新的记录预备候选索引。若前缀键集合相同，复用当前不可变的位图和叶布局。
+    /// 新根独立维护 alias 区间。输入可乱序，调用者的实际记录须按同一前缀顺序排列。
+    /// # Errors
+    /// 非法前缀、区间溢出或分配失败。当前索引保持原样。
+    pub fn rebuild(&self, entries: impl Iterator<Item = (A, u8)>) -> Result<Self, Error> {
+        Self::build_counted(
+            entries.map(|(network, length)| (network, length, 1)),
+            Some(self),
+        )
+    }
+
+    fn build_counted(
+        entries: impl Iterator<Item = (A, u8, u32)>,
+        previous: Option<&Self>,
+    ) -> Result<Self, Error> {
         let mut result = Self::new();
+        let mut ordered = true;
         for (network, length, references) in entries {
             if length > A::BITS || network.masked(length) != network || references == 0 {
                 return Err(Error::Invalid);
+            }
+            if let Some(last) = result.prefixes.last_mut() {
+                let key = (network, length);
+                let previous = (last.network, last.length);
+                if key == previous {
+                    last.references = last
+                        .references
+                        .checked_add(references)
+                        .ok_or(Error::NoSpace)?;
+                    continue;
+                }
+                ordered &= previous < key;
             }
             if result.prefixes.len() == u32::MAX as usize {
                 return Err(Error::NoSpace);
@@ -153,32 +207,33 @@ impl<A: Address> Poptrie<A> {
                 length,
                 references,
                 start: 0,
-                parent: 0,
             });
         }
-        result
-            .prefixes
-            .sort_unstable_by_key(|prefix| (prefix.network, prefix.length));
-        // 1. 原地合并重复前缀；先检查总数，不能在 dedup 回调里忽略引用计数溢出。
-        let mut previous = None;
-        let mut references = 0u32;
-        for prefix in &result.prefixes {
-            let key = (prefix.network, prefix.length);
-            if previous != Some(key) {
-                references = 0;
-                previous = Some(key);
+        if !ordered {
+            result
+                .prefixes
+                .sort_unstable_by_key(|prefix| (prefix.network, prefix.length));
+            // 1. 合并不相邻的重复前缀。先检查总数，避免在 dedup 回调里丢掉溢出。
+            let mut previous = None;
+            let mut references = 0u32;
+            for prefix in &result.prefixes {
+                let key = (prefix.network, prefix.length);
+                if previous != Some(key) {
+                    references = 0;
+                    previous = Some(key);
+                }
+                references = references
+                    .checked_add(prefix.references)
+                    .ok_or(Error::NoSpace)?;
             }
-            references = references
-                .checked_add(prefix.references)
-                .ok_or(Error::NoSpace)?;
+            result.prefixes.dedup_by(|next, previous| {
+                if (next.network, next.length) != (previous.network, previous.length) {
+                    return false;
+                }
+                previous.references += next.references;
+                true
+            });
         }
-        result.prefixes.dedup_by(|next, previous| {
-            if (next.network, next.length) != (previous.network, previous.length) {
-                return false;
-            }
-            previous.references += next.references;
-            true
-        });
         if result.prefixes.is_empty() {
             return Ok(result);
         }
@@ -187,11 +242,26 @@ impl<A: Address> Poptrie<A> {
             prefix.start = start;
             start = start.checked_add(prefix.references).ok_or(Error::NoSpace)?;
         }
+        if let Some(previous) = previous
+            && result.prefixes.len() == previous.prefixes.len()
+            && result
+                .prefixes
+                .iter()
+                .zip(&previous.prefixes)
+                .all(|(prefix, old)| (prefix.network, prefix.length) == (old.network, old.length))
+        {
+            result.layout = previous.layout.clone();
+            return Ok(result);
+        }
         // 2. 有序前缀的祖先链；IPv4/IPv6 共用同一算法，深度由地址位数限制。
+        let mut layout = Layout::default();
+        layout
+            .parents
+            .try_reserve_exact(result.prefixes.len())
+            .map_err(|_| Error::NoMemory)?;
         let mut ancestors = [0u32; 129];
         let mut depth = 0usize;
-        for index in 0..result.prefixes.len() {
-            let prefix = result.prefixes[index];
+        for (index, prefix) in result.prefixes.iter().enumerate() {
             while depth != 0 {
                 let parent = result.prefixes[(ancestors[depth - 1] - 1) as usize];
                 if parent.length < prefix.length
@@ -201,18 +271,30 @@ impl<A: Address> Poptrie<A> {
                 }
                 depth -= 1;
             }
-            result.prefixes[index].parent = if depth == 0 { 0 } else { ancestors[depth - 1] };
+            layout
+                .parents
+                .push(if depth == 0 { 0 } else { ancestors[depth - 1] });
             ancestors[depth] = index as u32 + 1;
             depth += 1;
         }
         // 3. 连续子节点/压缩叶 run 均在发布之前准备；失败只丢弃尚未发布的 result。
-        result.nodes.try_reserve(1).map_err(|_| Error::NoMemory)?;
-        result.nodes.push(Node::default());
-        result.nodes[0] = result.compile(A::zero(), 0, 0, result.prefixes.len(), 0)?;
+        layout.nodes.try_reserve(1).map_err(|_| Error::NoMemory)?;
+        layout.nodes.push(Node::default());
+        layout.nodes[0] =
+            layout.compile(&result.prefixes, A::zero(), 0, 0, result.prefixes.len(), 0)?;
+        use core::sync::atomic::Ordering::Relaxed;
+        layout.stamp = NEXT_LAYOUT
+            .try_update(Relaxed, Relaxed, |next| next.checked_add(1))
+            .unwrap_or(0);
+        result.layout = Some(Arc::try_new(layout).map_err(|_| Error::NoMemory)?);
         Ok(result)
     }
-    fn compile(
+}
+
+impl Layout {
+    fn compile<A: Address>(
         &mut self,
+        prefixes: &[Prefix<A>],
         base: A,
         offset: u8,
         start: usize,
@@ -227,17 +309,17 @@ impl<A: Address> Poptrie<A> {
         for (slot, branch) in branches[..slots].iter_mut().enumerate() {
             let key = base.slot(offset, width, slot);
             while inherited != 0 {
-                let prefix = self.prefixes[(inherited - 1) as usize];
+                let prefix = prefixes[(inherited - 1) as usize];
                 if key.masked(prefix.length) == prefix.network {
                     break;
                 }
-                inherited = prefix.parent;
+                inherited = self.parents[(inherited - 1) as usize];
             }
             let mut first = cursor;
-            while cursor < end && self.prefixes[cursor].network.stride(offset, width) == slot {
+            while cursor < end && prefixes[cursor].network.stride(offset, width) == slot {
                 cursor += 1;
             }
-            while first < cursor && self.prefixes[first].length <= offset + width {
+            while first < cursor && prefixes[first].length <= offset + width {
                 inherited = first as u32 + 1;
                 first += 1;
             }
@@ -283,6 +365,7 @@ impl<A: Address> Poptrie<A> {
         for (slot, branch) in branches[..slots].iter().enumerate() {
             if branch.start != branch.end {
                 let node = self.compile(
+                    prefixes,
                     base.slot(offset, width, slot),
                     offset + width,
                     branch.start as usize,
@@ -300,10 +383,10 @@ impl<A: Address> Poptrie<A> {
             base1,
         })
     }
-    fn identity(&self, address: A) -> u32 {
-        if self.nodes.is_empty() {
-            return 0;
-        }
+}
+
+impl Layout {
+    fn identity<A: Address>(&self, address: A) -> u32 {
         let mut index = 0;
         let mut offset = 0;
         loop {
@@ -321,28 +404,66 @@ impl<A: Address> Poptrie<A> {
             offset += width;
         }
     }
+}
+
+impl<A: Address> Poptrie<A> {
+    /// 保有当前不可变布局，供其他线程借用。空索引返回 None。
+    pub fn read_layout(&self) -> Option<ReadLayout<A>> {
+        let layout = self.layout.as_ref().filter(|layout| layout.stamp != 0)?;
+        Some(ReadLayout {
+            layout: layout.clone(),
+            address: core::marker::PhantomData,
+        })
+    }
+
+    /// 当前可向外发布的布局身份。0 表示空索引或不提供跨线程提示。
+    pub fn layout_stamp(&self) -> u32 {
+        self.layout.as_ref().map_or(0, |layout| layout.stamp)
+    }
     /// 当前索引的结构前缀；身份为本切片下标，只在同一未修改索引内有效。
     /// 零引用结构可能保留供恢复使用；调用者不得把下标当作全局路由身份。
     pub fn prefixes(&self) -> &[Prefix<A>] {
         &self.prefixes
     }
-    fn identities(&self, address: A) -> impl Clone + Iterator<Item = u32> {
-        core::iter::successors(Some(self.identity(address)), |identity| {
-            (*identity != 0).then(|| self.prefixes[(*identity - 1) as usize].parent)
+    fn identities(&self, address: A, probe: u64) -> impl Clone + Iterator<Item = u32> {
+        let (parents, identity) = self.layout.as_ref().map_or((&[][..], 0), |layout| {
+            let identity = probe as u32;
+            let stamp = (probe >> 32) as u32;
+            let first =
+                if stamp != 0 && stamp == layout.stamp && identity as usize <= layout.parents.len()
+                {
+                    identity
+                } else {
+                    layout.identity(address)
+                };
+            (layout.parents.as_slice(), first)
+        });
+        core::iter::successors(Some(identity), move |identity| {
+            (*identity != 0).then(|| parents[(*identity - 1) as usize])
         })
         .take_while(|identity| *identity != 0)
     }
     /// 从最窄匹配沿祖先退回，返回非零引用前缀在 prefixes 中的下标；不分配。
     /// 下标只供同一索引的旁路元数据使用，索引重建/修改后必须一起重建元数据。
     pub fn matching_indices(&self, address: A) -> impl Clone + Iterator<Item = usize> {
-        self.identities(address).filter_map(|identity| {
+        self.identities(address, 0).filter_map(|identity| {
             let index = (identity - 1) as usize;
             (self.prefixes[index].references != 0).then_some(index)
         })
     }
     /// 从最窄匹配沿祖先退回，跳过已退休 alias 的结构节点；不扫描无关前缀。
     pub fn matching(&self, address: A) -> impl Clone + Iterator<Item = &Prefix<A>> {
-        self.identities(address).filter_map(|identity| {
+        self.matching_from(address, 0)
+    }
+
+    /// 使用为同一 `address` 生成的提示。若布局已更换，重新查找；alias 总是读取当前根。
+    /// `probe` 来自此地址的 ReadLayout::probe，或为 0。调用者须保持提示与地址的对应关系。
+    pub fn matching_from(
+        &self,
+        address: A,
+        probe: u64,
+    ) -> impl Clone + Iterator<Item = &Prefix<A>> {
+        self.identities(address, probe).filter_map(|identity| {
             let prefix = &self.prefixes[(identity - 1) as usize];
             (prefix.references != 0).then_some(prefix)
         })
@@ -366,19 +487,27 @@ impl<A: Address> Poptrie<A> {
         }) {
             return Err(Error::NoSpace);
         }
-        if let Ok(index) = self.position(network, length) {
-            self.prefixes[index]
-                .references
-                .checked_add(1)
-                .ok_or(Error::NoSpace)?;
-            return Ok(Addition::Existing(index));
-        }
+        let position = match self.position(network, length) {
+            Ok(index) => {
+                self.prefixes[index]
+                    .references
+                    .checked_add(1)
+                    .ok_or(Error::NoSpace)?;
+                return Ok(Addition::Existing(index));
+            }
+            Err(position) => position,
+        };
+        let (before, after) = self.prefixes.split_at(position);
+        let count = |prefix: &Prefix<A>| {
+            (prefix.references != 0).then_some((prefix.network, prefix.length, prefix.references))
+        };
         Self::build_counted(
-            self.prefixes
+            before
                 .iter()
-                .filter(|prefix| prefix.references != 0)
-                .map(|prefix| (prefix.network, prefix.length, prefix.references))
-                .chain(core::iter::once((network, length, 1))),
+                .filter_map(count)
+                .chain(core::iter::once((network, length, 1)))
+                .chain(after.iter().filter_map(count)),
+            None,
         )
         .map(Addition::Rebuilt)
     }
@@ -525,12 +654,27 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
+        let probe = trie.read_layout().unwrap().probe(u32::MAX);
         let lengths = |trie: &Poptrie<u32>| {
-            trie.matching(u32::MAX)
+            trie.matching_from(u32::MAX, probe)
                 .map(|prefix| prefix.length)
                 .collect::<Vec<_>>()
         };
-        let nodes = trie.nodes.as_ptr();
+        let layout = trie.layout.as_ref().unwrap().clone();
+        let mut candidate = trie
+            .rebuild([(u32::MAX, 32), (0, 0), (0xfc00_0000, 6)].into_iter())
+            .unwrap();
+        assert!(Arc::ptr_eq(candidate.layout.as_ref().unwrap(), &layout));
+        assert_eq!(candidate.range_for(u32::MAX, 32), Some(2..3));
+        assert_eq!(trie.range_for(u32::MAX, 32), Some(3..4));
+        candidate.remove(0xfc00_0000, 6);
+        assert_eq!(lengths(&candidate), [32, 0]);
+        assert_eq!(lengths(&trie), [32, 6, 0]);
+        let changed = candidate
+            .rebuild([(0, 0), (0x0a00_0000, 8), (0x7f00_0000, 8)].into_iter())
+            .unwrap();
+        assert!(!Arc::ptr_eq(changed.layout.as_ref().unwrap(), &layout));
+        assert_eq!(lengths(&changed), [0]);
         trie.remove(0xfc00_0000, 6);
         assert_eq!(lengths(&trie), [32, 6, 0]);
         trie.remove(0xfc00_0000, 6);
@@ -541,17 +685,11 @@ mod tests {
         assert!(matches!(restored, Addition::Existing(_)));
         trie.add(restored);
         assert_eq!(lengths(&trie), [6, 0]);
-        assert_eq!(trie.nodes.as_ptr(), nodes);
+        assert!(Arc::ptr_eq(trie.layout.as_ref().unwrap(), &layout));
         trie.recount(core::iter::once((u32::MAX, 32)));
         assert_eq!(lengths(&trie), [32]);
         trie.recount(core::iter::empty());
-        assert_eq!(
-            (
-                trie.nodes.capacity(),
-                trie.leaves.capacity(),
-                trie.prefixes.capacity()
-            ),
-            (0, 0, 0)
-        );
+        assert!(trie.layout.is_none());
+        assert_eq!(trie.prefixes.capacity(), 0);
     }
 }

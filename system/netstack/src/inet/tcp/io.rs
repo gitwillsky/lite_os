@@ -1,7 +1,7 @@
 use super::{State, transport};
 
 use super::{TcpConnection, TcpEndpointState, TcpMode, endpoint_id};
-use crate::inet::{InetSocket, NetworkStack};
+use crate::inet::InetSocket;
 use crate::receive::ReceiveBuffer;
 use network_protocol::{SocketError, SocketPollState};
 
@@ -71,7 +71,7 @@ pub(in crate::inet) fn send(socket: &InetSocket, input: &[u8]) -> Result<usize, 
             state.handles[0].transmit_at = super::super::Instant::from_millis(0);
         },
     )?;
-    crate::worker::request_poll();
+    crate::worker::request_poll(socket.namespace.id());
     Ok(written)
 }
 
@@ -287,33 +287,7 @@ impl TcpEndpointState {
     }
 }
 
-/// 在协议 poll 内提交 connect/FIN/reset 状态。
-///
-/// # Parameters
-///
-/// - `network`: 唯一协议栈 owner。
-///
-/// # Errors
-///
-/// 状态不变量破坏时 fail-stop。
-/// 实际原生TCP连接的纯时间phase，先于任何FIB/NIC filter；无新锁/分配/Context。
-pub(in crate::inet) fn maintain_clocks(
-    network: &mut NetworkStack,
-    timestamp: smoltcp::time::Instant,
-) {
-    network.tcp_endpoints.for_each_mut(|_, state| {
-        for entry in &mut state.handles {
-            entry.transport.maintain(super::at(timestamp));
-        }
-        maintain_state(state);
-    });
-}
-
-pub(in crate::inet) fn maintain(
-    tcp_endpoints: &mut fallible_tree::FallibleMap<usize, TcpEndpointState>,
-) {
-    tcp_endpoints.for_each_mut(|_, state| maintain_state(state));
-}
+/// 根据实际传输状态提交 connect、FIN 或 reset 的可观察结果。
 pub(super) fn maintain_state(state: &mut TcpEndpointState) {
     if state.orphaned {
         return;
@@ -326,7 +300,9 @@ pub(super) fn maintain_state(state: &mut TcpEndpointState) {
             shutdown_write,
             ..
         } => {
-            let tcp = &mut state.handles[0].transport;
+            let entry = &mut state.handles[0];
+            entry.retire_ao();
+            let tcp = &mut entry.transport;
             match tcp.state() {
                 State::Established | State::CloseWait => {
                     let mut connection = TcpConnection::established(tcp, *bound, state.family);
@@ -352,13 +328,16 @@ pub(super) fn maintain_state(state: &mut TcpEndpointState) {
             }
         }
         TcpMode::Connected(connection) => {
-            let tcp = &mut state.handles[0].transport;
+            let entry = &mut state.handles[0];
+            entry.retire_ao();
+            let tcp = &mut entry.transport;
             if let Some(error) = connection.observe(tcp) {
                 state.pending_error = Some(error);
             }
         }
         TcpMode::Listening { endpoint, .. } => {
             for entry in &mut state.handles {
+                entry.retire_ao();
                 let tcp = &mut entry.transport;
                 if let Some(policy) = &mut entry.passive {
                     // 已建立 child 留在实际 accept queue；RST 不得把它改回监听槽。
@@ -371,6 +350,7 @@ pub(super) fn maintain_state(state: &mut TcpEndpointState) {
                     State::Established | State::CloseWait if entry.passive.is_none() => {
                         entry.passive = Some(super::PassivePolicy {
                             md5_keys: state.md5_keys.clone(),
+                            ao_keys: entry.ao.as_mut().and_then(|ao| ao.inherited_keys.take()),
                             options: {
                                 let mut options = state.options;
                                 if tcp.bound_interface().is_some() {
@@ -390,6 +370,9 @@ pub(super) fn maintain_state(state: &mut TcpEndpointState) {
                             .apply_tcp(tcp);
                     }
                     State::Closed => {
+                        entry.ao = None;
+                        entry.md5 = None;
+                        tcp.set_authentication(transport::Authentication::None);
                         state.options.apply_tcp(tcp);
                         tcp.listen(super::listen_endpoint(*endpoint))
                             .expect("existing passive endpoint must remain valid");
@@ -400,29 +383,6 @@ pub(super) fn maintain_state(state: &mut TcpEndpointState) {
         }
         TcpMode::Closed { .. } => {}
     }
-}
-
-/// 报文owner已消费reset或协议自然结束后回收Closed orphan，不等待网卡交付。
-pub(in crate::inet) fn reap_orphans(network: &mut NetworkStack) {
-    let NetworkStack {
-        tcp_endpoints,
-        tcp_ports,
-        ..
-    } = network;
-    tcp_endpoints.retain(|_, state| {
-        if !state.orphaned
-            || state.handles.iter().any(|entry| {
-                entry.transport.state() != State::Closed
-                    || entry.transport.remote_endpoint().is_some()
-            })
-        {
-            return true;
-        }
-        if let Some(lease) = state.port_lease {
-            tcp_ports.release(lease);
-        }
-        false
-    });
 }
 
 /// 原子读取并清除 TCP pending error，供 `SO_ERROR` 使用。
@@ -522,6 +482,6 @@ pub(in crate::inet) fn shutdown(socket: &InetSocket, how: usize) -> Result<(), S
         }
     };
     drop(network);
-    crate::worker::request_poll();
+    crate::worker::request_poll(socket.namespace.id());
     result
 }

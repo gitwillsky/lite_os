@@ -18,6 +18,8 @@ fn config() -> Config {
         ipv4_unicast: true,
         ipv6_unicast: true,
         route_refresh: true,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     }
 }

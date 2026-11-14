@@ -273,7 +273,7 @@ fn udp_broadcast_delivers_all_matching_sockets_without_creating_a_recipient_queu
 }
 
 #[test]
-fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
+fn second_receive_queue_delivers_udp_and_only_reserves_tx_for_a_reply() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let scope = crate::namespace::Namespace::create().unwrap();
@@ -310,20 +310,22 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
         .unwrap()
         .0
         .push_back(peer_udp_frame(udp_peer(44017), 43177, b"queue-one"));
+    let mut scan = crate::namespace::DomainScan::new(0, 1);
     for _ in 0..4 {
-        dispatch_network_work();
+        dispatch_network_work(&mut scan, u64::MAX);
     }
     assert_eq!(udp_read(&endpoint, false).unwrap().0, b"queue-one");
     assert_eq!(
         nic.cancelled_queue
             .load(core::sync::atomic::Ordering::Relaxed),
-        1
+        u16::MAX
     );
     nic.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
         Ipv4Addr::new(10, 0, 2, 15),
         ipv4_address(udp_peer(44017)),
     ));
     advance_actual_domains();
+    assert_eq!(nic.wire.lock().unwrap().2.last_transmit_queue, Some(1));
     // 先消费接收镜像；出口镜像必须独立携带尚待硬件补全的状态。
     for tap in &taps {
         let mut bytes = [0; 1600];
@@ -364,12 +366,11 @@ fn second_receive_queue_delivers_udp_and_retires_its_own_reply_reservation() {
         );
         assert_eq!(source.packet_type, 4);
         assert_eq!(
-            information,
-            network_protocol::PacketInformation {
-                checksum: network_protocol::PacketChecksum::Partial,
-                network_offset,
-            }
+            information.checksum,
+            network_protocol::PacketChecksum::Partial
         );
+        assert_eq!(information.network_offset, network_offset);
+        assert_ne!(information.timestamp_ns, 0);
         let mut complete = [0; 1600];
         let (_, consumed_full, _, consumed_information) =
             receive(tap, &mut complete, false).unwrap();
@@ -468,7 +469,6 @@ fn udp_connect_refines_port_lease_and_failed_refinement_preserves_binding() {
 #[test]
 fn native_udp_ring_preserves_wrapped_packets_peek_zero_length_and_backpressure() {
     let _serial = SERIAL.lock().unwrap();
-    crate::packet::init();
     let net = crate::namespace::Namespace::create().unwrap();
     net.install_protocol(prepare_network(&net, &[], true).unwrap());
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
@@ -478,17 +478,6 @@ fn native_udp_ring_preserves_wrapped_packets_peek_zero_length_and_backpressure()
     sender.bind(source).unwrap();
     receiver.bind(target).unwrap();
     receiver.set_packet_info(true).unwrap();
-    assert_eq!(
-        net.protocol()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .sockets
-            .iter()
-            .count(),
-        0,
-        "native UDP has no library socket registration"
-    );
     let first = vec![0x11; 60_000];
     let second = vec![0x22; 60_000];
     let third = vec![0x33; 60_000];
@@ -596,11 +585,12 @@ fn native_udp_lazy_storage_failure_releases_binding_and_does_not_publish_send() 
             assert_eq!(result, Err(SocketError::NoMemory));
             assert_eq!(endpoint.peer_address(), Err(SocketError::NotConnected));
             assert!(
-                !initial_stack()
+                initial_stack()
                     .unwrap()
                     .lock()
                     .unwrap()
-                    .udp_due(super::super::now())
+                    .udp_deadline()
+                    .is_none()
             );
             assert_eq!(
                 endpoint.send_to(b"atomic", Some(udp_peer(44000)), &[]),
@@ -620,10 +610,9 @@ fn native_udp_lazy_storage_failure_releases_binding_and_does_not_publish_send() 
 #[test]
 fn native_udp_submit_backpressure_retains_queue_until_device_activity() {
     use core::sync::atomic::Ordering;
-    use smoltcp::time::Instant;
+    use ::tcp::time::Instant;
     use smoltcp::wire::{EthernetFrame, EthernetProtocol, Ipv4Packet, UdpPacket};
     let _serial = SERIAL.lock().unwrap();
-    crate::packet::init();
     let nic = Arc::new(WireDevice::new());
     let net = crate::namespace::Namespace::create().unwrap();
     let device: Arc<dyn device_model::network::NetworkDevice> = nic.clone();
@@ -640,9 +629,7 @@ fn native_udp_submit_backpressure_retains_queue_until_device_activity() {
     nic.wire.lock().unwrap().1.clear();
     let endpoint = scoped_endpoint(&net, InetProtocol::Udp);
     for id in 0u8..8 {
-        endpoint
-            .send_to(&[id], Some(udp_peer(44000)), &[])
-            .unwrap();
+        endpoint.send_to(&[id], Some(udp_peer(44000)), &[]).unwrap();
     }
     assert!(!endpoint.poll_state().writable);
     nic.wire.lock().unwrap().2.submit_error = Some(device_model::network::NetworkError::WouldBlock);
@@ -656,11 +643,12 @@ fn native_udp_submit_backpressure_retains_queue_until_device_activity() {
     assert!(!endpoint.poll_state().writable);
     assert!(nic.wire.lock().unwrap().1.is_empty());
     assert!(
-        !net.protocol()
+        net.protocol()
             .unwrap()
             .lock()
             .unwrap()
-            .udp_due(Instant::from_millis(0))
+            .udp_deadline()
+            .is_none_or(|at| at > Instant::ZERO)
     );
     net.protocol()
         .unwrap()
@@ -711,9 +699,7 @@ fn native_udp_submit_backpressure_retains_queue_until_device_activity() {
         .local_statistics()
         .transmitted_dropped;
     for id in 0u8..8 {
-        endpoint
-            .send_to(&[id], Some(udp_peer(44000)), &[])
-            .unwrap();
+        endpoint.send_to(&[id], Some(udp_peer(44000)), &[]).unwrap();
     }
     assert!(!endpoint.poll_state().writable);
     configure_up(&net, 2, false).unwrap();
@@ -747,9 +733,7 @@ fn native_udp_submit_backpressure_retains_queue_until_device_activity() {
         .unwrap()
         .poll_at(Instant::from_millis(0));
     for id in 10u8..18 {
-        endpoint
-            .send_to(&[id], Some(udp_peer(44000)), &[])
-            .unwrap();
+        endpoint.send_to(&[id], Some(udp_peer(44000)), &[]).unwrap();
     }
     nic.wire.lock().unwrap().2.submit_error = Some(device_model::network::NetworkError::Device);
     nic.transmit_ready.store(true, Ordering::Relaxed);
@@ -828,6 +812,5 @@ fn udp_and_tcp_device_bound_ports_share_without_reuse_and_rebind_is_atomic() {
         probe.close_description();
     }
     let network = net.protocol().unwrap().lock().unwrap();
-    assert_eq!(network.sockets.iter().count(), 0);
     assert!(network.udp_endpoints.is_empty() && network.tcp_endpoints.is_empty());
 }

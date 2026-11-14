@@ -3,7 +3,8 @@ use super::*;
 impl<'a> Socket<'a> {
     /// Apply one admitted, complete TCP segment to this connection.
     /// # Parameters
-    /// `ip_repr` supplies the validated IP endpoints, `repr` its checksum-checked TCP values;
+    /// `ip_repr` supplies validated IP endpoints and `repr` supplies TCP values after checksum
+    /// validation and any authentication required by the selected connection policy.
     /// the caller must first use accepts and retain the same frozen input/path for this operation.
     /// # Returns
     /// At most one best-effort immediate ACK/reset; stream output remains pending for dispatch.

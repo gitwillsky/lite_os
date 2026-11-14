@@ -35,20 +35,20 @@ def verify(root: Path = ROOT) -> None:
         relative = path.relative_to(vendor).as_posix()
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
-    transport = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw"}
-    # TCP、UDP 和 ARP 已归原生 owner；产品与 host 共用同一 IPv4 接收 profile，DHCP feature 仅供 wire oracle。
-    for relative, section, features in [("system/netstack/Cargo.toml", "dependencies", transport),
-                                        ("tools/netstack-unit/Cargo.toml", "dependencies", transport),
-                                        ("tools/netstack-unit/Cargo.toml", "dev-dependencies", {"proto-dhcpv4"})]:
-        dependency = tomllib.loads((root / relative).read_text())[section]["smoltcp"]
+    relative = "tools/netstack-unit/Cargo.toml"
+    host = tomllib.loads((root / relative).read_text())
+    wire_fixture = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw"}
+    for section, features in [("dependencies", wire_fixture), ("dev-dependencies", {"proto-dhcpv4"})]:
+        dependency = host[section]["smoltcp"]
         if dependency.get("path") != "../../vendor/smoltcp" or dependency.get("version") != "=0.13.1":
-            raise ValueError(f"smoltcp: {relative} must use the single pinned local transport")
+            raise ValueError(f"smoltcp: {relative} must use the pinned wire fixture")
         if dependency.get("default-features") is not False or set(dependency["features"]) != features:
             raise ValueError(f"smoltcp: unexpected protocol features in {relative}")
 
-    for service in ("dhcp-client", "dhcp-server"):
-        dhcp = tomllib.loads((root / "system" / service / "Cargo.toml").read_text())["dependencies"]
-        if "smoltcp" in dhcp or dhcp.get("packet-wire", {}).get("path") != "../../libraries/packet-wire":
+    for service in ("netstack", "dhcp-client", "dhcp-server"):
+        manifest = tomllib.loads((root / "system" / service / "Cargo.toml").read_text())
+        if (any("smoltcp" in manifest.get(section, {}) for section in ("dependencies", "build-dependencies"))
+                or manifest["dependencies"].get("packet-wire", {}).get("path") != "../../libraries/packet-wire"):
             raise ValueError(f"{service}: packet formats must use packet-wire without a second codec")
 
 

@@ -86,10 +86,8 @@ workflow 已加入该 executable。namespace-user 新增互连 Datagram/SeqPacke
 回归覆盖：namespace-user 覆盖三个 type 的 SO_SNDBUF/RCVBUF/dup/短 getter、packet sndbuf-32、stream peek/partial退款、sendmsg name/control/SeqPacket error 优先级、零长度 peer half/full-close，以及 write/send 共用 blocking
 suffix 和 timeout prefix。anonymous-files 覆盖 pipe/inotify/scalar minimum record 与原生 readv/writev empty iterator 区别。send_staging_cost 仍要求初始化成本为零，并验证 fs route 到唯一 socket engine，无较宽阈值。
 
-- full/fast host scope 首先执行 `scripts/verify_smoltcp.py`，核对固定 upstream inventory、
-  允许变化的实际 transport producer 与全部 consumer 的唯一 path/feature 配置；不会生成
-  或覆盖源码。architecture source fence 与 actual wire host 回归随后检查 native admission、
-  解绑、shutdown、source freeze；vendor Rust formatting 在集中验证阶段检查所有实际修改文件。
+- full/fast host scope 执行 `scripts/verify_smoltcp.py`，核对宿主格式对照的固定源码、path 与 feature，并检查生产网络服务使用 packet-wire。
+  architecture source fence 与 wire host 回归覆盖原生准入、解绑、shutdown 和排队后的发送来源。
 
 BusyBox 挂载 gate 验证完整 relatime/data=ordered 展示、同一 ext4 volume 的 mount view
 共享 inode/数据、cwd 与真实 writer 的卸载拒绝，以及 umount 根的 superblock-only RO。

@@ -25,7 +25,7 @@ fn configure_route(
     operation: usize,
     argument: usize,
 ) -> isize {
-    use crate::net::{RouteKind, RouteMetrics, Ipv4RouteRequest};
+    use crate::net::{Ipv4RouteRequest, RouteKind, RouteMetrics};
     if argument == 0 {
         return -errno::EFAULT;
     }
@@ -33,10 +33,12 @@ fn configure_route(
     if task.copy_from_user(argument, &mut route).is_err() {
         return -errno::EFAULT;
     }
-    if !task.has_namespace_capability(
-        &scope.user_namespace(),
-        linux_abi::capability::Capability::NET_ADMIN,
-    ) {
+    if scope.is_managed()
+        || !task.has_namespace_capability(
+            &scope.user_namespace(),
+            linux_abi::capability::Capability::NET_ADMIN,
+        )
+    {
         return -errno::EPERM;
     }
     let family = u16::from_ne_bytes(route[8..10].try_into().unwrap()) as usize;
@@ -263,15 +265,17 @@ pub(in crate::syscall) fn socket_ioctl(
     ) {
         return -errno::ENOTTY;
     }
-    // 原生dev_ioctl/devinet_ioctl在ifreq copy之后、name查找之前重新检查owning UserNS。
+    // 默认域只读；独立域在 ifreq copy 后、查找名字前检查 owning UserNS。
     // 旧socket、SCM传递及setns不授予配置权；mapped/global uid0也不能替代NET_ADMIN。
     if matches!(
         request,
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFNETMASK | SIOCSIFBRDADDR | SIOCSIFMTU
-    ) && !task.has_namespace_capability(
-        &scope.user_namespace(),
-        linux_abi::capability::Capability::NET_ADMIN,
-    ) {
+    ) && (scope.is_managed()
+        || !task.has_namespace_capability(
+            &scope.user_namespace(),
+            linux_abi::capability::Capability::NET_ADMIN,
+        ))
+    {
         return -errno::EPERM;
     }
     if matches!(request, SIOCSIFADDR | SIOCSIFNETMASK | SIOCSIFBRDADDR)

@@ -35,11 +35,14 @@ pub(in crate::inet) fn receive_icmp_error(
     let Some(info) = accept((state.options.bound_to_device, state.options.mark), mode) else {
         return;
     };
-    let error = report.record(udp.destination_port(), info, |address| {
-        state.present(address, Some(report.interface))
-    });
+    let (error, payload) = report.record(
+        udp.destination_port(),
+        info,
+        (udp.payload(), report.transport_offset() + 8),
+        |address| state.present(address, Some(report.interface)),
+    );
     let hard = report.hard && state.peer.is_some() && (ipv6 || !report.too_big() || mode != 0);
-    state.errors.report(error, udp.payload(), hard);
+    state.errors.report(error, payload, hard);
 }
 
 /// 消费 SO_ERROR 的唯一错误槽；关闭或 owner 不可用时不重建状态。

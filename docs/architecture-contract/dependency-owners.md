@@ -26,9 +26,10 @@
 | `system/audio-core` | PCM 输出会话、混音引擎、主音量、独占格式切换、USB 声卡热插拔 | device-protocol、audio-protocol；不拥有 ALSA 状态、子流编号或 Linux ioctl |
 | `system/pager-pool` | 进程内 native pager、port、key 注册与可增长补页线程池 | native-runtime；补页政策由各内容 owner 的 `PageSource` 决定 |
 | `system/netstack` | 网络域、双栈 FIB/地址/端口、转发过滤与连接状态、原生 TCP/UDP/RAW 与链路、AF_PACKET、执行事务 | device-protocol、network-protocol 与 router-protocol 执行描述；不发现网卡、不决定接口配置，不拥有 Linux syscall、信号或阻塞超时 |
-| `system/router-config` | 网卡发现与安装授权、配置树与提交决定、原文件撤销、执行重试及 BGP 域寿命 | network-protocol、device-protocol、filesystem-protocol、router-protocol；不拥有协议栈状态 |
+| `system/router-config` | 网卡发现与安装授权、配置树与提交决定、原文件撤销、执行重试及动态路由实例寿命 | network-protocol、device-protocol、filesystem-protocol、router-protocol；不拥有协议栈状态 |
 | `system/routing-rib` | 候选与解析；授权来源会话、接口/静态意图与统一来源确认 | 候选库复用 prefix-index；原生服务经 network-protocol 委托 NET 执行，不持 FIB 前像 |
 | `system/bgp` | 原生 TCP 会话、接收路由与状态；纯库拥有协议裁决、选路、来源及出口链路资格投影 | 库依赖 packet-wire/router-protocol/fallible-tree/alloc；bin 从 NET 投影资格并装配原生服务，不持持久配置；只接管显式委托来源，见[BGP 契约](bgp.md) |
+| `system/ospf` | 接口绑定、认证与接收序列、邻接、数据库、通告、洪泛、老化及区域内和跨区域选路 | 经 network-protocol 取得网络事实、收发报文并提交获授权的 RIB 来源。见[OSPF 契约](ospf.md) |
 | `system/dhcp-client` | DHCPv4 地址和 DHCPv6 委派租约 | 通过 network-protocol 收发；租约交给 router-config 应用 |
 | `system/dhcp-server` | 下游 DHCPv4 地址池、客户端身份和租约截止时间 | 只接受 router-config 的会话请求，通过绑定接口的 packet socket 收发 |
 | `system/dns-cache` | 原生 DNS 监听、上游事务及回复缓存 | 核心依赖 packet-wire 和 fallible-tree，执行器只接受路由配置能力，经 network-protocol 收发。见 [DNS 转发契约](dns-forwarding.md) |
@@ -38,7 +39,8 @@
 `service-rpc` 的弹性池把控制、可选共享数据面 Event、停止通知统一汇入同一 port；具体共享区格式、credits、DMA/flush 与完成仍属于设备协议。
 纯控制积压直接读 channel，不逐条往返 port；有活动源时按 port 来源顺序处理，避免控制流饿死数据。
 活动接口接受非空 Event 集合及接收源索引的非阻塞数据处理器，至少两个工作者；控制来源在 handler 返回后才重武装，最多一个耗时控制。
-clear→arm→drain 保留 Event 在注册列表中的索引，不能在通用池中丢掉来源而迫使设备扫描所有队列；同一队列的多个来源由该领域归并。
+活动服务的所有工作者使用调用者指定的公平调度权重。权重在启动前设置，首次创建或弹性增长失败沿原线程创建失败路径清理。
+按 Event 索引清除、处理、重新登记。同一来源最多一个处理者，期间置位在重新登记时立即投递。独立队列分别分派，同一队列的来源由领域决定如何合并。
 请求与设备完成直接接入同一 reactor，不新增通知桥接线程。
 每个 worker 创建前以独立停止句柄预留一份异步 packet；停止 Event 无分配广播，空闲收缩关闭该句柄自动退订。
 source/rearm 失败先停止领取、唤醒全部读者，在途 handler 全部退出后才释放会话闭包；不靠定时轮询检查停止。
@@ -51,12 +53,16 @@ source/rearm 失败先停止领取、唤醒全部读者，在途 handler 全部�
 `task-observer-protocol` 是授予 adm 组系统工具的只读任务观测消息与端点 owner；仅定义数据，不依赖 native ABI、Linuxd 或 UI。
 原生权限、授权与观测契约见[执行契约](execution.md#原生任务观测)。
 `router-protocol` 是原生配置类型/语义校验/JSON Schema 元数据、网络设置与 DHCP 租约编码、原生接口执行描述及 `/dev/network-settings` 帧格式的 owner；同样只定义数据，
-router-config、netstack、dhcp-client、dhcp-server、dns-cache、linuxd 适配层与 Linux 侧的 `network-config` 共用各自所需类型。
+router-config、netstack、dhcp-client、dhcp-server、dns-cache、linuxd 适配层及 `network-config` 共用所需类型。`router-api` 只拥有 Linux 会话授权与 WebSocket 转发。
 BGP 联盟身份、成员集合与 PeerKind 由 router-protocol 拥有，运行时消费冻结关系，不从报文推断信任边界；见[联盟契约](bgp-confederation.md)。
 AS 路径表达式是模型拥有的已验证不可变值，纯编译依赖固定 regex-automata，不持会话、执行器或匹配缓存；序列化仍只有源字符串，见[筛选契约](router-configuration.md#bgp-as-路径筛选)。
 `router-config::policy` 只拥有 bootfs 默认策略与历史文件导入，不再定义第二套持久设置类型；Linux DTO 是当前执行/桌面投影，不是原生配置身份。
+转发 CPU 意图由 router-config 持久化。根 RIB 只转发专核操作，netstack 持实际线程和受限调度资源，内核调度器拥有 CPU 独占归属。[转发专用 CPU](ip-forwarding.md#转发专用-cpu)
 原生列表不采用 libc 的容量；resolvd 独自负责 musl 的 DNS/搜索行投影限制。
 接口事实与地址列表分开：固定 InterfaceSnapshot 服务收发路径，namespace::addresses 拥有冷查询的 AddressSnapshot；IPv6 地址资格仍由 netstack::inet::ipv6::address 拥有。
+netstack 的域服务通过 `inet::configuration::neighbor_page` 读取单页。全量和分页共用配置读取层的双栈遍历，邻居缓存接口只增加地址起点。邻居行和分页编解码归 [router-protocol](ipv6-link.md#桌面邻居观察)。
+netstack 的域服务通过 `inet::route::route_page` 读取单页生效路径。两个 FIB owner 只向同一有界捕获器提供实际路由及原始成员，接口、发布与选路状态各自归原 owner。[路由观察](ip-forwarding.md#桌面路由观察)
+`linux-uapi::rtnetlink` 读取 Linux 链路身份及统计。NET 和设备服务拥有原有计数，router-api 拥有采样期限与每会话速率基线，`router-protocol::management::traffic` 拥有观察帧编码。[接口流量观察](userspace-abi.md#接口流量观察)
 静态地址意图由 router-protocol::configuration 提供，interface 的借用视图仅用于配置预备；NET 拥有实际地址/共享组及本机/直连索引，事务不复制 DAD/监听协议状态。
 network-protocol::routes 统一拥有两族的类型化路由/下一跳字段与编解码；sealed RouteAddress 只定义标准地址类型的静态宽度/族/字段编码，不拥有选路、权限或设备状态。
 IPv4 执行及 Linux 投影显式使用 IPv4 类型；IPv6 gateway/RIB 执行仍须接通，不能把 codec 的表达能力当作实际功能。
@@ -72,7 +78,7 @@ router-config 的 backup 拥有自动调度/归档规则，filesystem-protocol �
 配置管理的 Request/Reply 元数据属于 router-protocol::administration；Linuxd 的 network_settings::configuration 只捕获 fd/转交 VMO，内容生命周期仍属文件/内存 owner。
 RegularFile 拥有文件到独立 VMO 的捕获，驱动更新与配置传输共用；endpoint 只沿标准 UnixRights graph 传递/退休文件能力，不引入另一个服务或数据缓存。
 `network-protocol::namespace` 持有网络域创建/操作的 trait 与请求分派，根 re-export 保持公共接口不变；
-`installer` 派生设备/执行事务能力，`configuration` 持有事务控制及复合批次消息，`bgp` 持有配置工厂与域状态能力；
+`installer` 派生设备/执行事务能力，`configuration` 持有事务控制及复合批次消息，`bgp`、`ospf` 持有各自配置工厂与状态能力；
 通用结果和地址字节机制仍由 crate 根持有。routes::snapshot 拥有冻结接口名/共享组/行的正文、引用校验及借用视图；
 namespace 只通过 VMO 传输该正文，不复制另一套路由模型。Linux rtnetlink 拥有 UAPI 权重/长度边界及每组不可变派生布局，/proc 拥有首路径投影。
 service-rpc::Writer 的 from_bytes/into_bytes 仅转移编码存储所有权，前缀 framing 由领域 codec 保证，不解释内容或新增缓存。
@@ -90,13 +96,13 @@ service-rpc::Writer 的 from_bytes/into_bytes 仅转移编码存储所有权，�
    `*_USES` 表，对应 Fuchsia 的 `expose`/`use`），未声明的协议返回 `ERR_ACCESS_DENIED`。
 2. 路由给 linuxd 的协议：`liteos.network.Control`、`liteos.storage.Blocks`、`liteos.filesystem.Ext4`、
    `liteos.network.Settings`、`liteos.audio.Core`、`liteos.driver.Update`；给 router-config：`liteos.network.Control`、`liteos.routing.Configuration`、
-   `liteos.network.Dhcp`、`liteos.network.DhcpServer`、`liteos.network.DnsCache`、`liteos.bgp.Configuration`；给 routing-rib：`liteos.network.Control`、`liteos.network.Installer`；
-   给 dhcp-client、dhcp-server、dns-cache 与 bgp：`liteos.network.Control`。
+   `liteos.network.Dhcp`、`liteos.network.DhcpServer`、`liteos.network.DnsCache`、`liteos.bgp.Configuration`、`liteos.ospf.Configuration`；
+   给 routing-rib：`liteos.network.Control`、`liteos.network.Installer`；给 dhcp-client、dhcp-server、dns-cache、bgp 与 ospf：`liteos.network.Control`。
    `liteos.storage.Admin` 只供 component-manager 派生私有目录；配置来源能力不能直接提交 FIB、下一跳更新或任意来源身份。
 3. 设备目录按类派生：Network → router-config，Block → fshost，Pcm → audio-core，其余 → linuxd；派生目录不能扩大范围。
-4. 监督：netstack、routing-rib、bgp、dhcp-client、dhcp-server、dns-cache、router-config、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束），
-   10 秒内 5 次判定为崩溃循环并关机（`native_runtime::task::CrashLoop`）；driver-manager、fshost 是关键组件，
-   当前实例意外终止即关机。被依赖的服务重启期间，component-manager 让新的连接请求等待新实例就绪；消费者在 `PEER_CLOSED` 后重连。
+4. 监督：netstack、routing-rib、bgp、ospf、dhcp-client、dhcp-server、dns-cache、router-config、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束）。
+   10 秒内 5 次判定为崩溃循环（`native_runtime::task::CrashLoop`）。bgp 和 ospf 等一个统计窗口后再次启动，重启期间连接请求返回 `ERR_SHOULD_WAIT` 供配置服务重试。
+   其他受监督服务进入崩溃循环时关机，重启期间新的连接等待实例就绪。driver-manager、fshost 当前实例意外终止即关机。
    driver-manager 以同一判定监督各驱动宿主，fshost 监督 ext4 实例（见 6、7）。
 5. 重启后的状态恢复由各使用者负责：NET 退出时 RIB 同时丢弃旧接口来源，router-config 重新安装网卡并重新配置；单独 RIB 退出只重放持久决定，不重复安装存活网卡。linuxd 为存活网络域重建协议实例，旧 socket
    以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 重连新实例：
@@ -112,16 +118,17 @@ service-rpc::Writer 的 from_bytes/into_bytes 仅转移编码存储所有权，�
 FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。ext4 实例拥有普通文件的内容
 （每文件一个 pager VMO），linuxd 经挂载控制取得它做 mmap；PCM 设备与混音属于 audio-core，linuxd 只翻译 ALSA。
 
-`libraries/packet-wire` 只拥有无状态报文字节算法与借用视图，不依赖 allocator、服务或原生对象。
-其 batch 阶段只填写调用者提供的视图槽；netstack::inet::device 拥有帧领取期间的短寿命 IngressFacts，
-Ethernet 与 loopback 的路由共用该投影，不能把未校验 checksum 的格式事实当成协议接收决定。
+`libraries/packet-wire` 拥有无状态报文字节算法、借用视图与 IP 头结构投影，不依赖 allocator、服务或原生对象。
+`device-model` 使用该库检查已交给 CPU 的以太网缓冲区，并在同一帧借用上携带结构事实。逻辑 VLAN 和 loopback 使用同一格式定义。
+协议接收决定、头校验和、选路和转发策略仍由 netstack 执行。
 当前格式与错误边界见[报文格式契约](ipc-network.md#报文格式)；DHCP 客户端不再依赖 smoltcp。packet-wire::bgp 拥有消息/OPEN/UPDATE/NLRI 的无状态边界，不拥有会话或 RIB，见[BGP 契约](bgp.md)。
-`libraries/tcp` 拥有独立于设备/服务的连接、流缓冲与无状态 MAC；依赖 packet-wire、managed、alloc 及固定 MD5/subtle/zeroize，不持有 NET、接口、凭据或配置；密钥策略归 NET，见 [TCP 认证](tcp-authentication.md)。
+`libraries/tcp` 拥有独立于设备/服务的连接、流缓冲、MAC 与方向密钥派生。依赖 packet-wire、managed、alloc 和固定密码库。接口、密钥选择与配置归 NET，见 [TCP 认证](tcp-authentication.md)。
 调用者提供同次冻结的路径、时钟与初始序号；输出完成后才推进流序号。IPv4/IPv6 已接入产品 NET，端口与接口范围由同一 NET owner 约束；边界见 [TCP 契约](ipv4-transports.md#tcp-连接机制)。
 DHCPv6 与 ND 共用非压缩 DNS 名称格式机制；icmp 唯一拥有两族共享的错误引用/扩展结构，icmpv4/v6 各自拥有类型、长度单位与校验和边界；租约、PD/RA、错误投递与 resolver 状态不进入字节库。
 Netstack 的设备 adapter 消费校验和机制构造伪头 seed，driver-host 在独占 RX claim 内补全部分校验和；
 硬件能力与缓冲寿命仍归设备 owner，路由/传输状态仍归 netstack。
-libraries/prefix-index 唯一拥有 Poptrie 机制，依赖只到 alloc；FIB/RIB 分别拥有索引实例和所指候选数组，不共享可变前缀状态。
+网桥的持久配置归 router-config。NET 拥有活动成员、MAC 学习和 VLAN 准入，报文字节沿 packet-wire，NIC 队列寿命仍由设备 owner 管理。[网桥契约](switching.md)
+libraries/prefix-index 唯一拥有 Poptrie 机制，依赖只到 alloc。每个索引拥有自己的记录区间，前缀键集合相同的 FIB 根可共享不可变的位图、叶和祖先链。
 system/routing-rib 同时提供候选库与原生服务：Source 拥有不可变来源头部（身份/授权代价比较范围/元数据）、声明及共享规范字典引用，Catalogue 只保活来源并索引八字节行引用。
 候选机制依赖 prefix-index、router-protocol 的无运行时词汇及 fallible-tree；服务装配额外依赖 native-runtime、launch-protocol、service-directory 和 service-rpc。
 router-config::leases 拥有 DHCP 会话与租约事件的地址发布；默认路由属性借唯一持久配置投影，不保存会话创建时的政策副本。
@@ -138,18 +145,25 @@ sources::Snapshot 持有同批冻结接口投影；resolution::installation 只�
 接口/载波变化由 NET Event 直达 RIB。RIB 主线程只拥有未完成重算工作，配置服务不再镜像路由重试状态。
 观察源只在执行域 NIC 发布前装配；逻辑变更在 NET 内通知，硬件回调只捕获 Event，不反向保活域；来源关闭标记登记并 signal，原 Port 确认后撤回。
 router-protocol::tracking 拥有查询/证明/立即出口及 codec；resolution::tracking 无分配借用同一选择图，sources::Snapshot 只保活该图，network-protocol 拥有只读能力/VMO 传输，原生 tracking actor 独占登记与确认后 Event 通知。
-跟踪登记不镜像结果或执行状态，不参与报文路径；默认实例两族共享同代已确认图，双栈 BGP 来源已接通；VRF/OSPF 联动仍待实现，见[跟踪契约](router-configuration.md#双栈下一跳跟踪)。
+跟踪登记不镜像结果或执行状态，不参与报文路径。默认实例两族共享同代已确认图，接收双栈 BGP 和 OSPF 来源，VRF 联动仍待实现。[跟踪契约](router-configuration.md#双栈下一跳跟踪)
 暂态可用性不跨求解缓存，没有执行侧 FIB 副本，见[RIB 候选目录](ipc-network.md#rib-候选目录)与[配置来源事务](router-configuration.md#原生-rib-配置来源)。
 route::fib 在 RoutingTable 内共同拥有唯一活动连续记录、prefix-index::Poptrie 实例和 route::nexthop 路径表；前缀区间直接引用同一数组，路由属性不复制进索引。
 内联下一跳按完整路径值共享，具名对象按非零配置身份独立，记录只保存所属根内槽号；身份/路径索引、引用数、LINK/HOST 范围约束计数和空槽复用同属一个 owner。
 具名零引用定义保留配置寿命，接口配置候选继承定义；route::group 拥有规范成员排序与带权 L3 选择，具名独立更新只交换槽内成员数组，既不复制设备在线状态也不逐前缀同步。
+NetworkStack 的设备表按 ifindex 递增。route::interfaces 借用该表来查询双栈出口资格，IPv4 配置候选只在读取时应用尚未发布的字段。
+NetworkStackOwner 在域 guard 释放前发布变化的只读前缀布局和转发检查需求。队列工作借用不可变布局与域内连接散列密钥，并可短暂读取实际连接分片。
+它只随帧交付由域线程校验的查询结果，连接修改仍归 Forwarding。前缀布局身份由 prefix-index 在进程内分配，不复用。[转发连接状态](ip-forwarding.md#转发连接状态)
 冷准入/读取投影不是常驻状态；Draft 直接构造最终数组，不另存百万条完整解析副本。
 整表候选与原根、独立下一跳更新的单槽前像各由同一配置事务持有；发布/撤销按对应粒度交换，设备身份与写租约证明无需正常整表过滤，退休根在 NET guard 外释放。
-IPv6 Ipv6Routes 拥有同族前缀/索引，复用类型化 nexthop 字典与组选择；地址候选/逆向根仅冷共享不可变字典，资格始终取实际接口/地址 owner。
+IPv6 Ipv6Routes 拥有同族前缀/索引，复用类型化 nexthop 字典与组选择。地址候选和逆向根可共享不可变字典及前缀布局，资格仍取实际接口与地址。
 RibAddress 静态统一递归键、策略及执行字段映射；Forwarding 仅借用冻结解析并按来源/共享组捕获执行元数据；两族直接编码同一配置，不建立逐前缀副本或独立发布 owner。
 邻居失败通过至多八项的轮内完成事实交回 NET，再由 UDP owner 按当前根清理等待者，不增加失败缓存或每流网关状态。
 不把前缀索引或路由策略下沉通用 kernel。
-NetworkStack 独占实际双栈转发策略，原配置事务交换前像；inet::forward 独占本域转发待发、分片游标和错误限速；只消费唯一 FIB/邻居机制，不保存另一份路由或 ARP/ND，见[转发契约](ip-forwarding.md)。
+NetworkStack 独占实际双栈转发策略，原配置事务交换前像；inet::forward 独占本域转发待发、转发分片重组和错误限速，连接跟踪持有 NAT 映射。
+连接跟踪按固定执行分区管理原始连接、到期节点和转换索引。线上别名只引用原始键，两个分区的容量预留、提交和退休由同一域内事务协调。域级唤醒索引只引用各分区的首个到期项。
+转发转换准入借用 TCP/UDP 的本机端口空间，主动连接和本机发送借用连接跟踪的有效转换别名。检查均在同一 NET guard，两个 owner 保留各自的唯一状态。
+防火墙拥有当前规则、地址集与计数。转发连接跟踪按连接身份区间借用不可变的历史规则和地址集，区间随连接退休，配置租约发布或撤销保留边界。
+本机重组仍由 NetworkStack 持有。转发消费唯一 FIB/邻居机制，见[转发契约](ip-forwarding.md)。
 network-protocol::routes 拥有原路由字段和完整集合 framing，configuration::batch 拥有接口/FIB 的可选组合；netstack::inet::route::admission 是单条与复合批次的唯一字段/设备准入，
 route::forwarding 拥有受管来源的整体替换规则。接口和 FIB 集合共用唯一配置写租约、PreparedRouteChange 与 ConfigurationSession 生命周期，
 不因新增控制入口建立第二个 FIB owner；routing-rib 负责选路，执行服务不能重复实现递归路由或默认路由意图。

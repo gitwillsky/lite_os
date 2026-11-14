@@ -210,11 +210,11 @@ fn an_acknowledged_layer_surface_maps_and_is_not_a_window() {
     assert_eq!(layers.len(), 1);
     assert_eq!(
         (
-            layers[0].namespace,
+            layers[0].surface,
             layers[0].state.layer,
             layers[0].state.keyboard
         ),
-        ("taskbar", Layer::Overlay, KeyboardInteractivity::Exclusive)
+        (id(5), Layer::Overlay, KeyboardInteractivity::Exclusive)
     );
     assert_eq!(layers[0].content.width, 2);
     assert_eq!(

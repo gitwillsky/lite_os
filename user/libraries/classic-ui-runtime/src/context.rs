@@ -157,9 +157,10 @@ impl Context {
         filter: Option<super::file_dialog::Filter>,
     ) -> io::Result<u64> {
         use super::file_dialog::{FileDialog, FileWorker};
+        use classic_ui_abi::file_mode;
         let title = match mode {
-            0 => "打开",
-            1 => "另存为",
+            file_mode::OPEN => "打开",
+            file_mode::SAVE | file_mode::SAVE_NEW => "另存为",
             _ => return Err(invalid("unknown file dialog mode")),
         };
         let app_id = self.host(parent)?.app_id.clone();
@@ -777,6 +778,9 @@ impl Context {
             .ok_or_else(|| invalid("unknown edit control"))?;
         if !node.editing_text() {
             return Err(invalid("editor is unavailable"));
+        }
+        if node.state & abi::state::READ_ONLY != 0 && command != 3 {
+            return Ok(());
         }
         let changed = if let Some(editor) = &mut node.editor {
             if command == 4 {

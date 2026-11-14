@@ -224,13 +224,13 @@ fn unknown_peer_resolves_from_tlla_and_does_not_learn_from_data_or_unrequested_n
         "a retained reply is not a lost packet"
     );
     assert!(
-        !network
+        network
             .interface(2)
             .unwrap()
             .ipv6
             .as_ref()
             .unwrap()
-            .due(2005)
+            .next_deadline(2005).is_none_or(|at| at > 2005)
     );
     drop(network);
     device
@@ -303,7 +303,7 @@ fn reachable_expires_to_stale_and_usage_delays_bounded_unicast_nud_with_tx_backp
     poll(&net, 52005);
     assert!(frames(&device).is_empty());
     assert!(
-        !stack(&net)
+        stack(&net)
             .unwrap()
             .lock()
             .unwrap()
@@ -312,7 +312,7 @@ fn reachable_expires_to_stale_and_usage_delays_bounded_unicast_nud_with_tx_backp
             .ipv6
             .as_ref()
             .unwrap()
-            .due(52005)
+            .next_deadline(52005).is_none_or(|at| at > 52005)
     );
     // 容量失败不消耗三个 NUD 探测，也不被旧计时器空转重投。
     poll(&net, 62005);
@@ -537,7 +537,7 @@ fn cached_echo_and_stale_to_delay_timer_rearm_do_not_allocate_payload_or_index_n
     let ipv6 = network.interface_mut(2).unwrap().ipv6.as_mut().unwrap();
     // 物理出帧已由上面的 wire 用例覆盖；这里用固定 TX 存储排除 NIC 记录器自己的 Vec 分配。
     crate::allocation_failure::fail_next();
-    let packet = crate::inet::ipv6::incoming(&request, [2, 0, 0, 0, 0, 1], 1500, |destination| {
+    let packet = crate::inet::ipv6::incoming(&request, [2, 0, 0, 0, 0, 1], 1500, None, |destination| {
         ipv6.accepts_destination(destination)
     })
     .unwrap();
@@ -574,6 +574,7 @@ fn cached_echo_and_stale_to_delay_timer_rearm_do_not_allocate_payload_or_index_n
 #[test]
 fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_flag_rules() {
     use network_protocol::NeighborState;
+    use router_protocol::neighbors::{Key, Page, observation};
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, device) = domain();
@@ -588,6 +589,18 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     frames(&device);
     let frozen = neighbor_snapshot(&net, 2).unwrap();
     let pending = frozen.get(0).unwrap();
+    let page = |after| {
+        Page::parse(&crate::inet::neighbor_page(&net, after).unwrap(), after).unwrap()
+    };
+    let initial = page(None);
+    assert_eq!(initial.rows[0].neighbor, pending);
+    assert!(!initial.more);
+    let before_ipv6 = Key {
+        interface: pending.interface_index,
+        address: "192.0.2.255".parse().unwrap(),
+    };
+    assert_eq!(page(Some(before_ipv6)), initial);
+    assert!(page(Some(pending.key())).rows.is_empty());
     assert_eq!(
         (
             pending.interface_index,
@@ -606,6 +619,13 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     poll(&net, 2003);
     frames(&device);
     let row = neighbor_snapshot(&net, 0).unwrap().get(0).unwrap();
+    let reachable = page(None);
+    let delta = observation::encode(&reachable, Some(&initial)).unwrap().unwrap();
+    let observation::Update::Changes(changes) = observation::Update::parse(&delta, None).unwrap() else {
+        panic!("neighbor reachability changed without an increment");
+    };
+    assert_eq!(changes.apply(&initial, None).unwrap(), reachable);
+    assert_eq!(reachable.rows[0].neighbor, row);
     assert_eq!(
         (row.hardware_address, row.state, row.is_router),
         (Some(MAC), NeighborState::Reachable, true)
@@ -638,5 +658,12 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     assert_eq!(neighbor_snapshot(&net, 2).unwrap().get(0), Some(current));
     configure_up(&net, 2, false).unwrap();
     assert!(neighbor_snapshot(&net, 0).unwrap().is_empty());
+    let empty = page(None);
+    assert!(empty.rows.is_empty());
+    let delta = observation::encode(&empty, Some(&reachable)).unwrap().unwrap();
+    let observation::Update::Changes(changes) = observation::Update::parse(&delta, None).unwrap() else {
+        panic!("removed neighbor did not produce an increment");
+    };
+    assert_eq!(changes.apply(&reachable, None).unwrap(), empty);
     assert_eq!(frozen.get(0), Some(pending));
 }

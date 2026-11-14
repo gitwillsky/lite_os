@@ -736,6 +736,7 @@ fn named_next_hop_updates_share_transaction_rollback_and_do_not_revive_removed_o
 #[test]
 fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_them() {
     use network_protocol::routes::{NextHopConfiguration, NextHopMember, RouteConfiguration};
+    use router_protocol::{route_view::{Cursor, Page, Position}, routing::Family};
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, wire2, wire3) = routing_domain(89253);
@@ -771,6 +772,17 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
     .unwrap();
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
+    let cursor = Cursor { family: Family::Ipv4, start: Position::default() };
+    let observed = Page::parse(&crate::inet::route_page(&net, cursor).unwrap(), cursor).unwrap();
+    let paths: Vec<_> = observed.rows.iter()
+        .filter(|row| row.prefix.network == core::net::IpAddr::from(request.destination))
+        .collect();
+    assert_eq!(paths.len(), 2);
+    assert_eq!((paths[0].hop.unwrap().interface, paths[0].hop.unwrap().weight), (2, 3));
+    assert_eq!((paths[1].hop.unwrap().interface, paths[1].hop.unwrap().weight), (3, 1));
+    let continuation = Cursor { start: paths[1].position, ..cursor };
+    let page = Page::parse(&crate::inet::route_page(&net, continuation).unwrap(), continuation).unwrap();
+    assert_eq!(page.rows.first(), Some(paths[1]));
     let destination = Ipv4Addr::new(198, 51, 100, 9);
     {
         let network = net.protocol().unwrap().lock().unwrap();

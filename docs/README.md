@@ -39,6 +39,7 @@
 - [TCP 认证与密钥契约](architecture-contract/tcp-authentication.md)
 - [原始 IP 报文](architecture-contract/raw-ip.md)：双族 RAW 的报文边界、校验和、队列与 Linux 选项。
 - [双栈转发契约](architecture-contract/ip-forwarding.md)
+- [网桥与 VLAN 契约](architecture-contract/switching.md)
 - [双栈本机分片重组](architecture-contract/ip-reassembly.md)
 - [IPv6 链路网络契约](architecture-contract/ipv6-link.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
@@ -105,6 +106,7 @@
 - [路由配置与执行事务契约](architecture-contract/router-configuration.md)
 - [DNS 转发契约](architecture-contract/dns-forwarding.md)
 - [BGP 契约](architecture-contract/bgp.md)、[IPv6 下一跳](architecture-contract/bgp-next-hop.md)、[AS 联盟](architecture-contract/bgp-confederation.md)
+- [OSPF 邻接与区域内选路契约](architecture-contract/ospf.md)
 - [IPv4 与 TCP/UDP 传输契约](architecture-contract/ipv4-transports.md)
 - [有序存储与源码审查](architecture-contract/ordered-storage.md)
 - [Packet 与 Netlink 契约](architecture-contract/packet-netlink.md)

@@ -3,7 +3,7 @@ use super::super::queue::{DmaBuffer, DmaPool, DmaRegion, VirtQueue, VirtQueueErr
 use super::rx_slots::{ReceiveQueue, ReceiveSlots};
 use super::{
     ActiveNetwork, QUEUE_SIZE, RX_BUFFER_SIZE, SPEED_OFFSET, STATUS_OFFSET,
-    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_SPEED_DUPLEX,
+    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_F_EVENT_IDX, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_SPEED_DUPLEX,
     VIRTIO_NET_F_STATUS, VIRTIO_NET_HEADER_SIZE, VIRTIO_NET_S_LINK_UP, VirtIODevice,
     VirtIONetworkDevice,
 };
@@ -27,7 +27,6 @@ pub(super) struct QueueState {
     receive: VirtQueue,
     transmit: VirtQueue,
     receive_slots: ReceiveSlots<DmaBuffer<RX_BUFFER_SIZE>, RX_BUFFER_SIZE>,
-    receive_reposted: bool,
     transmit_slots: Vec<TransmitSlot>,
     transmit_by_head: Vec<Option<u16>>,
     statistics: NetworkStatistics,
@@ -105,7 +104,6 @@ impl QueueState {
             receive,
             transmit,
             receive_slots,
-            receive_reposted: false,
             transmit_slots,
             transmit_by_head,
             statistics: NetworkStatistics::default(),
@@ -219,7 +217,7 @@ impl NetworkProvider for ActiveNetwork {
         if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
-        let result = control.set_rss(&self.device, self.queue_count(), config);
+        let result = control.set_rss(self, self.queue_count(), config);
         drop(control);
         match result {
             Err(NetworkError::Device) => Err(self.fail_device()),
@@ -278,9 +276,15 @@ impl NetworkProvider for ActiveNetwork {
         if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
         }
+        let event_index = self.features & VIRTIO_F_EVENT_IDX != 0;
         let mut count = 0;
         while count < output.len() {
-            let used = match queues.receive.used() {
+            let mut completion = queues.receive.used();
+            if event_index && matches!(completion, Ok(None)) {
+                queues.receive.arm_used_notification();
+                completion = queues.receive.used();
+            }
+            let used = match completion {
                 Ok(Some(used)) => used,
                 Ok(None) => break,
                 Err(()) => {
@@ -333,7 +337,10 @@ impl NetworkProvider for ActiveNetwork {
         Ok(count)
     }
 
-    fn release_receive(&self, queue: u16, slot: u16) -> Result<(), NetworkError> {
+    fn release_receive_batch(&self, queue: u16, slots: &[u16]) -> Result<(), NetworkError> {
+        if slots.is_empty() {
+            return Ok(());
+        }
         let mut queues = self.queue(queue)?.lock();
         if self.failed.load(Ordering::Acquire) != Self::LIVE {
             return Err(NetworkError::Device);
@@ -343,11 +350,15 @@ impl NetworkProvider for ActiveNetwork {
             receive_slots,
             ..
         } = &mut *queues;
-        if !receive_slots.release(receive, slot) {
+        let mut heads = [0; QUEUE_SIZE as usize / 2];
+        if !receive_slots.release(receive, slots, &mut heads)
+            || self
+                .notify_available(u32::from(queue) * 2, receive, slots.len() as u16)
+                .is_err()
+        {
             drop(queues);
             return Err(self.fail_device());
         }
-        queues.receive_reposted = true;
         Ok(())
     }
 
@@ -422,7 +433,10 @@ impl NetworkProvider for ActiveNetwork {
         }
         if count != 0 {
             transmit.add_batch_to_avail(&heads[..count]);
-            if self.device.notify_queue(u32::from(queue) * 2 + 1).is_err() {
+            if self
+                .notify_available(u32::from(queue) * 2 + 1, transmit, count as u16)
+                .is_err()
+            {
                 drop(queues);
                 return Err(self.fail_device());
             }
@@ -484,29 +498,20 @@ impl NetworkProvider for ActiveNetwork {
             drop(queues);
             return Err(self.fail_device());
         }
+        let mut backlog = queues.transmit.has_used();
+        if !backlog && self.features & VIRTIO_F_EVENT_IDX != 0 {
+            queues.transmit.arm_used_notification();
+            backlog = queues.transmit.has_used();
+        }
         Ok(device_model::network::NetworkCompletion {
             completed,
-            backlog: queues.transmit.has_used(),
+            backlog,
             transmit_became_available: completed != 0,
         })
     }
 
     fn stop(&self) {
         self.quiesce();
-    }
-
-    fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError> {
-        let mut queues = self.queue(queue)?.lock();
-        if self.failed.load(Ordering::Acquire) != Self::LIVE {
-            return Err(NetworkError::Device);
-        }
-        if core::mem::take(&mut queues.receive_reposted)
-            && self.device.notify_queue(u32::from(queue) * 2).is_err()
-        {
-            drop(queues);
-            return Err(self.fail_device());
-        }
-        Ok(())
     }
 
     fn statistics(&self) -> NetworkStatistics {
@@ -524,8 +529,8 @@ impl ReceiveQueue<DmaBuffer<RX_BUFFER_SIZE>> for VirtQueue {
         self.add_dma(&[output]).ok()
     }
 
-    fn publish(&mut self, head: u16) {
-        self.add_to_avail(head);
+    fn publish(&mut self, heads: &[u16]) {
+        self.add_batch_to_avail(heads);
     }
 
     fn retire_unpublished(&mut self, head: u16) {

@@ -28,10 +28,9 @@ pub(crate) use admission::DeadlineError;
 pub(super) use admission::DeadlineReservation;
 pub(super) use admission::ThreadSlot;
 pub(super) use handoff::{publish_pending_handoff, resume_without_switch, take_pending_handoff};
-pub(crate) use isolation::IsolationError;
+pub(crate) use isolation::{IsolationError, replace_isolation};
 pub(super) use isolation::{
-    cpu_is_shared, exit_partition, observe_partition, register_thread, replace_isolation,
-    shared_cpus,
+    cpu_is_shared, exit_partition, observe_partition, register_thread, shared_cpus,
 };
 pub(super) use placement::enqueue_new;
 use placement::{ready_entry, select_cpu, select_cpu_after_preemption};
@@ -297,7 +296,7 @@ struct ProcessorTopology {
     // OWNER: 各 CPU 已承诺的 Q32 截止密度；凭据归还也取此锁，不取线程/队列锁。
     // 缺失会使并发准入超售。同一事务扣旧添新，分配/唤醒/队列投递均在锁外。
     deadline_bandwidth: IrqMutex<Box<[u64]>>,
-    // OWNER: 只串行化 affinity/CBS/隔离配置；调度热路径与线程退出不取此锁。
+    // OWNER: 只串行化 affinity/CBS/隔离配置和退出归还；调度热路径不取此锁。
     // 事务不阻塞、不分配、不等远端；防止预检之后硬绑定或预算变化造成无核可运行。
     cpu_configuration: spin::Mutex<()>,
     // OWNER: 执行体弱索引，仅用于冷路径隔离预检。容量与 ThreadSlot 同时准备；

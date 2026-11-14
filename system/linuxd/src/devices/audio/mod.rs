@@ -277,7 +277,7 @@ pub(crate) fn init(caller: fn() -> Option<Arc<PidIdentity>>) -> Result<(), ()> {
     if DISCOVERY.get().is_some() {
         return Err(());
     }
-    let hub = EventHub::start().map_err(|_| ())?;
+    let hub = EventHub::start(None).map_err(|_| ())?;
     let session = Session::connect(&hub)?;
     let discovery = Arc::try_new(Discovery {
         hub,

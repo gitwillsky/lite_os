@@ -26,11 +26,15 @@ pub struct NextHop {
     pub address: IpAddr,
     pub link_local: Option<Ipv6Addr>,
 }
-/// 一条本邻居的增量决定；同一 UPDATE 的宣告覆盖其中对同前缀的显式撤回。
+/// 一条本邻居的增量决定；宣告覆盖对相同前缀及路径标识的显式撤回。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
-    Withdraw(Prefix),
-    Announce { prefix: Prefix, next_hop: NextHop },
+    Withdraw(Prefix, Option<u32>),
+    Announce {
+        prefix: Prefix,
+        path_id: Option<u32>,
+        next_hop: NextHop,
+    },
 }
 
 // OWNER: 一次 UPDATE 的 256 个属性编号集合。固定 32 bytes，无字典节点或逐属性分配；
@@ -136,9 +140,13 @@ impl<'a> ReceivedUpdate<'a> {
                     Section::Withdraw(nlri) => (nlri, None),
                     Section::Announce(nlri, hop) => (nlri, if withdraw_all { None } else { hop }),
                 };
-                nlri.prefixes().map(move |prefix| match next_hop {
-                    Some(next_hop) => Change::Announce { prefix, next_hop },
-                    None => Change::Withdraw(prefix),
+                nlri.paths().map(move |(prefix, path_id)| match next_hop {
+                    Some(next_hop) => Change::Announce {
+                        prefix,
+                        path_id,
+                        next_hop,
+                    },
+                    None => Change::Withdraw(prefix, path_id),
                 })
             })
     }
@@ -219,8 +227,13 @@ pub(super) fn capture<'a>(
     raw: &'a [u8],
 ) -> Result<ReceivedUpdate<'a>, Notice<'a>> {
     let invalid_network = || Notice::simple(3, 10);
-    let withdrawn = update.withdrawn().map_err(|_| invalid_network())?;
-    let announced = update.announced().map_err(|_| invalid_network())?;
+    let ipv4_path_ids = peer.receives_add_path(Family::Ipv4);
+    let withdrawn = update
+        .withdrawn_with_path_ids(ipv4_path_ids)
+        .map_err(|_| invalid_network())?;
+    let announced = update
+        .announced_with_path_ids(ipv4_path_ids)
+        .map_err(|_| invalid_network())?;
     let mut result = ReceivedUpdate {
         raw,
         update,
@@ -385,7 +398,12 @@ pub(super) fn capture<'a>(
                 if !family(peer, mp.afi, mp.safi) {
                     continue;
                 }
-                let nlri = mp.prefixes().map_err(|_| Notice {
+                let path_ids = if mp.afi == 1 {
+                    ipv4_path_ids
+                } else {
+                    peer.receives_add_path(Family::Ipv6)
+                };
+                let nlri = mp.prefixes_with_path_ids(path_ids).map_err(|_| Notice {
                     code: 3,
                     subcode: 9,
                     data: wire,
@@ -412,7 +430,12 @@ pub(super) fn capture<'a>(
                 if !family(peer, mp.afi, mp.safi) {
                     continue;
                 }
-                mp_withdrawn = Some(mp.prefixes().map_err(|_| Notice {
+                let path_ids = if mp.afi == 1 {
+                    ipv4_path_ids
+                } else {
+                    peer.receives_add_path(Family::Ipv6)
+                };
+                mp_withdrawn = Some(mp.prefixes_with_path_ids(path_ids).map_err(|_| Notice {
                     code: 3,
                     subcode: 9,
                     data: wire,

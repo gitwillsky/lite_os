@@ -29,6 +29,7 @@ impl<'a> Socket<'a> {
         self.failure_reason = None;
         self.pending_since = None;
         self.retransmits = 0;
+        self.total_retransmissions = 0;
         self.zero_window_probes = 0;
         self.zero_window_since = None;
         self.orphaned = false;
@@ -286,7 +287,7 @@ impl<'a> Socket<'a> {
             sack_permitted: false,
             sack_ranges: [None; 4],
             timestamp: None,
-            md5: self.md5,
+            authentication: self.authentication,
             payload: &[],
         };
         Some((

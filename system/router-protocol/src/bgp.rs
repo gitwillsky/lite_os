@@ -1,7 +1,7 @@
 //! BGP 会话配置及观察值；只定义数据，运行时连接/能力不进入持久配置。
 mod authentication;
 mod confederation;
-pub use authentication::Md5Password;
+pub use authentication::{AoAlgorithm, AoKey, TcpAo, TcpSecret};
 mod expression;
 use crate::{
     Invalid,
@@ -27,7 +27,7 @@ pub use routes::{
 };
 
 /// 原生 BGP 配置/状态传输版本；与 BGP 网络报文版本无关。
-pub const VERSION: u32 = 19;
+pub const VERSION: u32 = 25;
 /// BGP 领域提供的路由观测标记；实际安装权限仍由来源能力独立授予。
 pub const ROUTE_PROTOCOL: u8 = 186;
 
@@ -91,12 +91,15 @@ pub struct Neighbor {
     /// 实际 TCP 邻居；使用原生 IPv4/IPv6 地址，不持久化运行时 zone 编号。
     #[schemars(schema_with = "crate::configuration::address_schema")]
     pub address: IpAddr,
-    /// 链路本地 IPv6 邻居的实际接口名；其他地址不设置范围，每次连接按当前接口身份解析。
+    /// 链路本地 IPv6 邻居的接口。默认域使用系统接口名，具名域使用域内接口配置名。
     #[serde(default)]
     pub interface: Option<Name>,
     /// TCP MD5 认证；未设置使用普通 TCP，设置后所有握手/数据/关闭报文都必须验签。
     #[serde(default)]
-    pub md5_password: Option<Box<Md5Password>>,
+    pub md5_password: Option<Box<TcpSecret>>,
+    /// TCP-AO 密钥及首选 ID。与 `md5_password` 互斥。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_ao: Option<Box<TcpAo>>,
     /// 期望的实际 AS，须与 OPEN 一致。
     pub asn: NonZeroU32,
     /// 原生管理距离；只有显式准入的路由才使用，不是 LOCAL_PREF。
@@ -107,6 +110,9 @@ pub struct Neighbor {
     pub retry_seconds: NonZeroU16,
     /// 只接入站 TCP，不主动发起。
     pub passive: bool,
+    /// 保留配置并停用此邻居的主动连接和入站接纳。
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub shutdown: bool,
     /// 手工指定此 iBGP 邻居为反射器客户端；eBGP 不允许该角色，缺省保持非客户端。
     #[serde(default)]
     pub route_reflector_client: bool,
@@ -116,6 +122,12 @@ pub struct Neighbor {
     /// 在此 TCP 连接协商 IPv6 单播路由，独立于 TCP 传输地址族。
     #[serde(default)]
     pub ipv6_unicast: bool,
+    /// 对此邻居接收已启用单播地址族的多条路径。缺省沿用每邻居每前缀一条路径。
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub receive_add_path: bool,
+    /// 向此邻居发布启用单播族的多条合格路径，缺省只发布当前出口选择。
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub send_add_path: bool,
     /// 显式入口策略；缺省不采用此邻居路由，接收表仍保留原始属性。
     #[serde(default)]
     pub import: Option<ImportPolicy>,
@@ -128,6 +140,51 @@ pub struct Neighbor {
     /// 同前缀宣告/撤回的最短间隔（秒）；缺省 eBGP 30/iBGP 5，零显式关闭。
     #[serde(default)]
     pub advertisement_seconds: Option<u16>,
+}
+
+impl Neighbor {
+    /// 判断是否仅改变行政停用状态或已启用 TCP-AO 的密钥配置。
+    pub fn supports_live_update(&self, next: &Self) -> bool {
+        let Self {
+            address,
+            interface,
+            md5_password,
+            tcp_ao,
+            asn,
+            preference,
+            hold_seconds,
+            retry_seconds,
+            passive,
+            shutdown: _,
+            route_reflector_client,
+            ipv4_unicast,
+            ipv6_unicast,
+            receive_add_path,
+            send_add_path,
+            import,
+            resolve_via_default,
+            export,
+            advertisement_seconds,
+        } = self;
+        *address == next.address
+            && *interface == next.interface
+            && *md5_password == next.md5_password
+            && tcp_ao.is_some() == next.tcp_ao.is_some()
+            && *asn == next.asn
+            && *preference == next.preference
+            && *hold_seconds == next.hold_seconds
+            && *retry_seconds == next.retry_seconds
+            && *passive == next.passive
+            && *route_reflector_client == next.route_reflector_client
+            && *ipv4_unicast == next.ipv4_unicast
+            && *ipv6_unicast == next.ipv6_unicast
+            && *receive_add_path == next.receive_add_path
+            && *send_add_path == next.send_add_path
+            && *import == next.import
+            && *resolve_via_default == next.resolve_via_default
+            && *export == next.export
+            && *advertisement_seconds == next.advertisement_seconds
+    }
 }
 
 /// 有序 first-match 入口规则；默认决定与本地 degree 均由配置 owner 明确提供。
@@ -275,6 +332,32 @@ where
     Ok(values.map(Vec::into_boxed_slice))
 }
 impl Configuration {
+    /// 判断能否在现有路由域启停邻居或轮换 TCP-AO 密钥。
+    pub fn supports_live_update(&self, next: &Self) -> bool {
+        let Self {
+            local_as,
+            confederation,
+            identifier,
+            cluster_id,
+            networks,
+            redistribute,
+            neighbors,
+        } = self;
+        *local_as == next.local_as
+            && *confederation == next.confederation
+            && *identifier == next.identifier
+            && *cluster_id == next.cluster_id
+            && *networks == next.networks
+            && *redistribute == next.redistribute
+            && neighbors.len() == next.neighbors.len()
+            && neighbors
+                .iter()
+                .zip(&next.neighbors)
+                .all(|((name, peer), (new_name, new_peer))| {
+                    name == new_name && peer.supports_live_update(new_peer)
+                })
+    }
+
     /// 校验唯一邻居地址、Identifier、计时及现有会话核心的参数表示范围；不建立连接。
     /// # Errors
     /// 地址、Identifier、hold/retry 或配置身份非法。
@@ -338,6 +421,16 @@ impl Configuration {
                 return Err(ValidationError {
                     path: format!("{path}/address"),
                     message: "duplicate neighbor transport address",
+                });
+            }
+            if neighbor
+                .tcp_ao
+                .as_ref()
+                .is_some_and(|ao| neighbor.md5_password.is_some() || !ao.valid())
+            {
+                return Err(ValidationError {
+                    path: format!("{path}/tcp_ao"),
+                    message: "TCP-AO requires unique send and receive IDs, valid selections and no TCP MD5",
                 });
             }
             if neighbor.route_reflector_client && neighbor.asn != self.local_as {
@@ -493,6 +586,18 @@ impl Configuration {
     }
 }
 
+/// 已配置认证模式与当前 TCP-AO 密钥 ID。未连接时没有实际 ID。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthenticationStatus {
+    None,
+    Md5,
+    Ao {
+        send_id: Option<u8>,
+        receive_id: Option<u8>,
+    },
+}
+
 /// 当前邻居的可观察状态；不是另一份可写会话状态。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -505,20 +610,28 @@ pub struct NeighborStatus {
     pub interface: Option<Name>,
     /// 实际会话状态的标准 BGP 名称。
     pub state: String,
+    /// 此邻居已被管理员停用。
+    pub shutdown: bool,
     /// 原始接收表条目，不表示已安装/可转发路由。
     pub received_routes: usize,
     /// 此邻居是否有显式入口策略；不等同于全部路由都被采用。
     pub import_policy_configured: bool,
     /// 此邻居是否配置出口策略。
     pub export_policy_configured: bool,
-    /// 当前邻居是否要求 TCP MD5；不返回秘密或签名值。
-    pub tcp_md5: bool,
+    /// 当前邻居的认证模式；不返回秘密或签名值。
+    pub authentication: AuthenticationStatus,
     /// 此邻居配置的反射器客户端角色；尚未连接时仍可查看。
     pub route_reflector_client: bool,
     /// 当前连接已协商 IPv4 单播路由能力；未建立或未协商时为 false。
     pub ipv4_unicast: bool,
     /// 当前连接已协商 IPv6 单播路由能力；未建立或未协商时为 false。
     pub ipv6_unicast: bool,
+    /// 当前连接可接收多条单播路径的地址族，按 IPv4、IPv6 排列。未协商时省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receive_add_path: Option<[bool; 2]>,
+    /// 当前连接可发送多条单播路径的地址族，按 IPv4、IPv6 排列。未协商时省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_add_path: Option<[bool; 2]>,
     /// 已完整送入当前 TCP 的宣告数，不冒充对端确认或最终 FIB 安装量。
     pub advertised_routes: usize,
     /// 能力不相容后暂停此邻居；配置重建前不自动重新连接或接纳入站尝试。

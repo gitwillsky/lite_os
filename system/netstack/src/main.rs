@@ -5,7 +5,7 @@
 
 //! netstack：网络服务。
 //!
-//! 拥有 IPv4 协议栈（smoltcp）、网卡、接口与路由、TCP/UDP/ICMP/RAW endpoint 与 packet socket。
+//! 拥有双栈主机协议、网卡、接口与路由、TCP/UDP/ICMP/RAW endpoint 与 packet socket。
 //! 启动时只有带回环的默认网络；router_config 经原生 RIB 委托安装网卡（netstack 重启后重新安装）。经 outgoing 接受
 //! 控制与安装连接；
 //! 使用者为每个网络域创建域 channel，经域 channel 创建 socket；每个 socket 一条 channel，全部操作不阻塞，
@@ -41,10 +41,11 @@ native_runtime::entry!(main);
 fn main(mut startup: Startup) -> i64 {
     let outgoing =
         native_runtime::Channel::from_handle(startup.take(launch_protocol::netstack::OUTGOING));
-    packet::init();
-    worker::start().expect("netstack protocol worker");
+    let scheduler =
+        native_runtime::Resource::from_handle(startup.take(launch_protocol::netstack::SCHEDULER));
+    let forwarding = worker::start(scheduler).expect("netstack protocol worker");
     dispatcher::start().expect("netstack dispatcher");
-    let network = server::start().expect("netstack default network");
+    let network = server::start(forwarding).expect("netstack default network");
     service_directory::serve_directory(
         outgoing,
         b"netstack-outgoing",

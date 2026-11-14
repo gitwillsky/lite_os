@@ -7,11 +7,12 @@ use core::fmt::Display;
 use core::{fmt, mem};
 
 use crate::time::{Duration, Instant};
-use crate::{Context, Endpoint as IpEndpoint, ListenEndpoint as IpListenEndpoint, PollAt};
 use crate::{
-    Control as TcpControl, IpPacket as IpRepr, Segment as TcpRepr, Sequence as TcpSeqNumber,
-    Timestamp as TcpTimestampRepr, TimestampGenerator as TcpTimestampGenerator,
+    Authentication, Control as TcpControl, IpPacket as IpRepr, Segment as TcpRepr,
+    Sequence as TcpSeqNumber, Timestamp as TcpTimestampRepr,
+    TimestampGenerator as TcpTimestampGenerator,
 };
+use crate::{Context, Endpoint as IpEndpoint, ListenEndpoint as IpListenEndpoint, PollAt};
 use crate::{reassembly::Assembler, stream_buffer::RingBuffer};
 use core::net::IpAddr as IpAddress;
 const TCP_HEADER_LEN: usize = 20;
@@ -498,6 +499,8 @@ pub struct Socket<'a> {
     pending_since: Option<Instant>,
     /// 实际RTO事件次数，不用RTT estimator的Karn样本退避计数冒充native重试预算。
     retransmits: u8,
+    /// 累计成功提交的重传段，与控制退避的连续超时次数分别维护。
+    total_retransmissions: u32,
     /// PROBE0实际计数与第一探测时刻；窗口0应答只清count，不重置USER_TIMEOUT起点。
     zero_window_probes: u8,
     zero_window_since: Option<Instant>,
@@ -574,7 +577,7 @@ pub struct Socket<'a> {
     /// Whether or not the remote supports selective ACK as described in RFC 2018.
     remote_has_sack: bool,
     /// Per-operation output format from the caller's selected key; no secret/key table is mirrored here.
-    md5: bool,
+    authentication: Authentication,
     /// The maximum number of data octets that the remote side may receive.
     remote_mss: usize,
     /// The timestamp of the last packet received.

@@ -48,10 +48,11 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   kernel ISA baseline 由 target 定义，不使用 host `target-cpu=native`；跨 ISA 编译时 host CPU
   不属于目标 LLVM backend，native 会造成无效 CPU/codegen，且让同一源码随构建宿主改变指令。
 - `ARCH` 默认 `aarch64`，只接受 `aarch64` 与 `riscv64`；它统一选择 kernel target、Linux userspace target、QEMU、musl loader 与 Alpine repository architecture，未知值在 Make 解析期失败。
-- `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。`riscv64 + hvf` 在构建前硬失败；RISC-V 必须显式选择 `ACCEL=tcg`，AArch64 的 TCG 诊断路径也必须显式选择，不能从 HVF 静默回退。
+- `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。TCG 必须显式选择，RISC-V 仅支持 TCG。无窗口 HVF 使用软件 GICv3 和 ITS，并保留 CPU 加速。硬件 vGIC 无法连接 ITS。
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
 - `QEMU_MEMORY` 默认 `2G`，统一控制 `run`、`run-gui` 与 `run-gdb` 的 guest RAM；交互式
   AArch64 runtime gate 使用相同的 2 GiB 产品内存配置。
+- `QEMU_DEVICE_CONFIG` 让 `run`、`run-gdb` 使用 [QEMU 设备配置](../architecture-contract/ip-forwarding.md#隔离的多队列吞吐验收)，并取消默认用户态网卡。
 - `AGENT_QEMU_MEMORY` 默认 `6G`，只控制 `prepare-agent-development` 的原生 CLI smoke 与
   `run-agent-development`；不能用 Agent 的重型内存需求放宽产品 2 GiB runtime contract。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
@@ -236,7 +237,7 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 `target/` 保留正式编译 cache、sysroot、构建工具产物、验证镜像、门禁日志和 success stamp。
 `clean-musl` / `clean-busybox` 或删除 `target/` 只使产物重新构建，不再下载已校验固定输入，
 也不重建本地签名身份。实际构建仍逐项检查摘要、manifest 和架构；目录迁移不放宽输入验证。
-本地目录不进入架构源码扫描；仓库内有本地修改的 `vendor/smoltcp` 仍属于受版本管理的实现源码。
+本地目录不进入架构源码扫描。宿主测试用的 `vendor/smoltcp` 由 Git 管理。
 
 ### 构建缓存空间
 

@@ -1,0 +1,15 @@
+[package]
+name = "network-manager"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+linux-uapi.workspace = true
+liteos-ui = { path = "../../libraries/liteos-ui" }
+network-config = { path = "../../libraries/network-config" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["raw_value"] }
+
+[lints]
+workspace = true

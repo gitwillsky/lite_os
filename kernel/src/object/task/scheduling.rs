@@ -62,23 +62,6 @@ impl Thread {
             })
     }
 
-    /// 指定系统 worker 的独占逻辑 CPU；None 归还并恢复共享 affinity。
-    /// # Errors
-    /// 未启动/退出或并发替换返回 BAD_STATE；分区/CBS 冲突返回 NO_RESOURCES；快照分配失败返回 NO_MEMORY。
-    pub(crate) fn set_isolation(
-        &self,
-        cpu: Option<crate::execution::cpu::CpuId>,
-    ) -> Result<(), Status> {
-        self.execution()
-            .ok_or(native_abi::ERR_BAD_STATE)?
-            .set_isolation(cpu)
-            .map_err(|error| match error {
-                crate::thread::IsolationError::Conflict => native_abi::ERR_NO_RESOURCES,
-                crate::thread::IsolationError::Terminated => native_abi::ERR_BAD_STATE,
-                crate::thread::IsolationError::NoMemory => native_abi::ERR_NO_MEMORY,
-            })
-    }
-
     /// 已消耗的 CPU 时间。
     pub(crate) fn runtime(&self) -> crate::thread::Runtime {
         self.execution()

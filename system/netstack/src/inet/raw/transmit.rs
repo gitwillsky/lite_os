@@ -1,13 +1,37 @@
 //! RAW 队首沿唯一 FIB、ARP/ND 与实际设备推进；不拥有第二套路由或邻居状态。
 use super::*;
-use smoltcp::time::Duration;
+use ::tcp::time::Duration;
+
+fn report_transmit_failure(
+    errors: &mut super::super::error_queue::ErrorQueue,
+    peer: Option<InetAddress>,
+    mut destination: InetAddress,
+    interface: Option<u32>,
+    error: SocketError,
+    info: u32,
+) {
+    if let InetAddress::V6(address) = &mut destination
+        && address.scope_id() == 0
+        && (address.ip().is_unicast_link_local()
+            || address.ip().is_multicast() && address.ip().octets()[1] & 15 <= 2)
+    {
+        address.set_scope_id(interface.unwrap_or(0));
+    }
+    errors.local_error(
+        destination,
+        error,
+        info,
+        peer.is_some_and(|peer| peer.ip() == destination.ip()),
+    );
+}
+
 impl NetworkStack {
-    /// ND 最终失败后退休仍使用该下一跳的 RAW 报文；路由已切换的报文继续保留。
+    /// ARP/ND 最终失败后退休仍使用该下一跳的 RAW 报文；路由已切换的报文继续保留。
     /// 不缓存每流网关，失败清理复用同一队列的冷路径压紧，不在正常发送复制载荷。
     pub(in crate::inet) fn raw_neighbor_failed(
         &mut self,
         interface: u32,
-        neighbor: Ipv6Addr,
+        failed_neighbors: &[Option<IpAddr>],
         timestamp: Instant,
     ) -> usize {
         let Self {
@@ -22,29 +46,49 @@ impl NetworkStack {
         } = self;
         let mut dropped = 0;
         raw_endpoints.for_each_mut(|_, state| {
+            let mut recheck = false;
             dropped += state.transmit.discard(|metadata| {
-                let failed = metadata.source.is_ipv6()
-                    && super::super::route::output_for(
-                        (routing, ipv6_routing, selection_rules.local()),
-                        interfaces,
-                        path_mtu,
-                        metadata.source,
+                if metadata
+                    .outgoing
+                    .is_some_and(|bound| bound.get() != interface)
+                {
+                    return false;
+                }
+                recheck = true;
+                let failed = super::super::route::output_for(
+                    (routing, ipv6_routing, selection_rules.local()),
+                    interfaces,
+                    path_mtu,
+                    metadata.source,
+                    metadata.destination,
+                    (
+                        metadata.outgoing.map(core::num::NonZeroU32::get),
+                        metadata.mark,
+                    ),
+                    timestamp,
+                )
+                .is_ok_and(|route| {
+                    route.interface_index == interface
+                        && failed_neighbors.contains(&Some(route.neighbor))
+                });
+                if failed {
+                    if let Some(lease) = metadata.identification {
+                        identification.release(lease, timestamp);
+                    }
+                    report_transmit_failure(
+                        &mut state.errors,
+                        state.peer,
                         metadata.destination,
-                        (
-                            metadata.outgoing.map(core::num::NonZeroU32::get),
-                            metadata.mark,
-                        ),
-                        timestamp,
-                    )
-                    .is_ok_and(|route| {
-                        route.logical_interface_index == interface
-                            && route.neighbor == IpAddr::V6(neighbor)
-                    });
-                if failed && let Some(lease) = metadata.identification {
-                    identification.release(lease, timestamp);
+                        Some(interface),
+                        SocketError::HostUnreachable,
+                        0,
+                    );
                 }
                 failed
             });
+            if recheck {
+                state.transmit_at = timestamp;
+            }
         });
         dropped
     }
@@ -55,10 +99,12 @@ impl NetworkStack {
             }
         });
     }
-    pub(in crate::inet) fn raw_due(&self, timestamp: Instant) -> bool {
+    pub(in crate::inet) fn raw_deadline(&self) -> Option<Instant> {
         self.raw_endpoints
-            .iter()
-            .any(|(_, state)| !state.transmit.is_empty() && state.transmit_at <= timestamp)
+            .values()
+            .filter(|state| !state.transmit.is_empty())
+            .map(|state| state.transmit_at)
+            .min()
     }
     /// 按 endpoint 轮转，整轮有界；任何分配/设备失败均不虚报已发送。
     pub(in crate::inet) fn poll_raw(
@@ -67,6 +113,7 @@ impl NetworkStack {
         first: usize,
         end: usize,
         rotation: usize,
+        work_until: u64,
     ) -> bool {
         let mut budget = NETWORK_RX_BUDGET;
         for _ in 0..self.raw_endpoints.len() {
@@ -78,7 +125,6 @@ impl NetworkStack {
             else {
                 break;
             };
-            self.raw_cursor = id;
             loop {
                 let state = &self.raw_endpoints[&id];
                 if state.transmit_at > timestamp {
@@ -96,16 +142,25 @@ impl NetworkStack {
                     ),
                     timestamp,
                 );
-                let Ok(route) = route else {
-                    if budget == 0 {
-                        return true;
+                let route = match route {
+                    Ok(route) => route,
+                    Err(error) => {
+                        if !super::super::poll::spend_output_attempt(&mut budget, work_until) {
+                            return true;
+                        }
+                        self.raw_cursor = id;
+                        let state = self.raw_endpoints.get_mut(&id).expect("live RAW");
+                        state.retire_transmit(&mut self.identification, timestamp);
+                        report_transmit_failure(
+                            &mut state.errors,
+                            state.peer,
+                            metadata.destination,
+                            metadata.outgoing.map(core::num::NonZeroU32::get),
+                            error,
+                            0,
+                        );
+                        continue;
                     }
-                    budget -= 1;
-                    self.raw_endpoints
-                        .get_mut(&id)
-                        .expect("live RAW")
-                        .retire_transmit(&mut self.identification, timestamp);
-                    continue;
                 };
                 let Some(position) = (first..end)
                     .map(|n| (rotation + n) % self.interfaces.len())
@@ -113,10 +168,10 @@ impl NetworkStack {
                 else {
                     break;
                 };
-                if budget == 0 {
+                if !super::super::poll::spend_output_attempt(&mut budget, work_until) {
                     return true;
                 }
-                budget -= 1;
+                self.raw_cursor = id;
                 let ipv4 = metadata.source.is_ipv4();
                 let mtu = if ipv4 && (metadata.header_included || metadata.ipv4_mtu_discovery >= 3)
                 {
@@ -139,12 +194,17 @@ impl NetworkStack {
                 let fragmented = bytes.len() > mtu || metadata.fragment_offset != 0;
                 if fragmented && !fragmentable {
                     self.interfaces[position].device.record_transmit_drop();
+                    let destination = metadata.destination;
                     let state = self.raw_endpoints.get_mut(&id).expect("live RAW");
                     state.retire_transmit(&mut self.identification, timestamp);
-                    state.errors.local_mtu(metadata.destination, mtu);
-                    if state.peer.is_some() {
-                        state.errors.pending = Some(SocketError::MessageTooLarge);
-                    }
+                    report_transmit_failure(
+                        &mut state.errors,
+                        state.peer,
+                        destination,
+                        Some(route.logical_interface_index),
+                        SocketError::MessageTooLarge,
+                        mtu as u32,
+                    );
                     continue;
                 }
                 let (pending, bytes) = self
@@ -166,12 +226,19 @@ impl NetworkStack {
                     };
                     match lease {
                         Ok(lease) => pending.identification = Some(lease),
-                        Err(_) => {
+                        Err(error) => {
                             self.interfaces[position].device.record_transmit_drop();
-                            self.raw_endpoints
-                                .get_mut(&id)
-                                .expect("live RAW")
-                                .retire_transmit(&mut self.identification, timestamp);
+                            let destination = pending.destination;
+                            let state = self.raw_endpoints.get_mut(&id).expect("live RAW");
+                            state.retire_transmit(&mut self.identification, timestamp);
+                            report_transmit_failure(
+                                &mut state.errors,
+                                state.peer,
+                                destination,
+                                Some(route.logical_interface_index),
+                                error,
+                                0,
+                            );
                             continue;
                         }
                     }
@@ -183,7 +250,6 @@ impl NetworkStack {
                         route.logical_interface_index,
                         pending.destination.ip(),
                         bytes.len(),
-                        timestamp,
                         |packet| packet.copy_from_slice(bytes),
                     );
                 }
@@ -211,14 +277,18 @@ impl NetworkStack {
                                 let result = interface.device.transmit_ipv4(
                                     (&mut interface.arp, interface.state, &mut interface.ipv6),
                                     &header[..size],
-                                    (range.len(), |body| {
-                                        body.copy_from_slice(
-                                            &bytes[size + range.start..size + range.end],
-                                        )
-                                    }),
+                                    (
+                                        range.len(),
+                                        |body: &mut [u8]| {
+                                            body.copy_from_slice(
+                                                &bytes[size + range.start..size + range.end],
+                                            )
+                                        },
+                                        None,
+                                    ),
                                     (route.neighbor, route.logical_interface_index),
                                     timestamp,
-                                    false,
+                                    (false, |_| 0),
                                 );
                                 (result, Some((range.end, bytes.len() - size)))
                             }
@@ -284,7 +354,20 @@ impl NetworkStack {
                                 .transmit_at = timestamp + Duration::from_millis(1000);
                             break;
                         }
-                        Err(_) => self.interfaces[position].device.record_transmit_drop(),
+                        Err(error) => {
+                            self.interfaces[position].device.record_transmit_drop();
+                            if error == device_model::network::NetworkError::FrameTooLarge {
+                                let state = self.raw_endpoints.get_mut(&id).expect("live RAW");
+                                report_transmit_failure(
+                                    &mut state.errors,
+                                    state.peer,
+                                    metadata.destination,
+                                    Some(route.logical_interface_index),
+                                    SocketError::MessageTooLarge,
+                                    mtu as u32,
+                                );
+                            }
+                        }
                         Ok(()) => {
                             super::super::route::probe_gateway(
                                 &mut self.interfaces,
@@ -312,6 +395,7 @@ impl NetworkStack {
                     .expect("live RAW")
                     .retire_transmit(&mut self.identification, timestamp);
             }
+            self.raw_cursor = id;
         }
         false
     }

@@ -112,6 +112,9 @@ impl<'a> Ipv6Datagram<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Ipv6Error> {
         bounded(bytes).map(|(datagram, _)| datagram)
     }
+    pub(crate) fn from_checked_bounds(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
     /// 只按结构定位可见上层前缀，供路由器判断能否返回 ICMP 错误；不执行终点选项或认证语义。
     /// # Returns
     /// 非首分片返回 None；其他返回外层协议及可见字节，不能当作已验证的 transport。
@@ -119,6 +122,24 @@ impl<'a> Ipv6Datagram<'a> {
     /// 扩展头 framing 截断或非法；协议层无法确认时应抑制错误，不能猜 ICMP 类型。
     pub fn upper_prefix(self) -> Result<Option<(u8, &'a [u8])>, Ipv6Error> {
         quoted_upper_prefix(self.bytes)
+    }
+
+    /// 沿可见扩展头定位 Fragment 类型，供转发分类器判断是否需要进一步校验。
+    /// 遇到 Fragment 类型即返回 true，头部本身可能截断。此前的扩展头无法遍历时返回 false。
+    pub fn has_fragment_header(self) -> bool {
+        let mut kind = self.bytes[6];
+        let mut at = 40;
+        while is_parsed_extension(kind) {
+            if kind == 44 {
+                return true;
+            }
+            let Ok(length) = extension_length(self.bytes, at, kind) else {
+                return false;
+            };
+            kind = self.bytes[at];
+            at += length;
+        }
+        false
     }
 
     /// 排除链路 padding 的完整 IP 字节。
@@ -169,6 +190,13 @@ impl<'a> Ipv6Datagram<'a> {
         }))
     }
 }
+
+/// `kind` 是 IPv6 Next Header。返回该类型是否属于解析器可遍历的扩展链。
+/// ESP 和未知类型结束可见扩展链，按上层协议保留原字节。
+pub const fn is_parsed_extension(kind: u8) -> bool {
+    matches!(kind, 0 | 43 | 44 | 51 | 60)
+}
+
 /// 从原 IPv6 包或 ICMP 引用定位可见上层前缀，不要求不可见的完整载荷。
 /// # Parameters
 /// `bytes` 为至少包含固定头的 IPv6 原包前缀；不借此代替完整接收校验。
@@ -185,7 +213,7 @@ pub fn quoted_upper_prefix(bytes: &[u8]) -> Result<Option<(u8, &[u8])>, Ipv6Erro
     }
     let mut kind = bytes[6];
     let mut at = 40;
-    while matches!(kind, 0 | 43 | 44 | 51 | 60) {
+    while is_parsed_extension(kind) {
         let length = extension_length(bytes, at, kind)?;
         if kind == 44
             && (FragmentHeader {
@@ -282,9 +310,11 @@ fn scan(
         fragmented: false,
         non_initial_fragment: false,
     };
+    // 归一化只移除一个 Fragment header；同一扩展链的第二个头不能再次定义分片边界。
+    let mut fragment_seen = false;
     loop {
         let kind = chain.protocol;
-        if !matches!(kind, 0 | 43 | 44 | 51 | 60) {
+        if !is_parsed_extension(kind) {
             break;
         }
         let offset = chain.end;
@@ -306,9 +336,10 @@ fn scan(
             problem
         })?;
         if kind == 44 {
-            if packet_length > 65575 {
+            if fragment_seen || packet_length > 65575 {
                 return Err(error(PacketError::Malformed, offset));
             }
+            fragment_seen = true;
             let fragment = FragmentHeader {
                 bytes: &bytes[offset..offset + 8],
                 offset,

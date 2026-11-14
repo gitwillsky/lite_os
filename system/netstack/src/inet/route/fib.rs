@@ -1,6 +1,7 @@
 //! 唯一活动 FIB 的连续记录、共享下一跳与 Poptrie；前缀直接引用自己的 alias 区间。
 use super::*;
 use network_protocol::RouteChange;
+use network_protocol::routes::RouteAttributes;
 type NextHop = nexthop::NextHop<Ipv4Addr>;
 type NextHops = nexthop::NextHops<Ipv4Addr>;
 
@@ -22,6 +23,20 @@ struct StoredRecord {
     next_hop: Option<nexthop::Id>,
 }
 impl StoredRecord {
+    fn attributes(self) -> RouteAttributes<Ipv4Addr> {
+        RouteAttributes {
+            destination: self.destination,
+            prefix_length: self.prefix_length,
+            table: self.table,
+            metric: self.metric,
+            scope: self.scope,
+            protocol: self.protocol,
+            kind: self.kind,
+            preferred_source: self.preferred_source,
+            metrics: self.metrics,
+        }
+    }
+
     fn new(record: Record, next_hop: Option<nexthop::Id>) -> Self {
         let request = record.request;
         Self {
@@ -72,7 +87,7 @@ impl StoredRecord {
         &self,
         hops: &NextHops,
         flow: Flow,
-        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        interfaces: Ipv4Interfaces<'_>,
     ) -> Option<Record> {
         let stored = *self;
         let Some(index) = stored.next_hop else {
@@ -82,12 +97,17 @@ impl StoredRecord {
         };
         let (members, name) = hops.view(index);
         let seed = name.map_or_else(|| u64::from(index.get()), |name| name.get());
-        let mut member = group::select(members, flow, seed, stored.kind, interfaces.clone())?;
+        let mut member = group::select(members, flow, seed, stored.kind, interfaces)?;
         let mut frozen_source = None;
         // 只在同一匹配组内按最终源重选；常态直接投影选中成员，不先复制首成员记录。
         if members.len() > 1 && flow.source.is_unspecified() {
             frozen_source = stored.preferred_source.or_else(|| {
-                source_for_ipv4_path(member.interface_index, member.gateway, interfaces.clone())
+                let output = interfaces.get(member.interface_index);
+                source_for_ipv4_path(
+                    output.and_then(|device| device.address),
+                    member.gateway,
+                    interfaces,
+                )
             });
             if let Some(source) = frozen_source {
                 member = group::select(
@@ -219,7 +239,7 @@ impl Draft {
         table: u32,
         flow: Flow,
         minimum_scope: u8,
-        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        interfaces: Ipv4Interfaces<'_>,
     ) -> Option<Record> {
         self.entries
             .iter()
@@ -231,7 +251,7 @@ impl Draft {
             .filter_map(|entry| {
                 entry
                     .record
-                    .select(&self.hops, flow, interfaces.clone())
+                    .select(&self.hops, flow, interfaces)
                     .filter(|record| record.request.scope >= minimum_scope)
                     .map(|record| (entry, record))
             })
@@ -261,11 +281,26 @@ pub(super) struct Fib {
 }
 
 impl Fib {
+    pub(super) fn capture_page(
+        &self,
+        capture: &mut observation::Capture,
+        interfaces: &[NetworkInterface],
+    ) -> Result<(), SocketError> {
+        for (position, entry) in self.entries.iter().enumerate().skip(capture.start()) {
+            let record = entry.record;
+            let members = record.next_hop.map_or(&[][..], |id| self.hops.members(id));
+            if capture.route(position, record.attributes(), members, interfaces)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn has_gateway(&self, index: u32, gateway: IpAddr) -> bool {
         self.hops.active_groups().any(|(_, members)| {
-            members.iter().any(|member| {
-                member.interface_index == index && member.gateway == Some(gateway)
-            })
+            members
+                .iter()
+                .any(|member| member.interface_index == index && member.gateway == Some(gateway))
         })
     }
 
@@ -300,7 +335,7 @@ impl Fib {
         &self,
         interfaces: &[NetworkInterface],
     ) -> Result<Vec<u8>, SocketError> {
-        use network_protocol::routes::{NextHopConfiguration, RouteAttributes};
+        use network_protocol::routes::NextHopConfiguration;
         let mut indices = Vec::new();
         indices
             .try_reserve_exact(self.hops.slot_count())
@@ -319,17 +354,6 @@ impl Fib {
                 .map(|(index, (_, members))| NextHopConfiguration::new(index as u64 + 1, members)),
             self.entries.iter().map(|entry| {
                 let record = entry.record;
-                let attributes = RouteAttributes {
-                    destination: record.destination,
-                    prefix_length: record.prefix_length,
-                    table: record.table,
-                    metric: record.metric,
-                    scope: record.scope,
-                    protocol: record.protocol,
-                    kind: record.kind,
-                    preferred_source: record.preferred_source,
-                    metrics: record.metrics,
-                };
                 let group = record.next_hop.map(|id| {
                     let index = indices[id.get() as usize - 1];
                     assert_ne!(
@@ -339,7 +363,11 @@ impl Fib {
                     );
                     index
                 });
-                (attributes, group, group.is_none() && record.on_link)
+                (
+                    record.attributes(),
+                    group,
+                    group.is_none() && record.on_link,
+                )
             }),
         )
         .map_err(|error| {
@@ -350,9 +378,17 @@ impl Fib {
             }
         })
     }
-    pub(super) fn matching(&self, address: Ipv4Addr) -> impl Clone + Iterator<Item = &[Entry]> {
+    pub(super) fn index(&self) -> &poptrie::Poptrie<u32> {
+        &self.index
+    }
+
+    pub(super) fn matching(
+        &self,
+        address: Ipv4Addr,
+        probe: u64,
+    ) -> impl Clone + Iterator<Item = &[Entry]> {
         self.index
-            .matching(u32::from(address))
+            .matching_from(u32::from(address), probe)
             .map(|prefix| &self.entries[prefix.range()])
     }
     /// 暂存新根；未修改的标量属性复制到候选，下一跳只按实际不同的值暂存一次。
@@ -390,13 +426,14 @@ impl Fib {
             }
         }
         candidate.entries.sort_unstable_by_key(Entry::key);
-        let index = poptrie::Poptrie::build(candidate.entries.iter().map(Entry::prefix)).map_err(
-            |error| match error {
+        let index = self
+            .index
+            .rebuild(candidate.entries.iter().map(Entry::prefix))
+            .map_err(|error| match error {
                 poptrie::Error::Invalid => SocketError::Invalid,
                 poptrie::Error::NoMemory => SocketError::NoMemory,
                 poptrie::Error::NoSpace => SocketError::NoSpace,
-            },
-        )?;
+            })?;
         Ok(Self {
             entries: candidate.entries,
             hops: candidate.hops,
@@ -477,7 +514,7 @@ impl Fib {
         &self,
         entry: &Entry,
         flow: Flow,
-        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        interfaces: Ipv4Interfaces<'_>,
     ) -> Option<Record> {
         entry.record.select(&self.hops, flow, interfaces)
     }

@@ -542,6 +542,8 @@ const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
     #[cfg(target_os = "linux")]
+    pub(crate) fn setns(fd: c_int, namespace_type: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
     pub(crate) fn uname(name: *mut c_void) -> c_int;
     #[cfg(target_os = "linux")]
     pub(crate) fn geteuid() -> u32;
@@ -611,6 +613,14 @@ unsafe extern "C" {
         option: c_int,
         value: *mut c_void,
         length: *mut u32,
+    ) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn setsockopt(
+        fd: c_int,
+        level: c_int,
+        option: c_int,
+        value: *const c_void,
+        length: u32,
     ) -> c_int;
     pub(crate) fn fork() -> c_int;
     #[cfg(target_os = "linux")]

@@ -45,6 +45,9 @@ pub struct PathAttributes {
 pub struct RouteObservation {
     pub neighbor: String,
     pub address: IpAddr,
+    /// 当前邻居分配的路径编号。未协商接收多路径时省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_id: Option<u32>,
     pub decision: RouteDecision,
     pub next_hop: IpAddr,
     pub attributes: PathAttributes,
@@ -57,6 +60,9 @@ pub struct ExportObservation {
     pub address: IpAddr,
     /// 已完整送入当前 TCP 的宣告，不代表远端确认。
     pub advertised: bool,
+    /// 完整送入当前 TCP 的本端多路径编号。普通单路径不携带编号。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_ids: Vec<u32>,
 }
 /// 同一 actor 的单前缀结果；selected 是已经来源确认的后政策属性，不是最终 FIB 安装证明。
 #[derive(Debug, Serialize, Deserialize)]

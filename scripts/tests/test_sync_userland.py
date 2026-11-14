@@ -124,10 +124,13 @@ class UserlandSyncTests(unittest.TestCase):
         # 产品清单新增文件时，同步器的白名单必须同步更新；否则开发镜像同步会在运行时才报错。
         from userland.artifacts import base_userland
 
-        from unittest.mock import patch, Mock
-        with patch("userland.artifacts._build_rust_user_targets", side_effect=lambda _musl, targets: {
-            target: Path("/nonexistent/program") for target in targets
-        }):
+        from unittest.mock import Mock, patch
+        with (
+            patch("userland.artifacts._build_rust_user_targets", side_effect=lambda _musl, targets: {
+                target: Path("/nonexistent/program") for target in targets
+            }),
+            patch("userland.iperf._build", return_value=Path("/nonexistent/iperf-build")),
+        ):
             for artifact in base_userland(Mock()):
                 self.assertTrue(sync_userland.managed_path(artifact.destination), artifact.destination)
 

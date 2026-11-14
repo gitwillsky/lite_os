@@ -1,11 +1,11 @@
 //! NET endpoint 的签名密钥策略；不可变版本由实际已完成握手的 child 冻结，报文只短借选中的密钥。
 use super::*;
 use alloc::sync::Arc;
-use network_protocol::{TCP_MD5_MAX_KEY_BYTES, TcpMd5Selector};
+use network_protocol::{TCP_MD5_MAX_KEY_BYTES, TcpKeySelector};
 
 #[derive(Clone)]
 struct Entry {
-    selector: TcpMd5Selector,
+    selector: TcpKeySelector,
     key: Arc<transport::Md5Key>,
 }
 /// 只在配置过密钥时存在；同一不可变版本可被 listener、已握手 child 及在途回复共享。
@@ -13,7 +13,7 @@ pub(super) struct Keys(Vec<Entry>);
 pub(super) type SharedKeys = Option<Arc<Keys>>;
 /// 本连接已选择的密钥关联；路由变化不能在仍有同一配置项时把受保护连接悄悄降为无签名。
 pub(super) struct Binding {
-    selector: TcpMd5Selector,
+    selector: TcpKeySelector,
     pub(super) key: Arc<transport::Md5Key>,
 }
 impl Binding {
@@ -48,6 +48,11 @@ impl Binding {
     }
 }
 impl Keys {
+    pub(super) fn overlaps(keys: &SharedKeys, selector: TcpKeySelector) -> bool {
+        keys.iter()
+            .flat_map(|keys| keys.0.iter())
+            .any(|entry| entry.selector.overlaps(selector))
+    }
     /// 接口限定优先于通配，再取最长前缀；同等条件选最近新增项，与固定 Linux MD5 选择一致。
     fn select(keys: &SharedKeys, peer: IpAddr, interface: u32) -> Option<&Entry> {
         keys.as_ref()?
@@ -63,7 +68,7 @@ impl Keys {
     }
     fn changed(
         old: &SharedKeys,
-        selector: TcpMd5Selector,
+        selector: TcpKeySelector,
         key: &[u8],
     ) -> Result<SharedKeys, SocketError> {
         let entries = old.as_ref().map_or(&[][..], |keys| keys.0.as_slice());
@@ -104,7 +109,7 @@ impl InetSocket {
     /// 非 TCP、非法 selector/密钥、未知接口、无删除目标、已关闭 endpoint 或分配失败。
     pub(crate) fn set_md5_key(
         &self,
-        selector: TcpMd5Selector,
+        selector: TcpKeySelector,
         key: &[u8],
     ) -> Result<(), SocketError> {
         let _operation = self.open_operation()?;
@@ -125,13 +130,16 @@ impl InetSocket {
         if state.family == InetFamily::Ipv4 && selector.address.is_ipv6() {
             return Err(SocketError::Invalid);
         }
+        if !key.is_empty() && ao::MasterKey::overlaps(&state.ao_keys, selector) {
+            return Err(SocketError::AddressInUse);
+        }
         let next = Keys::changed(&state.md5_keys, selector, key)?;
         state.md5_keys = next;
         for entry in &mut state.handles {
             entry.transmit_at = Instant::from_millis(0);
         }
         drop(network);
-        crate::worker::request_poll();
+        crate::worker::request_poll(self.namespace.id());
         Ok(())
     }
 }

@@ -1,6 +1,9 @@
 //! INET 控制接口与请求分派；数据队列及应用编号不属于此层。
 use super::*;
 
+mod information;
+pub use information::{TcpInformation, TcpPhase};
+
 /// 服务端：一个 INET socket；全部操作不阻塞。
 pub trait InetSocketService: Send + Sync {
     fn bind(&self, address: InetAddress) -> Result<(), SocketError>;
@@ -28,7 +31,29 @@ pub trait InetSocketService: Send + Sync {
     /// Add/replace a peer key; an empty key deletes the exact selector.
     /// # Errors
     /// Invalid selector, missing deletion target, resource failure or unsupported protocol.
-    fn set_md5_key(&self, selector: TcpMd5Selector, key: &[u8]) -> Result<(), SocketError>;
+    fn set_md5_key(&self, selector: TcpKeySelector, key: &[u8]) -> Result<(), SocketError>;
+    /// Install a TCP-AO master key or remove its exact selector and IDs with an empty secret.
+    /// # Errors
+    /// Invalid selector, overlapping key IDs or MD5 policy, unsupported state or resource failure.
+    fn set_ao_key(
+        &self,
+        config: TcpAoKey,
+        key: &[u8],
+        selection: TcpAoSelection,
+    ) -> Result<(), SocketError>;
+    fn ao_status(&self) -> Result<TcpAoStatus, SocketError>;
+    /// 冻结当前 TCP 状态和实际发送统计，不推进连接。
+    /// # Errors
+    /// 端点已关闭或该 socket 使用其他传输协议。
+    fn tcp_information(&self) -> Result<TcpInformation, SocketError>;
+    /// Atomically replace the keys for one exact peer and select the desired IDs.
+    /// # Errors
+    /// Invalid selector, IDs or state, conflicting policies or resource failure.
+    fn replace_ao_keys(
+        &self,
+        keys: &[(TcpAoKey, &[u8])],
+        selection: TcpAoSelection,
+    ) -> Result<(), SocketError>;
     /// `privileged`：调用者在域的 owning user namespace 中具有 `CAP_NET_RAW`（已绑定后改绑需要它）。
     /// 读取 ICMP 接收位图，或按 mask 原子更新选定位；不修改已入队报文。
     /// # Parameters
@@ -119,6 +144,38 @@ pub fn dispatch_inet(
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
             options::dispatch_md5(service, request, reply)?;
+        }
+        ordinal::AO_KEY => {
+            if !handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            options::dispatch_ao(service, request, reply)?;
+        }
+        ordinal::AO_STATUS => {
+            if !handles.is_empty() || request.u32()? != 1 {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            request.finish()?;
+            reply.try_reserve(46)?;
+            if let Some(status) = put_result(reply, service.ao_status()) {
+                status.write(reply);
+            }
+        }
+        TcpInformation::ORDINAL => {
+            if !handles.is_empty() || request.u32()? != TcpInformation::VERSION {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            request.finish()?;
+            reply.try_reserve(1 + TcpInformation::WIRE_BYTES)?;
+            if let Some(info) = put_result(reply, service.tcp_information()) {
+                info.write(reply);
+            }
+        }
+        options::AO_REPLACE_KEYS => {
+            if !handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            options::dispatch_ao_replace(service, request, reply)?;
         }
         ordinal::BIND_TO_DEVICE => {
             let name = request.bytes()?;

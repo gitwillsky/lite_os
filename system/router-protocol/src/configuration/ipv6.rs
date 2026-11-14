@@ -85,6 +85,11 @@ fn router_lifetime() -> u16 {
 }
 
 impl RouterAdvertisements {
+    pub(crate) fn valid_for(self, addresses: impl Iterator<Item = Ipv6Address>) -> bool {
+        self.valid()
+            && (self == Self::Disabled || valid_advertised_prefixes(addresses, self.max_prefixes()))
+    }
+
     /// 本配置需要发布的 DNS 服务器；停止通告时为空。
     pub fn dns(self) -> AdvertisedDns {
         match self {
@@ -126,7 +131,7 @@ pub struct Ipv6Configuration {
     #[serde(default)]
     pub advertise: RouterAdvertisements,
 }
-fn addresses<'de, D: serde::Deserializer<'de>>(
+pub(super) fn addresses<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<Ipv6Address>, D::Error> {
     let mut values = Vec::<Ipv6Address>::deserialize(deserializer)?;
@@ -149,13 +154,7 @@ impl Ipv6Configuration {
                 ));
             }
         }
-        if !self.advertise.valid()
-            || self.advertise != RouterAdvertisements::Disabled
-                && !valid_advertised_prefixes(
-                    self.addresses.iter().copied(),
-                    self.advertise.max_prefixes(),
-                )
-        {
+        if !self.advertise.valid_for(self.addresses.iter().copied()) {
             return Err(invalid(
                 "/ipv6/advertise",
                 "invalid advertisement lifetime, interval or too many prefixes",

@@ -154,6 +154,17 @@ pub fn installed() -> Vec<Entry> {
     entries
 }
 
+/// 读取可显示的应用并跟随其 XDG 应用目录。扫描期间发生的变更留在通知队列。
+///
+/// 返回应用及首次注册错误。注册失败的目录仍参与本次读取。
+pub fn watch_installed(
+    changes: &mut linux_uapi::filesystem::DirectoryChanges,
+) -> (Vec<Entry>, io::Result<()>) {
+    let (mut entries, result) = changes.scan(|watch| scan_installed(&data_directories(), Some(watch)));
+    entries.retain(|entry| !entry.no_display);
+    (entries, result)
+}
+
 /// 返回窗口 app_id 与图标的对应关系，包含 NoDisplay 的已安装条目。
 pub fn icons_by_app_id() -> HashMap<String, String> {
     installed_in(&data_directories())
@@ -162,12 +173,15 @@ pub fn icons_by_app_id() -> HashMap<String, String> {
         .collect()
 }
 
-fn desktop_files(directory: &Path) -> Vec<PathBuf> {
+fn desktop_files(directory: &Path, watch: &mut Option<&mut dyn FnMut(&Path)>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(entries) = fs::read_dir(directory) {
+        if let Some(watch) = watch.as_deref_mut() {
+            watch(directory);
+        }
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                paths.extend(desktop_files(&entry.path()));
+                paths.extend(desktop_files(&entry.path(), watch));
             } else if entry
                 .path()
                 .extension()
@@ -182,11 +196,25 @@ fn desktop_files(directory: &Path) -> Vec<PathBuf> {
 }
 
 fn installed_in(directories: &[PathBuf]) -> Vec<Entry> {
+    scan_installed(directories, None)
+}
+
+fn scan_installed(directories: &[PathBuf], mut watch: Option<&mut dyn FnMut(&Path)>) -> Vec<Entry> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
     for (data_rank, directory) in directories.iter().enumerate() {
+        if let Some(watch) = watch.as_deref_mut() {
+            // 按从外到内的顺序观察现有祖先，连同首次创建 applications 的情况。
+            let ancestors: Vec<_> = directory.ancestors().collect();
+            for ancestor in ancestors.into_iter().rev() {
+                if !ancestor.is_dir() {
+                    break;
+                }
+                watch(ancestor);
+            }
+        }
         let directory = directory.join("applications");
-        for path in desktop_files(&directory) {
+        for path in desktop_files(&directory, &mut watch) {
             let id = path
                 .strip_prefix(&directory)
                 .expect("descendant")

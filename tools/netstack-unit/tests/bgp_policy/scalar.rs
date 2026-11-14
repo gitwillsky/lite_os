@@ -51,7 +51,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
     let raw = domain
         .peer_routes(second.id)
         .unwrap()
-        .get(prefix())
+        .get(prefix(), None)
         .unwrap()
         .attributes()
         .clone();
@@ -59,7 +59,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
     let received = domain
         .peer_routes(second.id)
         .unwrap()
-        .get(prefix())
+        .get(prefix(), None)
         .unwrap();
     for field in ["med", "origin", "local_preference", "as_path_length"] {
         let mut policy = parameters.import.clone().unwrap();
@@ -97,7 +97,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         domain
             .peer_routes(second.id)
             .unwrap()
-            .get(prefix())
+            .get(prefix(), None)
             .unwrap(),
     )
     .unwrap();
@@ -112,7 +112,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         )
         .unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, peer, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, peer, _, route| {
             Ok((
                 route.next_hop(),
                 Some(100),
@@ -135,7 +135,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         domain
             .peer_routes(second.id)
             .unwrap()
-            .get(prefix())
+            .get(prefix(), None)
             .unwrap()
             .attributes(),
         &raw
@@ -148,7 +148,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         .unwrap();
     domain.reconsider([prefix()]).unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, peer, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, peer, _, route| {
             Ok((
                 route.next_hop(),
                 Some(100),
@@ -165,8 +165,8 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         .unwrap()
         .commit();
     assert_eq!(domain.selected().get(prefix()).unwrap().peer(), first.id); // 相同相邻 AS/ORIGIN 后比较改写的 MED。
-    let mut outgoing = AdjRibOut::new();
-    outgoing.changed(prefix(), 0).unwrap();
+    let mut outgoing = AdjRibOut::default();
+    outgoing.changed(&domain, prefix(), 0).unwrap();
     let message = outgoing
         .prepare(&mut domain, parameters.export.as_ref(), context(), 0)
         .unwrap()
@@ -203,7 +203,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         extended_communities: None,
         large_communities: None,
     };
-    outgoing.changed(prefix(), 31).unwrap();
+    outgoing.changed(&domain, prefix(), 31).unwrap();
     let message = outgoing
         .prepare(&mut domain, Some(&removed), context(), 31)
         .unwrap()
@@ -223,7 +223,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         domain
             .peer_routes(first.id)
             .unwrap()
-            .get(prefix())
+            .get(prefix(), None)
             .unwrap()
             .attributes()
             .med(),
@@ -247,20 +247,20 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
         None
     );
     // 选路恢复后 MED 已缺失，出口条件不再满足；必须撤回此前已经完整发送的宣告。
-    outgoing.changed(prefix(), 62).unwrap();
+    outgoing.changed(&domain, prefix(), 62).unwrap();
     let withdrawn = outgoing
         .prepare(&mut domain, parameters.export.as_ref(), context(), 62)
         .unwrap()
         .unwrap();
     assert_eq!(
         receive(&mut remote, &withdrawn).changes().next(),
-        Some(bgp::Change::Withdraw(prefix()))
+        Some(bgp::Change::Withdraw(prefix(), None))
     );
     outgoing.sent(62);
     // eBGP 接收没有 LOCAL_PREF，出口仍匹配 Loc-RIB 确认的本地 degree，而不是原始字段或旧默认值。
     domain.reconsider([prefix()]).unwrap();
     domain
-        .prepare(wire::nlri::Family::Ipv4, |_, _, route| {
+        .prepare(wire::nlri::Family::Ipv4, |_, _, _, route| {
             Ok((
                 route.next_hop(),
                 Some(200),
@@ -275,7 +275,7 @@ fn scalar_policies_change_real_selection_and_outgoing_attributes_without_mutatin
     let mut policy = parameters.export.clone().unwrap();
     policy.rules[0].med = None;
     policy.rules[0].local_preference = Some(200..=200);
-    outgoing.changed(prefix(), 93).unwrap();
+    outgoing.changed(&domain, prefix(), 93).unwrap();
     let announced = outgoing
         .prepare(&mut domain, Some(&policy), context(), 93)
         .unwrap()

@@ -275,7 +275,6 @@ def run_command(session, command: str) -> None:
     click(session, 25, 786)
     wait_screen(session, [((180, 620), (212, 208, 200))], 'start menu mapped')
     click(session, 110, START_MENU_RUN)
-    session.console.wait_for(('compositor: layer "org.liteos.run" Top',))
     wait_screen(session, [((100, 650), (255, 255, 255)), ((200, 700), (212, 208, 200))], 'run dialog presented')
     type_text(session, command)
     tap(session, 'ret')

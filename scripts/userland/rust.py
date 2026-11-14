@@ -53,11 +53,12 @@ DYNAMIC_PROGRAMS = frozenset({
     ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
     ("sound-player", "sndplay"), ("smbfs", "smbfs"), ("linux-uapi", "session-launch"),
     ("resolvd", "resolvd"), ("network-config", "ipconfig"),
+    ("network-config", "router-api"),
     ("compositor", "wayland-probe"), ("compositor", "shell-probe"),
     ("classic-ui", "ui-probe"), ("classic-ui", "session-probe"), ("linux-uapi", "drm-flip-probe"),
 })
 
-STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
+STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay"), ("network-manager", "network-manager")})
 
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
@@ -233,7 +234,8 @@ def _build_rust_user_targets(
                 raise RuntimeError(f"static Rust build must not select a system library package: {group}")
             cargo_target = cargo_targets[first.dynamic]
             env = build_environment()
-            linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
+            compiler_target = RUST_USER_TARGET.replace("-", "_")
+            linker_variable = f"CARGO_TARGET_{compiler_target.upper()}_LINKER"
             env.update({
                 "LITEOS_MUSL_CLANG": str(musl.compiler),
                 "LITEOS_MUSL_LLD": str(musl.linker),
@@ -243,6 +245,8 @@ def _build_rust_user_targets(
                 "CARGO_INCREMENTAL": "0",
                 "CARGO_TARGET_DIR": str(cargo_target),
                 linker_variable: str(ROOT / "scripts/musl_clang.py"),
+                f"CC_{compiler_target}": str(ROOT / "scripts/musl_clang.py"),
+                f"AR_{compiler_target}": str(musl.archiver),
                 "RUSTFLAGS": (
                     f"{RUST_USER_RUSTFLAGS} "
                     f"{'-C prefer-dynamic ' if first.dynamic else ''}"

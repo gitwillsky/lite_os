@@ -6,7 +6,11 @@ pub use offload::{
 mod checksum;
 pub use checksum::NetworkChecksum;
 mod frame;
-pub use frame::{NetworkReceiveFrame, NetworkTransmit};
+pub use frame::{
+    NetworkReceiveBuffer, NetworkReceiveFrame, NetworkReceiveOwner, NetworkReceivePayload,
+    NetworkTransmit, NetworkTransmitData, ReceiveChecksum, ReceivePreparation,
+};
+pub use packet_wire::batch::NetworkPacket as ReceivePacket;
 mod rss;
 pub use rss::{NetworkRssCapabilities, NetworkRssConfiguration};
 
@@ -87,10 +91,21 @@ impl NetworkStatistics {
 pub struct NetworkCompletion {
     /// 本轮实际回收的 TX descriptor head 数，用于跨队列共享同一完成预算。
     pub completed: usize,
-    /// 尚有 used entry 未回收，调用方必须重新投递 network softirq。
+    /// 队列仍有待推进的工作，调用方须重新投递。
     pub backlog: bool,
     /// TX 容量从零变为非零，阻塞的 packet writer 需要被唤醒。
     pub transmit_became_available: bool,
+}
+
+/// 设备队列线程已发表、尚未被协议栈消费的进度。
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct NetworkDeviceProgress {
+    /// 至少一个队列从无发送槽变为可写。
+    pub transmit_ready: bool,
+    /// 接收方向待处理的故障。
+    pub receive_error: Option<NetworkError>,
+    /// 发送方向待处理的故障。
+    pub transmit_error: Option<NetworkError>,
 }
 
 /// 面向 Ethernet 协议栈的唯一 network device seam。
@@ -134,46 +149,36 @@ pub trait NetworkDevice: Send + Sync {
     /// 物理设备无法读取或会话已退出时返回错误；变化由独立链路通知发布。
     fn link(&self) -> Result<NetworkLink, NetworkError>;
 
-    /// 非阻塞批量领取 RX，只填写 output 的前缀；每个元素开始必须为 None，零表示当前无包。
+    /// 从 `start` 起循环选择一个有待交付帧的队列，非阻塞地领取一批 RX。
+    /// `output` 开始必须全为 None。成功时返回队列号和填入的非空前缀长度，无包时返回 None。
     /// 返回数不超过 output.len 与 RECEIVE_BATCH_CAPACITY，每帧有独立的不可复制借用，不复制 payload。
     /// # Errors
-    /// 输出含已有 token、队列无效或设备/协议失败。错误前可能已经填入部分 token，调用者必须全部归还，不能消费其 payload；
+    /// 输出含已有 token、起始队列无效或设备/协议失败。错误前可能已经填入部分 token，调用者必须全部归还，不能消费其 payload；
     /// 设备错误锁存终止。不得在持有设备本地队列锁时 Drop 这些 token，否则归还会重入同一锁。
     fn receive_batch<'a>(
         &'a self,
-        queue: u16,
+        start: u16,
         output: &mut [Option<NetworkReceiveFrame<'a>>],
-    ) -> Result<usize, NetworkError>;
+    ) -> Result<Option<(u16, usize)>, NetworkError>;
 
     /// 预留并返回唯一的可写 payload；无容量返回 WouldBlock，设备失败返回错误。
     fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError>;
 
-    /// 消费 RX token 的身份并归还槽；错误必须终止本次会话。
-    /// # Safety
-    /// 只能由持有对应 token 的 owner 调用，所有 payload 引用必须已结束，不得重复调用。
-    unsafe fn release_received(
-        &self,
-        queue: u16,
-        slot: u16,
-        ticket: u64,
-    ) -> Result<(), NetworkError>;
-
-    /// 把对应 TX reservation 交给 DMA；成功后不能取消或访问 payload。
+    /// 把对应 TX reservation 交给发送队列。成功后不能取消或访问 payload。
     /// # Safety
     /// 只能由唯一 TX token 消费该身份，所有 CPU 内容引用必须已结束，length 不超过容量。
     /// # Errors
-    /// 设备、格式或传输失败；实现须保留尚未发表的 reservation，或在终止后拒绝复用。
+    /// 接管时的设备或格式错误。失败须保留尚未交出的 reservation，或在终止后拒绝复用。
     unsafe fn submit_transmit(
         &self,
         queue: u16,
         slot: u16,
         ticket: u64,
         length: usize,
-        checksum: Option<NetworkChecksum>,
-        segmentation: Option<NetworkTcpSegmentation>,
+        data: NetworkTransmitData,
     ) -> Result<(), NetworkError>;
 
-    /// 取消尚未提交的 TX token；已交出的 Submitted 不能提前归还。
+    /// 取消尚未交出的 TX token；发送队列持有的槽不能提前归还。
     /// # Safety
     /// 只能消费唯一 token，且所有 payload 引用必须已结束；不可取消其他 token 的身份。
     unsafe fn cancel_transmit(&self, queue: u16, slot: u16, ticket: u64);
@@ -185,35 +190,10 @@ pub trait NetworkDevice: Send + Sync {
     /// 至少一个 free slot 时返回 `true`。
     fn transmit_available(&self, queue: u16) -> bool;
 
-    /// 有界回收 TX used-ring completion。
-    ///
-    /// # Parameters
-    ///
-    /// - `budget`: 本轮最多回收的 descriptor head 数。
-    ///
+    /// 由设备的唯一协议所有者消费队列已发表的可写与故障通知。
     /// # Returns
-    ///
-    /// backlog 与 TX capacity transition。
-    ///
-    /// # Errors
-    ///
-    /// used ring 或 descriptor owner 损坏返回 `Device`。
-    fn poll_completions(
-        &self,
-        queue: u16,
-        budget: usize,
-    ) -> Result<NetworkCompletion, NetworkError>;
-
-    /// 一轮 RX drain 结束后批量通知设备新的 available buffers。
-    ///
-    /// # Returns
-    ///
-    /// 无 pending repost 时为空操作。
-    ///
-    /// # Errors
-    ///
-    /// MMIO transport 失败返回 `Device`。
-    fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError>;
+    /// 自上次消费后的合并通知。发送可写与两个方向的故障分别报告。
+    fn take_progress(&self) -> NetworkDeviceProgress;
 
     /// 读取与 queue completion 同一 owner 更新的累计 counters。
     ///
@@ -272,7 +252,7 @@ pub struct NetworkTransmitDescriptor {
 pub trait NetworkController: Send + Sync {
     /// 是否支持每个活动 pair 独立选择 IRQ 目标 CPU；不能用共享 IRQ 假装独立路由。
     fn supports_queue_affinity(&self) -> bool;
-    /// 设备可配置的最大 pair 数，非零。
+    /// 设备可配置的最大收发 pair 数，非零。多个 pair 必须支持自动或可配置的接收分流。
     fn maximum_queue_pairs(&self) -> u16;
     /// 物理 TX checksum/TSO 与容量上限；本次实际容量由 OPEN 明确请求。
     fn transmit_capabilities(&self) -> NetworkTransmitCapabilities;
@@ -316,15 +296,16 @@ pub trait NetworkProvider: Send + Sync {
     fn set_receive_scaling(&self, config: &NetworkRssConfiguration) -> Result<(), NetworkError>;
     /// 授权共享 VMO 与真实布局；无效队列、句柄复制或分配失败返回错误。
     fn memory(&self, queue: u16) -> Result<NetworkQueueMemory, NetworkError>;
-    /// 有界领取 RX 完成，返回写入 output 的数量；已交出的槽在 release_receive 前归 CPU。
+    /// 有界领取 RX 完成，返回写入 output 的数量；已交出的槽在 release_receive_batch 前归 CPU。
     /// 空队列返回零，设备错误返回失败并由调用者停止数据面。
     fn receive_batch(
         &self,
         queue: u16,
         output: &mut [NetworkReceive],
     ) -> Result<usize, NetworkError>;
-    /// 恰好归还一次 RX 槽，形成后续批量 repost；错误不允许客户端继续使用其内容。
-    fn release_receive(&self, queue: u16, slot: u16) -> Result<(), NetworkError>;
+    /// 将 `queue` 的 `slots` 整批归还设备。每个槽的 CPU 借用必须已经结束，且只归还一次。
+    /// 空批不做工作，成功时整批可供设备接收。设备错误时调用者必须 stop，不得重试归还。
+    fn release_receive_batch(&self, queue: u16, slots: &[u16]) -> Result<(), NetworkError>;
     /// 批量提交空闲槽，返回已接受的前缀长度；零表示暂时无容量，未接受后缀仍归提交者。
     /// 错误表示本数据面不可用，调用者必须 stop，不能把错误当作尚未接受。
     fn transmit_batch(
@@ -340,8 +321,6 @@ pub trait NetworkProvider: Send + Sync {
     ) -> Result<NetworkCompletion, NetworkError>;
     /// 同步停止全部 DMA；返回后才能发表会话 closed，复位失败必须保活并 fail-stop。
     fn stop(&self);
-    /// 批量通知已归还的 RX 缓冲；设备错误返回失败。
-    fn finish_receive_batch(&self, queue: u16) -> Result<(), NetworkError>;
     /// 低频汇总真实队列累计量。
     fn statistics(&self) -> NetworkStatistics;
 }
@@ -349,7 +328,7 @@ pub trait NetworkProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkReceiveFrame,
+        NetworkDevice, NetworkDeviceProgress, NetworkError, NetworkLink, NetworkReceiveFrame,
         NetworkStatistics, NetworkTransmit,
     };
     use alloc::sync::Arc;
@@ -399,13 +378,13 @@ mod tests {
 
         fn receive_batch<'a>(
             &'a self,
-            _queue: u16,
+            start: u16,
             output: &mut [Option<NetworkReceiveFrame<'a>>],
-        ) -> Result<usize, NetworkError> {
-            if output.iter().any(Option::is_some) {
+        ) -> Result<Option<(u16, usize)>, NetworkError> {
+            if start >= self.queue_count() || output.iter().any(Option::is_some) {
                 return Err(NetworkError::InvalidConfiguration);
             }
-            Ok(0)
+            Ok(None)
         }
         fn reserve_transmit(&self, queue: u16) -> Result<NetworkTransmit<'_>, NetworkError> {
             let mut slot = self.slot.lock();
@@ -418,9 +397,6 @@ mod tests {
             Ok(unsafe { NetworkTransmit::new(self, queue, 7, 1, address, slot.0.len()) })
         }
         // SAFETY: 本 fixture 不产生 RX token，路径不可达，不持有任何接收内存。
-        unsafe fn release_received(&self, _: u16, _: u16, _: u64) -> Result<(), NetworkError> {
-            unreachable!()
-        }
         // SAFETY: 实际 token 已结束内容引用；fixture 只更新其独占槽状态，没有异步 DMA。
         unsafe fn submit_transmit(
             &self,
@@ -428,8 +404,7 @@ mod tests {
             _: u16,
             _: u64,
             _: usize,
-            _: Option<super::NetworkChecksum>,
-            _: Option<super::NetworkTcpSegmentation>,
+            _: super::NetworkTransmitData,
         ) -> Result<(), NetworkError> {
             if self.submit_error {
                 Err(NetworkError::Device)
@@ -448,16 +423,8 @@ mod tests {
             true
         }
 
-        fn poll_completions(
-            &self,
-            _queue: u16,
-            _budget: usize,
-        ) -> Result<NetworkCompletion, NetworkError> {
-            Ok(NetworkCompletion::default())
-        }
-
-        fn finish_receive_batch(&self, _queue: u16) -> Result<(), NetworkError> {
-            Ok(())
+        fn take_progress(&self) -> NetworkDeviceProgress {
+            NetworkDeviceProgress::default()
         }
 
         fn statistics(&self) -> NetworkStatistics {

@@ -5,7 +5,7 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 ## 网络服务拓扑
 
 1. netstack 只提供协议栈：启动时创建只有回环（启用）的默认网络，经 `liteos.network.Control` 交出网络域与 socket，
-   经 `liteos.network.Installer` 接受网卡会话并在默认网络中安装为 `eth<n>` 接口。默认网络随 netstack 存续。
+   经 `liteos.network.Installer` 接受网卡会话并在授权的网络域中安装为 `eth<n>` 接口。默认网络随 netstack 存续。
 2. router-config 是接口配置 owner（Fuchsia netcfg）：经原生 RIB 向 netstack 委托 Network 类目录能力与设备 ID；netstack 按自己的 worker 策略打开并独占队列；每个接口的配置依次取用户设置、
    bootfs 只读默认策略（`data/router-config/default.conf`，`iface * inet dhcp`）、DHCP。静态地址直接配置；DHCP 经
    dhcp-client 取得租约后由 router-config 向 RIB 提交接口意图；RIB 选默认路由，再经原生执行事务原子配置地址、掩码和 FIB；DNS 由配置/成功租约投影。
@@ -14,7 +14,7 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
    提交失败撤销原文件与可逆执行；持久决定后的确认丢失按新决定重试，快照明确投影提交状态，见[协调契约](../architecture-contract/router-configuration.md#原生接口执行事务)。
    一个事件循环线程以一个 Port 等待 netstack 断开（重连、重新安装网卡、重新配置）、设备目录变化（热插拔网卡）与
    各接口的租约事件；设置变化经 `liteos.network.Settings` 提交，先暂存可逆执行，再持久决定和确认。
-   原生配置使用具名接口对象与独立设备匹配，唯一 JSON 持久模型和字段元数据归 router-protocol；历史二进制仅导入，不再写回。
+   原生配置使用具名接口对象与独立设备匹配。配置模型和字段元数据归 router-protocol，router-config 将配置 JSON 与近期导入编号保存在同一私有文件。
    已发布配置是不可变 Arc 快照，导出/备份不复制整树。自动备份由同服务的后台执行线程处理周期、确认和轮转，不持配置锁等待存储。
    备份策略与目录管理见[配置备份契约](../architecture-contract/router-configuration.md#配置备份)，恢复仍走唯一整份导入。
    加载失败保留管理查询、禁用设备并拒绝局部覆盖；授权整份导入可以修复，不退回 DHCP，不使关键服务进入崩溃循环。
@@ -28,12 +28,16 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 4. linuxd 的初始网络域连上默认网络，新网络域在 netstack 中创建只有 DOWN 回环的独立实例。netstack 重启后 linuxd 重连并为
    全部存活网络域重建协议实例，旧 socket 的 channel 已随旧实例关闭，之后的操作以 `ENETDOWN` 失败；默认网络由 router-config
    重新配置。linuxd 重启不影响默认网络及其配置。
+
 5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 router-config 的设置快照维护。
-   `/dev/network-status` 向普通用户提供只读接口快照；`/dev/network-settings` 的修改和订阅能力限 netdev。
-   控制面板读取生效状态并经 `/dev/network-settings` 修改设置（见[用户态与 ABI 契约](../architecture-contract/userspace-abi.md)）。
+   `router-api` 向本机用户提供只读接口快照，按账户组开放观察及管理。控制面板经同一网关读取状态和修改设置。
+   原生设置端点由网关私有使用。[网络管理入口](../architecture-contract/userspace-abi.md#网络管理入口)
    接口管理开关由 netstack 持有。以太网载波与速率由网卡驱动读取，并随接口快照投影到 Linux sysfs 和 rtnetlink；
    VirtIO 按协商的 STATUS 和 SPEED_DUPLEX 读取同一配置代际，未协商速率时显示未知。
 
+获授权的 RIB 和配置服务可打开具名路由域。域内接口、转发表、连接和套接字由同一个 netstack 域持有，各域使用独立的 RIB 和通知对象。物理设备同一时刻只属于一个域，改绑时先撤下旧接口和相关路由，再在新域打开队列。
+具名域的接口、静态路由、选路规则、防火墙、BGP 和 OSPF 随系统加载。动态路由协议接收同域网络连接与路由来源。授权本机程序可取得对应的网络命名空间描述符。[启动方式](../../user/libraries/network-config/README.md#在指定路由域启动应用)
+配置服务可在打开设备前从目录读取 MAC。接口释放通过原有撤回路径清理旧域的接口和路由，网卡的独占会话结束后才可重新安装。
 
 socket 控制与数据分离：低频配置/关闭走 channel，send/receive/poll 只走 `LSOCK001` 共享 SQ/CQ 与持久载荷槽。
 复用现有 native VMO/Event/Port；调用者领队推进完成，不增加逐 socket 转发线程。netstack 的独立 dispatcher
@@ -85,7 +89,7 @@ socket 控制与数据分离：低频配置/关闭走 channel，send/receive/pol
 - pipe、AF_UNIX、IPv4、AF_PACKET 与 kobject receive 共同写入 `ipc::ReceiveBuffer` 的
   initialized prefix；短读、control barrier 与错误路径不暴露未初始化 capacity，syscall 不保留
   另一个 zeroed staging 路径。两条 64KiB heap receive 的预清零成本由 131,072B 降为 0。
-- smoltcp 仍负责 IPv4 链路、ARP、TCP/RAW 机制；UDP tuple、队列、校验与收发已归原生 owner，不定义 Linux socket UAPI、fd 或 errno。
+- `netstack` 独占双栈主机协议、邻接和设备收发。Linux socket UAPI、fd 与 errno 由 Linux 兼容层持有。[IPv4](../architecture-contract/ipv4-transports.md)、[IPv6](../architecture-contract/ipv6-link.md)
 - UDP/TCP 各自的 `PortNamespace` 是 local tuple 占用唯一 owner：per-port summary
   与双族 exact 地址索引保留 wildcard/`SO_REUSEADDR` 语义，按地址空间选择的 ephemeral bitmap
   只投影“整个 port 完全空闲”。TCP listener claim、accepted exact tuple 与 active

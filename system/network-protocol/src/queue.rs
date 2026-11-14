@@ -4,7 +4,7 @@ use super::*;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use device_model::DeviceBacking;
 
-pub(super) const MAGIC: u64 = u64::from_le_bytes(*b"LSOCK004");
+pub(super) const MAGIC: u64 = u64::from_le_bytes(*b"LSOCK006");
 pub(super) const CAPACITY: usize = 8;
 const _: () = assert!(CAPACITY.is_power_of_two() && CAPACITY <= u32::BITS as usize);
 pub(super) const WORDS: usize = 16;

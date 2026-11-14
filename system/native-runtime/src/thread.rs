@@ -377,6 +377,16 @@ pub fn spawn_in<T: Send + 'static>(
     prepare_in(process, name, stack_size, body)?.start()
 }
 
+/// 在本进程中按默认栈大小创建尚未启动的线程。
+/// # Errors
+/// 线程或栈创建失败。
+pub fn prepare<T: Send + 'static>(
+    name: &[u8],
+    body: impl FnOnce() -> T + Send + 'static,
+) -> Result<PreparedThread<T>, Status> {
+    prepare_in(crate::startup::self_process(), name, DEFAULT_STACK_SIZE, body)
+}
+
 /// 在本进程中创建线程。
 ///
 /// # Errors
@@ -386,10 +396,5 @@ pub fn spawn<T: Send + 'static>(
     name: &[u8],
     body: impl FnOnce() -> T + Send + 'static,
 ) -> Result<JoinHandle<T>, Status> {
-    spawn_in(
-        crate::startup::self_process(),
-        name,
-        DEFAULT_STACK_SIZE,
-        body,
-    )
+    prepare(name, body)?.start()
 }

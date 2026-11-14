@@ -19,7 +19,7 @@ impl VirtIONetworkDevice {
             // OWNER: 物理控制器已登记到全进程 completion owner；线程与同一物理节点同寿命。
             // 只在投递时按 generation upgrade 活动会话，不跨 port_wait 保活旧会话，也不为每队列开线程。
             let owner = self.clone();
-            let thread = native_runtime::thread::spawn(b"irq:virtio-net", move || {
+            let thread = native_runtime::thread::prepare(b"irq:virtio-net", move || {
                 loop {
                     let packet = match port.wait(native_abi::DEADLINE_INFINITE) {
                         Ok(packet) => packet,
@@ -33,6 +33,13 @@ impl VirtIONetworkDevice {
                     );
                     owner.message_interrupt(packet.key);
                 }
+            })
+            .and_then(|worker| {
+                worker
+                    .descriptor()
+                    .handle()
+                    .set_priority(device_protocol::network::FORWARDING_WORKER_PRIORITY)?;
+                worker.start()
             })
             .expect("network interrupt thread");
             drop(thread);

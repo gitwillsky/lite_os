@@ -8,6 +8,121 @@ pub struct Facts {
     pub neighbors: network_protocol::NeighborSnapshot,
 }
 
+impl Facts {
+    /// 以 NET 对同一批次的投影覆盖逻辑接口事实。其他接口和动态邻居仍来自活动快照。
+    /// # Errors
+    /// 候选未解析、身份冲突或内存不足。
+    pub fn project_bridges(
+        &mut self,
+        ports: router_protocol::switching::Ports<'_>,
+    ) -> Result<(), Status> {
+        use network_protocol::{
+            AddressOrigin, AddressSnapshot, AddressState, InterfaceAddress, NetworkLink,
+        };
+        if !ports.projected() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let gateways = ports
+            .gateways()
+            .filter(|gateway| gateway.binding.index != 0);
+        let count = gateways.clone().count();
+        if count == 0 && !self.interfaces.iter().any(|interface| interface.vlan) {
+            return Ok(());
+        }
+        let original_addresses = &self.addresses;
+        let rows =
+            || (0..original_addresses.len()).filter_map(|index| original_addresses.get(index));
+        let retained = rows().filter(|row| {
+            if !self
+                .interfaces
+                .iter()
+                .any(|fact| fact.index == row.interface_index && fact.vlan)
+            {
+                return true;
+            }
+            row.origin == AddressOrigin::Interface
+                && gateways.clone().any(|gateway| {
+                    gateway.binding.index == row.interface_index && gateway.binding.carrier
+                })
+        });
+        let configured = gateways.clone().flat_map(|gateway| {
+            gateway.ipv6.iter().map(move |intent| {
+                let prior = (0..original_addresses.len())
+                    .filter_map(|index| original_addresses.get(index))
+                    .find(|row| {
+                        row.interface_index == gateway.binding.index
+                            && row.origin == AddressOrigin::Configured
+                            && row.address == IpAddr::V6(intent.address)
+                    });
+                let state = prior
+                    .filter(|_| gateway.binding.carrier)
+                    .map_or(AddressState::Tentative, |row| row.state);
+                InterfaceAddress {
+                    interface_index: gateway.binding.index,
+                    name: gateway.name,
+                    address: intent.address.into(),
+                    prefix_length: intent.prefix_length,
+                    state,
+                    usable: matches!(state, AddressState::Preferred | AddressState::Deprecated),
+                    origin: AddressOrigin::Configured,
+                    on_link: intent.on_link,
+                    broadcast: None,
+                    preferred_lifetime: u32::MAX,
+                    valid_lifetime: u32::MAX,
+                }
+            })
+        });
+        let addresses =
+            AddressSnapshot::capture(retained.chain(configured)).map_err(|error| match error {
+                network_protocol::SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+                _ => native_abi::ERR_INVALID_ARGS,
+            })?;
+        if gateways.clone().any(|gateway| {
+            self.interfaces
+                .iter()
+                .any(|fact| !fact.vlan && fact.index == gateway.binding.index)
+        }) {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        self.interfaces
+            .try_reserve(count)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        self.interfaces.retain(|fact| !fact.vlan);
+        self.interfaces.extend(gateways.map(|gateway| {
+            let prefix_length = gateway.prefix_length;
+            let broadcast = gateway.address.filter(|_| prefix_length < 31).map_or(
+                Ipv4Addr::UNSPECIFIED,
+                |address| {
+                    let mask = u32::MAX
+                        .checked_shl(32 - u32::from(prefix_length))
+                        .unwrap_or(0);
+                    Ipv4Addr::from(u32::from(address) | !mask)
+                },
+            );
+            InterfaceSnapshot {
+                index: gateway.binding.index,
+                name: gateway.name,
+                loopback: false,
+                vlan: true,
+                mtu: i32::from(gateway.binding.mtu),
+                mac: [0; 6],
+                address: gateway.address,
+                prefix_length,
+                broadcast,
+                up: true,
+                link: Some(NetworkLink {
+                    carrier: gateway.binding.carrier,
+                    carrier_epoch: 0,
+                    speed_mbps: None,
+                }),
+                driver: None,
+            }
+        }));
+        self.addresses = addresses;
+        Ok(())
+    }
+}
+
 pub(super) struct Interface {
     pub(super) address: Option<Ipv4Addr>,
     pub(super) length: u8,
@@ -193,7 +308,10 @@ impl Interfaces {
         failed_gateways.extend(failed.map(|row| (row.interface_index, row.address)));
         failed_gateways.sort_unstable();
         failed_gateways.dedup();
-        Ok(Self { entries, failed_gateways })
+        Ok(Self {
+            entries,
+            failed_gateways,
+        })
     }
     fn interface(&self, index: u32) -> Option<&Interface> {
         self.entries
@@ -260,7 +378,9 @@ impl Interfaces {
         }
     }
     pub(super) fn failed_gateway(&self, target: &crate::resolution::Adjacency) -> Option<usize> {
-        self.failed_gateways.binary_search(&(target.interface_index, target.gateway?)).ok()
+        self.failed_gateways
+            .binary_search(&(target.interface_index, target.gateway?))
+            .ok()
     }
     pub(super) fn admits_ipv6(&self, target: &crate::resolution::Adjacency) -> bool {
         let Some(state) = self.interface(target.interface_index) else {

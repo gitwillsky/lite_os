@@ -2,7 +2,7 @@
 use core::net::{Ipv4Addr, Ipv6Addr};
 use fallible_tree::{FallibleMap, VacantEntry};
 use network_protocol::SocketError;
-use smoltcp::time::{Duration, Instant};
+use ::tcp::time::{Duration, Instant};
 
 // RFC 1122 的 120 秒 MDL；不能用本机较短的重组超时代替对端可能仍保留的分片寿命。
 const IPV4_LIFETIME: Duration = Duration::from_millis(120_000);
@@ -204,6 +204,9 @@ impl Identification {
     }
     pub(super) fn due(&self, now: Instant) -> bool {
         self.retire_at.is_some_and(|at| at <= now)
+    }
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.retire_at
     }
     /// 最多扫描固定数量的三元组；仍保有记录或 MDL 未过的状态绝不因容量压力驱逐。
     pub(super) fn retire(&mut self, now: Instant) -> bool {

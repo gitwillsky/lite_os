@@ -9,7 +9,7 @@ use core::{
 use fallible_tree::{FallibleMap, NodeSlot};
 use packet_wire::bgp::nlri::{Family, Prefix};
 
-/// 一个邻居对一个前缀的当前宣告；属性共享，下一跳属于本条路由。
+/// 一个邻居对一个前缀及路径身份的当前宣告；属性共享，下一跳属于本条路由。
 /// 存在于 Adj-RIB-In 不等于已通过入口政策、去环或下一跳可达性准入。
 #[derive(Debug)]
 pub struct ReceivedRoute {
@@ -49,10 +49,10 @@ impl ReceivedRoute {
 
 /// 单个已建立邻居的双栈 Adj-RIB-In；邻居/会话身份由其 actor 唯一绑定，不另存同步副本。
 pub struct AdjRibIn {
-    // OWNER: 本邻居每族前缀到唯一宣告；分族避免为每条 IPv4 路由存储最大宽度地址 enum。
+    // OWNER: 本邻居每族的前缀及路径身份到唯一宣告；分族避免为每条 IPv4 路由存储最大宽度地址 enum。
     // AVL 支持动态精确增删；不用冷构建的转发 LPM 索引逐前缀重建，也不建立平行的路由副本。
-    ipv4: FallibleMap<(u32, u8), ReceivedRoute>,
-    ipv6: FallibleMap<(u128, u8), ReceivedRoute>,
+    ipv4: FallibleMap<(u32, u8, Option<u32>), ReceivedRoute>,
+    ipv6: FallibleMap<(u128, u8, Option<u32>), ReceivedRoute>,
     refresh: [RefreshEpoch; 2],
 }
 #[derive(Clone, Copy)]
@@ -62,15 +62,17 @@ struct RefreshEpoch {
 }
 struct Patch {
     prefix: Prefix,
+    path_id: Option<u32>,
     order: usize,
     next_hop: Option<NextHop>,
 }
 enum Insertion {
-    Ipv4(NodeSlot<(u32, u8), ReceivedRoute>),
-    Ipv6(NodeSlot<(u128, u8), ReceivedRoute>),
+    Ipv4(NodeSlot<(u32, u8, Option<u32>), ReceivedRoute>),
+    Ipv6(NodeSlot<(u128, u8, Option<u32>), ReceivedRoute>),
 }
 struct Prepared {
     prefix: Prefix,
+    path_id: Option<u32>,
     route: Option<ReceivedRoute>,
     insertion: Option<Insertion>,
     // 相同宣告只更新现有记录的 epoch，保留已经确认的选路判定。
@@ -101,41 +103,68 @@ impl AdjRibIn {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// 查询完整规范前缀，不执行最长匹配；未规范化/非法长度的 key 不会匹配。
-    pub fn get(&self, prefix: Prefix) -> Option<&ReceivedRoute> {
+    /// 精确查询规范前缀和路径身份，不执行最长匹配。None 表示普通 NLRI。
+    pub fn get(&self, prefix: Prefix, path_id: Option<u32>) -> Option<&ReceivedRoute> {
         match prefix.address {
-            IpAddr::V4(address) => self.ipv4.get(&(u32::from(address), prefix.length)),
-            IpAddr::V6(address) => self.ipv6.get(&(u128::from(address), prefix.length)),
+            IpAddr::V4(address) => self.ipv4.get(&(u32::from(address), prefix.length, path_id)),
+            IpAddr::V6(address) => self
+                .ipv6
+                .get(&(u128::from(address), prefix.length, path_id)),
         }
     }
-    fn get_mut(&mut self, prefix: Prefix) -> Option<&mut ReceivedRoute> {
+    fn get_mut(&mut self, prefix: Prefix, path_id: Option<u32>) -> Option<&mut ReceivedRoute> {
         match prefix.address {
-            IpAddr::V4(address) => self.ipv4.get_mut(&(u32::from(address), prefix.length)),
-            IpAddr::V6(address) => self.ipv6.get_mut(&(u128::from(address), prefix.length)),
+            IpAddr::V4(address) => self
+                .ipv4
+                .get_mut(&(u32::from(address), prefix.length, path_id)),
+            IpAddr::V6(address) => {
+                self.ipv6
+                    .get_mut(&(u128::from(address), prefix.length, path_id))
+            }
         }
     }
-    /// 按 IPv4/IPv6、网络地址、前缀长度遍历实际宣告；不分配、不克隆共享属性。
-    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &ReceivedRoute)> {
+    /// 借用此精确前缀的全部路径。只查找一次下界，迭代到下一个前缀停止。
+    pub fn paths(&self, prefix: Prefix) -> impl Iterator<Item = (Option<u32>, &ReceivedRoute)> {
+        let (ipv4, ipv6) = match prefix.address {
+            IpAddr::V4(address) => (
+                Some(paths_at(&self.ipv4, u32::from(address), prefix.length)),
+                None,
+            ),
+            IpAddr::V6(address) => (
+                None,
+                Some(paths_at(&self.ipv6, u128::from(address), prefix.length)),
+            ),
+        };
+        ipv4.into_iter().flatten().chain(ipv6.into_iter().flatten())
+    }
+    /// 按族、网络地址、前缀长度和路径身份遍历实际宣告。
+    pub fn iter(&self) -> impl Iterator<Item = (Prefix, Option<u32>, &ReceivedRoute)> {
         self.ipv4
             .iter()
-            .map(|((address, length), route)| {
+            .map(|(&(address, length, path_id), route)| {
                 (
                     Prefix {
-                        address: IpAddr::V4(Ipv4Addr::from(*address)),
-                        length: *length,
+                        address: Ipv4Addr::from(address).into(),
+                        length,
                     },
+                    path_id,
                     route,
                 )
             })
-            .chain(self.ipv6.iter().map(|((address, length), route)| {
-                (
-                    Prefix {
-                        address: IpAddr::V6(Ipv6Addr::from(*address)),
-                        length: *length,
-                    },
-                    route,
-                )
-            }))
+            .chain(
+                self.ipv6
+                    .iter()
+                    .map(|(&(address, length, path_id), route)| {
+                        (
+                            Prefix {
+                                address: Ipv6Addr::from(address).into(),
+                                length,
+                            },
+                            path_id,
+                            route,
+                        )
+                    }),
+            )
     }
     /// 应用同一邻居的一份完整接收裁决，返回排序去重的实际变化前缀供后续选路。
     /// 同报文宣告覆盖撤回；相同最终属性/下一跳不重复报告变化。此处保留原始候选，不执行入口/去环政策。
@@ -146,7 +175,7 @@ impl AdjRibIn {
         pool: &mut AttributePool,
         update: &ReceivedUpdate<'_>,
     ) -> Result<Vec<Prefix>, OutOfMemory> {
-        // 1. 只捕获当前报文的增量；优先保留最后一条决定，去掉重复前缀，不复制原接收表。
+        // 1. 只捕获当前报文的增量；优先保留最后一条决定，去掉重复的前缀与路径标识组合，不复制原接收表。
         let mut patches = Vec::new();
         patches
             .try_reserve_exact(update.changes().count())
@@ -156,21 +185,30 @@ impl AdjRibIn {
                 .changes()
                 .enumerate()
                 .map(|(order, change)| match change {
-                    Change::Withdraw(prefix) => Patch {
+                    Change::Withdraw(prefix, path_id) => Patch {
                         prefix,
+                        path_id,
                         order,
                         next_hop: None,
                     },
-                    Change::Announce { prefix, next_hop } => Patch {
+                    Change::Announce {
                         prefix,
+                        path_id,
+                        next_hop,
+                    } => Patch {
+                        prefix,
+                        path_id,
                         order,
                         next_hop: Some(next_hop),
                     },
                 }),
         );
-        patches
-            .sort_unstable_by(|a, b| a.prefix.cmp(&b.prefix).then_with(|| b.order.cmp(&a.order)));
-        patches.dedup_by_key(|patch| patch.prefix);
+        patches.sort_unstable_by(|a, b| {
+            (a.prefix, a.path_id)
+                .cmp(&(b.prefix, b.path_id))
+                .then_with(|| b.order.cmp(&a.order))
+        });
+        patches.dedup_by_key(|patch| (patch.prefix, patch.path_id));
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(patches.len())
@@ -178,7 +216,7 @@ impl AdjRibIn {
         let attributes = pool.intern(update)?;
         // 2. 已存在的路由无须重新分配节点；所有新节点在任何撤回/替换前准备完成。
         for patch in patches {
-            let old = self.get(patch.prefix);
+            let old = self.get(patch.prefix, patch.path_id);
             let refresh_epoch = self.refresh[usize::from(patch.prefix.address.is_ipv6())].epoch;
             let route = patch.next_hop.map(|next_hop| ReceivedRoute {
                 attributes: attributes
@@ -203,6 +241,7 @@ impl AdjRibIn {
             };
             prepared.push(Prepared {
                 prefix: patch.prefix,
+                path_id: patch.path_id,
                 route,
                 insertion,
                 refresh_only,
@@ -219,39 +258,48 @@ impl AdjRibIn {
                     .route
                     .expect("an identical announcement")
                     .refresh_epoch;
-                self.get_mut(entry.prefix)
+                self.get_mut(entry.prefix, entry.path_id)
                     .expect("unchanged route still present")
                     .refresh_epoch = epoch;
                 continue;
             }
-            changed.push(entry.prefix);
+            if changed.last() != Some(&entry.prefix) {
+                changed.push(entry.prefix);
+            }
             match (entry.prefix.address, entry.route, entry.insertion) {
-                (IpAddr::V4(address), Some(route), Some(Insertion::Ipv4(slot))) => self
-                    .ipv4
-                    .commit_vacant(slot.fill((u32::from(address), entry.prefix.length), route)),
-                (IpAddr::V6(address), Some(route), Some(Insertion::Ipv6(slot))) => self
-                    .ipv6
-                    .commit_vacant(slot.fill((u128::from(address), entry.prefix.length), route)),
+                (IpAddr::V4(address), Some(route), Some(Insertion::Ipv4(slot))) => {
+                    self.ipv4.commit_vacant(slot.fill(
+                        (u32::from(address), entry.prefix.length, entry.path_id),
+                        route,
+                    ))
+                }
+                (IpAddr::V6(address), Some(route), Some(Insertion::Ipv6(slot))) => {
+                    self.ipv6.commit_vacant(slot.fill(
+                        (u128::from(address), entry.prefix.length, entry.path_id),
+                        route,
+                    ))
+                }
                 (IpAddr::V4(address), Some(route), None) => {
                     let current = self
                         .ipv4
-                        .get_mut(&(u32::from(address), entry.prefix.length))
+                        .get_mut(&(u32::from(address), entry.prefix.length, entry.path_id))
                         .expect("prepared replacement exists");
                     *current = route;
                 }
                 (IpAddr::V6(address), Some(route), None) => {
                     let current = self
                         .ipv6
-                        .get_mut(&(u128::from(address), entry.prefix.length))
+                        .get_mut(&(u128::from(address), entry.prefix.length, entry.path_id))
                         .expect("prepared replacement exists");
                     *current = route;
                 }
                 (IpAddr::V4(address), None, None) => {
-                    self.ipv4.remove(&(u32::from(address), entry.prefix.length));
+                    self.ipv4
+                        .remove(&(u32::from(address), entry.prefix.length, entry.path_id));
                 }
                 (IpAddr::V6(address), None, None) => {
                     self.ipv6
-                        .remove(&(u128::from(address), entry.prefix.length));
+                        .remove(&(u128::from(address), entry.prefix.length, entry.path_id));
                 }
                 _ => unreachable!("prepared route insertion family agrees with prefix"),
             }
@@ -301,8 +349,19 @@ impl AdjRibIn {
     }
 }
 
+fn paths_at<A: Copy + Ord>(
+    routes: &FallibleMap<(A, u8, Option<u32>), ReceivedRoute>,
+    address: A,
+    length: u8,
+) -> impl Iterator<Item = (Option<u32>, &ReceivedRoute)> {
+    routes
+        .iter_from(&(address, length, None))
+        .take_while(move |&(&(network, width, _), _)| network == address && width == length)
+        .map(|(&(_, _, path_id), route)| (path_id, route))
+}
+
 fn retire_stale<A: Copy + Ord>(
-    routes: &mut FallibleMap<(A, u8), ReceivedRoute>,
+    routes: &mut FallibleMap<(A, u8, Option<u32>), ReceivedRoute>,
     epoch: u32,
     pending: &mut Vec<Prefix>,
     address: impl Fn(A) -> IpAddr,
@@ -316,7 +375,7 @@ fn retire_stale<A: Copy + Ord>(
     }
     pending.try_reserve_exact(count).map_err(|_| OutOfMemory)?;
     // 先为全部撤回预留空间，按一个事务线性清扫并保留存活 AVL 节点。
-    routes.retain(|&(network, length), route| {
+    routes.retain(|&(network, length, _), route| {
         let keep = route.refresh_epoch == epoch;
         if !keep {
             pending.push(Prefix {

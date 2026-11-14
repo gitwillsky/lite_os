@@ -246,7 +246,7 @@ pub(in crate::inet) fn send(
                 let state = network.raw_endpoints.get_mut(&id).expect("live RAW");
                 if state.errors.local_mtu(target, mtu) {
                     state.notification_pending = true;
-                    crate::worker::request_poll();
+                    crate::worker::request_poll(endpoint.namespace.id());
                 }
                 return Err(SocketError::MessageTooLarge);
             }
@@ -365,7 +365,7 @@ pub(in crate::inet) fn send(
             state.transmit_at = super::super::now();
         },
     )?;
-    crate::worker::request_poll();
+    crate::worker::request_poll(endpoint.namespace.id());
     Ok(written)
 }
 pub(in crate::inet) fn receive(

@@ -7,6 +7,7 @@ use router_protocol::tracking::{
     installation::{self, Installation, Outcome},
 };
 const VERSION: u32 = 3;
+const GRANT_VERSION: u32 = 4;
 const PREPARE_VERSION: u32 = 4;
 const PREPARE: u32 = 1;
 const TRACK: u32 = 2;
@@ -31,7 +32,7 @@ impl Grant {
         }
     }
     pub(super) fn decode(request: &mut Reader<'_>) -> Result<Self, Status> {
-        if request.u32()? != VERSION {
+        if request.u32()? != GRANT_VERSION {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let grant = Self {
@@ -48,7 +49,7 @@ impl Grant {
     }
     pub(super) fn encode(self, request: &mut Writer) {
         request
-            .u32(VERSION)
+            .u32(GRANT_VERSION)
             .u8(self.protocol)
             .u32(self.minimum_preference)
             .u8(u8::from(self.ipv6_unicast));

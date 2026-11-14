@@ -2,11 +2,9 @@
 use super::NetworkStack;
 use alloc::vec::Vec;
 use fallible_tree::{FallibleMap, VacantEntry};
-use smoltcp::{
-    iface::Ipv4Reply,
-    time::{Duration, Instant},
-    wire::Ipv4Packet,
-};
+use network_protocol::{InetAddress, InetProtocol, SocketError};
+use packet_wire::ipv4::Ipv4Packet;
+use ::tcp::time::{Duration, Instant};
 
 // 即时协议响应的实际payload/node预算；没有无限延迟队列，不能把64 RX变成无界内存。
 const REPLY_BYTES: usize = 256 * 1024;
@@ -65,8 +63,17 @@ impl RouteReplies {
             used: 0,
         }
     }
-    pub(super) fn enqueue(&mut self, reply: &Ipv4Reply<'_>, origin: u32, now: Instant) -> bool {
-        let length = reply.buffer_len();
+    /// 在唯一回复队列的预算内编码一份原生 IPv4 回复。
+    pub(super) fn enqueue_ipv4(
+        &mut self,
+        header: packet_wire::ipv4::Ipv4Header<'_>,
+        payload_length: usize,
+        origin: u32,
+        now: Instant,
+        emit: impl FnOnce(&mut [u8]) -> bool,
+    ) -> bool {
+        let offset = 20 + header.options.len();
+        let length = offset + payload_length;
         let Some(charge) = length.checked_add(VacantEntry::<u64, Reply>::allocation_size()) else {
             return false;
         };
@@ -96,16 +103,10 @@ impl RouteReplies {
             return false;
         }
         packet.resize(length, 0);
-        reply.emit(&mut packet);
-        if packet[9] == 1 {
-            // 格式库 Repr 的默认 DF 不是主机 ICMP 策略；错误/回复必须能沿小 MTU 路径发送。
-            packet[6] &= !0x40;
-            packet[10..12].fill(0);
-            let header = usize::from(packet[0] & 15) * 4;
-            let checksum = packet_wire::checksum::checksum(&packet[..header]);
-            packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+        if !emit(&mut packet[offset..]) || header.emit(&mut packet).is_err() {
+            return false;
         }
-        self.enqueue_packet(packet, origin, (reply.bound_interface(), 0), now, false)
+        self.enqueue_packet(packet, origin, (None, 0), now, false)
     }
     /// 为 native TCP 的立即控制回复准备独占完整 IP 字节；不保留连接或载荷引用。
     pub(super) fn enqueue_tcp(
@@ -115,7 +116,7 @@ impl RouteReplies {
         egress: (Option<u32>, u32),
         origin: u32,
         now: Instant,
-        key: Option<&::tcp::Md5Key>,
+        key: ::tcp::SigningKey<'_>,
     ) -> bool {
         let header = if ip.src_addr().is_ipv4() { 20 } else { 40 };
         let length = header + segment.buffer_len();
@@ -144,17 +145,12 @@ impl RouteReplies {
             return false;
         }
         packet.resize(length, 0);
-        let encoded = if let Some(key) = key {
-            segment.emit_md5(
-                &mut packet[header..],
-                ip.src_addr(),
-                ip.dst_addr(),
-                key,
-                false,
-            )
-        } else {
-            segment.emit(&mut packet[header..], ip.src_addr(), ip.dst_addr())
-        };
+        let encoded = segment.emit_with_authentication(
+            &mut packet[header..],
+            (ip.src_addr(), ip.dst_addr()),
+            key,
+            false,
+        );
         if encoded.is_err() {
             return false;
         }
@@ -282,8 +278,8 @@ impl RouteReplies {
             .checked_sub(reply.packet.capacity() + VacantEntry::<u64, Reply>::allocation_size())
             .expect("routed reply charge double release");
     }
-    pub(super) fn due(&self, now: Instant) -> bool {
-        self.packets.iter().any(|(_, reply)| reply.retry_at <= now)
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.packets.values().map(|reply| reply.retry_at).min()
     }
 }
 impl NetworkStack {
@@ -338,12 +334,13 @@ impl NetworkStack {
             if reply.retry_at > now {
                 continue;
             }
-            let (source, destination) = if reply.packet[0] >> 4 == 4 {
+            let (source, destination, tcp) = if reply.packet[0] >> 4 == 4 {
                 let packet =
-                    Ipv4Packet::new_checked(reply.packet.as_slice()).expect("owned IPv4 reply");
+                    Ipv4Packet::parse_header(&reply.packet).expect("owned IPv4 reply");
                 (
-                    core::net::IpAddr::V4(packet.src_addr()),
-                    core::net::IpAddr::V4(packet.dst_addr()),
+                    core::net::IpAddr::V4(packet.source()),
+                    core::net::IpAddr::V4(packet.destination()),
+                    (packet.protocol() == 6).then(|| packet.payload()),
                 )
             } else {
                 let packet =
@@ -351,14 +348,30 @@ impl NetworkStack {
                 (
                     core::net::IpAddr::V6(packet.source()),
                     core::net::IpAddr::V6(packet.destination()),
+                    (packet.upper_protocol() == 6)
+                        .then(|| packet.upper_layer())
+                        .flatten(),
                 )
             };
-            let route = match self.ip_output(
-                source,
-                network_protocol::InetAddress::new(destination, 0),
-                reply.egress,
-                now,
-            ) {
+            // 已关闭的本机连接不保留端口。延迟的 RST 不能终止后来占用同一元组的转发连接。
+            let conflicts = tcp
+                .and_then(|bytes| bytes.first_chunk::<4>())
+                .is_some_and(|ports| {
+                    self.forwarding.local_tuple_taken(
+                        InetProtocol::Tcp,
+                        (
+                            InetAddress::new(source, u16::from_be_bytes([ports[0], ports[1]])),
+                            InetAddress::new(destination, u16::from_be_bytes([ports[2], ports[3]])),
+                        ),
+                        now,
+                    )
+                });
+            let route = if conflicts {
+                Err(SocketError::AddressInUse)
+            } else {
+                self.ip_output(source, InetAddress::new(destination, 0), reply.egress, now)
+            };
+            let route = match route {
                 Ok(route) => route,
                 Err(_) => {
                     if let Ok(interface) = self.interface(reply.origin) {
@@ -405,15 +418,19 @@ impl NetworkStack {
                         let sent = interface.device.transmit_ipv4(
                             (&mut interface.arp, interface.state, &mut interface.ipv6),
                             &header[..header_length],
-                            (range.len(), |body| {
-                                body.copy_from_slice(
-                                    &reply.packet
-                                        [header_length + range.start..header_length + range.end],
-                                )
-                            }),
+                            (
+                                range.len(),
+                                |body: &mut [u8]| {
+                                    body.copy_from_slice(
+                                        &reply.packet
+                                            [header_length + range.start..header_length + range.end],
+                                    )
+                                },
+                                None,
+                            ),
                             (route.neighbor, route.logical_interface_index),
                             now,
-                            false,
+                            (false, |_| 0),
                         );
                         (sent, Some((range.end, reply.packet.len() - header_length)))
                     }

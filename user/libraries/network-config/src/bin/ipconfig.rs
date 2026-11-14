@@ -1,11 +1,116 @@
 //! Windows 2000 风格的 IP 配置与 DHCP 租约操作。当前状态和租约由 router_config 提供。
-use network_config::{Link, LinkState, ethernet_links_with_settings, format_lease_time};
+use network_config::{
+    LinkState, ManagementClient,
+    configuration::{bgp_neighbor_state, ospf_authentication_failure, ospf_neighbor_state},
+    ethernet_links_with_settings, format_lease_time,
+};
 use router_protocol::{DhcpAction, Method};
 use std::{
-    io::{self, Write},
+    io::{self, BufRead, IsTerminal, Read, Write},
     net::Ipv4Addr,
     process::ExitCode,
 };
+
+#[path = "ipconfig/bgp.rs"]
+mod bgp;
+#[path = "ipconfig/configuration.rs"]
+mod configuration;
+
+fn show_ospf(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<()> {
+    let snapshot = client.ospf_status(domain)?;
+    let mut output = io::stdout().lock();
+    if snapshot.links.is_empty() {
+        return writeln!(output, "未配置 OSPF 链路");
+    }
+    for link in snapshot.links {
+        let local = link
+            .local
+            .map_or_else(|| "等待可用地址".into(), |address| address.to_string());
+        writeln!(
+            output,
+            "{}  OSPFv{}  区域 {}  本地 {}{}",
+            link.name.as_str(),
+            link.version,
+            link.area,
+            local,
+            if link.passive { "  仅通告" } else { "" }
+        )?;
+        if link.authentication.enabled || link.authentication.rejected != 0 {
+            writeln!(
+                output,
+                "    认证 {}  已拒绝 {} 个报文",
+                if link.authentication.enabled {
+                    "HMAC-SHA-256"
+                } else {
+                    "关闭"
+                },
+                link.authentication.rejected
+            )?;
+            if let Some(failure) = link.authentication.last_failure {
+                let reason = ospf_authentication_failure(failure);
+                writeln!(output, "    最近拒绝原因  {reason}")?;
+            }
+        }
+        for neighbor in link.neighbors {
+            let state = ospf_neighbor_state(neighbor.state);
+            writeln!(
+                output,
+                "    {}  {}  {state}",
+                neighbor.router_id, neighbor.address
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn show_routes(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<()> {
+    use router_protocol::{route_view::Cursor, routing::Family};
+
+    let mut output = io::stdout().lock();
+    writeln!(output, "目的网段  表  代价  来源  类型  出接口  网关  权重")?;
+    for family in [Family::Ipv4, Family::Ipv6] {
+        let mut cursor = Cursor {
+            family,
+            start: Default::default(),
+        };
+        loop {
+            let page = client.route_page(domain, cursor)?;
+            for row in page.rows {
+                write!(
+                    output,
+                    "{}/{}  {}  {}  ",
+                    row.prefix.network, row.prefix.length, row.table, row.metric
+                )?;
+                match row.protocol {
+                    router_protocol::ospf::ROUTE_PROTOCOL => write!(output, "OSPF")?,
+                    router_protocol::bgp::ROUTE_PROTOCOL => write!(output, "BGP")?,
+                    protocol => write!(output, "{protocol}")?,
+                }
+                write!(output, "  {:?}  ", row.kind)?;
+                if let Some(hop) = row.hop {
+                    let end = hop
+                        .name
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(hop.name.len());
+                    let name = std::str::from_utf8(&hop.name[..end]).unwrap_or("?");
+                    write!(output, "{name}  ")?;
+                    if let Some(gateway) = hop.gateway {
+                        write!(output, "{gateway}")?;
+                    } else {
+                        write!(output, "—")?;
+                    }
+                    writeln!(output, "  {}", hop.weight)?;
+                } else {
+                    writeln!(output, "—  —  —")?;
+                }
+            }
+            let Some(next) = page.next else { break };
+            cursor.start = next;
+        }
+    }
+    Ok(())
+}
 
 fn address(value: Ipv4Addr) -> String {
     if value.is_unspecified() {
@@ -15,12 +120,17 @@ fn address(value: Ipv4Addr) -> String {
     }
 }
 
-fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
-    let snapshot = network_config::snapshot()?;
-    let links = ethernet_links_with_settings(Some(&snapshot))?;
+fn show(client: &mut ManagementClient, all: bool, selected: Option<&[&str]>) -> io::Result<()> {
+    let snapshot = client.snapshot()?;
+    let links = (!client.is_remote())
+        .then(|| ethernet_links_with_settings(Some(&snapshot)))
+        .transpose()?;
     let mut output = io::stdout().lock();
     writeln!(output, "\nLiteOS IP 配置")?;
-    if all && let Ok(identity) = linux_uapi::uts::read() {
+    if all
+        && !client.is_remote()
+        && let Ok(identity) = linux_uapi::uts::read()
+    {
         writeln!(
             output,
             "\n        主机名 . . . . . . . . . . . : {}",
@@ -41,35 +151,66 @@ fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
             }
         }
     }
-    for link in links {
-        if selected.is_some_and(|names| !names.contains(&link.interface.as_str())) {
-            continue;
-        }
-        writeln!(output, "\n以太网适配器 {}:\n", link.name)?;
-        let interface = snapshot
+    let rows: Vec<_> = if let Some(links) = &links {
+        links
+            .iter()
+            .map(|link| {
+                let interface = snapshot
+                    .interfaces
+                    .iter()
+                    .find(|entry| entry.name == link.interface.as_bytes());
+                (
+                    link.name.as_str().into(),
+                    link.interface.as_str().into(),
+                    interface,
+                    Some(link),
+                )
+            })
+            .collect()
+    } else {
+        snapshot
             .interfaces
             .iter()
-            .find(|entry| entry.name == link.interface.as_bytes());
+            .map(|interface| {
+                (
+                    String::from_utf8_lossy(&interface.connection_name),
+                    String::from_utf8_lossy(&interface.name),
+                    Some(interface),
+                    None,
+                )
+            })
+            .collect()
+    };
+    for (display, name, interface, link) in rows {
+        if selected.is_some_and(|names| !names.contains(&name.as_ref())) {
+            continue;
+        }
+        writeln!(output, "\n以太网适配器 {display}:\n")?;
         if all {
             writeln!(
                 output,
                 "        连接特定的 DNS 后缀 . . . . . : {}",
                 interface.map_or("", |entry| entry.dns_suffix.as_str())
             )?;
-            writeln!(
-                output,
-                "        说明 . . . . . . . . . . . . : {}",
-                link.driver
-            )?;
+            if let Some(link) = link {
+                writeln!(
+                    output,
+                    "        说明 . . . . . . . . . . . . : {}",
+                    link.driver
+                )?;
+            }
             if let Some(interface) = interface {
                 let mac = network_config::format_mac(interface.mac);
                 writeln!(output, "        物理地址 . . . . . . . . . . : {mac}")?;
             }
         }
-        let media = match link.state {
-            LinkState::Disabled => Some("已禁用"),
-            LinkState::Disconnected => Some("网络电缆被拔出"),
-            LinkState::Connected => None,
+        let media = match link.map(|link| link.state) {
+            Some(LinkState::Disabled) => Some("已禁用"),
+            Some(LinkState::Disconnected) => Some("网络电缆被拔出"),
+            None if interface.is_some_and(|row| row.config.method == Method::Disabled) => {
+                Some("已禁用")
+            }
+            _ => None,
         };
         if let Some(media) = media {
             writeln!(output, "        媒体状态 . . . . . . . . . . : {media}")?;
@@ -129,13 +270,16 @@ fn show(all: bool, selected: Option<&[&str]>) -> io::Result<()> {
     output.flush()
 }
 
-fn matching_interfaces<'a>(links: &'a [Link], selected: Option<&str>) -> io::Result<Vec<&'a str>> {
+fn matching_interfaces<'a>(
+    links: &[(&'a str, &str)],
+    selected: Option<&str>,
+) -> io::Result<Vec<&'a str>> {
     let Some(selected) = selected else {
-        return Ok(links.iter().map(|link| link.interface.as_str()).collect());
+        return Ok(links.iter().map(|(name, _)| *name).collect());
     };
     // 保留已有脚本的精确接口名。通配只匹配显示名，避免一次操作误选同名接口。
-    if let Some(link) = links.iter().find(|link| link.interface == selected) {
-        return Ok(vec![&link.interface]);
+    if let Some((name, _)) = links.iter().find(|(name, _)| *name == selected) {
+        return Ok(vec![name]);
     }
     let mut pattern = String::new();
     for ch in selected.to_lowercase().chars() {
@@ -151,15 +295,38 @@ fn matching_interfaces<'a>(links: &'a [Link], selected: Option<&str>) -> io::Res
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     Ok(links
         .iter()
-        .filter(|link| pattern.matches(&link.name.to_lowercase()))
-        .map(|link| link.interface.as_str())
+        .filter(|(_, display)| pattern.matches(&display.to_lowercase()))
+        .map(|(name, _)| *name)
         .collect())
 }
 
-fn dhcp(action: DhcpAction, selected: Option<&str>) -> io::Result<()> {
-    let snapshot = network_config::snapshot()?;
-    let links = ethernet_links_with_settings(Some(&snapshot))?;
-    let selected = matching_interfaces(&links, selected)?;
+fn dhcp(
+    client: &mut ManagementClient,
+    action: DhcpAction,
+    selected: Option<&str>,
+) -> io::Result<()> {
+    let snapshot = client.snapshot()?;
+    let links = (!client.is_remote())
+        .then(|| ethernet_links_with_settings(Some(&snapshot)))
+        .transpose()?;
+    let choices = if let Some(links) = &links {
+        links
+            .iter()
+            .map(|link| (link.interface.as_str(), link.name.as_str()))
+            .collect::<Vec<_>>()
+    } else {
+        snapshot
+            .interfaces
+            .iter()
+            .filter_map(|interface| {
+                Some((
+                    std::str::from_utf8(&interface.name).ok()?,
+                    std::str::from_utf8(&interface.connection_name).ok()?,
+                ))
+            })
+            .collect()
+    };
+    let selected = matching_interfaces(&choices, selected)?;
     let mut interfaces = snapshot
         .interfaces
         .iter()
@@ -178,7 +345,7 @@ fn dhcp(action: DhcpAction, selected: Option<&str>) -> io::Result<()> {
     }
     let mut failed = false;
     for interface in interfaces {
-        if let Err(status) = network_config::dhcp(&interface.name, action) {
+        if let Err(status) = client.dhcp(&interface.name, action) {
             let name = String::from_utf8_lossy(&interface.name);
             eprintln!("{name}：{status}");
             failed = true;
@@ -187,135 +354,13 @@ fn dhcp(action: DhcpAction, selected: Option<&str>) -> io::Result<()> {
     if failed {
         return Err(io::Error::other("有适配器未完成 DHCP 操作"));
     }
-    show(false, Some(&selected))
+    show(client, false, Some(&selected))
 }
 
-fn show_bgp_routes(value: &std::ffi::OsStr) -> io::Result<()> {
-    use router_protocol::bgp::{PathAttributes, RouteDecision};
-    use router_protocol::tracking::IpPrefix;
-    let invalid = || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "BGP 路由须使用规范 IP 网段/前缀长度",
-        )
-    };
-    let (network, length) = value
-        .to_str()
-        .and_then(|text| text.split_once('/'))
-        .ok_or_else(invalid)?;
-    let query = IpPrefix {
-        network: network.parse().map_err(|_| invalid())?,
-        length: length.parse().map_err(|_| invalid())?,
-    };
-    let routes = network_config::configuration::bgp_routes(query)?;
-    fn path(output: &mut impl Write, attributes: &PathAttributes) -> io::Result<()> {
-        write!(output, "    AS 路径：")?;
-        for segment in &attributes.path {
-            let (start, end) = match segment.kind {
-                1 => ("{", "}"),
-                3 => ("(", ")"),
-                4 => ("[{", "}]"),
-                _ => ("", ""),
-            };
-            write!(output, "{start}")?;
-            for asn in &segment.asns {
-                write!(output, "{asn} ")?;
-            }
-            write!(output, "{end}")?;
-        }
-        writeln!(output)?;
-        writeln!(
-            output,
-            "    ORIGIN：{}，MED：{}",
-            match attributes.origin {
-                0 => "IGP",
-                1 => "EGP",
-                _ => "Incomplete",
-            },
-            attributes
-                .med
-                .map_or_else(|| "未设置".into(), |med| med.to_string())
-        )
-    }
-    let mut output = io::stdout().lock();
-    writeln!(output, "{}/{}", query.network, query.length)?;
-    if routes.pending {
-        writeln!(output, "选路变化尚待确认；下列已确认选择为上次结果。")?;
-    }
-    if routes.originated == Some(false) {
-        writeln!(output, "本机网段宣告暂无精确可用路由依据")?;
-    }
-    if routes.received.is_empty() {
-        writeln!(output, "未收到此网段的路由")?;
-    }
-    for route in routes.received {
-        let decision = match route.decision {
-            RouteDecision::Pending => "待确认",
-            RouteDecision::Selected => "已被 BGP 采用",
-            RouteDecision::NotBest => "有更优的 BGP 候选",
-            RouteDecision::InvalidPeer => "邻居身份无效",
-            RouteDecision::ImportPolicy => "入口策略拒绝或未配置",
-            RouteDecision::Unresolved => "下一跳无法满足安装后的可达条件",
-            RouteDecision::AsLoop => "AS 路径包含本地 AS",
-            RouteDecision::OriginatorLoop => "起源标识返回本机",
-            RouteDecision::ClusterLoop => "路由返回本地反射簇",
-        };
-        writeln!(
-            output,
-            "{} ({})：{}，收到的下一跳 {}",
-            route.neighbor, route.address, decision, route.next_hop
-        )?;
-        path(&mut output, &route.attributes)?;
-    }
-    for peer in routes.exported {
-        writeln!(
-            output,
-            "发往 {} ({})：{}",
-            peer.neighbor,
-            peer.address,
-            if peer.advertised {
-                "已发送宣告"
-            } else {
-                "未宣告"
-            }
-        )?;
-    }
-    if let Some(route) = routes.redistributed {
-        writeln!(
-            output,
-            "其他来源候选：{}，来源 ID {}，度量 {}",
-            route
-                .protocol
-                .map_or_else(|| "连接前缀".into(), |protocol| format!("协议 {protocol}")),
-            route.source,
-            route.metric
-        )?;
-    }
-    if let Some(selected) = routes.selected {
-        if selected.local {
-            writeln!(
-                output,
-                "本地发布候选：出口使用本机地址，选路优先级 {}",
-                selected.preference
-            )?;
-        } else {
-            writeln!(
-                output,
-                "已确认 BGP 选择：下一跳 {}，选路优先级 {}",
-                selected.next_hop, selected.preference
-            )?;
-        }
-        path(&mut output, &selected.attributes)?;
-    } else {
-        writeln!(output, "没有已确认的 BGP 选择")?;
-    }
-    writeln!(
-        output,
-        "BGP 选择可能被全局路由策略或其他来源压过；实际转发请查询路由表。"
-    )
-}
-
-fn show_dhcp_server_leases(interface: &std::ffi::OsStr) -> io::Result<()> {
+fn show_dhcp_server_leases(
+    client: &mut ManagementClient,
+    interface: &std::ffi::OsStr,
+) -> io::Result<()> {
     use std::net::Ipv4Addr;
 
     let mut output = io::stdout().lock();
@@ -323,10 +368,7 @@ fn show_dhcp_server_leases(interface: &std::ffi::OsStr) -> io::Result<()> {
     let mut generation = None;
     loop {
         let (current, observed, bindings, more) =
-            network_config::configuration::dhcp_server_bindings(
-                interface.as_encoded_bytes(),
-                after,
-            )?;
+            client.dhcp_server_bindings(interface.as_encoded_bytes(), after)?;
         if generation.is_some_and(|previous| previous != current) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -360,28 +402,6 @@ fn show_dhcp_server_leases(interface: &std::ffi::OsStr) -> io::Result<()> {
     }
 }
 
-fn request_bgp_refresh(neighbor: &std::ffi::OsStr, family: &std::ffi::OsStr) -> io::Result<()> {
-    use router_protocol::routing::Family;
-    let neighbor = neighbor
-        .to_str()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "BGP 邻居名称必须是 UTF-8"))?;
-    let family = match family.as_encoded_bytes() {
-        value if value.eq_ignore_ascii_case(b"ipv4") => Family::Ipv4,
-        value if value.eq_ignore_ascii_case(b"ipv6") => Family::Ipv6,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "地址族须为 ipv4 或 ipv6",
-            ));
-        }
-    };
-    network_config::configuration::bgp_refresh(neighbor, family)?;
-    writeln!(
-        io::stdout().lock(),
-        "已为 BGP 邻居 {neighbor} 排队刷新请求。"
-    )
-}
-
 fn connection_token(token: &std::ffi::OsStr, separator: char) -> io::Result<(u64, u64)> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "连接标识或翻页位置无效");
     let (epoch, id) = token
@@ -400,9 +420,13 @@ fn connection_token(token: &std::ffi::OsStr, separator: char) -> io::Result<(u64
     Ok((parse(epoch)?, parse(id)?))
 }
 
-fn clear_connection(token: &std::ffi::OsStr) -> io::Result<()> {
+fn clear_connection(
+    client: &mut ManagementClient,
+    domain: Option<&str>,
+    token: &std::ffi::OsStr,
+) -> io::Result<()> {
     let (epoch, id) = connection_token(token, ':')?;
-    network_config::configuration::clear_connection(router_protocol::connections::Identity { epoch, id })?;
+    client.clear_connection(domain, router_protocol::connections::Identity { epoch, id })?;
     writeln!(io::stdout().lock(), "已清除转发连接 {epoch:016x}:{id:016x}")
 }
 
@@ -428,7 +452,11 @@ fn write_connection(
         Phase::Reset => "已重置",
     };
     let idle = row.idle_ms.div_ceil(1000);
-    let idle_label = if prefix.is_empty() { "距空闲超时" } else { "变化时距空闲超时" };
+    let idle_label = if prefix.is_empty() {
+        "距空闲超时"
+    } else {
+        "变化时距空闲超时"
+    };
     if row.protocol == Protocol::Echo {
         writeln!(
             output,
@@ -446,7 +474,11 @@ fn write_connection(
     }
 }
 
-fn show_connections(token: Option<&std::ffi::OsStr>) -> io::Result<()> {
+fn show_connections(
+    client: &mut ManagementClient,
+    domain: Option<&str>,
+    token: Option<&std::ffi::OsStr>,
+) -> io::Result<()> {
     use router_protocol::connections::Cursor;
 
     let cursor = if let Some(token) = token {
@@ -455,7 +487,7 @@ fn show_connections(token: Option<&std::ffi::OsStr>) -> io::Result<()> {
     } else {
         Cursor::default()
     };
-    let page = network_config::configuration::connections(cursor)?;
+    let page = client.connections(domain, cursor)?;
     let mut output = io::stdout().lock();
     if page.rows.is_empty() && page.next.is_none() {
         let message = if token.is_some() {
@@ -469,24 +501,28 @@ fn show_connections(token: Option<&std::ffi::OsStr>) -> io::Result<()> {
         write_connection(&mut output, page.epoch, "", row)?;
     }
     if let Some(next) = page.next {
-        writeln!(
-            output,
-            "下一页  ipconfig /connections {:016x}-{next:016x}",
-            page.epoch,
-        )?;
+        writeln!(output, "下一页游标  {:016x}-{next:016x}", page.epoch)?;
     }
     Ok(())
 }
 
-fn write_connection_snapshot(output: &mut impl Write, epoch: u64) -> io::Result<()> {
+fn write_connection_snapshot(
+    client: &mut ManagementClient,
+    domain: Option<&str>,
+    output: &mut impl Write,
+    epoch: u64,
+) -> io::Result<()> {
     use router_protocol::connections::Cursor;
 
     writeln!(output, "当前转发连接")?;
     let mut cursor = Cursor::default();
     loop {
-        let page = network_config::configuration::connections(cursor)?;
+        let page = client.connections(domain, cursor)?;
         if page.epoch != epoch {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "转发服务实例已更换"));
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "转发服务实例已更换",
+            ));
         }
         for row in page.rows {
             write_connection(output, page.epoch, "", row)?;
@@ -498,18 +534,18 @@ fn write_connection_snapshot(output: &mut impl Write, epoch: u64) -> io::Result<
     }
 }
 
-fn watch_connections() -> io::Result<()> {
-    use network_config::configuration::{connection_changes, wait_connection_changes};
+fn watch_connections(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<()> {
     use router_protocol::connections::changes::{Change, Cursor};
 
     let mut output = io::stdout().lock();
     let mut cursor = Cursor::default();
     loop {
-        let batch = connection_changes(cursor)?;
+        let batch = client.connection_changes(domain, cursor)?;
         if batch.reset {
             cursor = batch.cursor;
-            if let Err(error) = write_connection_snapshot(&mut output, cursor.epoch) {
-                if connection_changes(cursor)?.reset {
+            if let Err(error) = write_connection_snapshot(client, domain, &mut output, cursor.epoch)
+            {
+                if client.connection_changes(domain, cursor)?.reset {
                     cursor = Cursor::default();
                     continue;
                 }
@@ -519,7 +555,13 @@ fn watch_connections() -> io::Result<()> {
             continue;
         }
         if batch.changes.is_empty() {
-            wait_connection_changes(cursor)?;
+            match client.wait_connection_changes(domain, cursor) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::ResourceBusy => {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                Err(error) => return Err(error),
+            }
             continue;
         }
         let epoch = batch.cursor.epoch;
@@ -535,79 +577,225 @@ fn watch_connections() -> io::Result<()> {
     }
 }
 
-fn show_firewall() -> io::Result<()> {
-    use router_protocol::firewall::{ConnectionState, Destination, Ingress, PreroutingAction, counters::Cursor};
+fn show_firewall(
+    client: &mut ManagementClient,
+    domain: Option<&std::ffi::OsStr>,
+) -> io::Result<()> {
+    use network_config::firewall::{self, RuleConditions, counters::Cursor};
 
+    let domain = domain
+        .map(|name| name.to_str().ok_or(io::ErrorKind::InvalidInput))
+        .transpose()?;
     let mut cursor = Cursor::default();
     let mut output = io::stdout().lock();
-    writeln!(output, "预路由规则  入接口  目的网段  连接状态  动作  报文数  IP 字节数")?;
+    writeln!(
+        output,
+        "规则链  序号  入接口  源地址  目的地址  目的服务  连接状态  动作  报文数  IP 字节数"
+    )?;
     loop {
-        let page = network_config::configuration::firewall_counters(cursor)?;
+        let page = client.firewall_counters(domain, cursor)?;
         if page.rows.is_empty() && cursor.offset == 0 {
             return writeln!(output, "没有预路由规则");
         }
-        for (position, counter) in page.rows.into_iter().enumerate() {
-            let rule = counter.rule;
-            let destination = match rule.destination {
-                Destination::Prefix(prefix) => format!("{}/{}", prefix.network, prefix.length),
-                Destination::Set(_) => format!("@{}", counter.destination_set.as_deref().expect("validated address set name")),
-            };
-            let ingress = match rule.ingress {
-                Ingress::Any => "任意".to_owned(),
-                Ingress::Interface(index) => index.to_string(),
-                Ingress::Unavailable => "设备缺席".to_owned(),
-            };
-            let state = match rule.connection_state {
-                None => "任意",
-                Some(ConnectionState::New) => "新连接",
-                Some(ConnectionState::Established) => "已有连接",
-                Some(ConnectionState::Related) => "关联错误",
-            };
-            let action = match rule.action {
-                PreroutingAction::SetMark { value } => format!("标记 {value}"),
-                PreroutingAction::Accept => "放行".to_owned(),
-                PreroutingAction::Drop => "丢弃".to_owned(),
-            };
+        for counter in page.rows {
+            let RuleConditions {
+                ingress,
+                source,
+                destination,
+                service,
+                state,
+            } = firewall::conditions(&counter);
+            let action = firewall::action(&counter);
             writeln!(
                 output,
-                "{}  {ingress}  {destination}  {state}  {action}  {}  {}",
-                cursor.offset as usize + position + 1,
-                counter.packets, counter.bytes,
+                "{}  {}  {ingress}  {source}  {destination}  {service}  {state}  {action}  {}  {}",
+                counter.chain.as_deref().unwrap_or("prerouting"),
+                counter.position,
+                counter.packets,
+                counter.bytes,
             )?;
         }
         let Some(offset) = page.next else {
             return Ok(());
         };
-        cursor = Cursor { revision: page.revision, offset };
+        cursor = Cursor {
+            revision: page.revision,
+            offset,
+        };
     }
 }
 
+fn connect_remote(
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> io::Result<ManagementClient> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "用法为 ipconfig /remote wss://主机[:端口]/router 账号 CA.pem [命令]",
+        )
+    };
+    let url = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .ok_or_else(invalid)?;
+    let user = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .ok_or_else(invalid)?;
+    let ca = arguments.next().ok_or_else(invalid)?;
+    let stdin = io::stdin();
+    if stdin.is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "请从管道输入口令",
+        ));
+    }
+    let mut password = zeroize::Zeroizing::new(String::new());
+    stdin.lock().take(1026).read_line(&mut password)?;
+    if password.len() >= 1026 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let password = password
+        .strip_suffix('\n')
+        .map_or(password.as_str(), |text| {
+            text.strip_suffix('\r').unwrap_or(text)
+        });
+    ManagementClient::remote(&url, &user, password, std::path::Path::new(&ca))
+}
+
 fn main() -> ExitCode {
-    const USAGE: &str = "用法：ipconfig [/all | /bgp [IP网段/长度] | /bgp-refresh 邻居名 ipv4|ipv6\n                 | /leases 接口名 | /firewall | /connections [游标] | /watch-connections\n                 | /clear-connection 连接标识 | /renew [适配器] | /release [适配器]\n                 | /export 文件 | /import 文件 预期代际]\n适配器使用连接名称，支持 * 和 ? 通配符。";
-    let mut arguments = std::env::args_os().skip(1);
+    let mut arguments = std::env::args_os().skip(1).peekable();
+    let remote = arguments
+        .peek()
+        .is_some_and(|option| option.as_encoded_bytes().eq_ignore_ascii_case(b"/remote"));
+    let mut client = if remote {
+        arguments.next();
+        match connect_remote(&mut arguments) {
+            Ok(client) => client,
+            Err(error) => {
+                eprintln!("ipconfig: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        ManagementClient::local()
+    };
+    run(&mut client, arguments, remote)
+}
+
+fn execute_in_domain(
+    domain: &str,
+    mut arguments: impl Iterator<Item = std::ffi::OsString>,
+) -> io::Result<()> {
+    use std::{
+        os::{fd::AsFd, unix::process::CommandExt},
+        process::Command,
+    };
+
+    let executable = arguments
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "/exec 需要程序和可选参数"))?;
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    let namespace = network_config::open_network_namespace(domain)?;
+    linux_uapi::process::enter_network_namespace(namespace.as_fd())?;
+    drop(namespace);
+    Err(command.exec())
+}
+
+fn run(
+    client: &mut ManagementClient,
+    arguments: impl Iterator<Item = std::ffi::OsString>,
+    remote: bool,
+) -> ExitCode {
+    const USAGE: &str = "用法：ipconfig [/remote wss://主机[:端口]/router 账号 CA.pem] [/all | /ospf | /routes | /bgp [IP网段/长度] | /bgp-refresh 邻居名 ipv4|ipv6\n                 | /leases 接口名 | /firewall [路由域] | /connections [游标] | /watch-connections\n                 | /clear-connection 连接标识 | /renew [适配器] | /release [适配器]\n                 | /schema 文件 | /validate 文件 | /diff 候选文件 差异文件\n                 | /export 文件 | /import 文件 预期代际 | /commit-status 提交编号 | /watch-config\n                 | /backups | /backup | /backup-export 编号 文件 | /backup-delete 编号 | /backup-restore 编号 预期代际]\n适配器使用连接名称，支持 * 和 ? 通配符。\n路由、BGP、OSPF 和转发连接操作前可加 /domain 路由域。\n本机启动程序：ipconfig /domain 路由域 /exec 程序 [参数]";
+    let mut arguments = arguments.peekable();
+    let domain = if arguments
+        .peek()
+        .is_some_and(|word| word.as_encoded_bytes().eq_ignore_ascii_case(b"/domain"))
+    {
+        arguments.next();
+        match arguments.next().and_then(|name| name.into_string().ok()) {
+            Some(name) if !name.is_empty() => Some(name),
+            _ => {
+                eprintln!("ipconfig: /domain 需要路由域名称");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let option = arguments.next();
+    if option
+        .as_ref()
+        .is_some_and(|option| option.as_encoded_bytes().eq_ignore_ascii_case(b"/exec"))
+    {
+        if let Some(domain) = domain.as_deref().filter(|_| !remote) {
+            if let Err(error) = execute_in_domain(domain, arguments) {
+                eprintln!("ipconfig: {error}");
+                return ExitCode::FAILURE;
+            }
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("ipconfig: 用法为 ipconfig /domain 路由域 /exec 程序 [参数]");
+        return ExitCode::FAILURE;
+    }
+    if domain.is_some()
+        && !option.as_ref().is_some_and(|word| {
+            let word = word.as_encoded_bytes();
+            [
+                b"/bgp".as_slice(),
+                b"/bgp-refresh",
+                b"/ospf",
+                b"/routes",
+                b"/connections",
+                b"/watch-connections",
+                b"/clear-connection",
+            ]
+            .iter()
+            .any(|option| word.eq_ignore_ascii_case(option))
+        })
+    {
+        eprintln!("ipconfig: /domain 可用于路由、BGP、OSPF 和转发连接操作");
+        return ExitCode::FAILURE;
+    }
+    let domain = domain.as_deref();
     let adapter = arguments.next();
     let generation = arguments.next();
     let extra = arguments.next().is_some();
     let result = match option.as_ref().map(|value| value.as_encoded_bytes()) {
-        None => show(false, None),
-        Some(option) if option.eq_ignore_ascii_case(b"/firewall") && adapter.is_none() => show_firewall(),
+        None => show(client, false, None),
+        Some(option)
+            if option.eq_ignore_ascii_case(b"/firewall") && generation.is_none() && !extra =>
+        {
+            show_firewall(client, adapter.as_deref())
+        }
         Some(option)
             if option.eq_ignore_ascii_case(b"/connections") && generation.is_none() && !extra =>
         {
-            show_connections(adapter.as_deref())
+            show_connections(client, domain, adapter.as_deref())
         }
         Some(option) if option.eq_ignore_ascii_case(b"/watch-connections") && adapter.is_none() => {
-            watch_connections()
+            watch_connections(client, domain)
         }
-        Some(option) if option.eq_ignore_ascii_case(b"/clear-connection") && generation.is_none() && !extra => {
+        Some(option)
+            if option.eq_ignore_ascii_case(b"/clear-connection")
+                && generation.is_none()
+                && !extra =>
+        {
             adapter.as_deref().map_or_else(
                 || Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE)),
-                clear_connection,
+                |token| clear_connection(client, domain, token),
             )
         }
         Some(option) if option.eq_ignore_ascii_case(b"/all") && adapter.is_none() => {
-            show(true, None)
+            show(client, true, None)
+        }
+        Some(option) if option.eq_ignore_ascii_case(b"/ospf") && adapter.is_none() && !extra => {
+            show_ospf(client, domain)
+        }
+        Some(option) if option.eq_ignore_ascii_case(b"/routes") && adapter.is_none() => {
+            show_routes(client, domain)
         }
         Some(option)
             if option.eq_ignore_ascii_case(b"/bgp-refresh")
@@ -615,7 +803,9 @@ fn main() -> ExitCode {
                 && generation.is_some()
                 && !extra =>
         {
-            request_bgp_refresh(
+            bgp::request_bgp_refresh(
+                client,
+                domain,
                 adapter.as_deref().expect("neighbor argument exists"),
                 generation.as_deref().expect("family argument exists"),
             )
@@ -626,7 +816,10 @@ fn main() -> ExitCode {
                 && generation.is_none()
                 && !extra =>
         {
-            show_dhcp_server_leases(adapter.as_deref().expect("interface argument exists"))
+            show_dhcp_server_leases(
+                client,
+                adapter.as_deref().expect("interface argument exists"),
+            )
         }
         Some(option)
             if option.eq_ignore_ascii_case(b"/bgp")
@@ -634,10 +827,14 @@ fn main() -> ExitCode {
                 && generation.is_none()
                 && !extra =>
         {
-            show_bgp_routes(adapter.as_ref().expect("prefix argument exists"))
+            bgp::show_bgp_routes(
+                client,
+                domain,
+                adapter.as_ref().expect("prefix argument exists"),
+            )
         }
         Some(option) if option.eq_ignore_ascii_case(b"/bgp") && adapter.is_none() => {
-            network_config::configuration::bgp_status().and_then(|snapshot| {
+            client.bgp_status(domain).and_then(|snapshot| {
                 let mut output = io::stdout().lock();
                 if snapshot.neighbors.is_empty() {
                     writeln!(output, "没有 BGP 邻居")?;
@@ -651,7 +848,7 @@ fn main() -> ExitCode {
                         "{} ({})：{}，接收路由 {}，发布路由 {}",
                         peer.name,
                         peer.address,
-                        peer.state,
+                        bgp_neighbor_state(&peer),
                         peer.received_routes,
                         peer.advertised_routes
                     )?;
@@ -663,6 +860,26 @@ fn main() -> ExitCode {
                     }
                     if peer.ipv6_unicast {
                         writeln!(output, "  已协商 IPv6 单播路由")?;
+                    }
+                    for (enabled, family) in peer
+                        .receive_add_path
+                        .unwrap_or_default()
+                        .into_iter()
+                        .zip(["IPv4", "IPv6"])
+                    {
+                        if enabled {
+                            writeln!(output, "  可接收 {family} 多路径")?;
+                        }
+                    }
+                    for (enabled, family) in peer
+                        .send_add_path
+                        .unwrap_or_default()
+                        .into_iter()
+                        .zip(["IPv4", "IPv6"])
+                    {
+                        if enabled {
+                            writeln!(output, "  可发布 {family} 多路径")?;
+                        }
                     }
                     if let Some(error) = peer.error {
                         writeln!(output, "  {error}")?;
@@ -676,8 +893,19 @@ fn main() -> ExitCode {
                     if peer.route_reflector_client {
                         writeln!(output, "  反射器客户端")?;
                     }
-                    if peer.tcp_md5 {
-                        writeln!(output, "  TCP MD5 认证")?;
+                    use router_protocol::bgp::AuthenticationStatus;
+                    match peer.authentication {
+                        AuthenticationStatus::None => {}
+                        AuthenticationStatus::Md5 => writeln!(output, "  TCP MD5 认证")?,
+                        AuthenticationStatus::Ao {
+                            send_id,
+                            receive_id,
+                        } => {
+                            writeln!(output, "  TCP-AO 认证")?;
+                            if let (Some(send), Some(receive)) = (send_id, receive_id) {
+                                writeln!(output, "  发送密钥 {send}，首选接收密钥 {receive}")?;
+                            }
+                        }
                     }
                     if !peer.export_policy_configured {
                         writeln!(output, "  未配置出口策略；不向此邻居发布路由。")?;
@@ -707,51 +935,6 @@ fn main() -> ExitCode {
         Some(option)
             if !extra
                 && generation.is_none()
-                && option.eq_ignore_ascii_case(b"/export")
-                && adapter.is_some() =>
-        {
-            (|| {
-                use std::os::unix::fs::OpenOptionsExt;
-                let (generation, configuration) = network_config::configuration::export()?;
-                let bytes = configuration.encode().map_err(io::Error::other)?;
-                let path = adapter.as_ref().expect("checked export path");
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(path)?;
-                if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-                    drop(file);
-                    if let Err(cleanup) = std::fs::remove_file(path) {
-                        eprintln!("清理未完成的导出文件失败：{cleanup}");
-                    }
-                    return Err(error);
-                }
-                writeln!(io::stdout().lock(), "已导出配置，代际 {generation}")
-            })()
-        }
-        Some(option)
-            if !extra
-                && option.eq_ignore_ascii_case(b"/import")
-                && adapter.is_some()
-                && generation.is_some() =>
-        {
-            (|| {
-                let generation = generation
-                    .as_ref()
-                    .and_then(|value| value.to_str())
-                    .and_then(|value| value.parse::<u64>().ok().filter(|value| *value != 0))
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "预期代际必须是正整数")
-                    })?;
-                let bytes = std::fs::read(adapter.as_ref().expect("checked import path"))?;
-                let applied = network_config::configuration::import(generation, &bytes)?;
-                writeln!(io::stdout().lock(), "配置已提交，代际 {applied}")
-            })()
-        }
-        Some(option)
-            if !extra
-                && generation.is_none()
                 && (option.eq_ignore_ascii_case(b"/renew")
                     || option.eq_ignore_ascii_case(b"/release")) =>
         {
@@ -768,14 +951,24 @@ fn main() -> ExitCode {
                             "无效的连接名称",
                         ))
                     },
-                    |name| dhcp(action, Some(name)),
+                    |name| dhcp(client, action, Some(name)),
                 ),
-                None => dhcp(action, None),
+                None => dhcp(client, action, None),
             }
         }
         _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
+            let Some(result) = option.as_deref().filter(|_| !extra).and_then(|option| {
+                configuration::run(
+                    client,
+                    option.as_encoded_bytes(),
+                    adapter.as_deref(),
+                    generation.as_deref(),
+                )
+            }) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            result
         }
     };
     match result {

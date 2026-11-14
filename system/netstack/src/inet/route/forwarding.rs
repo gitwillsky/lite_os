@@ -1,5 +1,5 @@
 //! 原生受管 FIB：完整集合与独立具名下一跳更新均经过原准入和配置会话。
-use super::configuration::{configuration_facts, replaced};
+use super::configuration::replaced;
 use super::*;
 use crate::inet::configuration::InterfaceChange;
 use network_protocol::routes::{NextHopConfiguration, RouteAttributes, RouteConfiguration};
@@ -58,11 +58,11 @@ impl RoutingTable {
         changes: &[InterfaceChange],
     ) -> Result<(PreparedRouteChange, Vec<u32>), SocketError> {
         let adjacency = Self::configuration_draft(changes)?;
-        let facts = configuration_facts(interfaces, changes);
+        let facts = Ipv4Interfaces::configured(interfaces, changes);
         let admit = |request| {
             Self::admit_with(
                 request,
-                facts.clone(),
+                facts,
                 Origin::Forwarding,
                 (interfaces, changes),
                 |destination, bound, minimum_scope| {

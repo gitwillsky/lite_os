@@ -136,7 +136,8 @@ pub(crate) fn register_device_interrupt(
         .unwrap_or_else(|status| panic!("{label} IRQ {vector} registration failed: {status}"));
     let mut name = alloc::vec::Vec::from(b"irq:".as_slice());
     name.extend_from_slice(label.as_bytes());
-    let thread = native_runtime::thread::spawn(&name, move || {
+    let priority = handler.worker_priority();
+    let thread = native_runtime::thread::prepare(&name, move || {
         loop {
             match interrupt.wait(native_abi::DEADLINE_INFINITE) {
                 Ok(_) => {
@@ -149,6 +150,12 @@ pub(crate) fn register_device_interrupt(
                 Err(status) => panic!("{label} IRQ {vector} wait failed: {status}"),
             }
         }
+    })
+    .and_then(|worker| {
+        if let Some(priority) = priority {
+            worker.descriptor().handle().set_priority(priority)?;
+        }
+        worker.start()
     })
     .unwrap_or_else(|status| panic!("{label} IRQ {vector} thread: {status}"));
     // 中断线程与服务同寿命，分离即可。

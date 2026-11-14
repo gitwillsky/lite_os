@@ -448,7 +448,8 @@ impl Session {
                     socket.send_to(&probe, Some(link(self.claim.index, [0xff; 6], ETH_ARP)));
                 match result {
                     Ok(ARP_BYTES) => self.server.probe_transmitted(address, Some(now_ms())),
-                    Ok(_) | Err(SocketError::Again | SocketError::NoBuffer) => {
+                    Ok(_)
+                    | Err(SocketError::Again | SocketError::NoBuffer | SocketError::NetworkDown) => {
                         self.server.probe_transmitted(address, None);
                     }
                     Err(error) => return Err(socket_status(error)),
@@ -471,7 +472,9 @@ impl Session {
             Delivery::Unicast { mac, .. } => mac,
         };
         match socket.send_to(reply.bytes, Some(link(self.claim.index, mac, ETH_IPV4))) {
-            Ok(_) | Err(SocketError::Again | SocketError::NoBuffer) => Ok(()),
+            Ok(_) | Err(SocketError::Again | SocketError::NoBuffer | SocketError::NetworkDown) => {
+                Ok(())
+            }
             Err(error) => Err(socket_status(error)),
         }
     }

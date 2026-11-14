@@ -200,6 +200,55 @@ pub const IPV4_VIA_IPV6: Capability<'static> = Capability {
     code: 5,
     data: &[0, 1, 0, 1, 0, 2],
 };
+/// RFC 7911 的 ADD-PATH 元组列表。只从已验证的 capability 解码构造。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddPath<'a>(&'a [u8]);
+
+impl AddPath<'_> {
+    /// 对端是否为此 AFI/SAFI 声明发送多路径。只接收或未知方向均不授权发送。
+    pub fn sends(self, afi: u16, safi: u8) -> bool {
+        self.direction(afi, safi, 2)
+    }
+    /// 对端是否为此 AFI/SAFI 声明接收多路径。
+    pub fn receives(self, afi: u16, safi: u8) -> bool {
+        self.direction(afi, safi, 1)
+    }
+    fn direction(self, afi: u16, safi: u8, direction: u8) -> bool {
+        let [high, low] = afi.to_be_bytes();
+        self.0.as_chunks::<4>().0.iter().any(|tuple| {
+            tuple[..3] == [high, low, safi]
+                && matches!(tuple[3], 1..=3)
+                && tuple[3] & direction != 0
+        })
+    }
+}
+
+impl<'a> Capability<'a> {
+    /// 将启用的单播族与收发方向写入同一个 ADD-PATH capability。
+    /// 没有方向或启用族时返回 None。
+    pub fn add_path(
+        storage: &'a mut [u8; 8],
+        unicast: [bool; 2],
+        send: bool,
+        receive: bool,
+    ) -> Option<Self> {
+        let direction = u8::from(receive) | (u8::from(send) << 1);
+        if direction == 0 {
+            return None;
+        }
+        let mut length = 0;
+        for (enabled, afi) in unicast.into_iter().zip([1, 2]) {
+            if enabled {
+                storage[length..length + 4].copy_from_slice(&[0, afi, 1, direction]);
+                length += 4;
+            }
+        }
+        (length != 0).then_some(Self {
+            code: 69,
+            data: &storage[..length],
+        })
+    }
+}
 /// 当前用于基本协商的 capability 值；其他扩展保持原值，不暗自接纳它的功能。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityValue<'a> {
@@ -209,6 +258,7 @@ pub enum CapabilityValue<'a> {
     EnhancedRouteRefresh,
     ExtendedMessage,
     FourOctetAsn(u32),
+    AddPath(AddPath<'a>),
     Unknown(&'a [u8]),
 }
 impl<'a> Capability<'a> {
@@ -236,7 +286,10 @@ impl<'a> Capability<'a> {
             (65, [a, b, c, d]) => {
                 CapabilityValue::FourOctetAsn(u32::from_be_bytes([*a, *b, *c, *d]))
             }
-            (1 | 2 | 5 | 6 | 65 | 70, _) => return Err(PacketError::Malformed),
+            (69, bytes) if !bytes.is_empty() && bytes.len().is_multiple_of(4) => {
+                CapabilityValue::AddPath(AddPath(bytes))
+            }
+            (1 | 2 | 5 | 6 | 65 | 69 | 70, _) => return Err(PacketError::Malformed),
             _ => CapabilityValue::Unknown(self.data),
         })
     }

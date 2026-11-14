@@ -2,7 +2,11 @@
 
 use super::*;
 use core::net::{IpAddr, SocketAddr, SocketAddrV6};
-use router_protocol::dns_cache::{self as protocol, Binding, Settings};
+use network_protocol::InterfaceSnapshot;
+use router_protocol::{
+    configuration::{InterfaceReference, Name},
+    dns_cache::{self as protocol, Binding, Settings},
+};
 
 #[derive(Default)]
 pub(super) struct DnsExecution {
@@ -91,16 +95,42 @@ impl RouterConfig {
         let Some(session) = &inner.dns.session else {
             return Ok(None);
         };
-        let changed = inner
-            .saved
-            .as_deref()
-            .and_then(|saved| saved.dns.forwarding.as_ref())
-            != configuration.and_then(|saved| saved.dns.forwarding.as_ref());
+        let saved = inner.saved.as_deref();
+        let previous = saved.and_then(|saved| saved.dns.forwarding.as_ref());
+        let changed = previous != configuration.and_then(|saved| saved.dns.forwarding.as_ref());
+        let uses_vlan = saved.zip(previous).is_some_and(|(saved, forwarding)| {
+            forwarding
+                .listen
+                .iter()
+                .map(|listener| &listener.interface)
+                .chain(
+                    forwarding
+                        .upstream
+                        .iter()
+                        .filter_map(|server| server.interface.as_ref()),
+                )
+                .any(|name| {
+                    matches!(
+                        saved.interface_reference(name),
+                        Some(InterfaceReference::Vlan(_))
+                    )
+                })
+        });
+        let topology_changed =
+            uses_vlan && configuration.is_some_and(|next| routing::bridges_changed(saved, next));
         if session.pending_pause.is_none()
             && !changed
-            && !positions
-                .into_iter()
-                .any(|position| session.uses(inner.interfaces[position].index))
+            && !topology_changed
+            && !positions.into_iter().any(|position| {
+                let interface = &inner.interfaces[position];
+                session.uses(interface.index)
+                    || uses_vlan
+                        && [saved, configuration].into_iter().flatten().any(|config| {
+                            config
+                                .bridged_profile(&interface.name, interface.mac)
+                                .is_some()
+                        })
+            })
         {
             return Ok(None);
         }
@@ -213,20 +243,31 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
     let Some(forwarding) = &saved.dns.forwarding else {
         return Ok(None);
     };
+    let network = &inner
+        .link
+        .as_ref()
+        .ok_or(native_abi::ERR_BAD_STATE)?
+        .network;
+    let interfaces = network
+        .interface_snapshots()
+        .map_err(configuration_status)?;
+    let addresses = network.address_snapshot(0).map_err(configuration_status)?;
+    let usable = || {
+        (0..addresses.len())
+            .filter_map(|at| addresses.get(at))
+            .filter(|row| row.usable)
+    };
     let mut listen = Vec::new();
     listen
         .try_reserve_exact(forwarding.listen.len())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for listener in &forwarding.listen {
-        let profile = &saved.interfaces[&listener.interface];
-        let Some(interface) = inner
-            .interfaces
-            .iter()
-            .find(|interface| profile.device.matches(&interface.name, interface.mac))
-        else {
+        let Some(interface) = resolve(saved, &interfaces, &listener.interface)? else {
             continue;
         };
-        if interface.config.method != Method::Disabled {
+        if usable()
+            .any(|row| row.interface_index == interface.index && row.address == listener.address)
+        {
             listen.push(Binding {
                 interface: interface.index,
                 address: listener.address,
@@ -242,15 +283,15 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for server in &forwarding.upstream {
         let address = if let Some(name) = &server.interface {
-            let profile = &saved.interfaces[name];
-            let interface = inner
-                .interfaces
-                .iter()
-                .find(|interface| {
-                    profile.device.matches(&interface.name, interface.mac)
-                        && interface.config.method != Method::Disabled
-                })
-                .ok_or(native_abi::ERR_SHOULD_WAIT)?;
+            let Some(interface) = resolve(saved, &interfaces, name)? else {
+                continue;
+            };
+            if !usable().any(|row| {
+                row.interface_index == interface.index
+                    && matches!(row.address, IpAddr::V6(ip) if ip.is_unicast_link_local())
+            }) {
+                continue;
+            }
             let IpAddr::V6(address) = server.address else {
                 return Err(native_abi::ERR_INVALID_ARGS);
             };
@@ -261,4 +302,35 @@ fn compile(inner: &Inner) -> Result<Option<Settings>, Status> {
         upstream.push(address);
     }
     Ok(Some(Settings { listen, upstream }))
+}
+
+fn resolve<'a>(
+    configuration: &Configuration,
+    interfaces: &'a [InterfaceSnapshot],
+    name: &Name,
+) -> Result<Option<&'a InterfaceSnapshot>, Status> {
+    let reference = configuration
+        .interface_reference(name)
+        .ok_or(native_abi::ERR_INVALID_ARGS)?;
+    let mut matching = interfaces.iter().filter(|snapshot| {
+        if snapshot.loopback {
+            return false;
+        }
+        let name = snapshot
+            .name
+            .split(|&byte| byte == 0)
+            .next()
+            .unwrap_or_default();
+        match reference {
+            InterfaceReference::Device(device) => {
+                !snapshot.vlan && device.matches(name, snapshot.mac)
+            }
+            InterfaceReference::Vlan(vlan) => snapshot.vlan && vlan.as_str().as_bytes() == name,
+        }
+    });
+    let first = matching.next();
+    if matching.next().is_some() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok(first.filter(|snapshot| snapshot.up))
 }

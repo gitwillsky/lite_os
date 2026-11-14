@@ -4,8 +4,8 @@ use super::{
     native_abi, put_ipv4, put_option_ipv4,
 };
 
-// 版本 3 只保留轻量接口事实；完整地址从地址快照查询，避免收发路径复制动态列表。
-const INTERFACE_VERSION: u32 = 4;
+// 版本 5 包含逻辑 VLAN 接口身份；完整地址仍从地址快照查询。
+const INTERFACE_VERSION: u32 = 5;
 
 pub(super) fn put_interface(writer: &mut Writer, snapshot: &InterfaceSnapshot) {
     writer
@@ -13,6 +13,7 @@ pub(super) fn put_interface(writer: &mut Writer, snapshot: &InterfaceSnapshot) {
         .u32(snapshot.index)
         .bytes(&snapshot.name)
         .bool(snapshot.loopback)
+        .bool(snapshot.vlan)
         .i32(snapshot.mtu)
         .bytes(&snapshot.mac);
     put_option_ipv4(writer, snapshot.address);
@@ -43,6 +44,10 @@ pub(super) fn get_interface(reader: &mut Reader<'_>) -> Result<InterfaceSnapshot
     let index = reader.u32()?;
     let name = fixed::<16>(reader)?;
     let loopback = reader.bool()?;
+    let vlan = reader.bool()?;
+    if loopback && vlan {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     let mtu = reader.i32()?;
     let mac = fixed::<6>(reader)?;
     let address = get_option_ipv4(reader)?;
@@ -67,6 +72,7 @@ pub(super) fn get_interface(reader: &mut Reader<'_>) -> Result<InterfaceSnapshot
         index,
         name,
         loopback,
+        vlan,
         mtu,
         mac,
         address,

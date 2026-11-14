@@ -5,7 +5,12 @@ use crate::{
     ipc::ReceiveBuffer,
     net::{SocketError, SocketType, UnixCredentials},
 };
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+
+/// 已收到请求的实际 Unix 发送端点。绑定名重用、网络域切换或调用者退出均不能改投回复。
+#[derive(Clone)]
+pub(crate) struct UnixReply(pub(in crate::net) Arc<UnixSocket>);
 
 /// 一次实际 UNIX receive 的 byte lengths、source、移交 rights 与 credentials。
 pub(in crate::net) type ReceivedUnixMessage = (
@@ -22,6 +27,7 @@ impl UnixSocket {
         output: &mut ReceiveBuffer<'_>,
         mode: ReceiveMode,
         peek: bool,
+        reply_to: Option<&mut Option<UnixReply>>,
     ) -> Result<ReceivedUnixMessage, SocketError> {
         let receive_rights = mode.receives_rights();
         let pass_credentials = self.pass_credentials();
@@ -142,6 +148,9 @@ impl UnixSocket {
                 } else {
                     None
                 };
+                if let Some(reply_to) = reply_to {
+                    *reply_to = Some(UnixReply(Arc::clone(message.source.sender())));
+                }
                 Ok((
                     count,
                     full_length,

@@ -349,7 +349,7 @@ impl InetSocket {
         options.mark = mark;
         drop(network);
         if changed && matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            crate::worker::request_poll();
+            crate::worker::request_poll(self.namespace.id());
         }
         Ok(())
     }
@@ -389,6 +389,8 @@ impl InetSocket {
                 network.options_mut(self.endpoint)?.bound_to_device = index;
             }
         }
+        drop(network);
+        crate::worker::request_poll(self.namespace.id());
         Ok(())
     }
 
@@ -605,12 +607,16 @@ impl InetSocket {
     pub(crate) fn option(&self, option: InternetOption) -> Result<i32, SocketError> {
         let _operation = self.open_operation()?;
         let network = self.stack()?.lock()?;
-        if matches!(
-            option,
-            InternetOption::Ipv4ReceiveError | InternetOption::Ipv6ReceiveError
-        ) {
+        let error_option = match option {
+            InternetOption::Ipv4ReceiveError => Some((false, false)),
+            InternetOption::Ipv6ReceiveError => Some((true, false)),
+            InternetOption::Ipv4ReceiveErrorExtensions => Some((false, true)),
+            InternetOption::Ipv6ReceiveErrorExtensions => Some((true, true)),
+            _ => None,
+        };
+        if let Some((ipv6, extensions)) = error_option {
             return network
-                .receive_error_enabled(self.endpoint, option == InternetOption::Ipv6ReceiveError)
+                .receive_error_enabled(self.endpoint, ipv6, extensions)
                 .map(i32::from);
         }
         if option == InternetOption::Protocol {
@@ -684,7 +690,9 @@ impl InetSocket {
             InternetOption::Protocol
             | InternetOption::Ipv6Checksum
             | InternetOption::Ipv4ReceiveError
-            | InternetOption::Ipv6ReceiveError => {
+            | InternetOption::Ipv6ReceiveError
+            | InternetOption::Ipv4ReceiveErrorExtensions
+            | InternetOption::Ipv6ReceiveErrorExtensions => {
                 unreachable!("RAW/transport query is handled before common policy")
             }
             InternetOption::Ipv4Mtu | InternetOption::Ipv6Mtu => {

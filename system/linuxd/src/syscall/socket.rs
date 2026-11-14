@@ -25,6 +25,7 @@ mod interface;
 mod listen;
 mod message;
 mod options;
+mod tcp_ao;
 mod timeout;
 mod unix_path;
 pub(super) use interface::socket_ioctl;

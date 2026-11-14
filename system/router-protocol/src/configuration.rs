@@ -19,21 +19,26 @@ use serde::{
 use crate::{InterfaceConfig, Invalid, Method};
 mod delegation;
 mod dhcp;
+mod difference;
 mod dns;
+mod routing_domain;
 pub use dhcp::DhcpV4Pool;
 pub use dns::{DnsForwarding, DnsListener, DnsUpstream};
+pub use routing_domain::{RoutingDomain, valid_routing_domain_name};
+mod firewall;
 mod ipv6;
 mod policy_routing;
-mod firewall;
 mod rdnss;
+mod switching;
 pub use delegation::PrefixDelegation;
+pub use firewall::{ConnectionState, Firewall, PreroutingAction, PreroutingRule};
 pub use ipv6::{
     ADVERTISEMENT_OPTION_SPACE, Ipv6Address, Ipv6Configuration, MAX_ADVERTISED_PREFIXES,
     RouterAdvertisementPolicy, RouterAdvertisements, valid_advertised_prefixes,
 };
-pub use firewall::{ConnectionState, Firewall, PreroutingAction, PreroutingRule};
 pub use policy_routing::{PolicyRouteRule, PolicyRouting, RuleOrigin, StaticTable};
 pub use rdnss::{AdvertisedDns, MAX_ADVERTISED_DNS, rdnss_size};
+pub use switching::{Bridge, BridgePort, VlanEgress, VlanGateway};
 mod routes;
 pub use routes::{StaticAction, StaticMember, StaticRoute, StaticTarget};
 
@@ -88,6 +93,11 @@ impl From<Name> for String {
         name.0
     }
 }
+impl core::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
 impl Name {
     /// 取得已检查的配置身份文本。
     pub fn as_str(&self) -> &str {
@@ -126,6 +136,13 @@ impl DeviceMatch {
             Self::Mac(expected) => *expected == mac,
         }
     }
+}
+
+/// 路由或规则引用的具名接口。物理接口解析设备绑定，VLAN 解析同一候选桥中的名称。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceReference<'a> {
+    Device(&'a DeviceMatch),
+    Vlan(&'a Name),
 }
 
 /// IPv4 地址来源；管理开关属于接口，禁用接口不会丢掉原地址策略。
@@ -250,6 +267,22 @@ pub struct Interface {
 }
 
 impl Interface {
+    /// 为指定设备创建沿用系统地址和管理策略的接口配置。
+    /// `device` 是此配置绑定的设备匹配条件。
+    /// 返回尚无地址、名称和默认路由覆盖的配置。
+    pub fn new(device: DeviceMatch) -> Self {
+        Self {
+            default_route: None,
+            mtu: DEFAULT_MTU,
+            device,
+            enabled: None,
+            display_name: None,
+            ipv4: None,
+            dhcp_v4_server: None,
+            ipv6: None,
+        }
+    }
+
     /// 将原生期望策略投影给现有 IPv4 执行/桌面接口，不改写完整原生配置。
     pub fn project(&self, inherited: InterfaceConfig) -> InterfaceConfig {
         let enabled = self.enabled.unwrap_or(inherited.method != Method::Disabled);
@@ -307,26 +340,47 @@ pub struct Configuration {
     /// 按稳定配置名索引的接口策略。
     #[serde(default, deserialize_with = "unique_objects")]
     pub interfaces: BTreeMap<Name, Interface>,
-    /// 是否转发目的不是本机的 IPv4 单播；路由器缺省开启，不影响本机 socket 或路由学习。
+    /// 独立路由域及其接口和转发设置；根对象的网络设置属于默认域。
+    #[serde(
+        default,
+        deserialize_with = "unique_objects",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub routing_domains: BTreeMap<Name, RoutingDomain>,
+    /// 以接口配置名为成员的 VLAN 感知网桥。
+    #[serde(
+        default,
+        deserialize_with = "unique_objects",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub bridges: BTreeMap<Name, Bridge>,
+    /// 是否启用 IPv4 单播及已配置的组播转发。
     #[serde(default = "forwarding_default")]
     #[schemars(
         title = "IPv4 转发",
-        description = "允许在接口之间转发 IPv4 单播；关闭仍保留路由和本机通信。"
+        description = "允许在接口之间转发 IPv4 单播和已配置的组播。"
     )]
     pub ipv4_forwarding: bool,
-    /// 是否转发 IPv6 单播；独立于 IPv4 开关，关闭仍保留本机通信和路由学习。
+    /// 是否启用 IPv6 单播及已配置的组播转发。
     #[serde(default = "forwarding_default")]
     #[schemars(
         title = "IPv6 转发",
-        description = "允许在接口之间转发 IPv6 单播；不转发链路范围地址。"
+        description = "允许在接口之间转发 IPv6 单播和已配置的组播。"
     )]
     pub ipv6_forwarding: bool,
+    /// 整个转发服务使用的专用逻辑 CPU，严格升序。空列表恢复共享调度。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64), title = "转发专用 CPU")]
+    pub forwarding_cpus: Vec<u32>,
     /// 上联 IPv6 前缀委派及下游子网编号。缺席时停用。
     #[serde(default)]
     pub prefix_delegation: Option<PrefixDelegation>,
     /// 双栈静态来源；接口使用配置对象名称，绝不持久化运行时 ifindex。
     #[serde(default)]
     pub routes: Vec<StaticRoute>,
+    /// 按组与可选发送源配置跨网段转发。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multicast_routes: Vec<routes::MulticastRoute>,
     /// 按流量来源、源网段和入接口选择双栈路由表。
     #[serde(default)]
     pub policy_routing: PolicyRouting,
@@ -339,6 +393,9 @@ pub struct Configuration {
     /// BGP 会话域；None 停止全部邻居。路由进出需要对应服务实际支持并显式配置的策略。
     #[serde(default)]
     pub bgp: Option<crate::bgp::Configuration>,
+    /// OSPF 路由器及链路的持久配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ospf: Option<crate::ospf::Configuration>,
     /// 系统解析策略。
     #[serde(default)]
     pub dns: DnsConfiguration,
@@ -356,19 +413,34 @@ pub const fn forwarding_default() -> bool {
     true
 }
 
+/// 将严格升序的逻辑 CPU `cpus` 转成执行协议的 64 位集合。空列表映射为共享调度。
+/// 无序、重复或无法在掩码中表示的编号返回 None。在线状态和独占准入由实际执行端确认。
+pub fn forwarding_cpu_mask(cpus: &[u32]) -> Option<u64> {
+    if cpus.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return None;
+    }
+    cpus.iter()
+        .try_fold(0, |mask, &cpu| Some(mask | 1u64.checked_shl(cpu)?))
+}
+
 impl Default for Configuration {
     fn default() -> Self {
         Self {
             version: VERSION,
             ipv4_forwarding: forwarding_default(),
             ipv6_forwarding: forwarding_default(),
+            forwarding_cpus: Vec::new(),
             prefix_delegation: None,
             route_policy: crate::policy::Policy::default(),
             interfaces: BTreeMap::new(),
+            routing_domains: BTreeMap::new(),
+            bridges: BTreeMap::new(),
             routes: Vec::new(),
+            multicast_routes: Vec::new(),
             policy_routing: PolicyRouting::default(),
             firewall: Firewall::default(),
             bgp: None,
+            ospf: None,
             dns: DnsConfiguration::default(),
             backup: None,
         }
@@ -376,12 +448,17 @@ impl Default for Configuration {
 }
 
 /// 捕获按配置名索引的对象；重复 JSON 键必须拒绝，不能静默覆盖另一个接口或邻居。
-pub(crate) fn unique_objects<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+pub(crate) fn unique_objects<
+    'de,
+    D: serde::Deserializer<'de>,
+    K: Ord + Deserialize<'de>,
+    T: Deserialize<'de>,
+>(
     decoder: D,
-) -> Result<BTreeMap<Name, T>, D::Error> {
-    struct Objects<T>(core::marker::PhantomData<T>);
-    impl<'de, T: Deserialize<'de>> Visitor<'de> for Objects<T> {
-        type Value = BTreeMap<Name, T>;
+) -> Result<BTreeMap<K, T>, D::Error> {
+    struct Objects<K, T>(core::marker::PhantomData<(K, T)>);
+    impl<'de, K: Ord + Deserialize<'de>, T: Deserialize<'de>> Visitor<'de> for Objects<K, T> {
+        type Value = BTreeMap<K, T>;
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("uniquely named configuration objects")
         }
@@ -410,6 +487,12 @@ impl Configuration {
         if self.version != VERSION {
             return Err(invalid("/version", "unsupported configuration version"));
         }
+        if forwarding_cpu_mask(&self.forwarding_cpus).is_none() {
+            return Err(invalid(
+                "/forwarding_cpus",
+                "expected increasing logical CPU IDs from 0 to 63",
+            ));
+        }
         if let Some(forwarding) = &self.dns.forwarding {
             forwarding.validate(self)?;
         }
@@ -419,80 +502,21 @@ impl Configuration {
         if let Some(bgp) = &self.bgp {
             bgp.validate()?;
         }
-        self.route_policy.validate().map_err(|error| {
-            invalid(
-                format!("/route_policy/rules/{}", error.index),
-                error.message,
-            )
-        })?;
-        let mut devices = BTreeSet::new();
-        routes::validate(self, &self.routes, "/routes")?;
-        self.policy_routing.validate(self)?;
-        self.validate_firewall()?;
-        let mut labels = BTreeSet::new();
-        for (name, interface) in &self.interfaces {
-            let path = format!(
-                "/interfaces/{}",
-                name.as_str().replace('~', "~0").replace('/', "~1")
-            );
-            if let Some(ipv6) = &interface.ipv6 {
-                ipv6.validate().map_err(|mut error| {
-                    error.path = format!("{path}{}", error.path);
-                    error
-                })?;
-            }
-            if interface.dhcp_settings().is_err() {
-                return Err(invalid(
-                    format!("{path}/dhcp_v4_server"),
-                    "requires static IPv4, IPv4 MTU of at least 576 and a valid on-link pool",
-                ));
-            }
-            if !devices.insert(&interface.device) {
-                return Err(invalid(
-                    format!("{path}/device"),
-                    "device matched by multiple objects",
-                ));
-            }
-            if let Some(label) = &interface.display_name
-                && (crate::connection_name(label.as_bytes()).is_err()
-                    || !labels.insert(label.to_lowercase()))
-            {
-                return Err(invalid(
-                    format!("{path}/display_name"),
-                    "invalid or duplicate display name",
-                ));
-            }
-            if !(68..=65535).contains(&interface.mtu) {
-                return Err(invalid(format!("{path}/mtu"), "invalid Ethernet MTU"));
-            }
-            if interface
-                .default_route
-                .is_some_and(|attributes| attributes.preference == 0)
-            {
-                return Err(invalid(
-                    format!("{path}/default_route/preference"),
-                    "preference must be nonzero",
-                ));
-            }
-            if let Some(ipv4) = &interface.ipv4 {
-                if ipv4.prefix_length > 32
-                    || interface.enabled != Some(false)
-                        && ipv4.assignment == Assignment::Static
-                        && ipv4.address.is_unspecified()
-                {
-                    return Err(invalid(
-                        format!("{path}/ipv4"),
-                        "invalid IPv4 address or prefix",
-                    ));
-                }
-                if !domain(&ipv4.dns_suffix) {
-                    return Err(invalid(
-                        format!("{path}/ipv4/dns_suffix"),
-                        "invalid DNS suffix",
-                    ));
-                }
-            }
+        if let Some(ospf) = &self.ospf {
+            ospf.validate(self)?;
         }
+        validate_route_policy(&self.route_policy)?;
+        self.validate_routing_domains()?;
+        routes::validate(&self.routes, "/routes", |name| {
+            self.interface_reference(name).is_some()
+        })?;
+        self.policy_routing
+            .validate(|name| self.interface_reference(name).is_some())?;
+        self.firewall
+            .validate(|name| self.interface_reference(name).is_some())?;
+        self.validate_bridges()?;
+        routes::validate_multicast(self)?;
+        validate_interfaces(&self.interfaces)?;
         if !domain(&self.dns.primary_suffix) {
             return Err(invalid("/dns/primary_suffix", "invalid DNS suffix"));
         }
@@ -508,7 +532,87 @@ impl Configuration {
         }
         Ok(())
     }
+}
 
+fn validate_route_policy(policy: &crate::policy::Policy) -> Result<(), ValidationError> {
+    policy.validate().map_err(|error| {
+        invalid(
+            format!("/route_policy/rules/{}", error.index),
+            error.message,
+        )
+    })
+}
+
+fn validate_interfaces(interfaces: &BTreeMap<Name, Interface>) -> Result<(), ValidationError> {
+    let mut devices = BTreeSet::new();
+    let mut labels = BTreeSet::new();
+    for (name, interface) in interfaces {
+        let path = format!(
+            "/interfaces/{}",
+            name.as_str().replace('~', "~0").replace('/', "~1")
+        );
+        if let Some(ipv6) = &interface.ipv6 {
+            ipv6.validate().map_err(|mut error| {
+                error.path = format!("{path}{}", error.path);
+                error
+            })?;
+        }
+        if interface.dhcp_settings().is_err() {
+            return Err(invalid(
+                format!("{path}/dhcp_v4_server"),
+                "requires static IPv4, IPv4 MTU of at least 576 and a valid on-link pool",
+            ));
+        }
+        if !devices.insert(&interface.device) {
+            return Err(invalid(
+                format!("{path}/device"),
+                "device matched by multiple objects",
+            ));
+        }
+        if let Some(label) = &interface.display_name
+            && (crate::connection_name(label.as_bytes()).is_err()
+                || !labels.insert(label.to_lowercase()))
+        {
+            return Err(invalid(
+                format!("{path}/display_name"),
+                "invalid or duplicate display name",
+            ));
+        }
+        if !(68..=65535).contains(&interface.mtu) {
+            return Err(invalid(format!("{path}/mtu"), "invalid Ethernet MTU"));
+        }
+        if interface
+            .default_route
+            .is_some_and(|attributes| attributes.preference == 0)
+        {
+            return Err(invalid(
+                format!("{path}/default_route/preference"),
+                "preference must be nonzero",
+            ));
+        }
+        if let Some(ipv4) = &interface.ipv4 {
+            if ipv4.prefix_length > 32
+                || interface.enabled != Some(false)
+                    && ipv4.assignment == Assignment::Static
+                    && ipv4.address.is_unspecified()
+            {
+                return Err(invalid(
+                    format!("{path}/ipv4"),
+                    "invalid IPv4 address or prefix",
+                ));
+            }
+            if !domain(&ipv4.dns_suffix) {
+                return Err(invalid(
+                    format!("{path}/ipv4/dns_suffix"),
+                    "invalid DNS suffix",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Configuration {
     /// 查找唯一匹配当前硬件事实的对象；名字与 MAC 两种匹配若发生别名冲突必须报错。
     /// # Errors
     /// 多个配置对象匹配同一实际接口。
@@ -557,22 +661,11 @@ impl Configuration {
                     return Err(Invalid);
                 }
             }
-            self.interfaces.insert(
-                key.clone(),
-                Interface {
-                    default_route: None,
-                    mtu: DEFAULT_MTU,
-                    device: match mac {
-                        Some(mac) => DeviceMatch::Mac(mac),
-                        None => DeviceMatch::Name(Name::try_from(name).map_err(|_| Invalid)?),
-                    },
-                    enabled: None,
-                    display_name: None,
-                    ipv4: None,
-                    dhcp_v4_server: None,
-                    ipv6: None,
-                },
-            );
+            let device = match mac {
+                Some(mac) => DeviceMatch::Mac(mac),
+                None => DeviceMatch::Name(Name::try_from(name).map_err(|_| Invalid)?),
+            };
+            self.interfaces.insert(key.clone(), Interface::new(device));
             key
         };
         let interface = self
@@ -596,9 +689,14 @@ impl Configuration {
     pub fn route_source(
         &self,
         family: crate::routing::Family,
-        resolve: impl FnMut(&DeviceMatch) -> Result<Option<u32>, Invalid>,
+        resolve: impl FnMut(InterfaceReference<'_>) -> Result<Option<u32>, Invalid>,
     ) -> Result<Vec<u8>, crate::routing::EncodeError> {
-        routes::compile(self, &self.routes, family, resolve)
+        routes::compile(
+            &self.routes,
+            family,
+            |name| self.interface_reference(name),
+            resolve,
+        )
     }
 
     /// 从 JSON 导入并执行完整语义检查，拒绝未知字段、重复对象键及尾部内容。
@@ -633,54 +731,15 @@ impl Configuration {
         serde_json::to_vec(&Self::schema()).map_err(|error| error.to_string())
     }
 
-    /// 对比两个有效配置，返回有序 JSON 变更列表；对象逐字段比较，有序数组整体替换。
+    /// 对比候选和已保存配置。没有已保存配置时，列出恢复将写入的内容。
     ///
     /// 每项含 RFC 6901 `path` 及存在时的 `before`/`after`，省略一侧表示添加/删除，JSON null 仍为真实值。
+    /// BGP 和 OSPF 密钥的变更仍列出，审阅结果以固定文字替换密钥正文。
     /// 只提供审阅结果，不把对比输出当成可绕过配置语义校验的补丁执行入口。
     /// # Errors
     /// 任一配置无效或 JSON 编码失败。
-    pub fn difference_json(&self, next: &Self) -> Result<Vec<u8>, String> {
-        self.validate().map_err(|error| error.to_string())?;
-        next.validate().map_err(|error| error.to_string())?;
-        let before = serde_json::to_value(self).map_err(|error| error.to_string())?;
-        let after = serde_json::to_value(next).map_err(|error| error.to_string())?;
-        let mut changes = Vec::new();
-        difference("", Some(&before), Some(&after), &mut changes);
-        serde_json::to_vec(&changes).map_err(|error| error.to_string())
-    }
-}
-
-#[derive(Serialize)]
-struct Change<'a> {
-    path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    before: Option<&'a serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    after: Option<&'a serde_json::Value>,
-}
-
-fn difference<'a>(
-    path: &str,
-    before: Option<&'a serde_json::Value>,
-    after: Option<&'a serde_json::Value>,
-    changes: &mut Vec<Change<'a>>,
-) {
-    if let (Some(serde_json::Value::Object(before)), Some(serde_json::Value::Object(after))) =
-        (before, after)
-    {
-        for key in before
-            .keys()
-            .chain(after.keys().filter(|key| !before.contains_key(*key)))
-        {
-            let path = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
-            difference(&path, before.get(key), after.get(key), changes);
-        }
-    } else if before != after {
-        changes.push(Change {
-            path: path.into(),
-            before,
-            after,
-        });
+    pub fn difference_json(before: Option<&Self>, next: &Self) -> Result<Vec<u8>, String> {
+        difference::encode(before, next)
     }
 }
 

@@ -72,8 +72,16 @@ impl PrefixDelegation {
                 "expected a unicast Ethernet address",
             ));
         }
-        if !configuration.interfaces.contains_key(&self.upstream) {
-            return Err(invalid("/prefix_delegation/upstream", "unknown interface"));
+        if !configuration.interfaces.contains_key(&self.upstream)
+            || configuration
+                .bridges
+                .values()
+                .any(|bridge| bridge.ports.contains_key(&self.upstream))
+        {
+            return Err(invalid(
+                "/prefix_delegation/upstream",
+                "expected a routed physical interface",
+            ));
         }
         if self.downstream.is_empty() {
             return Err(invalid(
@@ -87,7 +95,10 @@ impl PrefixDelegation {
                 .interfaces
                 .get(name)
                 .and_then(|interface| interface.ipv6.as_ref())
-                .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled);
+                .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled)
+                || configuration
+                    .vlan_gateway(name)
+                    .is_some_and(|gateway| gateway.advertise != RouterAdvertisements::Disabled);
             if name == &self.upstream || !advertised || !identifiers.insert(identifier) {
                 return Err(invalid(
                     "/prefix_delegation/downstream",

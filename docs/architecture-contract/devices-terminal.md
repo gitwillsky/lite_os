@@ -67,7 +67,7 @@ DRM/KMS、framebuffer、VirGL/PRIME 与图形资源退休的唯一细节 owner �
    多调用者不跨 DMA 持锁。
    当前调用者之一推进 CQ/port，其他调用者等本地 futex epoch；谓词在分派权交接的同一锁内重查。
    归还本地 credits 也通知完成 Event，不能让代表其他提交者等空位的分派者睡在没有新 DMA 的 port 上；无常驻转发线程。
-8. 服务复用 `service-rpc::serve_events`，在同一 port 接收控制、提交与驱动完成 Event；clear → arm → drain 后才等待。
+8. 服务复用 `service-rpc::serve_events`，在同一 port 接收控制、提交与驱动完成 Event。每个活动源先清除，处理返回后再登记。
    活动服务一次只处理一个控制操作，返回后才重新武装控制来源；数据 handler 按源索引非阻塞推进。
    块服务上限两个工作者；网络上限为实际 pair 数加一个控制余量，均按负载增长、空闲时收缩为一个，不预建每队列线程。
    注册、pin 等耗时控制不能占满数据接收者；若无法为控制准备接收者，停止并排空会话，不执行可能阻塞的控制。
@@ -147,8 +147,8 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
 - VirtIO PCI discovery 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell；MMIO/未接管消息的 PCI 消费 DTB
   `interrupt-map` 给出的 INTx，VirtIO-net 可按[硬件资源契约](hardware-resources.md)接管 MSI-X。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
-- PCI queue 初始化在独占 transport 配置阶段读取并校验每队列通知偏移，按设备声明的 num_queues 准备存储。
-  configure_queue 的 Release 发表与通知的 Acquire 读取配对；未配置队列拒绝通知，偏移 0 仍合法。
+- PCI transport 在 FEATURES_OK 后按 num_queues 分配通知位置。设备可在协商后公布更多队列；重开网卡沿用同组功能并清空通知位置。
+  configure_queue 在独占配置阶段读取、校验并 Release 发表偏移，通知端用 Acquire 读取。未配置队列拒绝通知，偏移 0 仍合法。
   notify_queue 不再改写共享 queue_select，因此不同队列可以并发敲 doorbell；特性与队列配置仍必须串行，不能与运行时通知并发重配。
   不新增热路径锁/分配；每个设备队列增加一个机器字，省掉每次通知的 queue_select 写、queue_notify_off 读与乘法。
   Benchmark 决策：寄存器访问形态可静态审查，最终多队列吞吐/时延作来宾诊断，不能由该改动推算整机收益。
@@ -321,11 +321,11 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   不得预零随后被 device 覆盖的 output/DMA bytes。
 - VirtIO-net RX slot owner 必须使 `posted + driver-owned + retired` 恒等于初始化容量；completion
   必须先 claim head→slot mapping 并验证 returned length，才允许 VirtQueue recycle；claim 借用实际池并冻结已验证长度，不能跨队列消费。
-  合法 completion 只交出槽号与长度，客户端结束 CPU 借用后才 release/repost；无法 repost 时进入 terminal reset。head→slot mapping 只在
-  available ring publication 前建立，重复/未知 head、畸形 length 不得窃取或回收仍 posted 的 slot。
+  合法 completion 只交出槽号与长度。客户端结束 CPU 借用后，提供者在同一次队列持锁内准备整批 head→slot 映射，只提升一次 available index 并通知设备。
+  任何槽无法准备时不发布前缀，通知失败也进入 terminal reset。重复或未知 head、畸形长度不得窃取或回收仍 posted 的 slot。
   TX 同样必须先 claim `transmit_by_head` 与 `InFlight` identity，且 device-written length 必须为 0；
   任一不一致永久锁存 failed 并 reset，后续 reserve/poll/receive 不得再进入 queue。
-- VirtIO-net 的 MMIO/PCI 只在发现/传输层分支，网络队列、DMA 和服务发布使用同一实现；PCI 当前仍走 INTx。
+- VirtIO-net 的 MMIO/PCI 只在发现/传输层分支，网络队列、DMA 和服务发布使用同一实现。PCI 优先 MSI-X，无 MSI 授权时使用 INTx。
   全部队列与 DMA owner 必须先放入具有 reset Drop 的实例，再设置 DRIVER_OK 和首次通知；此后任一失败先 reset 再释放缓冲。
 - `virtio::queue::dma::DmaPool` 只在构造时线性切分共享固定存储，不能重复取得同一槽；DmaBuffer/DmaRegion 不可复制，区间借用仅覆盖自身槽位。
   池按明确的 stride 切分；定长 take_fixed 校验尺寸且不增加定长 buffer 字段，运行时 take 交出带长度的 DmaRegion，两者共享同一游标与投影算法。
@@ -335,55 +335,56 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   Benchmark 决策：新增 Arc 只在构造/析构增减引用，稳定收发仅借用；额外 owner 间接访问与稠密元数据的综合成本留到目标机吞吐/时延诊断，
   不用 host 虚拟地址模拟设备/IOMMU 时延。现有 DMA fixture 覆盖线性槽、共享保活及跨非连续页的地址投影，不能代替实际 DMA 验收。
 - 网络队列由 `(device, queue pair, slot)` 标识；pair 数实例内固定、非零，槽号不能脱离队列寻址。
-  device-protocol 网络描述版本为 9，携带硬件最大 pair 数，不接受旧布局。客户端明确请求非零且不超过上限的 pair 数，
+  device-protocol 网络描述携带硬件最大 pair 数，线格式见下文 v13。客户端明确请求非零且不超过上限的 pair 数，
   驱动必须精确满足或失败，不能按 CPU 数替用户决定。目录独占 OPEN 的设备选项直接交给 NetworkController::open；
   MEMORY 授权 RX/TX 池与布局，
   QUEUE 一次授权四环 VMO、ready Event 与 progress Event，重复领取返回 ALREADY_BOUND。
   驱动名由设备提供，远端拥有可释放字符串，trait 按 self 借用，不把重连元数据泄漏成永久 static。
-- 四个 SPSC 环依次为 Receive、Fill、Transmit、Completion；本端每队列锁串行化 producer/consumer。
+- 四个 SPSC 环依次为 Receive、Fill、Transmit、Completion。客户端按接收和发送各持一把本地锁，服务端按队列串行调度四环。
   容量为 `max(RX 槽数, TX 槽数, 32)` 向上取 2 的幂，上限 65536。头部 576 字节；每环 head/tail 分居 64-byte cache line，
   closed/abort/kick 在偏移 512/516/520；记录为五个小端原子 u64：slot、非零 ticket、length/status、checksum、segmentation。
   Fill 后三字、CQ 后两字及 RX 第五字为零，RX 第四字为 checksum-valid 的 0/1。
   单批至多 32 条，记录字 Relaxed 访问、整批 head Release/Acquire 交付，tail Release/Acquire 归还元数据空间；
   wrapping head-tail 超过容量即协议错误。记录使用原子字，畸形对端不能通过改写记录制造 Rust 非原子数据竞争。
-  RX ticket 每队列递增，Fill 必须匹配仍持有的槽；TX 由客户端生成递增 ticket，服务端按槽保留上次 ticket，拒绝重复、过期和越界提交。
+  RX ticket 每队列递增，服务端逐项校验 Fill 票据，整批合法才交给设备。TX 由客户端生成递增 ticket，服务端按槽保留上次 ticket，拒绝重复、过期和越界提交。
   未接受的 TX 后缀保留在固定窗口；硬件只接受前缀，不把队列暂满当故障。CQ 只在真实 used/recycle 后发表；客户端核对 Submitted ticket 后才复用。
 - 硬件只实现 `NetworkProvider` 的共享槽批量接口；`NetworkDevice` 向主机栈交出有寿命的共享帧借用，不在任何一端保留复制帧入口。
   正常数据面无逐包 channel RPC：TX/FILL 发表后仅 kick 的 0→1 转换 signal ready；服务端排空前 AcqRel 清 kick，
   并发发表要么被本轮消费，要么重新唤醒。ready/硬件使用服务 reactor 的 SIGNALED，progress 使用 EventHub 的 USER_0，不能混用。
-  服务复用 service-rpc 弹性线程消费控制消息、ready 与硬件通知，不为每条队列增加桥接线程；每轮有界推进，有 backlog 再调度。
-  客户端回收 CQ 也 kick，释放 CQ 背压；reserve/available 提前回收时把容量边沿留给下一 poll，不能吞掉等待发送者的通知。
+  网卡每队列的客户端提交、驱动进展和批次续调度共用 ready。客户端仅获得唤醒能力，数据及错误仍从环和设备读取。弹性线程按队列独立分派，每批有界。
+  客户端由队列线程领取 RX、发布 FILL 和 TX、回收 CQ，批次完成后 kick。可写跃迁和收发故障先按网卡发表，再唤醒协议所有者用 `NetworkDevice::take_progress` 消费。可写通知独立于故障，断开优先。
   EventHub 在验证关联 peer 真正关闭后保留 disconnected 事实，队列 poll 读取该 owner，不逐包向内核查询 peer。
 - 客户端一次校验 VMO 大小、槽数、stride、header、TX 上限并映射；收发直接投影，不逐帧 VMO read/write。
-  RX 的 Receive Acquire 取得 Borrowed ticket，`NetworkReceiveFrame` 借用 device 保活映射，显式 release 或 Drop 后才 Fill Release；不在返回帧前归还槽。
-  `NetworkDevice` 的 RX seam 只提供 `receive_batch`：调用者提供空的 Option token 窗口，每批至多 32 个独立借用，零表示暂无输入。
-  RemoteNetwork 用一次队列短锁和一次环位置快照/批量 tail Release 领取描述符，逐项验证 slot/ticket/length/checksum，
-  不再在实际 netstack 入口逐帧 pop ring。每个 token 的 payload/校验和事实仍只属于它自己，不把上一帧的卸载状态带入下一帧。
-  遇到后续坏记录时只锁存 abort；已领取前缀保留在调用者窗口，退出短锁后由批 owner 全部归还，不能在锁内 Drop 而重入 release_received。
+  RX 的 Receive Acquire 取得 Borrowed ticket。`NetworkReceiveFrame` 借用原队列，跨队列载荷仅保活 RX 映射和票据。最后一个只读持有释放后才将槽交给预留 FIFO，FILL 发表后才进入 Available。
+  `NetworkDevice::receive_batch` 从指定队列开始轮转，填入空 token 窗口的前缀。成功时返回队列号与借用数，每批至多 32 帧。暂无输入时返回 None。
+  RemoteNetwork 在 RX 锁内读取 Receive 环、校验记录并领取整批票据。批次锁外检查 IP 头并执行接收者请求的标注和传输层校验，再整批发表。
+  暂存期间仍可归还其他批次的票据，同队列只允许一个未发表的批次。IP 边界、标注和校验事实随原帧借用交付。域线程领取最后一条时检查续填，解锁后投递活动回调。
+  批中有坏记录时锁存 abort，该批全部不发表。驱动停止 DMA 后关闭会话并退休其槽；已经交付给调用者的其他批次仍各自持有唯一 token。
   协议回调始终在设备短锁外执行；主机栈按批轮转队列，在原 64-frame/8-interface 轮次预算内逐帧推进，不扩大预算或忙等。
-  TX 的 `NetworkTransmit` 在 Reserved ticket 中直接构造 payload；消费 token 的 submit 结束全部 CPU 引用，再 Release 发表，matching CQ 前不可重写。
-  两类 token 不可复制，不逐包分配或增加 Arc 引用；安全访问只在 token 寿命内创建临时 &[u8]/&mut[u8]，不在交出所有权后保留 Rust 内容引用。
+  RX 借用同时提供原队列编号，供[双栈单播转发](ip-forwarding.md#入口与职责)选择出口队列。读取编号不改变接收槽的所有权或归还路径。
+  TX 的 `NetworkTransmit` 在 Reserved 槽中编码。submit 结束生产者 CPU 引用，槽按顺序入 FIFO。队列线程在 TX 锁外补齐只读后缀，再 Release 发表并等待匹配的 CQ。
+  两类 token 不可复制，常规收发不逐包分配或增加 Arc 引用；安全访问只在 token 寿命内创建临时 &[u8]/&mut[u8]，不在交出所有权后保留 Rust 内容引用。
   token 的 unsafe 构造者证明范围、初始化、非别名与 owner 寿命；底层 release/submit/cancel 也是 unsafe 接口，防止安全代码绕过 token 提前复用。
   批 guard 只借用调用者 token 窗口；取出的帧离开 guard 后仍有自己的设备寿命，guard Drop 只能归还尚未取出的部分。
-  TX 暂满保留 RX/ACK 推进；真正的 reservation 错误终止本批，归还当前及剩余 RX。部分失败和未消费后缀计入实际适配器丢弃量。
-  客户端本地短锁只保护票据和 ring，不跨协议回调或 payload 编码。TX 通知失败锁存 abort，已发表的槽不能按可恢复错误重新借出。
+  RX 只携带回复队列，真正回复时才申请发送槽。背压与发送错误沿原诊断路径记录，不中止已领取的 RX 批次。[转发入口](ip-forwarding.md#入口与职责)
+  客户端两把锁各自保护本方向票据和环，互不嵌套，不跨协议回调或编码。两方向复用原 kick/abort，TX 通知失败后已发表的槽不能按可恢复错误重新借出。
   池 VMO 大小固定，仅授予 READ/WRITE/MAP/INSPECT/DUPLICATE/TRANSFER；设备 header 不属于客户端 payload；端点只授权指定系统组件。
   句柄/映射不证明字节借用权；原始映射依赖双方槽协议，DmaBuffer::share_vmo 的 unsafe 契约覆盖对端 CPU，Arc 只证明存活。
   现有主机栈已直接消费 RX 共享帧，并在预留 TX 槽中编码；AF_PACKET 直接写 header/payload，移除原临时 Vec 与 NIC 适配复制。
   Codec 所需零初始化保留在实际 TX 范围；TX 拥塞时仅用丢弃缓冲推进协议，不发布替代 DMA 或阻塞 RX/ACK。
-  Socket/capture 自有 payload 语义仍需相应存储；最终每核路由引擎、跨网卡转发借用与新引擎的大包生成尚未完成，不能称完整零拷贝路由数据面。
+  Socket/capture 自有载荷仍需相应存储。跨队列转发保留源载荷至出口复制结束，退休队列立即撤销活动登记，待发载荷不会保活源 TX 或会话 channel。[DPDK 外部缓冲引用](https://doc.dpdk.org/api-24.11/rte__mbuf_8h.html)
   所有权循环参考固定 Linux revision 的 [AF_XDP UMEM](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/networking/af_xdp.rst)，不导入 Linux UAPI 到内核。
 - 会话最后一个 handler/activity 退出后，析构有界排空已经接受的 TX，归还所有 CPU RX；未接受后缀不再发布。
   超时、协议损坏或硬件失败时同步 stop 全设备，不能把取消/超时当作 DMA 已结束。只有排空或确认 reset 后才发表 closed 并唤醒客户端。
   正常关闭也同步停止本次 RX DMA，随后才能 closed；未归还的 RX 仍由硬件 owner 保活至 stop。
   停止只废弃本次配置，controller 在旧租约彻底退休后允许重新配置另一数量的队列，本期不承诺故障后恢复运行时状态。
   Benchmark 决策：每 pair 四环和固定 ticket 表换取无逐帧分配/无逐包 RPC，默认 32 容量的四环连同头部共两页；
-  host codec 用例覆盖容量、回绕、错误位置和 kick 重新武装；实际 device-model 的提交/取消用例与现有引擎 wire 用例覆盖帧寿命及直接写入。
+  host codec 用例覆盖容量、回绕、错误位置和 kick 重新武装。`device-model` 自己的提交/取消用例与现有引擎 wire 用例覆盖帧寿命及直接写入。
   Benchmark 决策：借用帧替代每包 Arc/CPU 帧复制，减少 RX 栈缓冲及 AF_PACKET 临时分配；保留 codec 零初始化，不以 host 假 DMA 代替真实设备吞吐。
   批领取只使用调用者的固定 32-token 临时窗口，不为每个设备/队列新增长期缓存或为大枚举加 Box；实际 ring 本地锁和 acquire/release 按批摊销。
   既有实际 TCP wire/NIC poll 基准继续覆盖入口，八帧 UDP 批次加入同一诊断基准（明确包含边界 peer/读取分配，不设孤立吞吐阈值）。
   批次所有权用例覆盖唯一槽、部分失败后锁外归还、guard 退休后已发出 token 的存活；不把这些 host 证据当成 DMA/SMP 或吞吐验收。
-  实际 DMA、跨核唤醒和批处理吞吐在最终来宾验收测量。
+  实际 DMA、跨核唤醒和批处理吞吐在来宾测量，固定流量对比 Fill 批大小、接收槽周转、丢包与桌面响应。批量归还复用有界栈窗口，无新增堆分配或常驻状态。
 - VirtIO-net 的 MQ/RSS 都依赖 CTRL_VQ；只在控制队列可用且至少支持其一时协商它。max_virtqueue_pairs 从同代配置读取并校验 1..=0x8000。
   VirtIONetworkDevice 只拥有 transport、能力与冷配置租约；ActiveNetwork 拥有本次配置的 queues/control/pools/failed。
   发现设备时不创建数据队列或置 DRIVER_OK；OPEN 按请求重新协商 feature、准备精确数量的队列与 reset owner，再启用 DMA。
@@ -391,15 +392,17 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   已 stop 的租约若仍被完成线程临时保活，OPEN 等待 controller 的 retired Event；最后一个 owner 在清空租约的同一锁内 signal，新租约发表前清除。
   所有 Weak upgrade 得到的强引用在配置锁外 drop，避免最后引用析构反入该锁；没有定时轮询或逐包开销。
   IRQ 不强持 ActiveNetwork，回调由 controller 的租约保护并在锁外调用；错误完成线程先无锁观察错误，仅错误时 try_lock 消费本代锁存并临时 upgrade 租约，竞争时重调度，不能阻塞其他设备的完成；数据收发不取配置锁。
-  IRQ 的 ACK/错误锁存与冷重配串行，重开先清除旧锁存；控制 used/ACK 不依赖 IRQ 服务线程，不会因该串行化互等。
+  IRQ ACK/错误锁存与冷重配串行，重开先清除旧锁存。控制 used/ACK 由冷路径有界睡眠轮询推进，不占数据队列锁。
   各 pair 独立准备 ring、RX/TX pool 和锁；控制队列位于 `2 * max_virtqueue_pairs`，不以活动数猜测控制队列编号。
   DRIVER_OK 后，MQ 使用 VQ_PAIRS_SET；仅 RSS 的硬件用标准 RSS_CONFIG（hash=0、未分类队列 0、max_tx_vq=请求数）初始化。
   只有唯一 head、设备写入长度与 ACK 全部正确后才发布 adapter；失败/超时先 reset 再释放 DMA。
   中断/映射准备的资源耗尽使用 NoResources/NO_RESOURCES，内存不足使用 NoMemory/NO_MEMORY；亲和准备失败不改旧路由。
-  控制命令为冷初始化，有界睡眠等待，不占数据队列锁、不忙等。共享 MMIO/INTx 中断通知全部 pair；MSI-X 按 RX/TX 向量只通知所属 pair，config 通知全部，见硬件资源契约。
+  MMIO/INTx 通知全部 pair，MSI-X 的 RX/TX 向量只通知所属 pair，config 通知全部。接收与发送积压时继续消费，排空后更新 `used_event` 并在屏障后复查。
 - RSS 按固定 [VirtIO 1.4 CS01 网络规范](https://github.com/oasis-tcs/virtio-spec/blob/917e900e0246b7fe21cdde795b0e566dd4f57d8d/device-types/net/description.tex)实现可配置 Toeplitz 分流。
   只协商 RSS，不协商 HASH_REPORT，收发 header 保持 12 字节。能力来自同代配置的 key/table/hash-types；key 上限至少 40、table 上限至少 128，
   领域 hash bits 只涵盖 IPv4/TCPv4/UDPv4、IPv6/TCPv6/UDPv6 与 IPv6 EX 三类；不公布未实现的隧道散列。
+  NET 取逻辑 CPU 数与设备公布的 pair 上限的较小值；显式 RSS 还受间接表长度约束。支持自动分流的设备可使用多对队列。实际会话沿同一 OPEN 机制校验并分配。
+  接口发表前配置稳定的表和密钥。整机验收须启用 RSS 并使用能提供多对队列的后端，再核对实际 pair 数、收发分布和吞吐。[QEMU 后端队列](https://github.com/qemu/qemu/blob/v11.1.2/hw/net/virtio-net.c#L3707-L3724)
   v13 静态描述在 maximum-pairs 后编码 TX flags(u8，checksum/TCPv4/TCPv6/ECN 为 bits 0..3)、普通帧上限(u32)、TX 容量上限(u32)，
   随后为独立队列 IRQ 亲和能力(bool)，再沿原 RSS 描述编码；QUEUE_AFFINITY(15) 使用 queue(u16)/逻辑 CPU(u32)，拒绝尾部和句柄。
   原生会话 capability 约束同一设备/队列；设置错误及停止顺序见[硬件资源契约](hardware-resources.md)。
@@ -420,7 +423,7 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   硬件控制 payload 使用标准 hash-types/mask/unclassified/table/max_tx_vq/key-length/key 顺序，pair 下标就是 rss_rq_id（实际 virtqueue index >> 1），max_tx_vq 是数量。
   控制 DMA 按真实上限预分配连续 backing/pin（通常一页），只有输入与 ACK 两个 descriptor；不为普通 NIC 固定预留大 RSS 缓冲。
   串行控制锁拥有整个 command→ACK 生命周期；未确认、拒绝或畸形完成均 reset，不能假定失败时硬件保留旧表。
-  Netstack 在多 worker 时选择均衡表和随机 40-byte key，单 worker 保留标准初始化、不额外计算散列。RSS 切换可能移动既有流，worker 切换职责仍属于协议引擎。
+  Netstack 按 CPU 与设备上限打开队列。自动分流使用设备原生策略，可配置 RSS 再按有效表长选择队列数，并设置均衡表及随机 40-byte key。单 worker 无需额外配置散列。
   Benchmark 决策：编码/VMO/连续控制页只在冷配置分配，不改变逐帧缓冲与复制路径；主机 codec 覆盖超 64 KiB 表及非法队列/hash，真实分流和吞吐在最终来宾验收。
 - TX partial checksum 仅在设备提供 `VIRTIO_NET_F_CSUM` 时协商并发布。TX 第四字为零表示逐字节发送；
   非零字的 bit 48 是 presence，低 48 位依次为 start/offset/header-length 三个 u16，其余位必须为零。
@@ -437,7 +440,7 @@ MMIO/IRQ/MSI authority、BTI/PMT、IOMMU 与消息中断的寿命及验证边界
   分段必须同时提交 checksum、完整 TCP 头与非零 MSS，单段全部头加 MSS 不超过普通帧上限；无分段时仍按普通 MTU 拒绝大包。
   net/offload.rs 的 VirtIO header 按地址族置 TCPV4(1)/TCPV6(4)，ECN 为 0x80，写 gso_size；其余元数据归零，payload 不复制或改写。
   OPEN 明确请求 payload 容量，范围为普通帧上限至硬件公布上限；每槽 stride 为 (12 + 请求容量) 向上对齐 64。
-  当前 VirtIO 普通帧上限 1514，具备 TSO 时容量上限 65549；旧主机引擎只请求 1514，不为闲置能力预留大槽。
+  当前 VirtIO 普通帧上限 1518，具备 TSO 时容量上限 65549。NET 请求普通帧上限，发送槽可容纳标准 VLAN 标签。
   默认 pair 数据页仍为 112 KiB，32 个最大 TX 槽按需增加到 2052 KiB TX 页；sg descriptor 容量不足只接受批前缀，保留其余帧至完成。
   Benchmark 决策：五字记录默认四环仍为两页；逐包不分配，大槽与引用只在 OPEN 创建。实际分段正确性及吞吐在硬件验收。
 - RX 协商 `VIRTIO_NET_F_GUEST_CSUM`，不协商接收 GSO。驱动在 ReceiveClaim 的唯一 CPU 槽内检查已初始化的 12-byte header；

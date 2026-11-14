@@ -13,6 +13,209 @@ mod multicast_contract {
     const PEER: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 1, 1);
     const ALL: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
+
+    // 实际 RX/NET/VLAN 边界才能捕获同一报文的本机投递、出口复制及反向路径冲突。
+    #[test]
+    fn static_multicast_routes_forward_both_families_and_restore_previous_table() {
+        use packet_wire::{
+            ipv6::{Ipv6Header, Ipv6Packet},
+            udp,
+        };
+        use router_protocol::{
+            configuration::{Configuration, InterfaceReference},
+            switching::Ports,
+        };
+        let _serial = SERIAL.lock().unwrap();
+        initialize();
+        let net = crate::namespace::Namespace::create().unwrap();
+        let [input_device, output, trunk] = core::array::from_fn(|_| Arc::new(WireDevice::new()));
+        net.install_protocol(
+            prepare_network(
+                &net,
+                &[input_device.clone(), output.clone(), trunk.clone()],
+                true,
+            )
+            .unwrap(),
+        );
+        for index in 2..=4 {
+            configure_up(&net, index, true).unwrap();
+        }
+        configure_address(&net, 2, LOCAL).unwrap();
+        let config = Configuration::decode(
+            br#"{
+          "version":1,"interfaces":{
+            "in":{"device":{"kind":"name","value":"eth0"}},
+            "out":{"device":{"kind":"name","value":"eth1"}},
+            "trunk":{"device":{"kind":"name","value":"eth2"}}
+          },"bridges":{"lan":{"rstp":false,"ports":{"trunk":{"vlans":{"20":"tagged"}}},
+            "gateways":{"20":{"name":"lan20"}}}},
+          "multicast_routes":[
+            {"group":"239.1.1.1","source":"10.0.2.2","ingress":"in","outputs":["out","lan20"]},
+            {"group":"239.1.1.1","ingress":"out","outputs":["lan20"]},
+            {"group":"ff3e::8000:1234","source":"2001:db8:1::2","ingress":"in","outputs":["out","lan20"]}
+          ]
+        }"#,
+        )
+        .unwrap();
+        let devices = |device: &router_protocol::configuration::DeviceMatch| {
+            Ok([b"eth0", b"eth1", b"eth2"]
+                .into_iter()
+                .zip(2..)
+                .find_map(|(name, index)| {
+                    device.matches(name, [2, 0, 0, 0, 0, 1]).then_some(index)
+                }))
+        };
+        let bridges = config.bridge_source(devices).unwrap();
+        let projected =
+            crate::inet::project_bridges(&net, Ports::parse(&bridges).unwrap(), Default::default())
+                .unwrap();
+        let ports = Ports::parse(&projected).unwrap();
+        let bytes = config
+            .multicast_source(|reference| match reference {
+                InterfaceReference::Device(device) => devices(device),
+                InterfaceReference::Vlan(name) => Ok(ports
+                    .gateway(name.as_str().as_bytes())
+                    .map(|gateway| gateway.binding.index)),
+            })
+            .unwrap();
+        let batch = network_protocol::ConfigurationBatch::default()
+            .with_bridges(ports)
+            .with_multicast(&bytes);
+        let change = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
+        change.activate().unwrap();
+        change.confirm().unwrap();
+
+        let receiver = scoped_endpoint(&net, InetProtocol::Udp);
+        receiver
+            .bind(InetAddress::new(GROUP.into(), 43255))
+            .unwrap();
+        receiver.ipv4_membership(GROUP, 2, LOCAL, true).unwrap();
+        let make = |source: IpAddr, group: IpAddr, hops| {
+            let header = if source.is_ipv4() { 20 } else { 40 };
+            let mut frame = vec![0; 14 + header + 8 + 3];
+            frame[14 + header + 8..].copy_from_slice(b"mrt");
+            udp::emit(&mut frame[14 + header..], source, group, 43256, 43255).unwrap();
+            let (kind, mac) = match (source, group) {
+                (IpAddr::V4(source), IpAddr::V4(destination)) => {
+                    Ipv4Header {
+                        source,
+                        destination,
+                        protocol: 17,
+                        hop_limit: hops,
+                        dscp_ecn: 0,
+                        identification: 1,
+                        fragment: 0,
+                        options: &[],
+                    }
+                    .emit(&mut frame[14..])
+                    .unwrap();
+                    let bytes = destination.octets();
+                    (0x0800, [1, 0, 0x5e, bytes[1] & 0x7f, bytes[2], bytes[3]])
+                }
+                (IpAddr::V6(source), IpAddr::V6(destination)) => {
+                    Ipv6Header {
+                        source,
+                        destination,
+                        next_header: 17,
+                        hop_limit: hops,
+                        traffic_class: 0,
+                        flow_label: 0,
+                    }
+                    .emit(&mut frame[14..])
+                    .unwrap();
+                    let bytes = destination.octets();
+                    (
+                        0x86dd,
+                        [0x33, 0x33, bytes[12], bytes[13], bytes[14], bytes[15]],
+                    )
+                }
+                _ => unreachable!(),
+            };
+            EthernetHeader {
+                source: [2, 0, 0, 0, 0, 2],
+                destination: mac,
+                type_or_length: kind,
+                tags: &[],
+            }
+            .emit(&mut frame)
+            .unwrap();
+            frame
+        };
+        let take = |device: &WireDevice| {
+            core::mem::take(&mut device.wire.lock().unwrap().1)
+                .into_iter()
+                .filter_map(|bytes| {
+                    let frame = EthernetFrame::parse(&bytes).unwrap().network().unwrap();
+                    let vid = frame.tags().next().map(|tag| tag.id());
+                    let (group, hop, payload) = match frame.type_or_length() {
+                        0x0800 => {
+                            let ip = Ipv4Packet::parse(frame.payload()).unwrap();
+                            if ip.protocol() != 17 {
+                                return None;
+                            }
+                            (ip.destination().into(), ip.hop_limit(), ip.payload())
+                        }
+                        0x86dd => {
+                            let ip = Ipv6Packet::parse(frame.payload()).unwrap();
+                            if ip.upper_protocol() != 17 {
+                                return None;
+                            }
+                            (
+                                ip.destination().into(),
+                                ip.hop_limit(),
+                                ip.upper_layer().unwrap(),
+                            )
+                        }
+                        _ => return None,
+                    };
+                    assert_eq!(&payload[8..], b"mrt");
+                    Some((vid, group, hop))
+                })
+                .collect::<Vec<_>>()
+        };
+        let group6: IpAddr = "ff3e::8000:1234".parse().unwrap();
+        let source6 = "2001:db8:1::2".parse().unwrap();
+        input(&input_device, make(PEER.into(), GROUP.into(), 9));
+        input(&input_device, make(source6, group6, 10));
+        for ms in [0, 250, 500] {
+            poll(&net, ms);
+        }
+        assert_eq!(take(&output), [(None, GROUP.into(), 8), (None, group6, 9)]);
+        assert_eq!(
+            take(&trunk),
+            [(Some(20), GROUP.into(), 8), (Some(20), group6, 9)]
+        );
+        assert!(take(&input_device).is_empty());
+        let mut payload = [0; 8];
+        assert_eq!(receive(&receiver, &mut payload, false).unwrap().0, 3);
+        assert_eq!(&payload[..3], b"mrt");
+        assert!(!receiver.poll_state().readable);
+
+        input(&output, make(PEER.into(), GROUP.into(), 9));
+        input(&input_device, make(PEER.into(), GROUP.into(), 1));
+        poll(&net, 501);
+        assert!(take(&trunk).is_empty());
+        input(
+            &output,
+            make(Ipv4Addr::new(10, 0, 4, 2).into(), GROUP.into(), 9),
+        );
+        poll(&net, 502);
+        poll(&net, 503);
+        assert_eq!(take(&trunk), [(Some(20), GROUP.into(), 8)]);
+
+        let empty = router_protocol::multicast::encode(&[]).unwrap();
+        let withdrawal = network_protocol::ConfigurationBatch::default().with_multicast(&empty);
+        let change = crate::inet::prepare_configuration(&net, Some(withdrawal), None).unwrap();
+        change.activate().unwrap();
+        input(&input_device, make(source6, group6, 10));
+        poll(&net, 504);
+        assert!(take(&output).is_empty());
+        change.abort().unwrap();
+        input(&input_device, make(source6, group6, 10));
+        poll(&net, 505);
+        assert_eq!(take(&output), [(None, group6, 9)]);
+        receiver.close_description();
+    }
     fn domain() -> (Arc<crate::namespace::Namespace>, Arc<WireDevice>) {
         let net = crate::namespace::Namespace::create().unwrap();
         let device = Arc::new(WireDevice {

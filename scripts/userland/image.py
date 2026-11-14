@@ -383,7 +383,7 @@ def create_published_image(
         boot_scene(),
         ROOT / "user/base/shutdown",
         ROOT / "scripts/create_fs.py",
-        *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "rust.py")),
+        *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "iperf.py", "rust.py")),
         ROOT / "scripts/apk_cache.py",
         ROOT / "scripts/apk_package.py",
         ROOT / "scripts/apk_rootfs.py",

@@ -6,9 +6,23 @@ fn routing_domain(
     Arc<WireDevice>,
     Arc<WireDevice>,
 ) {
+    routing_domain_with_queues(1, 1)
+}
+
+fn routing_domain_with_queues(
+    ingress: u16,
+    egress: u16,
+) -> (
+    Arc<crate::namespace::Namespace>,
+    Arc<WireDevice>,
+    Arc<WireDevice>,
+) {
     let net = crate::namespace::Namespace::create().unwrap();
-    let a = Arc::new(WireDevice::new());
-    let b = Arc::new(WireDevice::new());
+    let mut a = WireDevice::new();
+    a.queue_count = ingress;
+    let mut b = WireDevice::new();
+    b.queue_count = egress;
+    let (a, b) = (Arc::new(a), Arc::new(b));
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     for (index, address) in [
         (2, Ipv4Addr::new(10, 40, 0, 15)),
@@ -20,6 +34,57 @@ fn routing_domain(
     }
     (net, a, b)
 }
+
+#[test]
+fn a_single_receive_queue_spreads_ipv4_flows_on_a_wider_egress() {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let _serial = SERIAL.lock().unwrap();
+    initialize();
+    let (_net, a, b) = routing_domain_with_queues(1, 4);
+    let source = Ipv4Addr::new(10, 40, 0, 9);
+    let destination = Ipv4Addr::new(10, 41, 0, 9);
+    b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
+        Ipv4Addr::new(10, 41, 0, 15),
+        destination,
+    ));
+    advance_actual_domains();
+    b.wire.lock().unwrap().1.clear();
+    let mut used = 0_u8;
+    let mut first_pass = [0; 16];
+    for repeated in [false, true] {
+        for (index, queue) in first_pass.iter_mut().enumerate() {
+            let blocked = repeated && index == 0;
+            if blocked {
+                b.transmit_available.store(false, Relaxed);
+            }
+            a.wire.lock().unwrap().0.push_back(peer_udp_frame_for(
+                InetAddress::new(source.into(), 43000 + index as u16),
+                InetAddress::new(destination.into(), 44000),
+                b"flow-affinity",
+            ));
+            advance_actual_domains();
+            if blocked {
+                assert!(b.wire.lock().unwrap().1.is_empty());
+                b.transmit_available.store(true, Relaxed);
+                b.transmit_ready.store(true, Relaxed);
+                advance_actual_domains();
+            }
+            let mut wire = b.wire.lock().unwrap();
+            assert_eq!(wire.1.len(), 1);
+            wire.1.clear();
+            let selected = wire.2.last_transmit_queue.unwrap();
+            if repeated {
+                assert_eq!(selected, *queue);
+            } else {
+                *queue = selected;
+                used |= 1 << selected;
+            }
+        }
+    }
+    assert!(used.count_ones() > 1);
+}
+
 fn static_route(
     destination: Ipv4Addr,
     prefix_length: u8,
@@ -421,12 +486,12 @@ fn actual_static_gateway_udp_and_asymmetric_protocol_reply_use_same_fib_and_wire
         )
     }));
     assert!(
-        !net.protocol()
+        net.protocol()
             .unwrap()
             .lock()
             .unwrap()
             .route_replies
-            .due(now() + smoltcp::time::Duration::from_millis(2000))
+            .next_deadline().is_none_or(|at| at > now() + ::tcp::time::Duration::from_millis(2000))
     );
     sender.close_description();
 }
@@ -643,8 +708,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
     assert!(sent > 0);
     {
         let network = net.protocol().unwrap().lock().unwrap();
-        assert!(!network.tcp_due(data_time + smoltcp::time::Duration::from_millis(2999)));
-        assert!(network.tcp_due(data_time + smoltcp::time::Duration::from_millis(3000)),
+        assert_eq!(network.tcp_deadline(data_time), Some(data_time + ::tcp::time::Duration::from_millis(3000)),
             "route IRTT must arm the native TCP worker at the actual first data RTO");
     }
     configure_mtu(&net, 2, 128).unwrap();
@@ -785,7 +849,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
         let rto = {
             let network = net.protocol().unwrap().lock().unwrap();
             network.tcp_endpoints[&id].transport_for_test()
-                .maintenance_deadline().map(|deadline| smoltcp::time::Instant::from_micros(deadline.total_micros()))
+                .maintenance_deadline(::tcp::time::Instant::ZERO)
                 .unwrap()
         };
         device

@@ -7,7 +7,7 @@ Linux VMA/映射政策由 `system/linuxd/src/memory` 拥有，native VMO/VMAR �
 | 214 | `brk` | Complete | program break 与匿名 VMA 统一 owner |
 | 215 | `munmap` | Complete | VMA split、共享写回、native 翻译撤销与清理 |
 | 216 | `mremap` | Partial | 私有/共享匿名、文件及 device 映射缩小、增长、MAYMOVE/FIXED/DONTUNMAP、old_size=0 共享别名；stack/loader System VMA 返回 EFAULT |
-| 222 | `mmap` | Partial | anonymous、regular file、memfd、ALSA PCM；private/shared/fixed；populate/noreserve/stack 为 advisory，按需补页 |
+| 222 | `mmap` | Partial | anonymous、regular file、memfd、ALSA PCM、AF_PACKET 接收环；private/shared/fixed；populate/noreserve/stack 为 advisory，按需补页 |
 | 224 | `swapon` | Unsupported | ENOSYS，无交换设备或页迁移机制 |
 | 225 | `swapoff` | Unsupported | ENOSYS，无交换设备或页迁移机制 |
 | 226 | `mprotect` | Complete | protection combinations、VMA split 与最大权限约束 |
@@ -49,7 +49,7 @@ native `ALLOW_FAULTS` 允许映射覆盖尚无 backing 的范围，实际访问�
 open 使用 READ_FSCREDS 与实际 MM 授权；同 MM 和初始域 PERFMON/SYS_ADMIN 按固定 Linux 规则处理。
 打开的 fd 不保活 MM user，最后 user 退出后 EOF；跨 exec 仍绑定旧 MM。读取不提交内容页。
 
-设备映射的文件身份来自 mmap 入口实际持有的打开文件，缓冲寿命独立保留。
+设备及抓包环映射的文件身份来自 mmap 入口实际持有的打开文件，缓冲寿命独立保留。抓包参数与撤销条件见 [socket ABI](socket.md)。
 共享匿名映射保活真实内部 tmpfs `/dev/zero (deleted)` 文件；命名映射显示 `[anon_shmem:name]`，
 设备/inode/偏移仍来自原文件。SysV 段持有真实内部 tmpfs inode，maps 使用创建时的 `/SYSV%08x (deleted)` 名字、实际设备/inode 与映射偏移；
 RMID 撤销 key 不改写旧文件名。内容保持原匿名 VMO，不创建 pager 或另一份内容副本。当前段文件大小固定，

@@ -5,13 +5,17 @@ mod rss;
 mod server;
 
 use crate::{Reader, Writer};
-pub use client::{RemoteNetwork, connect};
+pub use client::{RemoteNetwork, connect, mac_address};
 use device_model::network::{
     NetworkChecksum, NetworkError, NetworkTcpSegmentation, NetworkTcpVersion,
     NetworkTransmitCapabilities,
 };
 use native_runtime::native_abi::{self, Status};
 pub use server::publish;
+
+/// 网络收发、完成通知和转发线程的公平调度等级。
+/// 保留原转发线程的 nice +5 等效权重，让同核可运行的默认权重任务获得更多 CPU 时间。
+pub const FORWARDING_WORKER_PRIORITY: u32 = 25;
 
 const NETWORK_VERSION: u16 = 13;
 const STATISTICS: u32 = 8;
@@ -21,7 +25,8 @@ const QUEUE: u32 = 13;
 const RSS_CONFIG: u32 = 14;
 const QUEUE_AFFINITY: u32 = 15;
 
-fn encode_error(error: NetworkError) -> Status {
+/// 将 `error` 转成设备协议状态，供服务间调用保留原错误类别。
+pub fn encode_error(error: NetworkError) -> Status {
     match error {
         NetworkError::InvalidConfiguration => native_abi::ERR_INVALID_ARGS,
         NetworkError::WouldBlock => native_abi::ERR_SHOULD_WAIT,

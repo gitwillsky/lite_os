@@ -69,7 +69,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   与桌面快捷键复用同一选择规则，排除登录客户端，独占与安全握手仍优先，不另存焦点历史。
 - Seat 只识别并路由受支持的外壳组合键，desktop 经标准键盘事件执行开始、运行、我的电脑、系统属性与任务管理器命令。
   Desktop.start_key 仅表示尚未被其他输入打断的 Win 单键候选；释放时消费，其他按键、点击与失焦撤销，缺少它会让组合键误开开始菜单。
-  开始菜单关闭后从现有 foreign-toplevel 快照选择活动窗口并请求 Activate，窗口栈与键盘目标仍由 compositor 拥有。
+  开始菜单在登录和关闭时预先请求图层配置，打开才提交缓冲并接收输入。关闭后从 foreign-toplevel 选择活动窗口并请求 Activate，窗口栈与键盘目标仍由 compositor 拥有。
   Win+Tab 的逻辑任务焦点由 desktop 保存带 generation 的 foreign 句柄；背景 surface 承载键盘，任务栏绘制焦点，Enter 经标准 Activate 激活，Esc 取当前活动窗口。
   导航、菜单、翻页和自动隐藏共用现有任务列表及几何，不复制激活状态；点击/失焦清除逻辑焦点，集合/尺寸变化重新裁决。仅输入或窗口集合变化遍历，不复制列表、不引入新轮询器。
   按需外壳取得键盘时，全屏组不再覆盖 Top 外壳；Session 的同一边界用于合成与命中，归还窗口焦点后恢复全屏组优先级；Seat 返回实际焦点变化以失效绘制，不依赖客户端提交，无额外模式副本。
@@ -95,7 +95,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   入队、工作者计数与退休同锁，任务和 UI Waker 始终锁外执行；首个线程创建失败不接收任务，扩容失败仍可由现有工作者推进。
   提交句柄独立于工作者的 Arc 寿命计数，最后一个句柄退出时唤醒全部空闲线程，已接收任务仍按原语义排空，不在 UI join。
   文件对话框的专属队列/通知 watch 在最后一个对话框关闭时退休；创建窗口失败也回收，旧结果不能投递给下一代 watch。
-- Task/窗口关闭后，Future 在 UI 线程释放；FD interest、定时器与接收端通过各自 RAII owner 撤销。
+- Task/窗口关闭后，Future 在 UI 线程释放；FD interest、定时器与接收端由各自 owner 撤销。`Window::watch` 在窗口任务内复用应用的就绪循环。
   在途 clipboard 传输和协议缓冲不依赖已释放的回调 userdata。
 - 协议断开向应用返回错误；库不调用 process::exit。Application 析构取消任务、关闭窗口，再释放连接。
 - 新热路径的测量项为缓冲复用、任务调度/唤醒、布局与可见行绘制；验证入口与范围见[Wayland 验证](../development/wayland-ui-verification.md)。
@@ -149,9 +149,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 - Outline 只持有父子关系、展开状态和可见索引，文本仍在 Node.rows；父先子后、ID 唯一且深度不超过 64。
   数据刷新按稳定 ID 保留展开，折叠选择对应分支；与列表复用滚动与双击时序，不在应用持有展开镜像。
-- TextEditor 唯一持有 Document、选择/光标、两个滚动轴和行宽索引。修改只替换受影响宽度，scale 变化重建。
-  缺少宽度索引会在每个按键扫描全文；索引与 Document 在同一同步修改入口更新，无跨 owner 人工同步。
-  ABI 文本读取只在调用时拼接自有副本，Rust Document 不跨边界；编辑动作和剪贴板复用单行控件通知路径。
+- TextEditor 持有 Document、选区、滚动轴与行宽索引。编辑同步更新受影响的宽度，避免逐键扫描全文。比例变化时重建索引。
+  ABI 文本读取只在调用时拼接副本。编辑动作和剪贴板复用单行控件通知路径。
+  `READ_ONLY` 保留导航、选择和复制，拒绝键盘及编辑命令写入。进入只读时取消在途粘贴，以免旧请求写进下一份草稿。
   可编辑组合框复用单行输入的编辑能力判断，程序化全选和文本剪贴板与键盘输入一致；下拉列表式组合框不接收文本编辑。
 - Dialogs 与 Application 共用 Rc<RefCell> 窗口表和订阅 owner，不复制登记表；只允许 UI 线程使用。
   Future 可在 await 之后开下一项对话框；所有借用在返回 Future 之前结束，不跨 await 保留可变借用。
@@ -206,7 +206,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 - 文件对话框的 Filter 只拥有复制后的标签与扩展名；Tree 的“所有文件”勾选是唯一筛选模式状态。
   worker 先筛选普通文件再计入 4096 项额度，目录始终可导航；请求序号排除切换前的结果。
-  原有 ABI 槽位保留，新增筛选入口只追加到表尾；手工路径不受列表筛选限制。
+  筛选入口追加到 ABI 表尾，手工路径不受筛选限制。`SAVE_NEW` 拒绝已存在的普通文件，调用方仍须独占创建，以防选定后路径被占用。
 - Wayland wire 以头部 16-bit 长度和四字节对齐接收至 65532 字节的消息；socket 分批读取不限制消息长度。
   编码/解码拒绝内部 NUL；编码错误原子回滚消息及其 FD。动态窗口文本在分配角色前验证。
 
@@ -352,7 +352,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 ## 应用条目与安装集成
 
-- `desktop-entry` 独占 Desktop Entry 解析、XDG 应用目录优先级和文件启动选择；desktop 与 file-explorer 共用。
+- `desktop-entry` 独占 Desktop Entry 解析、XDG 应用目录优先级和文件启动选择；desktop 与 file-explorer 共用。desktop 通过 inotify 与 Wayland 一起等待应用目录变更。
   类型来自 XDG mime/packages/*.xml，支持名称 glob 权重/大小写、别名、继承、本地化与图标；无内容 magic/编译 cache。目录共用安装/关联快照，不逐文件扫描注册目录或读远端内容。
   `mimeapps.list` 按标准 config/data 与 desktop 优先级处理 Default/Added/Removed；缺失或卸载的处理器被跳过。
   “打开方式”只列可接收文件的已安装条目，临时选择不改配置；设置默认在用户配置锁内合并后原子发布。
@@ -446,7 +446,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   hit_testing 按提交树逆序和输入 region 命中，空洞穿透；实际 leaf 收指针，根窗口收键盘/激活，隐式抓取保留 leaf 坐标原点。
 - Session.pointer_grab 独占按下时的 leaf、serial 与物理位置；pressed_buttons 决定寿命，最后释放或目标消失时撤销。
   Seat 只签发/投递 serial，不保存第二份按钮授权。输入 Decoder 在按钮前提交已有轴值，Button 携带事件位置；
-  同一批次之后的 motion 不能反向改变点击命中、菜单选择或抓取锚点。sync_focus 也保留仍存活的隐式目标。
+  同批释放后再次按下时，按该事件位置恢复 enter 再派发按钮。后续 motion 不改写点击锚点，焦点同步保留仍存活的隐式目标。
   xdg_toplevel.move/resize 校验该 serial 和根目标，以按下位置作锚点；请求到达时立即应用已发生的位移，
   无须等待下一个 motion。语义遵循固定 xdg-shell 用户事件授权及
   [Mutter 49.0 的 grab 坐标捕获](https://github.com/GNOME/mutter/blob/49.0/src/wayland/meta-wayland-pointer.c)。

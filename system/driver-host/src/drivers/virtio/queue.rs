@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering, fence};
 use native_runtime::native_abi::PAGE_SIZE;
 
 use super::transport::VirtQueueAddresses;
@@ -46,6 +46,8 @@ impl UsedDescriptor {
 // VirtIO Ring 描述符标志
 pub(super) const VIRTQ_DESC_F_NEXT: u16 = 1;
 pub(super) const VIRTQ_DESC_F_WRITE: u16 = 2;
+pub(super) const VIRTIO_F_EVENT_IDX: u64 = 1 << 29;
+const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -187,10 +189,18 @@ impl VirtQueue {
             // 初始化available ring
             (*avail).flags = AtomicU16::new(0);
             (*avail).idx = AtomicU16::new(0);
+            avail
+                .cast::<AtomicU16>()
+                .add(2 + usize::from(size))
+                .write(AtomicU16::new(0));
 
             // 初始化used ring
             (*used).flags = AtomicU16::new(0);
             (*used).idx = AtomicU16::new(0);
+            used.cast::<u8>()
+                .add(used_size - size_of::<u16>())
+                .cast::<AtomicU16>()
+                .write(AtomicU16::new(0));
         }
 
         debug!("created virtqueue: size={size}, pages={pages_needed}");
@@ -429,6 +439,40 @@ impl VirtQueue {
         // SAFETY: used ring 在 `_ring` 生命周期内有效；Acquire 与 device 的
         // used publication 配对，本方法不读取 ring payload。
         unsafe { (*self.used).idx.load(Ordering::Acquire) != self.last_used_idx }
+    }
+
+    /// 判断刚发表的 `added` 个描述符是否跨过设备要求的通知位置。
+    /// `event_index` 来自本队列所在设备的协商结果。调用者须串行化发表和本次检查。
+    pub(super) fn needs_available_notification(&self, added: u16, event_index: bool) -> bool {
+        // VirtIO §2.7.13.4：先让设备看见 available index，再读取设备的抑制状态。
+        fence(Ordering::SeqCst);
+        // SAFETY: used header 及其尾部 event word 均位于本队列固定页，event word 按 u16 对齐。
+        unsafe {
+            if event_index {
+                let event = self
+                    .used
+                    .cast::<u8>()
+                    .add(size_of::<VirtqUsed>() + usize::from(self.size) * size_of::<VirtqUsedElem>())
+                    .cast::<AtomicU16>();
+                self.avail_idx
+                    .wrapping_sub((*event).load(Ordering::Relaxed))
+                    .wrapping_sub(1)
+                    < added
+            } else {
+                (*self.used).flags.load(Ordering::Relaxed) & VIRTQ_USED_F_NO_NOTIFY == 0
+            }
+        }
+    }
+
+    /// 请求下一次 used 完成通知。仅在协商 EVENT_IDX 后调用，随后须重新读取 used index。
+    pub(super) fn arm_used_notification(&mut self) {
+        // SAFETY: 队列构造时初始化 avail 尾部的 u16 event word，当前锁下只有本驱动写它。
+        unsafe {
+            let event = self.avail.cast::<AtomicU16>().add(2 + usize::from(self.size));
+            (*event).store(self.last_used_idx, Ordering::Relaxed);
+        }
+        // 与设备发布 used index 后读取 used_event 配对。复查可见的完成不能等待下一次 IRQ。
+        fence(Ordering::SeqCst);
     }
 
     fn recycle_descriptors(&mut self, head: u16) -> Result<(), ()> {

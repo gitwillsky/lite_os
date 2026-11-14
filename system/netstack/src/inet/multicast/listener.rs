@@ -174,7 +174,7 @@ impl<A: GroupAddress> Listener<A> {
         self.general = None;
         self.specific = None;
     }
-    pub(in crate::inet) fn due(&self, now: u64) -> bool {
+    pub(in crate::inet) fn next_deadline(&self) -> Option<u64> {
         let change = match self.membership {
             Membership::Changing { at, .. } => at.deadline(),
             _ => None,
@@ -188,7 +188,7 @@ impl<A: GroupAddress> Listener<A> {
         ]
         .into_iter()
         .flatten()
-        .any(|at| at <= now)
+        .min()
     }
     /// 接收已经由协议校验的查询；None 为全组查询，来源仅用于本次报告合并。
     pub(in crate::inet) fn query(

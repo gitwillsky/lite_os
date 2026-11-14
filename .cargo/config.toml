@@ -5,5 +5,6 @@ LITEOS_BOOT_SCENE = { value = "assets/classic/boot-scene.lbs", relative = true }
 
 # 原生 MMU 使用 4 KiB 页；AArch64 链接器默认的 64 KiB 最大页会给每个启动 ELF 留下无用填充。
 # 这只约束 ELF 文件段的对齐，Image 的物理放置仍由原启动契约校验。
+# 原生 soft-float ABI 使用 RustCrypto 软件后端，AES/SHA 的 ARM 指令后端要求 NEON ABI。
 [target.aarch64-unknown-none-softfloat]
-rustflags = ["-C", "link-arg=-zmax-page-size=4096"]
+rustflags = ["-C", "link-arg=-zmax-page-size=4096", '--cfg=aes_backend="soft"', '--cfg=sha1_backend="soft"', '--cfg=sha2_backend="soft"']

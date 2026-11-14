@@ -42,7 +42,7 @@ fn control() -> Result<Arc<NetworkClient>, SocketError> {
 ///
 /// 分派线程、连接、初始域或监视线程创建失败：没有初始域就没有任何网络。
 pub(crate) fn init() {
-    EVENTS.call_once(|| EventHub::start().expect("network event hub"));
+    EVENTS.call_once(|| EventHub::start(None).expect("network event hub"));
     let client = Arc::new(connect().expect("netstack connection"));
     let initial = client
         .create_namespace(true)

@@ -1,59 +1,12 @@
 //! 原生双栈邻居的冻结读投影；不携带 Linux NUD 位、时钟节点或写权限。
 use crate::{SocketError, native_abi};
 use alloc::vec::Vec;
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use router_protocol::neighbors::ROW_BYTES as ROW;
+pub use router_protocol::neighbors::{Neighbor, NeighborState};
 
 pub(crate) const ORDINAL: u32 = 14;
 const VERSION: u32 = 3;
 const HEADER: usize = 8;
-const ROW: usize = 32;
-
-/// 已观察到的原生邻居可达状态，包含为网关选路保留的探测失败事实。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NeighborState {
-    Incomplete,
-    Reachable,
-    Stale,
-    Delay,
-    Probe,
-    Failed,
-}
-
-/// 一条邻居事实；逻辑接口标识与本族地址共同确定身份。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Neighbor {
-    /// 原生逻辑接口身份；非零 u32，不按应用 ABI 截断。
-    pub interface_index: u32,
-    /// 当前记录的对端地址，身份还需包含所在接口。
-    pub address: IpAddr,
-    /// 只由有效 ARP/ND 学习的单播 MAC；解析未完成时为 None。
-    pub hardware_address: Option<[u8; 6]>,
-    pub state: NeighborState,
-    /// 已接受的 IPv6 Router 位。IPv4 始终为 false。
-    pub is_router: bool,
-    /// 当前 INCOMPLETE/PROBE 阶段已成功发出的探测次数；其他状态为零。
-    pub probes: u8,
-}
-impl Neighbor {
-    fn valid(self) -> bool {
-        self.interface_index != 0
-            && match self.address {
-                IpAddr::V4(address) => !self.is_router
-                    && matches!(address.octets()[0], 1..=126 | 128..=223),
-                IpAddr::V6(address) => !address.is_unspecified() && !address.is_multicast()
-                    && !address.is_loopback() && address.to_ipv4_mapped().is_none(),
-            }
-            && matches!(
-                self.state,
-                NeighborState::Incomplete | NeighborState::Failed
-            ) == self.hardware_address.is_none()
-            && self
-                .hardware_address
-                .is_none_or(|mac| mac != [0; 6] && mac[0] & 1 == 0)
-            && (matches!(self.state, NeighborState::Incomplete | NeighborState::Probe)
-                || self.probes == 0)
-    }
-}
 
 /// 一次 NET guard 中冻结的完整邻居集合；单一字节存储可经 VMO 交接，dump 不再复制行列表。
 #[derive(Debug)]
@@ -82,35 +35,11 @@ impl NeighborSnapshot {
         bytes[4..8].copy_from_slice(&count.to_le_bytes());
         let mut written = 0;
         for row in rows {
-            if written == count as usize || !row.valid() {
+            if written == count as usize {
                 return Err(SocketError::Invalid);
             }
             let output = &mut bytes[HEADER + written * ROW..HEADER + (written + 1) * ROW];
-            output[..4].copy_from_slice(&row.interface_index.to_le_bytes());
-            output[4] = match row.state {
-                NeighborState::Incomplete => 0,
-                NeighborState::Reachable => 1,
-                NeighborState::Stale => 2,
-                NeighborState::Delay => 3,
-                NeighborState::Probe => 4,
-                NeighborState::Failed => 5,
-            };
-            output[5] = u8::from(row.is_router);
-            output[6] = row.probes;
-            output[7] = u8::from(row.hardware_address.is_some());
-            match row.address {
-                IpAddr::V4(address) => {
-                    output[8..12].copy_from_slice(&address.octets());
-                    output[30] = 4;
-                }
-                IpAddr::V6(address) => {
-                    output[8..24].copy_from_slice(&address.octets());
-                    output[30] = 6;
-                }
-            }
-            if let Some(mac) = row.hardware_address {
-                output[24..30].copy_from_slice(&mac);
-            }
+            output.copy_from_slice(&row.encode().map_err(|_| SocketError::Invalid)?);
             written += 1;
         }
         if written != count as usize {
@@ -131,7 +60,7 @@ impl NeighborSnapshot {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         for row in bytes[HEADER..].as_chunks::<ROW>().0 {
-            decode(row)?;
+            Neighbor::decode(row).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         }
         Ok(Self(bytes))
     }
@@ -153,42 +82,10 @@ impl NeighborSnapshot {
             return None;
         }
         Some(
-            decode(&self.0[HEADER + index * ROW..HEADER + (index + 1) * ROW])
+            Neighbor::decode(&self.0[HEADER + index * ROW..HEADER + (index + 1) * ROW])
                 .expect("immutable validated snapshot"),
         )
     }
-}
-fn decode(row: &[u8]) -> Result<Neighbor, native_abi::Status> {
-    let invalid = native_abi::ERR_INVALID_ARGS;
-    let state = match row[4] {
-        0 => NeighborState::Incomplete,
-        1 => NeighborState::Reachable,
-        2 => NeighborState::Stale,
-        3 => NeighborState::Delay,
-        4 => NeighborState::Probe,
-        5 => NeighborState::Failed,
-        _ => return Err(invalid),
-    };
-    if row[5] > 1 || row[7] > 1 || row[31] != 0 || row[7] == 0 && row[24..30] != [0; 6] {
-        return Err(invalid);
-    }
-    let address = match row[30] {
-        4 if row[12..24] == [0; 12] => IpAddr::V4(Ipv4Addr::from(<[u8; 4]>::try_from(&row[8..12]).expect("IPv4 width"))),
-        6 => IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&row[8..24]).expect("IPv6 width"))),
-        _ => return Err(invalid),
-    };
-    let result = Neighbor {
-        interface_index: u32::from_le_bytes(row[..4].try_into().expect("row width")),
-        address,
-        hardware_address: (row[7] == 1).then(|| row[24..30].try_into().expect("MAC width")),
-        state,
-        is_router: row[5] == 1,
-        probes: row[6],
-    };
-    if !result.valid() {
-        return Err(invalid);
-    }
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -240,7 +137,10 @@ mod tests {
         };
         let snapshot = NeighborSnapshot::capture([row, ipv4].into_iter()).unwrap();
         let encoded = snapshot.as_bytes();
-        assert_eq!(NeighborSnapshot::parse(encoded.to_vec()).unwrap().get(1), Some(ipv4));
+        assert_eq!(
+            NeighborSnapshot::parse(encoded.to_vec()).unwrap().get(1),
+            Some(ipv4)
+        );
         for offset in [5, 12, 31] {
             let mut bad = encoded.to_vec();
             bad[HEADER + ROW + offset] = 1;

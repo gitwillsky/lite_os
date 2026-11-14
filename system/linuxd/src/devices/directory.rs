@@ -109,7 +109,7 @@ fn wait_change(watch: &Event) -> Result<(), Status> {
 ///
 /// 目录在枚举完成前关闭（driver-host 失败），或事件分派/目录线程创建失败：没有设备无法继续启动。
 pub(crate) fn connect(channel: Channel) -> DeviceDirectory {
-    let hub = EventHub::start().expect("device event hub");
+    let hub = EventHub::start(None).expect("device event hub");
     let directory = DirectoryClient::new(channel);
     let watch = directory.watch().expect("device directory watch");
     let mut boot = None;

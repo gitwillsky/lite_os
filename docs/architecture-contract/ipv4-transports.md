@@ -4,7 +4,7 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 
 ## TCP 连接机制
 
-`libraries/tcp` 提供双栈纯连接机制，已接入产品 NET 的 IPv4/IPv6 TCP；产品与 host 均关闭旧库 TCP feature，没有备用实现。Linux IPv6 TCP、SACK 恢复与 MD5 认证已接通，TCP-AO 尚未提供。
+`libraries/tcp` 提供双栈连接机制，已接入产品 NET 的 IPv4/IPv6 TCP。产品和宿主夹具均关闭旧库的 TCP feature。Linux 双栈 TCP 支持 SACK 恢复、MD5 与 TCP-AO 认证。
 1. Context 由调用者提供同次冻结的路径 MTU、逻辑接口、选源及运输度量；初始序号由实际 tuple 的秘密 PRF 与时钟生成。机制不查询设备/FIB，不拥有系统时钟、秘密或授权。
 2. 连接唯一拥有序号、窗口、乱序重组和重传/关闭计时；MSS 缺省按族选择，路线 RTT seed 使用毫秒，不携带 Linux 缩放编码。绑定资格、地址族与链路 zone 的分派属于 NET。
 3. Segment 只捕获 packet-wire 的已校验值，输出也只经其 TCP codec；stream payload 借用已有环，发送回调成功才推进流序号。即时 ACK/reset 是 best-effort，不保留额外连接或端口身份。
@@ -12,9 +12,9 @@ Reno 静态调用，接收窗口只归连接；拥塞避免按已确认字节累
 RTO 按真实未确认量计算阈值，同一丢失序号的重复超时不再次减半；丢失窗口为一个 SMSS。实际发送历史只用于空闲重启，ACK/keepalive 不伪装成数据活动。
 流存储由调用者准备，接收固定四个乱序洞；没有新增锁、线程或全局状态。普通顺序收发不创建 SACK 存储；选择确认历史只属于同一连接，不是路由/就绪镜像。
 双族机制字节用例覆盖无 MSS 握手、SYN/数据丢失、输出背压重试、顺序数据恢复与 FIN/TIME_WAIT；实际 NET 夹具覆盖双栈装配与生命周期，均不替代 Linux ABI、协议互通或整机吞吐验收。
-认证 TLV 必须经密钥 owner 验证；MD5 配置、选择及签名见 [TCP 认证](tcp-authentication.md)，TCP-AO 尚未提供。固定来源见[标准基线](../standards-baseline/network.md#原生-tcp-机制)。
+认证 TLV 必须经密钥 owner 验证。MD5 和 TCP-AO 的配置、选钥与验签见 [TCP 认证](tcp-authentication.md)。固定来源见[标准基线](../standards-baseline/network.md#原生-tcp-机制)。
 benchmark 决策：复用既有 TCP 生产路径与每 handle 成本测量，最终整机吞吐仍待统一验收；当前组件用例不作为跨服务性能结论。
-NET 的 TcpHandle 直接拥有连接，不再在 SocketSet 保留 TCP 句柄；RAW 也由原生 endpoint 队列持有，旧表只以空集合满足链路库接口。普通 TCP 输入短路匹配实际节点并立即观察其状态，UDP 输入不扫描 TCP。
+NET 的 TcpHandle 直接拥有连接，RAW 由原生端点队列持有。普通 TCP 输入短路匹配实际节点并立即观察其状态，UDP 输入不扫描 TCP。
 每域启动时从 CPRNG 创建唯一 HMAC-SHA256 秘密；每次开连接用实际 tuple 的 PRF 加 4 微秒时钟生成初始序号。固定软件 SHA-256 避免服务未保存的可选 SIMD/FPU 状态，不增加逐包随机调用、分配或全局 key。
 输出复用真实 FIB、ARP 与 DMA token，直接用 packet-wire 编码并保留实际 checksum 卸载；提交失败不推进流序号。全域有界输出预算按 endpoint 轮转。
 输出等待只限制时钟独立唤醒，不阻止已有 poll 机会重新检查设备；协议安排的拥塞重试不能被外层等待延后。路径失败与本地拥塞仍由同一连接计时器裁决。
@@ -58,7 +58,7 @@ benchmark 决策：新增控制热路径使用紧凑半开区间，Update 对每
   保留 accept，SHUT_RD 停止监听并移除实际 child policy。disconnect 恢复原 bind，清除 shutdown，
   删除无需RST的transport；RST仅在唯一RouteReplies预算内保存实际payload，不保留handles、
   endpoint或port membership。queue_tcp_resets从actual socket一次消费tuple；无route/预算/OOM
-  best-effort丢弃，符合tcp_send_active_reset/__tcp_close，不恢复连接。新connect/listen复用
+  best-effort 丢弃。输出遍历只观察实际尝试发送的状态，并按身份移除已结束的 orphan。单次关闭直接回收本连接。新 connect/listen 复用
   同一facade slot；完整buffer准备失败保留原bind，没有reset专用orphan/node/端口借用。
   CLOSED shutdown 提交 read flag 后返回 ENOTCONN；INET façade 在 operation/stack guards 外
   直接发出 notification，SHUT_RD 不依赖不存在的 egress，已经阻塞的 reader 因而可以重查 EOF。
@@ -67,13 +67,16 @@ benchmark 决策：新增控制热路径使用紧凑半开区间，Update 对每
   SYN_RECV 不提前发布 Connected/完成 connect/POLLOUT。读关闭即时 EOF/RDHUP，两侧关闭即时
   HUP；这些投影不完成实际握手。该 flag 与 protocol FIN 的时序不同，不能由 `may_send()` 猜测。
 
-单物理 NIC 与 lo 的源码归属：NetworkStack.interfaces唯一持NetworkInterface（index/name、实际设备、
-smoltcp Interface及IPv4配置），boot只装配首张物理NIC；lo为真实IP-medium，不生成Ethernet/ARP。
-每域lo先完整准备固定256KiB ring、独立64KiB TX/RX scratch与metadata，最后才移交；
-新域初始DOWN/无地址，NETDEV_UP规则发表127.0.0.1/8。队列在actual protocol mutex下
-串行，RX先复制到独立预留scratch并释放queue borrow再进入可能立即回复的callback；
-TX拥塞按实际设备丢帧计数，原先队列不被覆盖，热路径不分配。library any_ip/self-router
-仅作已由kernel实际LOCAL route选择的lo queue解码机制，不在kernel RIB暴露外部default。
+`NetworkStack.interfaces` 独占接口标识、实际设备、IPv4 配置、邻居和组播状态。lo 直接收发 IP，无需 Ethernet 或 ARP。
+每域回环在发布前准备 256 KiB 载荷队列、64 条记录和 64 KiB 独立 RX 缓冲。UDP、RAW 与回环复用同一个有界队列实现。
+新域初始 DOWN 且无地址，启用回环时发表 127.0.0.1/8。RX 在调用协议处理前释放队列借用，允许处理过程立即发送回环回复。
+报文携带 FIB 选出的逻辑入接口。编码完成后才入队，背压与编码失败均不覆盖旧报文、触发抓包或重新调度。收发不新增分配。
+[Fuchsia 回环交付接口](https://fuchsia.googlesource.com/fuchsia/+/a36360769a4f36d4d152c69e19d22ba82fd274a5/src/connectivity/network/netstack3/core/device/src/loopback.rs)
+本机入口复用网卡批次已解码的 IPv4 首部；回环与重组报文沿同一准入分派。RAW 先观察合格报文，再交 ICMP、IGMP、TCP 或 UDP。反向选路只在 TCP 或组地址需选接收本地地址时执行。
+IPv4 FIB 将出口 MTU 与 `RouteMetrics` 交给本机收发路径。TCP 以绑定、标记和反向路径的 PMTU 决定收包上下文，沿用 FIB 的 MSS、接收窗口和初始 RTT。默认 MSS 按链路 MTU 推导。
+单播 Echo 回复使用原请求的目的地址作为源，保留标识、序号、载荷及 DSCP，回复使用基本 IPv4 首部与 Not-ECT。有效 UDP 无接收者或未知协议时可返回不可达，已由 RAW 接收及链路或 IP 广播/组播时抑制错误。
+回复沿有界队列、当前路由与 PMTU 发送。普通收包在准入分派层无需新分配；整机吞吐对比包含收包及控制回复负载。
+[RFC 1122 §3.2.2.6](https://www.rfc-editor.org/rfc/rfc1122.html#section-3.2.2.6)、[RFC 1812 §4.3.2.7](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.7)、[RFC 3168 §5](https://www.rfc-editor.org/rfc/rfc3168.html#section-5)
 实际IPv4 selector同时用于连接/发送准入和TCP egress，当前覆盖LOCAL/connected prefix/
 default gateway；绑定保存真实设备index。UDP/raw准入metadata固定出口，后续binding不
 重写旧队列；UDP 的 bound-device 在原生 owner、TCP 的绑定由原生连接筛选，RAW 同样在原生 owner 入队前过滤。TCP/UDP/RAW 各沿唯一 FIB 和实际队首选择出口，
@@ -82,9 +85,8 @@ default gateway；绑定保存真实设备index。UDP/raw准入metadata固定出
 completion预算，持续lo/eth0流量不饿死其他设备。配置/IFCONF/GETNAME/INDEX/MTU/
 SO_BINDTODEVICE getter查询实际设备，删除syscall eth0/index常量。raw创建按实际NET
 owning UserNS NET_RAW授权，普通NETLINK RAW不能按INET raw类型误授权。
-固定 smoltcp 的修改清单由 verify_smoltcp 管理，netstack 与 netstack-unit 使用相同 medium-ip features；
-原inventory不变，其余upstream文件仍禁止漂移。真实无NIC LO UDP/TCP握手/数据、独立
-双NIC frozen-oif/bound ingress/LOCAL source/weak-host SYN回归源码已写。
+协议计时复用 TCP 库的单调微秒类型，保持轮询截止、定时器取整和 TCP 重传语义。固定 smoltcp 只用于宿主测试的格式对照。
+宿主回归覆盖无 NIC 的 UDP/TCP 回环、发送窗口不足及多 NIC 的绑定和选路。整机吞吐验收继续覆盖回环和物理链路，需同时观察失败发送次数。
 route selector 使用同一 FIB 的 33 个 prefix AVL roots，查找不扫描全部 route records。
 NET、packet、uevent 捕获创建域；NEWNET publication 提供声明范围内的独立 transport/ports/lo。
 完整 Linux NETNS/veth/设备迁移不支持。
@@ -137,7 +139,7 @@ getter 不从某个 pending child 估计 parent 值。disconnect 按 native mems
 更新同一 guard，不能让 getter 与 SYN/数据出现两个值。源围栏覆盖握手捕获、真实分段与断开
 归属，并提供删去捕获/分段约束、篡改 cache、保留旧 cap 的负例。
 
-TCP lifecycle benchmark 复用完整实际 NetworkStack/原生 TCP/端口 owner 与 NIC boundary，既有 200ns hot-path 门禁分别测量实际 pending child 观察和 1024-handle 有界扫描的每 handle 成本；真实 RST wire/NIC poll 的分配与收包冷成本独立报告。
+TCP 生命周期 benchmark 测量待 accept 子连接、1024 个句柄的时钟与 RST 阶段，以及完整 NET 轮询。沿用每句柄 200 ns 热路径门禁。真实 RST 收包成本独立报告。
 未读数据的最后 OFD close 使用实际 tcp.abort，完整接收则 tcp.close，后续 orphan 保留直到真实协议退休。
 
 active connect 的原始 InetAddress bind identity 随 Connecting→TcpConnection 移交，不能与协议选择的 source address 混同。握手失败保留 Connecting 与一次终止事件，SO_ERROR/读写消费不重新生成；blocking connect 或再次 connect 完成该失
@@ -149,7 +151,7 @@ CLOSED 只保留真实句柄与状态，首次 connect/listen 才完整准备各
 活动连接、passive child 与补位 listener 保持原缓冲容量；已有打开准备路径完成延迟分配，不增加收发热路径分支。空闲端点每个少占 64 KiB，实际容量与 OOM 边界沿既有生命周期夹具覆盖。
 
 - UDP 的 tuple、端口租约、user_bind_locks/shutdown、实际 RX/TX queue 及 readiness 唯一属于 netstack::inet::udp；
-  NetworkStack.udp_endpoints 使用不复用的 ID，SocketSet 不再注册 UDP，产品及 host profile 均关闭库 socket-udp feature。
+  `NetworkStack.udp_endpoints` 使用不复用的 ID，唯一持有 UDP 端点及其接收状态。
   connect、解绑、shutdown、广播授权与绑定精确化仍沿相同端口 owner；队列、PEEK、截断、EOF 与旧 TX source/oif/TTL 保持原语义。
 - IP 层完成本地目的与 IP 校验后，原生 UDP 使用 packet-wire 校验长度与 checksum；只有真实硬件验证可省略求和，RAW 仍获得原 IP bytes。
   单播按 exact/peer/实际绑定顺序选择一个 endpoint，广播交付所有匹配者；接收队列满不产生错误 ICMP port unreachable。
@@ -200,16 +202,14 @@ receive_limit，未实现的send budget仍返回EOPNOTSUPP，不能只修改gett
 ### actual interface MTU
 
 ProtocolDevice的实际Ethernet/lo对象唯一拥有配置L3 MTU；InterfaceState不新增镜像。
-configure_mtu在已捕获NET protocol guard内准入native设备上下界、改actual值并刷新同一
-vendor Interface的derived capabilities。snapshot/packet准入/device TxToken使用同一值，
+`configure_mtu` 在所属 NET guard 内检查设备允许的上下界，并修改实际设备值。接口快照、分段、报文准入和发送预留使用同一值，
 RX scratch和物理DMA storage仍为硬件最大容量，缩小MTU不改变已有已排队frame的存储。
-Ethernet帧最大长度冻结为当前L3+14，lo inject使用actual L3；库分段使用同步caps。
+Ethernet 发送帧上限是当前 L3 MTU 加链路头长度，回环使用实际 L3 MTU。
 MTU低于68时销毁同一IPv4地址/broadcast及实际FIB成员，setaddr返回ENOBUFS；增长仅恢复
 IPv4能力，不恢复地址。lo UP首次创建默认地址也检查actual MTU达到68；native重新DOWN→UP
 发表127/8。既有OFD仍路由原NET，新getter无硬编码1500，setter不再只允许原值。
 
-新增状态只是actual设备的一个usize，不增加hot锁、global或allocation；caps刷新属于冷配置
-事务，沿用实际TCP/UDP/packet benchmark。真实不同NIC MTU/packet frame长度/SYN MSS及
+修改设备 MTU 属于冷配置事务，沿用实际 TCP/UDP/packet benchmark。真实不同 NIC MTU、帧长度、SYN MSS 及
 lo 512→0→65536收发/地址退休host/nativeguest与negative围栏已写。
 IPv4 UDP/RAW 路径 MTU 与分片行为见[发送契约](#ipv4-主机分片发送)。多地址与设备迁移仍需补齐。
 
@@ -243,6 +243,9 @@ IpRouteContext只在本次active-open/egress/RX guard有效，reverse route提�
 route RTT只在握手完成seed首个data RTO，不伪造srtt采样。pure maintain先于route/NIC筛选，
 无route/设备DOWN不阻止timeout与60秒TIMEWAIT退休；真实FailureReason产生一次ETIMEDOUT，
 退休保留queued RX/FIN。无新锁/global/unsafe/分配；沿用实际TCP每slot成本门禁。
+普通输出先根据 TCP 实际状态判断是否可能需要路径。空闲连接跳过选路，延迟确认与探测到期后才尝试输出。
+存在待发或在途序号时仍检查当前路径，保留 PMTU 下降后的及时重分段。发送 MSS 在输出路径选定后更新。
+整机测量大量空闲连接与少量活跃连接同时转发时的 FIB 查询次数、域锁占用和输入延迟。
 规范依据同一固定Linux commit的
 [`rtentry_to_fib_config`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/fib_frontend.c)、
 [`ip_metrics_convert`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/metrics.c)、
@@ -381,7 +384,7 @@ benchmark 决策：泛型机制没有运行时分派，来源保留各自地址�
 - UDP 分片在实际需要时计算并保存一次完整 checksum；元数据和载荷发布后不可变，后续片/背压不重复扫描完整数据。
   第一片包含 UDP header，后续片直接借用原载荷区间；普通报文继续请求 NIC checksum 卸载，最终 adapter 自己安装伪头种子。
   multicast 回送仍只交付一次完整包；物理分片不会把本机回送重放成多份数据报。
-- `ProtocolDevice::reserve` 返回真实 reservation 错误；标准 Device 的 Option 适配不决定原生发送成败。
+- `ProtocolDevice::reserve` 返回真实 reservation 错误，只有物理网卡可声明传输层校验和卸载。编码器只使用已取得的发送窗口。
   `transmit_ipv4`/`transmit_ipv6` 共用最终 Ethernet/IP commit；IPv4 仍借用唯一 ARP owner，IPv6 借用唯一 ND owner。
   只有实际提交成功才推进游标，WouldBlock 保留队首/同一 ID，硬错误退休报文并沿原设备诊断及丢包计数处理。
   旧库 dispatch_ipv4_packet/parts 已无调用方并移除，不能保留只观察编码完成的另一条原生发送入口。

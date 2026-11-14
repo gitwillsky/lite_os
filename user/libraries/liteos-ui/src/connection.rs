@@ -150,7 +150,7 @@ impl Connection {
                 message: "UI text query failed".into(),
             });
         }
-        if length > 16 * 1024 * 1024 {
+        if length > abi::MAX_TEXT_BYTES {
             return Err(Error {
                 code: abi::INVALID,
                 message: "UI text is too large".into(),

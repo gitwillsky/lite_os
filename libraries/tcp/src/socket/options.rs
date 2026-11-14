@@ -7,9 +7,15 @@ impl<'a> Socket<'a> {
     }
 
     /// Select the output header required by the current endpoint key policy.
-    /// The caller must supply the same selected key to Segment::emit_md5; no key is stored here.
-    pub fn set_md5(&mut self, enabled: bool) {
-        self.md5 = enabled;
+    /// The caller supplies the key when encoding each output segment.
+    pub fn set_authentication(&mut self, authentication: Authentication) {
+        self.authentication = authentication;
+    }
+
+    /// Return SND.UNA and RCV.NXT for authentication sequence checkpoints.
+    /// Only use RCV.NXT after a peer SYN establishes its sequence space.
+    pub fn authentication_checkpoints(&self) -> (TcpSeqNumber, TcpSeqNumber) {
+        (self.local_seq_no, self.remote_seq_no + self.rx_buffer.len())
     }
 
     /// actual bound-device mechanism的只读投影，供出口route选择。
@@ -42,6 +48,7 @@ impl<'a> Socket<'a> {
             user_timeout: None,
             pending_since: None,
             retransmits: 0,
+            total_retransmissions: 0,
             zero_window_probes: 0,
             zero_window_since: None,
             orphaned: false,
@@ -82,7 +89,7 @@ impl<'a> Socket<'a> {
             remote_win_shift: rx_cap_log2.saturating_sub(16) as u8,
             remote_win_scale: None,
             remote_has_sack: false,
-            md5: false,
+            authentication: Authentication::None,
             remote_mss: DEFAULT_MSS,
             remote_last_ts: None,
             local_rx_last_ack: None,
@@ -106,6 +113,37 @@ impl<'a> Socket<'a> {
     /// Return whether TCP Timestamp is enabled.
     pub fn timestamp_enabled(&self) -> bool {
         self.tsval_generator.is_some()
+    }
+
+    /// 冻结发送估计器的 RTO、平滑 RTT 和 RTT 偏差，单位为微秒。
+    /// 尚未采样时 RTT 与偏差为零。
+    pub fn round_trip_times(&self) -> [u32; 3] {
+        [self.rtte.rto, self.rtte.srtt, self.rtte.rttvar].map(|millis| millis.saturating_mul(1000))
+    }
+
+    /// 返回当前发送窗口和慢启动阈值，以拥塞控制实际使用的段大小为单位。
+    /// 阈值缺席时仍处于无阈值的初始慢启动。
+    pub fn congestion_windows(&self) -> (u32, Option<u32>) {
+        self.congestion_controller.windows()
+    }
+
+    /// 累计成功提交的重传段数与当前连续超时次数。
+    pub fn retransmissions(&self) -> (u32, u8) {
+        (self.total_retransmissions, self.retransmits)
+    }
+
+    /// 返回协商的 SACK 支持以及收发窗口缩放值。窗口缩放缺席时返回 None。
+    pub fn peer_window_options(&self) -> (bool, Option<[u8; 2]>) {
+        (
+            self.remote_has_sack,
+            self.remote_win_scale
+                .map(|scale| [scale, self.remote_win_shift]),
+        )
+    }
+
+    /// 返回握手选定的本地接收 MSS 广告。
+    pub fn advertised_mss(&self) -> Option<usize> {
+        self.advertised_mss
     }
 
     /// Return the timeout duration.
@@ -278,7 +316,7 @@ impl<'a> Socket<'a> {
         // RFC 6691: the peer's MSS excludes options, whereas the payload limit does not.
         self.send_mss.saturating_sub(TcpRepr::data_option_space(
             self.tsval_generator.is_some(),
-            self.md5,
+            self.authentication,
         ))
     }
 

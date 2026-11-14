@@ -1,5 +1,6 @@
 //! 主动 TCP 打开与失败完成；实际端口、绑定和机制同一事务发布。
 use super::*;
+use network_protocol::InetProtocol;
 
 /// 通过唯一 interface context 启动 active TCP handshake。
 ///
@@ -116,18 +117,48 @@ pub(in crate::inet) fn connect(
         .map(|lease| network.tcp_ports.prepare_readdress(lease, binding))
         .transpose()
         .map_err(port_error)?;
-    let new_lease = if bound.is_none() {
-        Some(
-            network
-                .tcp_ports
-                .acquire_ephemeral(binding, reuse_address)
-                .map_err(port_error)?,
-        )
-    } else {
-        None
+    let new_lease = {
+        let NetworkStack {
+            tcp_ports,
+            forwarding,
+            ..
+        } = &mut *network;
+        let available = |port| {
+            !forwarding.local_tuple_taken(
+                InetProtocol::Tcp,
+                (InetAddress::new(route.source, port), peer),
+                timestamp,
+            )
+        };
+        if let Some(local) = bound {
+            if !available(local.port()) {
+                return Err(SocketError::AddressInUse);
+            }
+            None
+        } else {
+            Some(
+                tcp_ports
+                    .acquire_ephemeral_matching(binding, reuse_address, available)
+                    .map_err(port_error)?,
+            )
+        }
     };
     let local =
         bound.unwrap_or_else(|| unspecified(family, new_lease.expect("unbound TCP port").port()));
+    let ao = match AoConnection::prepare(
+        &network.tcp_endpoints[&id].ao_keys,
+        core::net::SocketAddr::new(route.source, local.port()),
+        core::net::SocketAddr::new(destination, peer.port()),
+        route.logical_interface_index,
+    ) {
+        Ok(connection) => connection,
+        Err(error) => {
+            if let Some(lease) = new_lease {
+                network.tcp_ports.release(lease);
+            }
+            return Err(error);
+        }
+    };
     let NetworkStack {
         tcp_endpoints,
         syn_sequence_key,
@@ -149,7 +180,13 @@ pub(in crate::inet) fn connect(
     );
     {
         let entry = &mut state.handles[0];
-        entry.transport.set_md5(entry.md5.is_some());
+        entry.transport.set_authentication(if ao.is_some() {
+            transport::Authentication::Ao
+        } else if entry.md5.is_some() {
+            transport::Authentication::Md5
+        } else {
+            transport::Authentication::None
+        });
     }
     state.handles[0].transport.set_bound_interface(device);
     if state.handles[0]
@@ -171,6 +208,12 @@ pub(in crate::inet) fn connect(
             network.tcp_ports.release(lease);
         }
         return Err(SocketError::AddressNotAvailable);
+    }
+    let entry = &mut state.handles[0];
+    entry.ao = ao;
+    if let Some(connection) = &mut entry.ao {
+        entry.md5 = None;
+        connection.start(&entry.transport);
     }
     if destination.is_ipv6() {
         state.handles[0]
@@ -197,7 +240,7 @@ pub(in crate::inet) fn connect(
     state.pending_error = None;
     state.port_lease = Some(lease);
     drop(network);
-    crate::worker::request_poll();
+    crate::worker::request_poll(socket.namespace.id());
     Err(SocketError::InProgress)
 }
 

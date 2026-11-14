@@ -16,6 +16,7 @@ mod send_preflight;
 use send_memory::{SendMemoryState, SenderCharge};
 mod readiness;
 mod receive;
+pub(crate) use receive::UnixReply;
 mod shutdown;
 use datagram_queue::DatagramQueue;
 mod lifecycle;

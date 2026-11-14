@@ -16,9 +16,7 @@ impl<'a> Ipv4Packet<'a> {
     /// 截断、版本/IHL/选项/分片格式非法或 header checksum 错误。
     pub fn parse(bytes: &'a [u8]) -> Result<Self, PacketError> {
         let packet = Self::parse_header(bytes)?;
-        if checksum::checksum(&packet.bytes[..packet.header]) != 0 {
-            return Err(PacketError::Checksum);
-        }
+        packet.check_header_checksum()?;
         Ok(packet)
     }
     /// 只检查头部、选项、总长度与分片结构，不检查校验和；协议接收仍须独立完成校验。
@@ -29,6 +27,19 @@ impl<'a> Ipv4Packet<'a> {
         let (header, total) = checked_header(bytes)?;
         let bytes = bytes.get(..total).ok_or(PacketError::Truncated)?;
         Ok(Self { bytes, header })
+    }
+    /// 校验已检查结构的 IPv4 头。
+    /// # Errors
+    /// 头校验和无效时返回 Checksum。
+    pub fn check_header_checksum(self) -> Result<(), PacketError> {
+        if checksum::checksum(&self.bytes[..self.header]) == 0 {
+            Ok(())
+        } else {
+            Err(PacketError::Checksum)
+        }
+    }
+    pub(crate) fn from_checked_bounds(bytes: &'a [u8], header: usize) -> Self {
+        Self { bytes, header }
     }
     /// 已排除链路 padding 的完整 IP 数据。
     pub fn bytes(self) -> &'a [u8] {
@@ -57,6 +68,21 @@ impl<'a> Ipv4Packet<'a> {
     /// 剩余 TTL；0/1 的处理由本机接收或转发策略决定。
     pub fn hop_limit(self) -> u8 {
         self.bytes[8]
+    }
+    /// 从已校验头 checksum 的报文复制固定头，递减 TTL 并增量更新 checksum。
+    /// 带选项或 TTL 不足以转发时返回 `None`，由调用方处理选项或报告超时。
+    pub fn forwarded_base_header(self) -> Option<[u8; 20]> {
+        if self.header != 20 || self.hop_limit() <= 1 {
+            return None;
+        }
+        let mut header: [u8; 20] = self.bytes[..20].try_into().expect("validated base header");
+        header[8] -= 1;
+        // RFC 1624 Eq. 3：TTL 减一对应线上 16 位字减 0x0100。
+        // 增量和到达 0xffff 时也要回卷，使结果与重新计算所得的零相同。
+        let sum = u32::from(u16::from_be_bytes([header[10], header[11]])) + 0x0100;
+        let checksum = (sum + u32::from(sum >= u32::from(u16::MAX))) as u16;
+        header[10..12].copy_from_slice(&checksum.to_be_bytes());
+        Some(header)
     }
     /// 是否仍需重组（MF 或非零 fragment offset）。
     pub fn fragmented(self) -> bool {

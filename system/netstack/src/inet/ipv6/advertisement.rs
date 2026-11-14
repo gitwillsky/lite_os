@@ -76,14 +76,18 @@ impl Advertiser {
         self.dns_expires = now.saturating_add(u64::from(lifetime) * 1000);
     }
 
-    pub(super) fn due(&self, now: u64, source_ready: impl FnOnce() -> bool) -> bool {
-        let deadline_due = self
-            .next
-            .is_some_and(|next| next.deadline().is_some_and(|deadline| deadline <= now));
+    pub(super) fn next_deadline(
+        &self,
+        now: u64,
+        source_ready: impl FnOnce() -> bool,
+    ) -> Option<u64> {
         if self.joined || self.needs_withdrawal() {
-            (self.next.is_none() || deadline_due) && source_ready()
+            if !source_ready() {
+                return None;
+            }
+            self.next.map_or(Some(now), SendTime::deadline)
         } else {
-            deadline_due
+            self.next.and_then(SendTime::deadline)
         }
     }
 }

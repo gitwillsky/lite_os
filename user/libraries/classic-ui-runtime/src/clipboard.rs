@@ -53,6 +53,9 @@ impl Context {
         if !node.editing_text() {
             return Err(io::Error::other("not an editor"));
         }
+        if node.state & abi::state::READ_ONLY != 0 && command != 2 {
+            return Ok(());
+        }
         if command == 3 {
             if self.pastes.len() >= 8 {
                 return Err(io::ErrorKind::WouldBlock.into());
@@ -117,7 +120,7 @@ impl Context {
             .get(&paste.window)
             .and_then(|host| host.controls().ok())
             .and_then(|tree| tree.nodes.get(&paste.node))
-            .is_some_and(|node| node.editing_text());
+            .is_some_and(|node| node.editing_text() && node.state & abi::state::READ_ONLY == 0);
         if !live {
             self.watches.remove(&id);
             return true;

@@ -54,7 +54,7 @@ fn invalid(message: &str) -> io::Error {
 }
 // SAFETY: 所有调用均来自 Api 的 unsafe 指针契约；长度与空指针先检查，字节在 ABI 返回前复制。
 unsafe fn text(value: Text) -> io::Result<String> {
-    if value.len > 16 * 1024 * 1024 || (value.len != 0 && value.data.is_null()) {
+    if value.len > abi::MAX_TEXT_BYTES || (value.len != 0 && value.data.is_null()) {
         return Err(invalid("invalid text span"));
     }
     let bytes = if value.len == 0 {

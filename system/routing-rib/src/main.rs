@@ -6,13 +6,17 @@
 //! 2. 预备租约排斥来源变化；NET 确认后才交换不可变来源，不复制 NET 事务阶段。
 //! 3. 执行实例退出或确认结果不确定时退出本实例，由配置 owner 重放持久决定。
 extern crate alloc;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use native_runtime::{
     Channel, Event, Handle, Port, Startup,
     native_abi::{self, Status, signals},
     sync::Mutex,
 };
 use network_protocol::{NetworkClient, NetworkInstaller, RemoteNamespace};
+use router_protocol::configuration::Name;
 use routing_rib::sources::{PreparedRoutes, Routes};
 use service_directory::ServiceDirectory;
 
@@ -41,6 +45,26 @@ struct Rib {
     source_changes: Event,
 }
 impl Rib {
+    fn new(installer: NetworkInstaller, network: RemoteNamespace) -> Result<Arc<Self>, Status> {
+        let mut routes = Routes::default();
+        let configuration_source = routes.reserve_source()?;
+        Arc::try_new(Self {
+            released: Event::create()?,
+            source_changes: Event::create()?,
+            installer,
+            network,
+            state: Mutex::new(State {
+                routes,
+                configuration_source,
+                watchers: Vec::new(),
+                pending: None,
+                next: 0,
+                sources: Vec::new(),
+            }),
+        })
+        .map_err(|_| native_abi::ERR_NO_MEMORY)
+    }
+
     fn facts(&self) -> Result<routing_rib::sources::Facts, Status> {
         // 调用者持有唯一 RIB 写租约/状态锁，逻辑配置不会在两次查询间改变；物理变化仍由 NET 预备核对。
         let error = |error| match error {
@@ -59,7 +83,10 @@ impl Rib {
         configuration: network_protocol::routing::Configuration<'_>,
         policy: network_protocol::ExecutionPolicy<'_>,
     ) -> Result<(Routes, network_protocol::PreparedConfiguration), Status> {
-        let facts = self.facts()?;
+        let mut facts = self.facts()?;
+        if let Some(ports) = policy.bridges {
+            facts.project_bridges(ports)?;
+        }
         let mut plans = Vec::new();
         plans
             .try_reserve_exact(configuration.interfaces().iter().len())
@@ -90,10 +117,7 @@ impl Rib {
             state
                 .routes
                 .prepare_configuration(&facts, &plans, &replacement, admission, tables)?;
-        Ok((
-            next,
-            self.installer.prepare_configuration(encoded, policy)?,
-        ))
+        Ok((next, self.installer.prepare_configuration(encoded, policy)?))
     }
 
     fn refresh(&self) -> Result<RecomputeWork, Status> {
@@ -116,7 +140,9 @@ impl Rib {
             state
                 .routes
                 .prepare_sources(&self.facts()?, None, &removed)?;
-        let execution = self.installer.prepare_configuration(encoded, network_protocol::ExecutionPolicy::default())?;
+        let execution = self
+            .installer
+            .prepare_configuration(encoded, network_protocol::ExecutionPolicy::default())?;
         if execution.activate().is_err() {
             let _ = execution.abort();
             return Err(native_abi::ERR_BAD_STATE);
@@ -154,21 +180,107 @@ impl Rib {
         Ok(client)
     }
 }
-struct Controller(Arc<Rib>);
+impl Drop for Rib {
+    fn drop(&mut self) {
+        // 观察线程只持 Weak；最后一个配置或来源能力关闭后唤醒它退出。
+        let _ = self.released.signal(0, signals::USER_0);
+    }
+}
+
+// OWNER: 名称只索引仍被配置、来源或事务能力持有的 RIB；不保存路由数据或保活空域。
+struct Domains(Mutex<fallible_tree::FallibleMap<Name, Weak<Rib>>>);
+
+struct Controller(Arc<Rib>, Option<Arc<Domains>>);
+impl Controller {
+    fn serve(self, channel: Channel) -> Result<(), Status> {
+        service_rpc::serve(
+            channel,
+            1,
+            b"rib-configuration",
+            Arc::try_new(
+                move |ordinal,
+                      request: &mut service_rpc::Reader<'_>,
+                      handles,
+                      reply: &mut service_rpc::Writer| {
+                    network_protocol::routing::dispatch_routing_configuration(
+                        &self, ordinal, request, handles, reply,
+                    )
+                },
+            )
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+        )
+    }
+}
 impl network_protocol::routing::RoutingConfigurationService for Controller {
-    fn firewall_counters(&self, cursor: router_protocol::firewall::counters::Cursor) -> Result<Vec<u8>, Status> {
+    fn set_forwarding_cpus(&self, mask: u64) -> Result<(), Status> {
+        if self.1.is_none() {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        self.0.installer.set_forwarding_cpus(mask)
+    }
+
+    fn open_routing_domain(&self, name: Name) -> Result<(Channel, Channel), Status> {
+        let directory = self.1.as_ref().ok_or(native_abi::ERR_ACCESS_DENIED)?;
+        let rib = {
+            let mut domains = directory.0.lock();
+            if let Some(rib) = domains.get(&name).and_then(Weak::upgrade) {
+                rib
+            } else {
+                domains.retain(|_, rib| rib.strong_count() != 0);
+                let (installer, network) = self.0.installer.open_routing_domain(&name)?;
+                let rib = Rib::new(installer, network)?;
+                let (port, changes) = watch_port(&rib)?;
+                let weak = Arc::downgrade(&rib);
+                drop(native_runtime::thread::spawn(b"rib-domain", move || {
+                    if let Err(status) = watch_changes(weak, port, changes) {
+                        native_runtime::warn!("routing-rib: domain observer stopped: {status}");
+                    }
+                })?);
+                domains
+                    .try_insert(name, Arc::downgrade(&rib))
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                rib
+            }
+        };
+        let network = rib.network.channel().duplicate(native_abi::rights::SAME)?;
+        let (client, server) = Channel::create()?;
+        Controller(rib, None).serve(server)?;
+        Ok((client, network))
+    }
+
+    fn project_bridges(
+        &self,
+        ports: router_protocol::switching::Ports<'_>,
+        plans: router_protocol::interface::InterfaceConfigurationBatch<'_>,
+    ) -> Result<Vec<u8>, Status> {
+        self.0.installer.project_bridges(ports, plans)
+    }
+
+    fn firewall_counters(
+        &self,
+        cursor: router_protocol::firewall::counters::Cursor,
+    ) -> Result<Vec<u8>, Status> {
         self.0.installer.firewall_counters(cursor)
     }
 
-    fn connection_changes(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Vec<u8>, Status> {
+    fn connection_changes(
+        &self,
+        cursor: router_protocol::connections::changes::Cursor,
+    ) -> Result<Vec<u8>, Status> {
         self.0.installer.connection_changes(cursor)
     }
 
-    fn arm_connection_watch(&self, cursor: router_protocol::connections::changes::Cursor) -> Result<Option<Event>, Status> {
+    fn arm_connection_watch(
+        &self,
+        cursor: router_protocol::connections::changes::Cursor,
+    ) -> Result<Option<Event>, Status> {
         self.0.installer.arm_connection_watch(cursor)
     }
 
-    fn clear_connection(&self, identity: router_protocol::connections::Identity) -> Result<(), Status> {
+    fn clear_connection(
+        &self,
+        identity: router_protocol::connections::Identity,
+    ) -> Result<(), Status> {
         self.0.installer.clear_connection(identity)
     }
 
@@ -182,16 +294,30 @@ impl network_protocol::routing::RoutingConfigurationService for Controller {
     ) -> Result<(Channel, Event), Status> {
         self.0.track(queries, None)
     }
-    fn open_source(&self, grant: network_protocol::routing::Grant) -> Result<Channel, Status> {
-        self.0.open_source(grant)
+    fn open_source(
+        &self,
+        grant: network_protocol::routing::Grant,
+    ) -> Result<(Channel, Channel), Status> {
+        let network = self
+            .0
+            .network
+            .channel()
+            .duplicate(native_abi::rights::SAME)?;
+        Ok((self.0.open_source(grant)?, network))
     }
     fn install_device(
         &self,
         id: u64,
+        domain: Option<Name>,
         description: Vec<u8>,
         handles: Vec<Handle>,
     ) -> Result<(u32, Channel, native_runtime::Event), Status> {
-        self.0.installer.install_device(id, &description, handles)
+        if self.1.is_none() {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        self.0
+            .installer
+            .install_device(id, domain.as_ref(), &description, handles)
     }
     fn prepare_configuration(
         &self,
@@ -217,23 +343,32 @@ enum RecomputeWork {
     Retry(i64),
 }
 
-fn watch_changes(rib: &Rib) -> Result<(), Status> {
+const ROUTING_INPUTS: u32 = NetworkInstaller::TOPOLOGY_CHANGED | NetworkInstaller::GATEWAYS_CHANGED;
+
+fn watch_port(rib: &Rib) -> Result<(Port, Event), Status> {
     let port = Port::create()?;
     let changes = rib.installer.watch_routing_inputs()?;
-    let routing_inputs = NetworkInstaller::TOPOLOGY_CHANGED | NetworkInstaller::GATEWAYS_CHANGED;
     rib.installer
         .channel()
         .wait_async(&port, 0, signals::PEER_CLOSED)?;
-    changes.wait_async(&port, 1, routing_inputs)?;
+    changes.wait_async(&port, 1, ROUTING_INPUTS)?;
     rib.released.wait_async(&port, 2, signals::USER_0)?;
     rib.source_changes.wait_async(&port, 3, signals::USER_0)?;
+    Ok((port, changes))
+}
+
+fn watch_changes(rib: Weak<Rib>, port: Port, changes: Event) -> Result<(), Status> {
     let mut work = RecomputeWork::Retry(native_runtime::system::monotonic());
     loop {
         let deadline = match work {
             RecomputeWork::Retry(deadline) => deadline,
             _ => native_abi::DEADLINE_INFINITE,
         };
-        match port.wait(deadline) {
+        let packet = port.wait(deadline);
+        let Some(rib) = rib.upgrade() else {
+            return Ok(());
+        };
+        match packet {
             Ok(packet) if packet.key == 0 => return Err(native_abi::ERR_PEER_CLOSED),
             Ok(packet) => {
                 if packet.status != native_abi::OK {
@@ -242,8 +377,8 @@ fn watch_changes(rib: &Rib) -> Result<(), Status> {
                 match packet.key {
                     1 => {
                         // clear -> arm -> snapshot：计算期间的新变化仍留在 port，不把合并事件当作变化历史。
-                        changes.signal(routing_inputs, 0)?;
-                        changes.wait_async(&port, 1, routing_inputs)?;
+                        changes.signal(ROUTING_INPUTS, 0)?;
+                        changes.wait_async(&port, 1, ROUTING_INPUTS)?;
                         work = RecomputeWork::Retry(native_runtime::system::monotonic());
                     }
                     2 => {
@@ -293,24 +428,11 @@ fn run(startup: &mut Startup) -> Result<(), Status> {
     let installer = NetworkInstaller::new(services.connect(service_directory::NETWORK_INSTALLER)?);
     let network =
         NetworkClient::new(services.connect(service_directory::NETWORK)?).create_namespace(true)?;
-    let mut routes = Routes::default();
-    let configuration_source = routes.reserve_source()?;
-    let rib = Arc::try_new(Rib {
-        released: Event::create()?,
-        source_changes: Event::create()?,
-        installer,
-        network,
-        state: Mutex::new(State {
-            routes,
-            configuration_source,
-            watchers: Vec::new(),
-            pending: None,
-            next: 0,
-            sources: Vec::new(),
-        }),
-    })
-    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let rib = Rib::new(installer, network)?;
+    let (port, changes) = watch_port(&rib)?;
     let controller = rib.clone();
+    let domains = Arc::try_new(Domains(Mutex::new(fallible_tree::FallibleMap::new())))
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     service_directory::serve_directory(
         outgoing,
         b"rib-outgoing",
@@ -318,31 +440,11 @@ fn run(startup: &mut Startup) -> Result<(), Status> {
             if protocol != service_directory::ROUTING_CONFIGURATOR {
                 return Err(native_abi::ERR_NOT_FOUND);
             }
-            let controller = Controller(controller.clone());
-            service_rpc::serve(
-                channel,
-                1,
-                b"rib-configuration",
-                Arc::try_new(
-                    move |ordinal,
-                          request: &mut service_rpc::Reader<'_>,
-                          handles,
-                          reply: &mut service_rpc::Writer| {
-                        network_protocol::routing::dispatch_routing_configuration(
-                            &controller,
-                            ordinal,
-                            request,
-                            handles,
-                            reply,
-                        )
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )
+            Controller(controller.clone(), Some(domains.clone())).serve(channel)
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     native_runtime::info!("routing-rib ready");
     // NET 退出后旧接口身份全部失效；不把上一实例的来源投递到新实例。
-    watch_changes(&rib)
+    watch_changes(Arc::downgrade(&rib), port, changes)
 }

@@ -1,9 +1,9 @@
 use alloc::{sync::Weak, vec::Vec};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV6};
-use network_protocol::{InetAddress, InetFamily};
+use network_protocol::{InetAddress, InetFamily, TcpInformation, TcpPhase};
 
 use ::tcp::{self as transport, Endpoint as IpEndpoint, ListenEndpoint as IpListenEndpoint, State};
-use smoltcp::time::Instant;
+use ::tcp::time::Instant;
 
 use fallible_tree::FallibleMap;
 
@@ -13,7 +13,9 @@ use super::{
 };
 
 mod accept;
+mod ao;
 mod authentication;
+use ao::{AoConnection, AoPolicy};
 use authentication::{Binding, SharedKeys};
 mod connect;
 pub(super) use connect::{connect, connection_result};
@@ -21,15 +23,13 @@ mod io;
 mod lifecycle;
 mod storage;
 pub(super) use accept::accept;
-pub(super) use io::{
-    maintain, maintain_clocks, poll_state, reap_orphans, receive, send, shutdown, take_error,
-};
+pub(super) use io::{poll_state, receive, send, shutdown, take_error};
 pub(super) use lifecycle::{disconnect, drop_endpoint};
 use storage::{allocate_socket, placeholder_socket};
 mod packet;
 mod path;
-pub(super) use packet::{ingress, ingress_ipv6, match_too_big};
-use path::{Path, at};
+pub(super) use packet::{ingress, ingress_ipv6, receive_icmp_error};
+use path::Path;
 pub(super) use path::{SequenceKey, sequence_key};
 
 const TCP_BACKLOG_MAX: usize = 16;
@@ -130,6 +130,7 @@ impl TcpConnection {
 struct PassivePolicy {
     options: InetSocketOptions,
     md5_keys: SharedKeys,
+    ao_keys: AoPolicy,
     connection: TcpConnection,
     pending_error: Option<SocketError>,
     // OWNER: 通常借 parent 覆盖；parent 改设备前转为独立 membership，accept 移交而非复制。
@@ -141,6 +142,7 @@ struct TcpHandle {
     transport: transport::Socket<'static>,
     passive: Option<PassivePolicy>,
     md5: Option<Binding>,
+    ao: Option<alloc::boxed::Box<AoConnection>>,
     // OWNER: 本机制的最早输出重试时间；设备/邻居背压不能让持续 writable 的流忙轮询，实际事件可以提前重试。
     transmit_at: Instant,
 }
@@ -150,7 +152,14 @@ impl TcpHandle {
             transport,
             passive: None,
             md5: None,
+            ao: None,
             transmit_at: Instant::from_millis(0),
+        }
+    }
+
+    fn retire_ao(&mut self) {
+        if self.transport.state() == State::Closed && self.transport.remote_endpoint().is_none() {
+            self.ao = None;
         }
     }
 }
@@ -161,6 +170,8 @@ pub(super) struct TcpEndpointState {
     /// 只在释放 stack lock 后用于 readiness notification 的 OFD-facing 弱引用。
     pub(super) endpoint: Weak<InetSocket>,
     handles: Vec<TcpHandle>,
+    // 下次从哪条连接开始发送。短轮次反复从首条连接开始会饿死同一监听端的其他连接。
+    output_handle: usize,
     mode: TcpMode,
     pending_error: Option<SocketError>,
     pub(super) port_lease: Option<PortLease>,
@@ -170,6 +181,8 @@ pub(super) struct TcpEndpointState {
     /// 当前 endpoint 的 SOL_SOCKET policy；passive child 在握手完成时冻结，而非 accept 时复制。
     pub(super) options: InetSocketOptions,
     md5_keys: SharedKeys,
+    ao_keys: AoPolicy,
+    ao_counters: Option<alloc::boxed::Box<network_protocol::TcpAoCounters>>,
     // 协议 poll 前的唯一 edge 快照；缺失时长期 writable TCP 会持续唤醒全部 waiter。
     pub(super) readiness: network_protocol::SocketPollState,
     // 只跨越 stack unlock 保存一次 transition；缺失会在持 stack lock 时反向进入 wait owner。
@@ -182,6 +195,25 @@ impl TcpEndpointState {
     }
     pub(super) fn slot_count(&self) -> usize {
         self.handles.len()
+    }
+
+    fn orphan_finished(&self) -> bool {
+        self.orphaned
+            && self.handles.iter().all(|entry| {
+                entry.transport.state() == State::Closed
+                    && entry.transport.remote_endpoint().is_none()
+            })
+    }
+}
+
+impl NetworkStack {
+    /// 退休已结束且没有待移交 RST 的 orphan，并归还其唯一端口租约。
+    fn retire_tcp_orphan(&mut self, id: usize) {
+        let state = self.tcp_endpoints.remove(&id).expect("live TCP orphan");
+        debug_assert!(state.orphan_finished());
+        if let Some(lease) = state.port_lease {
+            self.tcp_ports.release(lease);
+        }
     }
 }
 
@@ -246,6 +278,7 @@ pub(super) fn create_endpoint(
             family,
             endpoint,
             handles,
+            output_handle: 0,
             mode: TcpMode::Closed {
                 bound: None,
                 shutdown_read: false,
@@ -255,6 +288,8 @@ pub(super) fn create_endpoint(
             orphaned: false,
             options: InetSocketOptions::default(),
             md5_keys: None,
+            ao_keys: None,
+            ao_counters: None,
             readiness: network_protocol::SocketPollState::error(),
             notification_pending: false,
         },
@@ -326,6 +361,8 @@ pub(super) fn set_ipv6_option(
             state.options.apply_tcp(&mut entry.transport);
         }
     }
+    drop(network);
+    crate::worker::request_poll(socket.namespace.id());
     Ok(())
 }
 /// 返回已关联 IPv6 TCP 的实际 IP 路径 MTU，不把 socket 手工上限冒充路径学习值。
@@ -333,8 +370,77 @@ pub(super) fn path_mtu(network: &NetworkStack, id: usize, ipv4: bool) -> Result<
     i32::try_from(connected_output(network, id, ipv4)?.mtu).map_err(|_| SocketError::Invalid)
 }
 
+impl InetSocket {
+    /// 冻结本 socket 的 TCP 发送状态及统计，不改变计时器或队列。
+    /// # Errors
+    /// endpoint 不可用或不是 TCP。
+    pub(crate) fn tcp_information(&self) -> Result<TcpInformation, SocketError> {
+        let _operation = self.open_operation()?;
+        let InetEndpoint::Tcp(id) = self.endpoint else {
+            return Err(SocketError::OperationNotSupported);
+        };
+        let network = self.stack()?.lock()?;
+        let state = network
+            .tcp_endpoints
+            .get(&id)
+            .ok_or(SocketError::NotConnected)?;
+        if let TcpMode::Listening { backlog, .. } = state.mode {
+            return Ok(TcpInformation {
+                phase: TcpPhase::Listen,
+                accept_ready: state
+                    .handles
+                    .iter()
+                    .filter(|handle| handle.passive.is_some())
+                    .count() as u32,
+                accept_limit: backlog as u32,
+                ..TcpInformation::default()
+            });
+        }
+        let tcp = &state.handles[0].transport;
+        let phase = match tcp.state() {
+            State::Closed => TcpPhase::Closed,
+            State::Listen => TcpPhase::Listen,
+            State::SynSent => TcpPhase::SynSent,
+            State::SynReceived => TcpPhase::SynReceived,
+            State::Established => TcpPhase::Established,
+            State::FinWait1 => TcpPhase::FinWait1,
+            State::FinWait2 => TcpPhase::FinWait2,
+            State::CloseWait => TcpPhase::CloseWait,
+            State::Closing => TcpPhase::Closing,
+            State::LastAck => TcpPhase::LastAck,
+            State::TimeWait => TcpPhase::TimeWait,
+        };
+        let [rto_us, rtt_us, rtt_variance_us] = tcp.round_trip_times();
+        let (congestion_window, threshold) = tcp.congestion_windows();
+        let (retransmitted_segments, timeout_retries) = tcp.retransmissions();
+        let (sack, window_scale) = tcp.peer_window_options();
+        Ok(TcpInformation {
+            phase,
+            timeout_retries,
+            sack,
+            window_scale,
+            rto_us,
+            rtt_us,
+            rtt_variance_us,
+            timestamps: !matches!(phase, TcpPhase::Closed | TcpPhase::SynSent)
+                && tcp.timestamp_enabled(),
+            send_mss: tcp.send_mss() as u32,
+            advertised_mss: tcp.advertised_mss().unwrap_or_default() as u32,
+            congestion_window,
+            slow_start_threshold: threshold.unwrap_or(u32::MAX),
+            retransmitted_segments,
+            accept_ready: 0,
+            accept_limit: 0,
+        })
+    }
+}
+
 /// 按连接端点、绑定接口及标记解析本次 IP 路径。未关联或没有路径时返回领域错误。
-pub(super) fn connected_output(network: &NetworkStack, id: usize, ipv4: bool) -> Result<super::route::Output, SocketError> {
+pub(super) fn connected_output(
+    network: &NetworkStack,
+    id: usize,
+    ipv4: bool,
+) -> Result<super::route::Output, SocketError> {
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -491,6 +597,8 @@ fn update_transport_options(
             state.options.apply_tcp(&mut entry.transport);
         }
     }
+    drop(network);
+    crate::worker::request_poll(socket.namespace.id());
     Ok(())
 }
 

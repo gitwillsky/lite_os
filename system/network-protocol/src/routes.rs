@@ -1,6 +1,6 @@
 //! 原生 FIB 的完整集合输入；复用既有路由字段 codec，正文通过独立 VMO，不受 channel 大小限制。
 
-use crate::{Reader, RouteKind, RouteMetrics, Writer, get_option_u32, put_option_u32};
+use crate::{Reader, RouteKind, RouteMetrics, Writer};
 use native_runtime::native_abi::{self, Status};
 
 mod forwarding;
@@ -17,6 +17,20 @@ pub use rules::{RuleEntry, RuleSnapshot};
 
 /// FIB 集合正文版本；只接受当前布局，不保留旧布局分派。
 pub const VERSION: u32 = 7;
+
+fn put_option_u32(writer: &mut Writer, value: Option<u32>) {
+    writer.bool(value.is_some()).u32(value.unwrap_or(0));
+}
+
+fn get_option_u32(reader: &mut Reader<'_>) -> Result<Option<u32>, Status> {
+    let present = reader.bool()?;
+    let value = reader.u32()?;
+    if !present && value != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok(present.then_some(value))
+}
+
 const HEADER: usize = 16;
 const fn entry_bytes<A: RouteAddress>() -> usize {
     48 + 2 * A::BYTES

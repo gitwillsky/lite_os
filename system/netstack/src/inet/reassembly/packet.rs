@@ -1,7 +1,11 @@
 //! 分片格式与完整包归一化；队列、预算、寿命属于父 owner。
-use super::{First, Key};
+use super::Key;
 use core::net::{IpAddr, Ipv4Addr};
-use packet_wire::{ethernet::EthernetFrame, ipv4::Ipv4Packet, ipv6::Ipv6Packet};
+use packet_wire::{
+    ethernet::EthernetFrame,
+    ipv4::Ipv4Packet,
+    ipv6::{Ipv6Packet, is_parsed_extension},
+};
 pub(super) struct Fragment<'a> {
     pub(super) key: Key,
     pub(super) bytes: &'a [u8],
@@ -24,6 +28,7 @@ pub(super) fn inspect(
     frame: &[u8],
     link: Option<([u8; 6], usize)>,
     interface: u32,
+    transit: bool,
     admits: impl FnOnce(IpAddr, IpAddr) -> bool,
 ) -> Inspected<'_> {
     let bytes = if let Some((mac, _)) = link {
@@ -56,9 +61,11 @@ pub(super) fn inspect(
             if !admits(ip.source().into(), ip.destination().into()) {
                 return Inspected::Pass;
             }
-            // 转发片交回原转发入口验证 checksum，本机片才在此承担重组前的完整校验。
-            if packet_wire::checksum::checksum(&ip.bytes()[..ip.bytes().len() - ip.payload().len()])
-                != 0
+            // 转发入口已验证 IP 头；本机片在此承担重组前的头部校验。
+            if !transit
+                && packet_wire::checksum::checksum(
+                    &ip.bytes()[..ip.bytes().len() - ip.payload().len()],
+                ) != 0
             {
                 return Inspected::Drop;
             }
@@ -67,7 +74,8 @@ pub(super) fn inspect(
                 destination: ip.destination().into(),
                 id: u32::from(ip.identification()),
                 protocol: ip.protocol(),
-                zone: if ip.source().is_link_local()
+                zone: if transit
+                    || ip.source().is_link_local()
                     || ip.destination().is_link_local()
                     || ip.destination().is_multicast()
                 {
@@ -91,14 +99,14 @@ pub(super) fn inspect(
         }
         Some(6) => {
             // 普通 TCP/UDP 快路径不扫描扩展链，不分配或复制载荷。
-            if bytes.len() < 40 || !matches!(bytes[6], 0 | 43 | 44 | 51 | 60) {
+            if bytes.len() < 40 || !is_parsed_extension(bytes[6]) {
                 return Inspected::Pass;
             }
             let Ok(datagram) = packet_wire::ipv6::Ipv6Datagram::parse(bytes) else {
                 return Inspected::Drop;
             };
             if let Some((mac, mtu)) = link
-                && super::super::ipv6::incoming(frame, mac, mtu, |_| true).is_none()
+                && super::super::ipv6::incoming(frame, mac, mtu, None, |_| true).is_none()
             {
                 return Inspected::Pass;
             }
@@ -129,7 +137,7 @@ pub(super) fn inspect(
             if !ip.needs_reassembly() {
                 return Inspected::Pass;
             }
-            if !super::super::ipv6::fragment_extensions(ip) {
+            if !transit && !super::super::ipv6::fragment_extensions(ip) {
                 return Inspected::Drop;
             }
             let mut previous = 6;
@@ -157,7 +165,8 @@ pub(super) fn inspect(
                             destination: ip.destination().into(),
                             id: fragment.identification(),
                             protocol: 0,
-                            zone: if ip.source().is_unicast_link_local()
+                            zone: if transit
+                                || ip.source().is_unicast_link_local()
                                 || ip.destination().is_unicast_link_local()
                                 || ip.destination().is_multicast()
                             {
@@ -184,11 +193,16 @@ pub(super) fn inspect(
         _ => Inspected::Pass,
     }
 }
-pub(super) fn normalize(bytes: &mut [u8], first: &First, ecn: u8) -> Option<()> {
+pub(super) fn normalize(
+    bytes: &mut [u8],
+    header: usize,
+    next: Option<(usize, u8)>,
+    ecn: u8,
+) -> Option<()> {
     // RFC 3168 / Linux ip_frag_ecn_table：Not-ECT 混合非法；有 CE 则向完整包保留拥塞信号。
     let ce = if ecn & 8 != 0 { 3 } else { 0 };
-    if let Some(field) = first.next_field {
-        bytes[field] = first.quote[first.header];
+    if let Some((field, next)) = next {
+        bytes[field] = next;
         let length = u16::try_from(bytes.len().checked_sub(40)?).ok()?;
         bytes[4..6].copy_from_slice(&length.to_be_bytes());
         bytes[1] |= ce << 4;
@@ -198,7 +212,7 @@ pub(super) fn normalize(bytes: &mut [u8], first: &First, ecn: u8) -> Option<()> 
         bytes[6..8].fill(0);
         bytes[1] |= ce;
         bytes[10..12].fill(0);
-        let checksum = packet_wire::checksum::checksum(&bytes[..first.header]);
+        let checksum = packet_wire::checksum::checksum(&bytes[..header]);
         bytes[10..12].copy_from_slice(&checksum.to_be_bytes());
     }
     Some(())

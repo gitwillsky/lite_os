@@ -74,7 +74,10 @@ impl PolicyRouteRule {
 }
 
 impl PolicyRouting {
-    pub(super) fn validate(&self, configuration: &Configuration) -> Result<(), ValidationError> {
+    pub(super) fn validate(
+        &self,
+        interface_exists: impl Fn(&Name) -> bool,
+    ) -> Result<(), ValidationError> {
         let mut tables = BTreeSet::new();
         for (index, table) in self.tables.iter().enumerate() {
             if !alternate_table(table.id) || !tables.insert(table.id) {
@@ -84,9 +87,9 @@ impl PolicyRouting {
                 ));
             }
             routes::validate(
-                configuration,
                 &table.routes,
                 &format!("/policy_routing/tables/{index}/routes"),
+                &interface_exists,
             )?;
         }
         let mut priorities = BTreeSet::new();
@@ -120,7 +123,7 @@ impl PolicyRouting {
             if rule
                 .ingress
                 .as_ref()
-                .is_some_and(|name| !configuration.interfaces.contains_key(name))
+                .is_some_and(|name| !interface_exists(name))
             {
                 return Err(invalid(
                     format!("/policy_routing/rules/{index}/ingress"),
@@ -130,46 +133,38 @@ impl PolicyRouting {
         }
         Ok(())
     }
-}
 
-impl Configuration {
-    /// 投影已验证的备选表及规则。缺席设备的成员及绑定该入接口的规则暂退。
-    /// # Parameters
-    /// resolve 解析当前稳定设备绑定，含糊匹配必须报错。
-    /// # Returns
-    /// 包含两族声明和当前有效规则的完整正文，空配置用于撤销旧策略。
-    /// # Errors
-    /// 未知接口、绑定含糊、表示超限或内存不足。
-    pub fn policy_source(
-        &self,
-        mut resolve: impl FnMut(&DeviceMatch) -> Result<Option<u32>, Invalid>,
+    pub(super) fn compile<'a>(
+        &'a self,
+        interface: impl Fn(&'a Name) -> Option<InterfaceReference<'a>>,
+        mut resolve: impl FnMut(InterfaceReference<'_>) -> Result<Option<u32>, Invalid>,
     ) -> Result<Vec<u8>, EncodeError> {
         let mut tables = Vec::new();
         tables
-            .try_reserve_exact(self.policy_routing.tables.len())
+            .try_reserve_exact(self.tables.len())
             .map_err(|_| EncodeError::NoMemory)?;
-        for table in &self.policy_routing.tables {
+        for table in &self.tables {
             tables.push((
                 table.id,
                 [
-                    routes::compile(self, &table.routes, Family::Ipv4, &mut resolve)?,
-                    routes::compile(self, &table.routes, Family::Ipv6, &mut resolve)?,
+                    routes::compile(&table.routes, Family::Ipv4, &interface, &mut resolve)?,
+                    routes::compile(&table.routes, Family::Ipv6, &interface, &mut resolve)?,
                 ],
             ));
         }
         tables.sort_unstable_by_key(|(id, _)| *id);
         let mut rules = Vec::new();
         rules
-            .try_reserve_exact(self.policy_routing.rules.len())
+            .try_reserve_exact(self.rules.len())
             .map_err(|_| EncodeError::NoMemory)?;
-        for rule in &self.policy_routing.rules {
+        for rule in &self.rules {
             let ingress = match (rule.origin, &rule.ingress) {
                 (RuleOrigin::Local, None) => crate::interface::LOOPBACK_INDEX,
                 (RuleOrigin::Local, Some(_)) => return Err(EncodeError::Invalid),
                 (RuleOrigin::Forwarded, None) => 0,
                 (RuleOrigin::Forwarded, Some(name)) => {
-                    let profile = self.interfaces.get(name).ok_or(EncodeError::Invalid)?;
-                    match resolve(&profile.device).map_err(|_| EncodeError::Invalid)? {
+                    let reference = interface(name).ok_or(EncodeError::Invalid)?;
+                    match resolve(reference).map_err(|_| EncodeError::Invalid)? {
                         Some(0 | crate::interface::LOOPBACK_INDEX) => {
                             return Err(EncodeError::Invalid);
                         }
@@ -182,5 +177,18 @@ impl Configuration {
         }
         rules.sort_unstable_by_key(|rule| rule.priority);
         policy_routing::encode(&rules, &tables)
+    }
+}
+
+impl Configuration {
+    /// 投影默认域的备选表及规则。`resolve` 解析当前设备，缺席设备的成员及规则暂退。
+    /// # Errors
+    /// 未知接口、绑定含糊、表示超限或内存不足。
+    pub fn policy_source(
+        &self,
+        resolve: impl FnMut(InterfaceReference<'_>) -> Result<Option<u32>, Invalid>,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.policy_routing
+            .compile(|name| self.interface_reference(name), resolve)
     }
 }

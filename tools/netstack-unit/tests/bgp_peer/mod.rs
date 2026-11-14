@@ -19,6 +19,8 @@ pub(super) fn config(internal: bool) -> Config {
         ipv4_unicast: true,
         ipv6_unicast: true,
         route_refresh: true,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     }
 }
@@ -26,6 +28,9 @@ pub(super) fn established(internal: bool, four: bool) -> Session {
     established_with(config(internal), four)
 }
 pub(super) fn established_with(config: Config, four: bool) -> Session {
+    established_with_capabilities(config, four, &[])
+}
+pub(super) fn established_with_capabilities(config: Config, four: bool, extra: &[u8]) -> Session {
     let mut session = Session::new(config).unwrap();
     session.on(0, Input::Start);
     session.on(1, Input::Connected(::bgp::OpenOffer::Capabilities));
@@ -34,7 +39,8 @@ pub(super) fn established_with(config: Config, four: bool) -> Session {
         1, 4, 0, 1, 0, 1, 1, 4, 0, 2, 0, 1, 5, 6, 0, 1, 0, 1, 0, 2, 65, 4, 0, 0, 0, 0,
     ];
     capabilities[22..].copy_from_slice(&config.peer_as.to_be_bytes());
-    let capabilities = &capabilities[..if four { 26 } else { 20 }];
+    let mut offered = capabilities[..if four { 26 } else { 20 }].to_vec();
+    offered.extend_from_slice(extra);
     let length = Open::emit(
         &mut bytes,
         u16::try_from(config.peer_as).unwrap_or(23456),
@@ -42,7 +48,7 @@ pub(super) fn established_with(config: Config, four: bool) -> Session {
         Ipv4Addr::new(192, 0, 2, 2),
         &[Parameter {
             kind: 2,
-            data: capabilities,
+            data: &offered,
         }],
     )
     .unwrap();

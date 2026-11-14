@@ -10,10 +10,12 @@ pub(super) const WATCH_DNS: u32 = 17;
 pub(super) const ROUTE_LOOKUP: u32 = 18;
 pub(super) const RULE_SNAPSHOT: u32 = 19;
 pub(super) const RULE_SNAPSHOT_VERSION: u32 = 1;
+pub(super) const NEIGHBOR_PAGE: u32 = 20;
+pub(super) const ROUTE_PAGE: u32 = 21;
 
 /// 服务端：网络服务的控制面。
 pub trait NetworkService: Send + Sync {
-    /// 返回交给使用者的域 channel。`initial` 时连上 netstack 的默认网络（持有全部网卡、启用回环，
+    /// 返回交给使用者的域 channel。`initial` 时连上 netstack 的默认网络（启用回环，
     /// 随 netstack 存续，多个连接共享同一网络）；否则创建只有 DOWN 回环的新网络域，随其 channel 退休。
     ///
     /// # Errors
@@ -43,7 +45,7 @@ pub fn dispatch_control(
     }
 }
 
-/// 服务端：一个网络域。
+/// 服务端：一个网络域。托管域的接口和路由只能经独立的安装能力配置。
 pub trait NamespaceService: Send + Sync {
     /// 在本域创建指定地址族 `family`、传输协议 `protocol` 的端点，返回独占 channel 和 readiness Event。
     /// # Errors
@@ -65,6 +67,14 @@ pub trait NamespaceService: Send + Sync {
     /// # Errors
     /// 域不可用或捕获存储不足，不返回部分集合。
     fn neighbor_snapshot(&self, index: u32) -> Result<NeighborSnapshot, SocketError>;
+    /// 捕获当前域游标后的一页实际邻居，供管理观察使用。
+    /// # Errors
+    /// 域不可用、编码或存储失败。
+    fn neighbor_page(&self, after: Option<router_protocol::neighbors::Key>) -> Result<Vec<u8>, SocketError>;
+    /// 捕获当前域中单族的一页生效路由和成员。
+    /// # Errors
+    /// 域不可用、编码或存储失败。
+    fn route_page(&self, cursor: router_protocol::route_view::Cursor) -> Result<Vec<u8>, SocketError>;
     /// 冻结本域全部或指定接口的实际地址；未知接口或资源失败返回领域错误。
     fn address_snapshot(&self, index: u32) -> Result<AddressSnapshot, SocketError>;
     /// 冻结当前网络域有效的通告 DNS。资源不足时返回领域错误。
@@ -177,6 +187,7 @@ pub fn dispatch_namespace(
             if let Some(rows) = put_result(reply, service.network_snapshot()) {
                 reply.u32(rows.len() as u32);
                 for row in &rows {
+                    reply.u32(row.index);
                     reply.bytes(&row.name);
                     put_statistics(reply, &row.statistics);
                 }
@@ -202,6 +213,24 @@ pub fn dispatch_namespace(
                     AddressSnapshot::as_bytes,
                 )
             }
+        }
+        NEIGHBOR_PAGE => {
+            let after = router_protocol::neighbors::parse_cursor(request.bytes()?)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            request.finish()?;
+            if !handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            snapshot_reply(reply, || service.neighbor_page(after), Vec::as_slice)
+        }
+        ROUTE_PAGE => {
+            let cursor = router_protocol::route_view::Cursor::parse(request.bytes()?)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+            request.finish()?;
+            if !handles.is_empty() {
+                return Err(native_abi::ERR_INVALID_ARGS);
+            }
+            snapshot_reply(reply, || service.route_page(cursor), Vec::as_slice)
         }
         RULE_SNAPSHOT => {
             if request.u32()? != RULE_SNAPSHOT_VERSION {

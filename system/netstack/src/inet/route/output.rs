@@ -1,12 +1,12 @@
 //! 本次主机输出的双族 FIB、选源与路径 MTU；TCP/UDP 共用，不保留第二份路由状态。
-use super::super::{NetworkStack, SocketError};
+use super::super::{NetworkInterface, NetworkStack, SocketError};
 use core::net::{IpAddr, Ipv4Addr};
 use network_protocol::{
     InetAddress, RouteKind, RouteMetrics,
     routes::{RouteDirection, RouteLookup, RoutePath},
 };
 use router_protocol::{interface::LOOPBACK_INDEX, policy_routing::Rule};
-use smoltcp::time::Instant;
+use ::tcp::time::Instant;
 
 type OutputRoutes<'a> = (&'a super::RoutingTable, &'a super::Ipv6Routes, &'a [Rule]);
 
@@ -148,9 +148,7 @@ fn output_with_source(
 ) -> Result<Output, SocketError> {
     let (outgoing, mark) = egress;
     let interface = |index| {
-        interfaces
-            .binary_search_by_key(&index, |entry| entry.index)
-            .ok()
+        NetworkInterface::position(interfaces, index)
             .map(|position| &interfaces[position])
             .ok_or(SocketError::NoDevice)
     };
@@ -166,7 +164,7 @@ fn output_with_source(
                 destination,
                 outgoing,
                 (mark, routes.2),
-                interfaces.iter().map(super::InterfaceFacts::capture),
+                super::Ipv4Interfaces::live(interfaces),
             )
             .map_err(super::selection_error)?;
         let chosen = if source.is_unspecified() {
@@ -195,7 +193,7 @@ fn output_with_source(
                     source: chosen.into(),
                     destination: destination.into(),
                 },
-                route.transport.mtu,
+                route.mtu,
                 timestamp.total_millis().max(0) as u64,
             ),
             kind: route.kind,
@@ -203,11 +201,7 @@ fn output_with_source(
             via_gateway: route.via_gateway,
             hop_limit: super::super::DEFAULT_IPV4_HOP_LIMIT,
             recovery: None,
-            metrics: RouteMetrics {
-                advertised_mss: route.transport.advertised_mss as u32,
-                receive_window: route.transport.receive_window as u32,
-                round_trip_time: route.transport.initial_rtt,
-            },
+            metrics: route.metrics,
         });
     }
     let (IpAddr::V6(source), IpAddr::V6(destination)) = (source, destination.ip().to_canonical())
@@ -226,7 +220,7 @@ fn output_with_source(
         outgoing,
         timestamp.total_millis().max(0) as u64,
         (mark, routes.2),
-        interfaces.iter().map(super::Ipv6InterfaceFacts::capture),
+        super::Ipv6Interfaces::live(interfaces),
     )?;
     let logical = selected.interface;
     let actual = if selected.local { 1 } else { logical };

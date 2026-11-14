@@ -68,6 +68,8 @@ fn receive<'a>(
         ipv4_unicast: true,
         ipv6_unicast: true,
         route_refresh: true,
+        receive_add_path: false,
+        send_add_path: false,
         extended_messages: false,
     };
     let peer = Negotiated {
@@ -78,6 +80,8 @@ fn receive<'a>(
         ipv6_unicast: true,
         send_ipv4_via_ipv6: false,
         receive_ipv4_via_ipv6: true,
+        receive_add_path: [false; 2],
+        send_add_path: [false; 2],
         four_octet_asn: four,
         send_extended: false,
         receive_extended: false,

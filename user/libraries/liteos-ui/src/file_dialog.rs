@@ -1,5 +1,6 @@
 //! 文件对话框结果 Future；共用同一个 UI 循环，不创建嵌套消息循环。
 use crate::{EventKind, EventStream, Result, Window};
+use classic_ui_abi::file_mode;
 use std::{
     future::Future,
     os::unix::ffi::OsStringExt,
@@ -11,8 +12,10 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 #[repr(u32)]
 pub enum FileDialogMode {
-    Open = 0,
-    Save = 1,
+    Open = file_mode::OPEN,
+    Save = file_mode::SAVE,
+    /// 只选择新文件名；调用方应独占创建，以应对选择后路径被占用。
+    SaveNew = file_mode::SAVE_NEW,
 }
 /// 文件列表的类型筛选；扩展名不含前导点，按 ASCII 大小写不敏感匹配。
 /// 对话框仍显示目录，并允许切换“所有文件”或手工输入其他类型的路径。

@@ -85,7 +85,7 @@
 | `system/linuxd/src/fs/procfs.rs` | 849 | fs | ProcNode 投影，目录枚举归 procfs/directory，lookup 归 procfs/lookup，MM 文本归 procfs/maps | 新增独立目录 family 前拆分 |
 | `kernel/src/vm/vmo.rs` | 577 | `vm` | COW 树、页解析与映射退休。构造归 creation，物理归属/驻留归 residency；补页归 pager，别名登记/投影归 mapping，祖先折叠/释放归 release，固定归 pin，淘汰归 reclaim | 增加新的 backing kind 前审查页解析职责 |
 | `kernel/src/vm/address_space.rs` | 917 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
-| `system/network-protocol/src/lib.rs` | 237 | `lib` | 通用格式与 Handler；INET/packet 控制各归 inet/packet，地址/接口归 address/interface，选项归 options，域操作归 namespace，路由归 routes | 增加 wire family 前按领域继续拆分 |
+| `system/network-protocol/src/lib.rs` | 224 | `lib` | 通用格式与 Handler；INET/packet 控制各归 inet/packet，地址/接口归 address/interface，选项归 options，域操作归 namespace，路由归 routes | 增加 wire family 前按领域继续拆分 |
 | `system/ext4/src/fuse_server.rs` | 998 | `fuse_server` | FUSE 操作分派与每文件内容缓存的生命周期在同一会话事务内（lookup/forget、写回与 syncfs） | 新增 FUSE 操作 family 前把内容缓存表拆到独立 owner |
 
 ## Change contract

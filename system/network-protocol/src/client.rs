@@ -73,9 +73,28 @@ pub struct RemoteNamespace {
 }
 
 impl RemoteNamespace {
+    /// 接管上游授权服务移交的域连接。
+    pub fn from_channel(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    /// 移交此域连接给下游服务。
+    pub fn into_channel(self) -> Channel {
+        self.channel
+    }
+
     /// 实际执行域的寿命连接；服务退出时 PEER_CLOSED，控制面据此丢弃旧接口身份并重建。
     pub fn channel(&self) -> &Channel {
         &self.channel
+    }
+
+    /// 借用同一个域的能力执行独立请求，避免把调用方状态锁持有到 RPC 完成。
+    /// # Errors
+    /// 能力复制失败。
+    pub fn duplicate(&self) -> Result<Self, Status> {
+        Ok(Self {
+            channel: self.channel.duplicate(native_abi::rights::SAME)?,
+        })
     }
 
     /// 创建本域的 `family`/`protocol` 端点，返回 channel 和就绪通知；不默认截断到 IPv4。
@@ -154,6 +173,7 @@ impl RemoteNamespace {
     pub fn network_snapshot(&self) -> Result<Vec<NetworkSnapshot>, SocketError> {
         self.rows(ordinal::NETWORK_SNAPSHOT, |reader| {
             Ok(NetworkSnapshot {
+                index: reader.u32()?,
                 name: fixed::<16>(reader)?,
                 statistics: get_statistics(reader)?,
             })
@@ -169,6 +189,35 @@ impl RemoteNamespace {
         let mut writer = Writer::request(namespace::neighbors::ORDINAL);
         writer.u32(index);
         NeighborSnapshot::parse(self.snapshot_bytes(&writer)?).map_err(transport)
+    }
+
+    /// 读取管理邻居页的版本化正文。页内容由域 owner 在同一次读取中确定。
+    /// # Errors
+    /// 域、存储、能力或回复格式不合法。
+    pub fn neighbor_page(
+        &self,
+        after: Option<router_protocol::neighbors::Key>,
+    ) -> Result<Vec<u8>, SocketError> {
+        let mut writer = Writer::request(namespace::NEIGHBOR_PAGE);
+        writer.bytes(&router_protocol::neighbors::cursor(after));
+        let bytes = self.snapshot_bytes(&writer)?;
+        router_protocol::neighbors::Page::parse(&bytes, after).map_err(|_| SocketError::Invalid)?;
+        Ok(bytes)
+    }
+
+    /// 读取生效路由页的完整正文，按所请求的族和位置验证。
+    /// # Errors
+    /// 域、存储、能力或回复格式不合法。
+    pub fn route_page(
+        &self,
+        cursor: router_protocol::route_view::Cursor,
+    ) -> Result<Vec<u8>, SocketError> {
+        let mut writer = Writer::request(namespace::ROUTE_PAGE);
+        writer.bytes(&cursor.encode());
+        let bytes = self.snapshot_bytes(&writer)?;
+        router_protocol::route_view::Page::parse(&bytes, cursor)
+            .map_err(|_| SocketError::Invalid)?;
+        Ok(bytes)
     }
 
     /// 读取本域冻结的接口地址；使用 VMO，数量不受 channel 消息长度限制。
@@ -592,19 +641,81 @@ impl RemoteInetSocket {
     /// Add/replace a TCP peer signature key, or delete it with an empty byte slice.
     /// # Errors
     /// Invalid selector/length, missing deletion target, allocation or service failure.
-    pub fn set_md5_key(&self, selector: TcpMd5Selector, key: &[u8]) -> Result<(), SocketError> {
+    pub fn set_md5_key(&self, selector: TcpKeySelector, key: &[u8]) -> Result<(), SocketError> {
         if !selector.valid() || key.len() > TCP_MD5_MAX_KEY_BYTES {
             return Err(SocketError::Invalid);
         }
         let mut writer = Writer::request(ordinal::MD5_KEY);
         writer.try_reserve(128).map_err(transport)?;
         writer.u32(1);
-        put_inet(&mut writer, InetAddress::new(selector.address, 0));
-        writer
-            .u8(selector.prefix_length)
-            .u32(selector.interface_index.unwrap_or(0))
-            .bytes(key);
+        options::put_tcp_key_selector(&mut writer, selector);
+        writer.bytes(key);
         self.unit(&writer)
+    }
+
+    /// Install or remove a TCP-AO master key on this native TCP socket.
+    /// # Errors
+    /// Invalid configuration, allocation failure or a rejected socket policy update.
+    pub fn set_ao_key(
+        &self,
+        config: TcpAoKey,
+        key: &[u8],
+        selection: TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        let selector = config.selector;
+        if !selector.valid() || key.len() > TCP_AO_MAX_KEY_BYTES {
+            return Err(SocketError::Invalid);
+        }
+        let mut writer = Writer::request(ordinal::AO_KEY);
+        writer.try_reserve(136).map_err(transport)?;
+        writer.u32(2);
+        options::put_tcp_key_selector(&mut writer, selector);
+        options::put_ao_key(&mut writer, config, key);
+        selection.write(&mut writer);
+        self.unit(&writer)
+    }
+
+    /// Replace one exact peer's nonempty key set without rebuilding this socket.
+    /// `selection` may change the selected IDs in the same operation as retiring keys.
+    /// # Errors
+    /// Inconsistent selectors, invalid keys or state, conflicting policy or resource failure.
+    pub fn replace_ao_keys(
+        &self,
+        keys: &[(TcpAoKey, &[u8])],
+        selection: TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        let selector = keys.first().ok_or(SocketError::Invalid)?.0.selector;
+        if !selector.valid()
+            || keys.len() > 256
+            || keys.iter().any(|(config, key)| {
+                config.selector != selector || key.is_empty() || key.len() > TCP_AO_MAX_KEY_BYTES
+            })
+        {
+            return Err(SocketError::Invalid);
+        }
+        let mut writer = Writer::request(options::AO_REPLACE_KEYS);
+        writer
+            .try_reserve(48 + 88 * keys.len())
+            .map_err(transport)?;
+        writer.u32(1);
+        options::put_tcp_key_selector(&mut writer, selector);
+        selection.write(&mut writer);
+        writer.u16(keys.len() as u16);
+        for &(config, key) in keys {
+            options::put_ao_key(&mut writer, config, key);
+        }
+        self.unit(&writer)
+    }
+
+    /// Snapshot selected IDs and authentication counters without reading any secret bytes.
+    /// # Errors
+    /// TCP-AO has not been configured, the socket is closed, or the control exchange fails.
+    pub fn ao_status(&self) -> Result<TcpAoStatus, SocketError> {
+        let mut writer = Writer::request(ordinal::AO_STATUS);
+        writer.try_reserve(4).map_err(transport)?;
+        writer.u32(1);
+        let reply = request(&self.channel, &writer, Vec::new())?;
+        TcpAoStatus::read(&mut body(&reply)).map_err(transport)
     }
 
     /// Read the ICMP message-type filter, or atomically change its masked bits.
@@ -644,6 +755,19 @@ impl RemoteInetSocket {
         writer.u8(option.code());
         let reply = request(&self.channel, &writer, Vec::new())?;
         body(&reply).i32().map_err(transport)
+    }
+
+    /// 查询实际 TCP 阶段及发送统计。
+    /// # Errors
+    /// 端点不可用、传输协议不符或服务回复无效。
+    pub fn tcp_information(&self) -> Result<TcpInformation, SocketError> {
+        let mut writer = Writer::request(TcpInformation::ORDINAL);
+        writer.u32(TcpInformation::VERSION);
+        let reply = request(&self.channel, &writer, Vec::new())?;
+        let mut input = body(&reply);
+        let info = TcpInformation::read(&mut input).map_err(transport)?;
+        input.finish().map_err(transport)?;
+        Ok(info)
     }
 
     /// 关闭 socket（使用者最后一次文件关闭）；服务已终止时无事可做。
@@ -717,6 +841,49 @@ impl RemotePacketSocket {
                 .ok_or(SocketError::NetworkDown)?,
             information: socket_io::get_packet_information(&response).map_err(transport)?,
         })
+    }
+
+    /// 返回并清零匹配数和丢弃数。
+    /// # Errors
+    /// endpoint 已关闭或服务回复无效。
+    pub fn take_statistics(&self) -> Result<[u32; 2], SocketError> {
+        let reply = request(
+            &self.channel,
+            &Writer::request(crate::packet::STATISTICS),
+            Vec::new(),
+        )?;
+        let mut reader = body(&reply);
+        let values = [
+            reader.u32().map_err(transport)?,
+            reader.u32().map_err(transport)?,
+        ];
+        reader.finish().map_err(transport)?;
+        Ok(values)
+    }
+
+    /// 安装固定帧接收环，或恢复普通接收队列。
+    ///
+    /// # Errors
+    /// 几何无效、缓冲无法建立、已有接收环，或远端已关闭。
+    pub fn set_receive_ring(
+        &self,
+        ring: Option<(FrameRingLayout, Vmo)>,
+    ) -> Result<(), SocketError> {
+        let mut writer = Writer::request(crate::packet::RECEIVE_RING);
+        writer
+            .try_reserve(4 + 1 + FrameRingLayout::WIRE_BYTES)
+            .map_err(transport)?;
+        writer.u32(FrameRingLayout::VERSION).bool(ring.is_some());
+        let mut handles = Vec::new();
+        if let Some((layout, vmo)) = ring {
+            layout.write(&mut writer);
+            handles
+                .try_reserve_exact(1)
+                .map_err(|_| SocketError::NoMemory)?;
+            handles.push(vmo.into_handle());
+        }
+        let reply = request(&self.channel, &writer, handles)?;
+        body(&reply).finish().map_err(transport)
     }
 
     pub fn take_error(&self) -> Option<SocketError> {

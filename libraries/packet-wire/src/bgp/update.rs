@@ -82,7 +82,13 @@ impl<'a> Update<'a> {
     /// # Errors
     /// 非法/截断前缀。
     pub fn withdrawn(self) -> Result<Nlri<'a>, PacketError> {
-        Nlri::parse(self.withdrawn, Family::Ipv4)
+        self.withdrawn_with_path_ids(false)
+    }
+    /// 检查基础 IPv4 撤回区，使用本方向已协商的路径标识布局。
+    /// # Errors
+    /// 前缀或路径标识非法或截断。
+    pub fn withdrawn_with_path_ids(self, path_ids: bool) -> Result<Nlri<'a>, PacketError> {
+        Nlri::parse_with_path_ids(self.withdrawn, Family::Ipv4, path_ids)
     }
     /// 检查属性 framing，不把单项内容错误升级为整个 UPDATE framing 错误。
     /// # Errors
@@ -108,7 +114,13 @@ impl<'a> Update<'a> {
     /// # Errors
     /// 非法/截断前缀。
     pub fn announced(self) -> Result<Nlri<'a>, PacketError> {
-        Nlri::parse(self.announced, Family::Ipv4)
+        self.announced_with_path_ids(false)
+    }
+    /// 检查基础 IPv4 宣告区，使用本方向已协商的路径标识布局。
+    /// # Errors
+    /// 前缀或路径标识非法或截断。
+    pub fn announced_with_path_ids(self, path_ids: bool) -> Result<Nlri<'a>, PacketError> {
+        Nlri::parse_with_path_ids(self.announced, Family::Ipv4, path_ids)
     }
     /// 编码经过各自 framing 检查的区间到最终消息，返回实际长度；每段仅复制一次。
     /// # Errors

@@ -6,11 +6,12 @@ description = "原生路由配置模型与元数据、网络设置投影、DHCP 
 
 [dependencies]
 serde = { version = "=1.0.229", default-features = false, features = ["alloc", "derive"] }
-serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc", "raw_value"] }
 schemars = { version = "=1.2.3", default-features = false, features = ["derive"] }
 ulid = { version = "=3.0.0", default-features = false }
 regex-automata = { version = "=0.4.18", default-features = false, features = ["alloc", "syntax", "dfa-build"] }
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+uuid = { version = "=1.29.0", default-features = false }
 
 [lints]
 workspace = true

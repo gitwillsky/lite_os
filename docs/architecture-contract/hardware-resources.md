@@ -132,7 +132,8 @@ IRQ 仅做有界查找、源寄存器操作和本地 CSR，不逐包分配。真
 ## 当前范围与验证
 
 - RISC-V 产品与普通 QEMU 门禁使用 APLIC/IMSIC；固件、内核、原生消息对象与驱动发现代码已接通，尚无启动及 MSI-X 硬件验收结论。
-- AArch64 产品 machine 与门禁配置启用 ITS；kernel 和 driver-manager 从同一 DTB 分别消费机制窗口与消息映射。
+- AArch64 的 ITS 平台由 kernel 和 driver-manager 从同一 DTB 分别读取机制窗口和消息映射。UTM 的 HVF 内核 GIC 可提供 GICv2m 帧。
+  driver-manager 校验 GICv2m 的控制器声明及 PCI 映射，但当前没有 GICv2m MSI 分配器，PCI 设备使用固件公布的 INTx。
   产品与门禁默认网卡使用 virtio-net-pci；PCI 枚举以消息关闭状态交接，由实际 adapter 声明是否接管 MSI-X。
   当前为 VirtIO-net，其他 PCI adapter 保持 INTx；不支持 MSI 的平台仍使用硬件提供的真实 INTx。
 - 网卡会话按实际 pair 数准备 2N+1 个中断（每 RX/TX 队列各一项，加 config），control VQ 明确 NO_VECTOR 并沿用冷 ACK 轮询。
@@ -146,6 +147,8 @@ IRQ 仅做有界查找、源寄存器操作和本地 CSR，不逐包分配。真
   `ActiveNetwork.interrupts` 的 Vec 保活内核组，reset 与各 DMA 区间退休后、允许重开前清空；没有每队列线程或通知转发线程。
 - 网络 v13 静态描述包含独立队列亲和能力，只有实际 MSI-X adapter 提供；持有会话控制端点可用 QUEUE_AFFINITY
   配置 pair 的 RX/TX 中断目标逻辑 CPU，配置向量不移动，不增加应用 syscall 或扩大原生 authority。
+  NET 在接口发表前按队列的固定执行分区分散中断。失败时未发表的队列登记和独占会话一起退休。
+  变更转发专用 CPU 只改变线程放置，已安装网卡保留中断目标与 RSS 归属。配置只在安装时增加每队列一次 RPC，按实际中断分布和吞吐验证。
   会话的 interrupt_configuration 冷锁串行 IRQ 配置，不持 DMA/lease 锁跨可睡眠路由调用，不堵塞其他队列/IRQ。
   stop 可并发 reset：调用强引用保活当前 IRQ 句柄，结束复检 failed；不会操作下一会话的资源。
   无效 CPU/未改变状态的 OOM 或资源不足直接返回；NO_RESOURCES（如 IOVA/中断槽不足）沿 NoResources 原样传递，

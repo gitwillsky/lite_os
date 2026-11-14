@@ -1,16 +1,15 @@
 //! 本机重组超时/格式错误使用原 FIB、错误限速和回复队列，不经过转发策略开关。
 use super::{Problem, packet};
-use crate::inet::{NetworkStack, route_reply::RouteReplies};
+use crate::inet::{NetworkStack, interface::NetworkInterface, route_reply::RouteReplies};
 use alloc::vec::Vec;
 use core::net::IpAddr;
-use smoltcp::time::Instant;
+use ::tcp::time::Instant;
 impl NetworkStack {
-    pub(in crate::inet) fn retire_fragments(&mut self, now: Instant) -> bool {
-        for _ in 0..16 {
+    pub(in crate::inet) fn retire_fragments(&mut self, now: Instant, work_until: u64) -> bool {
+        for _ in 0..super::RETIRE_BUDGET {
             let Some(outcome) = self.reassembly.retire(now, |index| {
-                self.interfaces
-                    .iter()
-                    .any(|entry| entry.index == index && entry.state.up)
+                NetworkInterface::position(&self.interfaces, index)
+                    .is_some_and(|position| self.interfaces[position].state.up)
             }) else {
                 return false;
             };
@@ -37,6 +36,9 @@ impl NetworkStack {
                         |_| local,
                     );
                 }
+            }
+            if work_until != u64::MAX && crate::time::get_time_us() >= work_until {
+                break;
             }
         }
         self.reassembly.due(now)

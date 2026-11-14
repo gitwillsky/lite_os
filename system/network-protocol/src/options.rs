@@ -6,12 +6,28 @@ pub const TCP_MD5_MAX_KEY_BYTES: usize = 80;
 /// Peer prefix and optional logical input/output interface for a TCP signature key.
 /// Interface scoping is explicit service policy; no Linux sockaddr or capability lives here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TcpMd5Selector {
+pub struct TcpKeySelector {
     pub address: core::net::IpAddr,
     pub prefix_length: u8,
     pub interface_index: Option<u32>,
 }
-impl TcpMd5Selector {
+impl TcpKeySelector {
+    /// Whether both selectors can name the same peer on one logical interface.
+    pub fn overlaps(self, other: Self) -> bool {
+        if self
+            .interface_index
+            .zip(other.interface_index)
+            .is_some_and(|(a, b)| a != b)
+        {
+            return false;
+        }
+        let interface = self.interface_index.or(other.interface_index).unwrap_or(0);
+        if self.prefix_length <= other.prefix_length {
+            self.matches(other.address, interface)
+        } else {
+            other.matches(self.address, interface)
+        }
+    }
     /// Select one exact peer, optionally within its current logical interface.
     pub fn host(address: core::net::IpAddr, interface_index: Option<u32>) -> Self {
         Self {
@@ -49,6 +65,206 @@ impl TcpMd5Selector {
     }
 }
 
+/// Configured TCP-AO MAC and key-derivation algorithms from RFC 5926.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpAoAlgorithm {
+    HmacSha1,
+    Aes128Cmac,
+}
+
+/// One TCP-AO master key tuple. Secret bytes are supplied separately and never returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpAoKey {
+    pub selector: TcpKeySelector,
+    pub algorithm: TcpAoAlgorithm,
+    pub send_id: u8,
+    pub receive_id: u8,
+    pub cover_options: bool,
+}
+
+/// SendID to use locally and RecvID to request from the peer. An absent field keeps its current value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TcpAoSelection {
+    pub current: Option<u8>,
+    pub receive: Option<u8>,
+}
+
+impl TcpAoSelection {
+    fn from_fields(value: i32, flags: u8) -> Result<Self, Status> {
+        if flags > 3
+            || !(0..=0xffff).contains(&value)
+            || flags & 1 == 0 && value & 0xff != 0
+            || flags & 2 == 0 && value >> 8 != 0
+        {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        Ok(Self {
+            current: (flags & 1 != 0).then_some(value as u8),
+            receive: (flags & 2 != 0).then_some((value >> 8) as u8),
+        })
+    }
+
+    fn fields(self) -> (i32, u8) {
+        let value =
+            i32::from(self.current.unwrap_or(0)) | i32::from(self.receive.unwrap_or(0)) << 8;
+        let flags = u8::from(self.current.is_some()) | u8::from(self.receive.is_some()) << 1;
+        (value, flags)
+    }
+
+    pub(super) fn write(self, writer: &mut Writer) {
+        let (value, flags) = self.fields();
+        writer.i32(value).u8(flags);
+    }
+}
+
+/// Authentication counters owned by the native socket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TcpAoCounters {
+    pub verified: u64,
+    pub bad_mac: u64,
+    pub key_not_found: u64,
+    pub unsigned: u64,
+    pub ignored_icmp: u64,
+}
+
+/// One snapshot of the actual TCP-AO key selection and authentication counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TcpAoStatus {
+    pub selection: TcpAoSelection,
+    pub counters: TcpAoCounters,
+}
+
+impl TcpAoStatus {
+    pub(super) fn write(self, writer: &mut Writer) {
+        self.selection.write(writer);
+        let counters = self.counters;
+        writer
+            .u64(counters.verified)
+            .u64(counters.bad_mac)
+            .u64(counters.key_not_found)
+            .u64(counters.unsigned)
+            .u64(counters.ignored_icmp);
+    }
+
+    pub(super) fn read(reader: &mut Reader<'_>) -> Result<Self, Status> {
+        let status = Self {
+            selection: TcpAoSelection::from_fields(reader.i32()?, reader.u8()?)?,
+            counters: TcpAoCounters {
+                verified: reader.u64()?,
+                bad_mac: reader.u64()?,
+                key_not_found: reader.u64()?,
+                unsigned: reader.u64()?,
+                ignored_icmp: reader.u64()?,
+            },
+        };
+        reader.finish()?;
+        Ok(status)
+    }
+}
+
+fn get_tcp_key_selector(request: &mut Reader<'_>) -> Result<TcpKeySelector, Status> {
+    let endpoint = get_inet(request)?;
+    let selector = TcpKeySelector {
+        address: endpoint.ip(),
+        prefix_length: request.u8()?,
+        interface_index: core::num::NonZeroU32::new(request.u32()?).map(core::num::NonZeroU32::get),
+    };
+    if !selector.valid() || endpoint != InetAddress::new(endpoint.ip(), 0) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok(selector)
+}
+
+pub(super) fn put_tcp_key_selector(writer: &mut Writer, selector: TcpKeySelector) {
+    put_inet(writer, InetAddress::new(selector.address, 0));
+    writer
+        .u8(selector.prefix_length)
+        .u32(selector.interface_index.unwrap_or(0));
+}
+
+pub(super) fn dispatch_ao(
+    service: &dyn InetSocketService,
+    request: &mut Reader<'_>,
+    reply: &mut Writer,
+) -> Result<(), Status> {
+    if request.u32()? != 2 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let selector = get_tcp_key_selector(request)?;
+    let (config, key) = get_ao_key(request, selector)?;
+    let selection = TcpAoSelection::from_fields(request.i32()?, request.u8()?)?;
+    request.finish()?;
+    reply.try_reserve(1)?;
+    put_result(reply, service.set_ao_key(config, key, selection));
+    Ok(())
+}
+
+fn get_ao_key<'a>(
+    request: &mut Reader<'a>,
+    selector: TcpKeySelector,
+) -> Result<(TcpAoKey, &'a [u8]), Status> {
+    let algorithm = match request.u8()? {
+        1 => TcpAoAlgorithm::HmacSha1,
+        2 => TcpAoAlgorithm::Aes128Cmac,
+        _ => return Err(native_abi::ERR_INVALID_ARGS),
+    };
+    let config = TcpAoKey {
+        selector,
+        algorithm,
+        send_id: request.u8()?,
+        receive_id: request.u8()?,
+        cover_options: request.bool()?,
+    };
+    let key = request.bytes()?;
+    if key.len() > TCP_AO_MAX_KEY_BYTES {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok((config, key))
+}
+
+pub(super) fn put_ao_key(writer: &mut Writer, config: TcpAoKey, key: &[u8]) {
+    writer
+        .u8(match config.algorithm {
+            TcpAoAlgorithm::HmacSha1 => 1,
+            TcpAoAlgorithm::Aes128Cmac => 2,
+        })
+        .u8(config.send_id)
+        .u8(config.receive_id)
+        .bool(config.cover_options)
+        .bytes(key);
+}
+
+pub(super) const AO_REPLACE_KEYS: u32 = 24;
+
+pub(super) fn dispatch_ao_replace(
+    service: &dyn InetSocketService,
+    request: &mut Reader<'_>,
+    reply: &mut Writer,
+) -> Result<(), Status> {
+    if request.u32()? != 1 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let selector = get_tcp_key_selector(request)?;
+    let selection = TcpAoSelection::from_fields(request.i32()?, request.u8()?)?;
+    let count = usize::from(request.u16()?);
+    if !(1..=256).contains(&count) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let mut keys = alloc::vec::Vec::new();
+    keys.try_reserve_exact(count)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    for _ in 0..count {
+        keys.push(get_ao_key(request, selector)?);
+    }
+    request.finish()?;
+    reply.try_reserve(1)?;
+    put_result(reply, service.replace_ao_keys(&keys, selection));
+    Ok(())
+}
+
+/// TCP-AO secret size bound for Linux TCP_AO_ADD_KEY interoperability.
+pub const TCP_AO_MAX_KEY_BYTES: usize = 80;
+
 pub(super) fn dispatch_md5(
     service: &dyn InetSocketService,
     request: &mut Reader<'_>,
@@ -57,18 +273,10 @@ pub(super) fn dispatch_md5(
     if request.u32()? != 1 {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
-    let endpoint = get_inet(request)?;
-    let selector = TcpMd5Selector {
-        address: endpoint.ip(),
-        prefix_length: request.u8()?,
-        interface_index: core::num::NonZeroU32::new(request.u32()?).map(core::num::NonZeroU32::get),
-    };
+    let selector = get_tcp_key_selector(request)?;
     let key = request.bytes()?;
     request.finish()?;
-    if !selector.valid()
-        || key.len() > TCP_MD5_MAX_KEY_BYTES
-        || endpoint != InetAddress::new(endpoint.ip(), 0)
-    {
+    if key.len() > TCP_MD5_MAX_KEY_BYTES {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     reply.try_reserve(1)?;
@@ -127,6 +335,13 @@ pub enum InetOptionChange {
         ipv6: bool,
         enabled: bool,
     },
+    /// 是否在错误到达时记录 ICMP 扩展的位置和验证结果。
+    ReceiveErrorExtensions {
+        ipv6: bool,
+        enabled: bool,
+    },
+    /// 原子修改 TCP-AO 当前发送和首选接收密钥。
+    AoSelection(TcpAoSelection),
     /// IPv4 ASM 加退组；接口序号优先，0 时按地址或实际路由选择。
     Ipv4Membership {
         /// 组播地址。
@@ -227,6 +442,11 @@ pub(super) fn get_option_change(request: &mut Reader<'_>) -> Result<InetOptionCh
             enabled: value != 0,
         },
         26 if option == 0 => InetOptionChange::Mark(value as u32),
+        27 if matches!(value, 0 | 1) && option <= 1 => InetOptionChange::ReceiveErrorExtensions {
+            ipv6: option != 0,
+            enabled: value != 0,
+        },
+        28 => InetOptionChange::AoSelection(TcpAoSelection::from_fields(value, option)?),
         _ => return Err(native_abi::ERR_INVALID_ARGS),
     })
 }
@@ -256,6 +476,13 @@ pub(super) fn put_option_change(writer: &mut Writer, change: InetOptionChange) {
         InetOptionChange::Ipv6DontFragment(value) => (24, i32::from(value), 0),
         InetOptionChange::ReceiveError { ipv6, enabled } => {
             (25, i32::from(enabled), u8::from(ipv6))
+        }
+        InetOptionChange::ReceiveErrorExtensions { ipv6, enabled } => {
+            (27, i32::from(enabled), u8::from(ipv6))
+        }
+        InetOptionChange::AoSelection(selection) => {
+            let (value, option) = selection.fields();
+            (28, value, option)
         }
         InetOptionChange::Ipv4MulticastInterface { interface, address } => {
             writer.u8(20).i32(0).u8(0).u32(1).u32(interface);

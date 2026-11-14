@@ -27,13 +27,9 @@ fn native_arp_gateway_exhausts_committed_probes_and_recovers_from_valid_reply() 
     )
     .unwrap();
     let sender = scoped_endpoint(&net, InetProtocol::Udp);
-    sender
-        .send_to(
-            b"arp-gateway",
-            Some(InetAddress::new(destination.into(), 44331)),
-            &[],
-        )
-        .unwrap();
+    sender.set_receive_error(false, true).unwrap();
+    let target = InetAddress::new(destination.into(), 44331);
+    sender.send_to(b"arp-gateway", Some(target), &[]).unwrap();
     let poll = |at| {
         stack(&net)
             .unwrap()
@@ -73,6 +69,13 @@ fn native_arp_gateway_exhausts_committed_probes_and_recovers_from_valid_reply() 
     assert_eq!(rank(), (true, false));
     poll(4001);
     assert_eq!(rank(), (false, false));
+    let mut empty = crate::receive::ReceiveBuffer::try_new(0).unwrap();
+    let (length, error) = sender.receive_error(&mut empty).unwrap();
+    assert_eq!(length, 0);
+    assert_eq!(error.origin, network_protocol::InternetErrorOrigin::Local);
+    assert_eq!(error.error, SocketError::HostUnreachable);
+    assert_eq!(error.destination, target);
+    assert_eq!(sender.take_error(), None);
 
     let mut reply = peer_arp_frame_for(local, gateway);
     let local_mac = [2, 0, 0, 0, 0, 1];
@@ -142,6 +145,9 @@ fn recursive_ipv4_route_switches_and_recovers_without_traffic_to_parent_prefix()
     }"#).unwrap();
     let bytes = config
         .route_source(Family::Ipv4, |device| {
+            let router_protocol::configuration::InterfaceReference::Device(device) = device else {
+                unreachable!("physical fixture");
+            };
             Ok([(2, b"eth0"), (3, b"eth1")]
                 .into_iter()
                 .find_map(|(index, name)| device.matches(name, [0; 6]).then_some(index)))

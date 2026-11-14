@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Network Manager
+Name[zh_CN]=网络管理器
+Exec=/bin/network-manager
+Icon=network-connections
+Categories=Settings;Network;
+StartupWMClass=org.liteos.network-manager
+Terminal=false

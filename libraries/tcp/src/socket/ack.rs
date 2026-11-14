@@ -16,7 +16,7 @@ impl<'a> Socket<'a> {
             sack_permitted: false,
             sack_ranges: [None; 4],
             timestamp: None,
-            md5: false,
+            authentication: Authentication::None,
             payload: &[],
         };
         let ip_reply_repr = IpRepr::new(
@@ -39,7 +39,7 @@ impl<'a> Socket<'a> {
         // See https://www.snellman.net/blog/archive/2016-02-01-tcp-rst/ for explanation
         // of why we sometimes send an RST and sometimes an RST|ACK
         reply_repr.control = TcpControl::Rst;
-        reply_repr.md5 = repr.md5;
+        reply_repr.authentication = repr.authentication;
         reply_repr.seq_number = repr.ack_number.unwrap_or_default();
         if repr.control == TcpControl::Syn && repr.ack_number.is_none() {
             reply_repr.ack_number = Some(repr.seq_number + repr.segment_len());
@@ -54,7 +54,7 @@ impl<'a> Socket<'a> {
         repr: &TcpRepr,
     ) -> (IpRepr, TcpRepr<'static>) {
         let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
-        reply_repr.md5 = self.md5;
+        reply_repr.authentication = self.authentication;
         reply_repr.timestamp = repr
             .timestamp
             .and_then(|tcp_ts| tcp_ts.generate_reply(self.tsval_generator));

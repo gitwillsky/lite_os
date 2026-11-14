@@ -1,6 +1,6 @@
 //! 协议最佳路由的唯一持有者；候选视图沿现有来源完整替换发布，确认后才提交本地表。
 use crate::{Candidate, NextHop, OutOfMemory, RouteAttributes, SelectionContext, Selector};
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use fallible_tree::{FallibleMap, NodeSlot};
 use packet_wire::bgp::nlri::{Family, Prefix};
@@ -8,10 +8,37 @@ use packet_wire::bgp::nlri::{Family, Prefix};
 /// 一条协议选择；提案阶段仍须完成 RIB 准入，只有外部确认后才能作为当前 Loc-RIB 发表。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedRoute {
-    peer: u64,
-    attributes: RouteAttributes,
-    next_hop: NextHop,
-    preference: u32,
+    paths: SelectedPaths,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SelectedPaths {
+    Best(SelectedPath),
+    // OWNER: 同一确认批次的多路径视图；只有需要多路径且存在备选时才分配，不复制赢家属性或维护第二份表。
+    Multiple {
+        best: usize,
+        paths: Rc<Vec<SelectedPath>>,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectedPath {
+    pub(crate) peer: u64,
+    pub(crate) path_id: Option<u32>,
+    pub(crate) attributes: RouteAttributes,
+    pub(crate) next_hop: NextHop,
+    pub(crate) preference: u32,
+}
+impl SelectedPath {
+    fn capture(candidate: &Candidate<'_>) -> Self {
+        Self {
+            peer: candidate.peer.id,
+            path_id: candidate.path_id,
+            attributes: candidate.attributes.clone(),
+            next_hop: candidate.next_hop,
+            preference: candidate
+                .preference
+                .expect("eligible path passed import policy"),
+        }
+    }
 }
 impl SelectedRoute {
     /// 从同一前缀的后政策候选选取并持有结果；全部被拒绝返回 None，表示撤销旧选择。
@@ -32,11 +59,36 @@ impl SelectedRoute {
         context: SelectionContext,
         candidates: &[Candidate<'_>],
         decisions: &mut Vec<router_protocol::bgp::RouteDecision>,
+        retain_paths: bool,
     ) -> Result<Option<Self>, OutOfMemory> {
-        Ok(Self::capture(
-            selector.select_observed(context, candidates, decisions)?,
-            candidates,
-        ))
+        use router_protocol::bgp::RouteDecision::{NotBest, Selected};
+        let start = decisions.len();
+        let selected = selector.select_observed(context, candidates, decisions)?;
+        if retain_paths && let Some(selected) = selected {
+            let eligible = decisions[start..]
+                .iter()
+                .enumerate()
+                .filter_map(|(index, decision)| {
+                    matches!(decision, Selected | NotBest).then_some(index)
+                });
+            let count = eligible.clone().count();
+            if count > 1 {
+                let mut paths = Vec::new();
+                paths.try_reserve_exact(count).map_err(|_| OutOfMemory)?;
+                let mut best = 0;
+                for index in eligible {
+                    if index == selected {
+                        best = paths.len();
+                    }
+                    paths.push(SelectedPath::capture(&candidates[index]));
+                }
+                let paths = Rc::try_new(paths).map_err(|_| OutOfMemory)?;
+                return Ok(Some(Self {
+                    paths: SelectedPaths::Multiple { best, paths },
+                }));
+            }
+        }
+        Ok(Self::capture(selected, candidates))
     }
     /// 准备尚未验证可达性的提案，仅供 RIB 检查，不可跳过实际 select 和来源确认。
     /// # Errors
@@ -52,33 +104,44 @@ impl SelectedRoute {
         ))
     }
     fn capture(index: Option<usize>, candidates: &[Candidate<'_>]) -> Option<Self> {
-        index.map(|index| {
-            let candidate = &candidates[index];
-            Self {
-                peer: candidate.peer.id,
-                attributes: candidate.attributes.clone(),
-                next_hop: candidate.next_hop,
-                preference: candidate
-                    .preference
-                    .expect("selected route passed import policy"),
-            }
+        index.map(|index| Self {
+            paths: SelectedPaths::Best(SelectedPath::capture(&candidates[index])),
         })
+    }
+    pub(crate) fn best(&self) -> &SelectedPath {
+        match &self.paths {
+            SelectedPaths::Best(path) => path,
+            SelectedPaths::Multiple { best, paths } => &paths[*best],
+        }
+    }
+    pub(crate) fn paths(&self) -> &[SelectedPath] {
+        match &self.paths {
+            SelectedPaths::Best(path) => core::slice::from_ref(path),
+            SelectedPaths::Multiple { paths, .. } => paths,
+        }
+    }
+    fn same_forwarding_source(&self, other: &Self) -> bool {
+        let (a, b) = (self.best(), other.best());
+        a.peer == b.peer
+            && a.attributes == b.attributes
+            && a.next_hop == b.next_hop
+            && a.preference == b.preference
     }
     /// 稳定配置邻居身份；注册 owner 必须保持它与本路由的退出/重算次序一致。
     pub fn peer(&self) -> u64 {
-        self.peer
+        self.best().peer
     }
     /// 实际持有的共享后政策属性。
     pub fn attributes(&self) -> &RouteAttributes {
-        &self.attributes
+        &self.best().attributes
     }
     /// 后政策逻辑下一跳；立即出口/递归解析仍由统一 RIB 拥有。
     pub fn next_hop(&self) -> NextHop {
-        self.next_hop
+        self.best().next_hop
     }
     /// Phase 1 的 degree，越大越优；传播到 iBGP 时须用它生成 LOCAL_PREF，不借用管理距离。
     pub fn preference(&self) -> u32 {
-        self.preference
+        self.best().preference
     }
 }
 /// Loc-RIB 批次未发表的失败原因。
@@ -260,7 +323,7 @@ impl LocRib {
             if prefix.address.is_ipv6()
                 && route
                     .as_ref()
-                    .is_some_and(|route| route.next_hop.address.is_ipv4())
+                    .is_some_and(|route| route.next_hop().address.is_ipv4())
             {
                 return Err(LocRibError::NextHopFamily);
             }
@@ -309,6 +372,14 @@ pub struct LocRibUpdate<'a> {
     prefixes: Vec<Prefix>,
 }
 impl LocRibUpdate<'_> {
+    pub(crate) fn forwarding_changed(&self) -> bool {
+        self.changes.iter().any(
+            |change| match (self.rib.get(change.prefix), &change.route) {
+                (Some(old), Some(next)) => !old.same_forwarding_source(next),
+                _ => true,
+            },
+        )
+    }
     /// 本次候选完整替换所属地址族，必须与外部来源授权相符。
     pub fn family(&self) -> Family {
         self.family

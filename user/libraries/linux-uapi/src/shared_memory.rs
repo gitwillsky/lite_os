@@ -68,8 +68,29 @@ impl MemFd {
         use std::os::unix::fs::FileExt;
         let memory = Self::allocate(name, bytes.len())?;
         memory.file.write_all_at(bytes, 0)?;
-        #[cfg(target_os = "linux")]
-        memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
+        memory.seal_read_only()?;
+        Ok(memory)
+    }
+
+    /// 按声明长度分段写入并封印一份独占文档。回调在 fd 发布之前执行。
+    /// # Errors
+    /// 长度非法、写入量不符、回调失败或无法封印。
+    pub fn from_writer(
+        name: &str,
+        len: usize,
+        write: impl FnOnce(&mut File) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        use std::io::Seek;
+
+        let mut memory = Self::allocate(name, len)?;
+        write(&mut memory.file)?;
+        if memory.file.stream_position()? != len as u64
+            || memory.file.metadata()?.len() != len as u64
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        memory.file.rewind()?;
+        memory.seal_read_only()?;
         Ok(memory)
     }
 
@@ -82,9 +103,14 @@ impl MemFd {
             .ok_or(io::ErrorKind::InvalidInput)?;
         let memory = Self::allocate(name, length)?;
         memory.write_segments([(0, words)])?;
-        #[cfg(target_os = "linux")]
-        memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
+        memory.seal_read_only()?;
         Ok(memory)
+    }
+
+    fn seal_read_only(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        self.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
+        Ok(())
     }
 
     fn allocate(name: &str, len: usize) -> io::Result<Self> {

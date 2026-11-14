@@ -1,6 +1,6 @@
 /// Deferred final-cleanup 的固定容量 FIFO owner。
 ///
-/// 容量与 active SocketSet slot 上限相同：poll 持有 stack owner 时不能创建新 endpoint，
+/// 容量与域的端点上限相同：poll 持有 stack owner 时不能创建新 endpoint，
 /// 每个 live `InetSocket` 至少占一个尚未复用的 slot，且 final Drop 只发布一次 identity。
 /// 因此 publish 无需 O(N) duplicate scan，单轮最多积累 `N` 个 cleanup，也不需要 fallback queue。
 pub(super) struct PendingCleanup<T: Copy, const N: usize> {
@@ -10,7 +10,7 @@ pub(super) struct PendingCleanup<T: Copy, const N: usize> {
     length: usize,
 }
 
-/// Fixed ring 已达到与 SocketSet 相同的容量上限。
+/// 固定队列已达到域的端点上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Full;
 
@@ -19,7 +19,7 @@ impl<T: Copy, const N: usize> PendingCleanup<T, N> {
     ///
     /// # Parameters
     ///
-    /// - `N`: 与生产 SocketSet capacity 相同的 compile-time slot 数。
+    /// - `N`: 与生产端点上限相同的固定槽数。
     ///
     /// # Returns
     ///
@@ -50,7 +50,7 @@ impl<T: Copy, const N: usize> PendingCleanup<T, N> {
     ///
     /// # Errors
     ///
-    /// 达到 active SocketSet slot 上限时返回 `Full`，表示 owner 不变量被破坏。
+    /// 达到端点上限时返回 `Full`，表示 owner 不变量被破坏。
     pub(super) fn publish(&mut self, value: T) -> Result<(), Full> {
         if self.length == N {
             return Err(Full);

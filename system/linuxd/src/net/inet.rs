@@ -37,6 +37,30 @@ pub(super) struct InetSocket {
 }
 
 impl InetSocket {
+    pub(super) fn tcp_information(&self) -> Result<network_protocol::TcpInformation, SocketError> {
+        self.remote.tcp_information()
+    }
+
+    pub(super) fn ao_status(&self) -> Result<network_protocol::TcpAoStatus, SocketError> {
+        self.remote.ao_status()
+    }
+
+    pub(super) fn set_ao_key(
+        &self,
+        config: network_protocol::TcpAoKey,
+        key: &[u8],
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        self.remote.set_ao_key(config, key, selection)
+    }
+
+    pub(super) fn select_ao_keys(
+        &self,
+        selection: network_protocol::TcpAoSelection,
+    ) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::AoSelection(selection))
+    }
     /// 在 `namespace` 的 netstack 协议实例中创建 endpoint。
     ///
     /// # Errors
@@ -137,16 +161,24 @@ impl InetSocket {
             full_length: received.full_length,
             source: Some(super::SocketAddress::Inet(received.error.destination)),
             internet_error: Some(received.error),
-            internet_packet_info: None,
+            internet_packet_info: received.error.packet_info,
             packet_information: None,
             rights: None,
             credentials: None,
         })
     }
 
-    pub(super) fn set_receive_error(&self, ipv6: bool, enabled: bool) -> Result<(), SocketError> {
-        self.remote
-            .set_option(InetOptionChange::ReceiveError { ipv6, enabled })
+    pub(super) fn set_receive_error(
+        &self,
+        ipv6: bool,
+        extensions: bool,
+        enabled: bool,
+    ) -> Result<(), SocketError> {
+        self.remote.set_option(if extensions {
+            InetOptionChange::ReceiveErrorExtensions { ipv6, enabled }
+        } else {
+            InetOptionChange::ReceiveError { ipv6, enabled }
+        })
     }
 
     pub(super) fn receive(
@@ -406,7 +438,7 @@ impl InetSocket {
     }
     pub(super) fn set_md5_key(
         &self,
-        selector: network_protocol::TcpMd5Selector,
+        selector: network_protocol::TcpKeySelector,
         key: &[u8],
     ) -> Result<(), SocketError> {
         self.remote.set_md5_key(selector, key)

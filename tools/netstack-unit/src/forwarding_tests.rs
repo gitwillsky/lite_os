@@ -53,6 +53,10 @@ mod ipv4_forwarding {
         let _serial = SERIAL.lock().unwrap();
         initialize();
         let (net, a, b) = routing_domain(89401);
+        let layouts = stack(&net).unwrap().receive_snapshot().unwrap();
+        let destination = Ipv4Addr::new(10, 41, 0, 9);
+        let old_probe = layouts.prepare_for(destination.into()).annotation[0];
+        a.wire.lock().unwrap().2.receive_snapshot = Some((2, layouts));
         a.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
             Ipv4Addr::new(10, 40, 0, 15),
             Ipv4Addr::new(10, 40, 0, 9),
@@ -65,16 +69,92 @@ mod ipv4_forwarding {
         packets(&a);
         packets(&b);
         let bytes = datagram(64, 0, &[], b"native-transit-without-local-socket");
-        a.wire.lock().unwrap().0.push_back(bytes.clone());
+        let batch = device_model::network::RECEIVE_BATCH_CAPACITY;
+        a.wire
+            .lock()
+            .unwrap()
+            .0
+            .extend(core::iter::repeat_n(bytes.clone(), batch + 1));
+        b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
+            Ipv4Addr::new(10, 41, 0, 15),
+            Ipv4Addr::new(10, 41, 0, 9),
+        ));
+        let expired_round = || {
+            stack(&net)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .poll_until(Instant::from_millis(1000), 0)
+        };
+        assert!(expired_round().backlog);
+        assert_eq!(packets(&b).len(), batch);
+        assert_eq!(a.wire.lock().unwrap().0.len(), 1);
+        assert_eq!(b.wire.lock().unwrap().0.len(), 1);
+        assert!(expired_round().backlog);
+        assert_eq!(a.wire.lock().unwrap().0.len(), 1);
+        assert!(b.wire.lock().unwrap().0.is_empty());
+        // 尾部接口为空，仍要回到尚未排空的首个接口。
+        assert!(expired_round().backlog);
+        poll(&net, 1000);
+        assert_eq!(packets(&b).len(), 1);
+        // 校验和加 0x0100 到达 0xffff 时，发送结果与完整重算一样是 0x0000。
+        let mut zero_checksum = bytes.clone();
+        zero_checksum[18..20].copy_from_slice(&0x663a_u16.to_be_bytes());
+        zero_checksum[24..26].copy_from_slice(&0xfeff_u16.to_be_bytes());
+        let mut invalid_header = bytes.clone();
+        invalid_header[22] ^= 1;
+        a.receive_checksum_valid.store(true, core::sync::atomic::Ordering::Relaxed);
+        a.wire.lock().unwrap().0.extend([bytes.clone(), zero_checksum, invalid_header]);
         poll(&net, 1001);
+        a.receive_checksum_valid.store(false, core::sync::atomic::Ordering::Relaxed);
         let output = packets(&b);
-        assert_eq!(output.len(), 1);
+        assert_eq!(output.len(), 2);
         let ip = Ipv4Packet::parse(&output[0]).unwrap();
         assert_eq!(ip.hop_limit(), 63);
         assert_eq!(ip.identification(), 712);
         assert_eq!(ip.bytes()[1], 0x2e);
         assert_eq!(ip.payload(), b"native-transit-without-local-socket");
+        let wrapped = Ipv4Packet::parse(&output[1]).unwrap();
+        assert_eq!(wrapped.hop_limit(), 63);
+        assert_eq!(&wrapped.bytes()[10..12], &[0, 0]);
         assert!(packets(&a).is_empty());
+        // 保留队列领取旧布局后生成的提示，同时发布比原直连更具体的丢弃路由。
+        let reject = network_protocol::Ipv4RouteRequest {
+            kind: network_protocol::RouteKind::Blackhole,
+            interface_index: None,
+            ..static_route(destination, 32, 3, 1)
+        };
+        let change = network_protocol::RouteChange {
+            create: true,
+            delete: false,
+            replace: false,
+            exclusive: false,
+            append: false,
+        };
+        configure_route(&net, reject, change).unwrap();
+        let current = stack(&net).unwrap().receive_snapshot().unwrap();
+        assert_ne!(old_probe, current.prepare_for(destination.into()).annotation[0]);
+        a.wire.lock().unwrap().0.push_back(bytes.clone());
+        poll(&net, 1001);
+        assert!(packets(&a).is_empty());
+        assert!(packets(&b).is_empty());
+        configure_route(&net, reject, network_protocol::RouteChange { delete: true, ..change }).unwrap();
+        // 源地址新成为本域广播后，排队帧携带的旧源前缀不能继续放行。
+        let broadcast = network_protocol::Ipv4RouteRequest {
+            kind: network_protocol::RouteKind::Broadcast,
+            scope: 253,
+            ..static_route(Ipv4Addr::new(10, 40, 0, 9), 32, 2, 1)
+        };
+        configure_route(&net, broadcast, change).unwrap();
+        let packet = device_model::network::ReceivePacket::direct_ip(&bytes).unwrap();
+        let old = a.wire.lock().unwrap().2.receive_snapshot.as_ref().unwrap().1.prepare(packet, true, 2);
+        let new = stack(&net).unwrap().receive_snapshot().unwrap().prepare(packet, true, 2);
+        assert_ne!(old.annotation[6], 0);
+        assert_ne!(old.annotation[6], new.annotation[6]);
+        a.wire.lock().unwrap().0.push_back(bytes.clone());
+        poll(&net, 1001);
+        assert!(packets(&b).is_empty());
+        configure_route(&net, broadcast, network_protocol::RouteChange { delete: true, ..change }).unwrap();
         // TTL 错误引用减 TTL 之前的原包；不继承正向出口。
         let expired = datagram(1, 0, &[], b"expired");
         a.wire.lock().unwrap().0.push_back(expired.clone());
@@ -161,49 +241,54 @@ mod ipv4_forwarding {
     }
     #[test]
     fn unresolved_neighbor_and_tx_backpressure_retry_original_without_resending_fragments() {
+        use core::sync::atomic::Ordering::Relaxed;
         let _serial = SERIAL.lock().unwrap();
         initialize();
-        let (net, a, b) = routing_domain(89402);
-        a.wire
-            .lock()
-            .unwrap()
-            .0
-            .push_back(datagram(9, 0, &[], b"wait-for-neighbor"));
+        let (net, a, b) = routing_domain_with_queues(4, 2);
+        let queue_input = |bytes| a.wire.lock().unwrap().0.push_back(bytes);
+        a.receive_on.store(3, Relaxed);
+        queue_input(datagram(9, 0, &[], b"wait-for-neighbor"));
         poll(&net, 1000);
         assert!(packets(&b).is_empty());
-        b.transmit_available
-            .store(false, core::sync::atomic::Ordering::Relaxed);
+        b.transmit_available.store(false, Relaxed);
         b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
             Ipv4Addr::new(10, 41, 0, 15),
             Ipv4Addr::new(10, 41, 0, 9),
         ));
         poll(&net, 1001);
+        assert!(packets(&b).is_empty());
+        b.transmit_available.store(true, Relaxed);
+        // 上次邻居唤醒已消费。重排的报文等待新可写事件或自己的截止时间。
         poll(&net, 1002);
         assert!(packets(&b).is_empty());
-        b.transmit_available
-            .store(true, core::sync::atomic::Ordering::Relaxed);
-        b.transmit_ready
-            .store(true, core::sync::atomic::Ordering::Relaxed);
+        b.transmit_ready.store(true, Relaxed);
         poll(&net, 1003);
         let output = packets(&b);
         assert_eq!(output.len(), 1);
         let ip = Ipv4Packet::parse(&output[0]).unwrap();
         assert_eq!(ip.hop_limit(), 8);
         assert_eq!(ip.payload(), b"wait-for-neighbor");
+        assert_eq!(b.wire.lock().unwrap().2.last_transmit_queue, Some(1));
         poll(&net, 1004);
         assert!(packets(&b).is_empty());
         // 细小 MTU 使一个包超过本轮 TX 预算；后续轮次只发送尚未发出的区间，不等待 ARP 重试秒表。
         configure_mtu(&net, 3, 68).unwrap();
         let payload = vec![0x5a; 1400];
-        a.wire
-            .lock()
-            .unwrap()
-            .0
-            .push_back(datagram(4, 0, &[1; 40], &payload));
+        queue_input(datagram(4, 0, &[1; 40], &payload));
         poll(&net, 1005);
         let mut fragments = packets(&b);
         assert_eq!(fragments.len(), NETWORK_RX_BUDGET);
-        for time in 1006..1010 {
+        assert_eq!(b.wire.lock().unwrap().2.last_transmit_queue, Some(1));
+        // 旧片继续前进，新数据报在时间已用尽的这一轮仍可发送。
+        queue_input(datagram(9, 0x4000, &[], b"new traffic"));
+        let round = stack(&net).unwrap().lock().unwrap().poll_until(Instant::from_millis(1006), 0);
+        assert!(round.backlog);
+        let mut shared_round = packets(&b);
+        let fresh = shared_round.pop().unwrap();
+        assert_eq!(Ipv4Packet::parse(&fresh).unwrap().payload(), b"new traffic");
+        assert_eq!(shared_round.len(), NETWORK_RX_BUDGET - device_model::network::RECEIVE_BATCH_CAPACITY);
+        fragments.append(&mut shared_round);
+        for time in 1007..1010 {
             poll(&net, time);
             fragments.extend(packets(&b));
         }
@@ -216,6 +301,99 @@ mod ipv4_forwarding {
             restored.extend_from_slice(ip.payload());
         }
         assert_eq!(restored, payload);
+
+        // Keep a genuine queued packet on the primary. A carrier event alone
+        // must move it to the backup before its retransmit deadline.
+        let add = network_protocol::RouteChange {
+            delete: false,
+            replace: false,
+            create: true,
+            exclusive: false,
+            append: false,
+        };
+        let gateway = Ipv4Addr::new(10, 40, 0, 8);
+        configure_route(
+            &net,
+            network_protocol::Ipv4RouteRequest {
+                gateway: Some(gateway.into()),
+                scope: 0,
+                ..static_route(Ipv4Addr::new(10, 41, 0, 0), 24, 2, 100)
+            },
+            add,
+        )
+        .unwrap();
+        queue_input(peer_arp_frame_for(Ipv4Addr::new(10, 40, 0, 15), gateway));
+        b.transmit_available.store(false, Relaxed);
+        queue_input(datagram(9, 0, &[], b"live failover"));
+        poll(&net, 1010);
+        assert!(packets(&a).is_empty() && packets(&b).is_empty());
+        b.set_carrier(false);
+        b.transmit_available.store(true, Relaxed);
+        poll(&net, 1011);
+        assert!(packets(&b).is_empty());
+        let backup = packets(&a);
+        assert_eq!(backup.len(), 1);
+        let ip = Ipv4Packet::parse(&backup[0]).unwrap();
+        assert_eq!((ip.hop_limit(), ip.payload()), (8, &b"live failover"[..]));
+
+        b.set_carrier(true);
+        a.wire
+            .lock()
+            .unwrap()
+            .0
+            .push_back(datagram(9, 0, &[], b"must be retired"));
+        poll(&net, 1012);
+        assert!(
+            packets(&a).is_empty() && packets(&b).is_empty(),
+            "carrier recovery must refresh ARP"
+        );
+        let reject = network_protocol::Ipv4RouteRequest {
+            interface_index: None,
+            kind: network_protocol::RouteKind::Blackhole,
+            scope: 0,
+            ..static_route(Ipv4Addr::new(10, 41, 0, 9), 32, 3, 0)
+        };
+        configure_route(&net, reject, add).unwrap();
+        poll(&net, 1013);
+        configure_route(
+            &net,
+            reject,
+            network_protocol::RouteChange {
+                delete: true,
+                ..add
+            },
+        )
+        .unwrap();
+        b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
+            Ipv4Addr::new(10, 41, 0, 15),
+            Ipv4Addr::new(10, 41, 0, 9),
+        ));
+        poll(&net, 1014);
+        assert!(
+            packets(&a).is_empty() && packets(&b).is_empty(),
+            "retired packet must not reappear after route removal"
+        );
+
+        let reads = b.link_reads.load(Relaxed);
+        queue_input(datagram(9, 0, &[], b"stable carrier"));
+        poll(&net, 1015);
+        assert_eq!(packets(&b).len(), 1);
+        assert_eq!(b.link_reads.load(Relaxed), reads);
+
+        b.set_carrier(false);
+        b.set_carrier(true);
+        queue_input(datagram(9, 0, &[], b"new carrier epoch"));
+        poll(&net, 1016);
+        assert_eq!(b.link_reads.load(Relaxed), reads + 1);
+        assert!(packets(&b).is_empty(), "old neighbor must be retired");
+        b.wire.lock().unwrap().0.push_back(peer_arp_frame_for(
+            Ipv4Addr::new(10, 41, 0, 15),
+            Ipv4Addr::new(10, 41, 0, 9),
+        ));
+        poll(&net, 1017);
+        let resumed = packets(&b);
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(Ipv4Packet::parse(&resumed[0]).unwrap().payload(), b"new carrier epoch");
     }
     #[test]
     fn forwarding_switch_uses_the_existing_write_lease_and_preserves_local_traffic() {
@@ -370,7 +548,7 @@ mod ipv4_forwarding {
 // IPv4 用例不能覆盖 IPv6 的不分片/扩展头作用域、ND 恢复与跨 zone 禁止；沿同一实际双 NIC、FIB 和配置租约验收。
 mod ipv6_forwarding {
     use super::*;
-    use core::net::Ipv6Addr;
+    use core::net::{IpAddr, Ipv6Addr};
     use packet_wire::{
         ethernet::EthernetHeader,
         icmpv6::{Icmpv6Packet, Message},
@@ -379,12 +557,12 @@ mod ipv6_forwarding {
     };
     const OUR_MAC: [u8; 6] = [2, 0, 0, 0, 0, 1];
     const A: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 40, 0, 0, 0, 0, 15);
-    const B: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 41, 0, 0, 0, 0, 15);
-    const FROM: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 40, 0, 0, 0, 0, 9);
-    const TO: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 41, 0, 0, 0, 0, 9);
+    pub(super) const B: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 41, 0, 0, 0, 0, 15);
+    pub(super) const FROM: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 40, 0, 0, 0, 0, 9);
+    pub(super) const TO: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 41, 0, 0, 0, 0, 9);
     const FROM_MAC: [u8; 6] = [2, 0, 0, 0, 0, 9];
-    const TO_MAC: [u8; 6] = [2, 0, 0, 0, 0, 10];
-    fn frame(
+    pub(super) const TO_MAC: [u8; 6] = [2, 0, 0, 0, 0, 10];
+    pub(super) fn frame(
         source: Ipv6Addr,
         destination: Ipv6Addr,
         hop: u8,
@@ -413,7 +591,7 @@ mod ipv6_forwarding {
         .unwrap();
         bytes
     }
-    fn neighbor(
+    pub(super) fn neighbor(
         message: NdMessage,
         source: Ipv6Addr,
         destination: Ipv6Addr,
@@ -446,6 +624,51 @@ mod ipv6_forwarding {
     fn ip(frame: &[u8]) -> Ipv6Packet<'_> {
         Ipv6Packet::parse(&frame[14..]).unwrap()
     }
+    fn wire_payload(frame: &[u8]) -> (IpAddr, IpAddr, &[u8]) {
+        match frame[12..14] {
+            [0x08, 0x00] => {
+                let ip = packet_wire::ipv4::Ipv4Packet::parse(&frame[14..]).unwrap();
+                (ip.source().into(), ip.destination().into(), ip.payload())
+            }
+            [0x86, 0xdd] => {
+                let ip = ip(frame);
+                (
+                    ip.source().into(),
+                    ip.destination().into(),
+                    &ip.bytes()[ip.upper_offset()..],
+                )
+            }
+            _ => panic!("expected an IP frame"),
+        }
+    }
+
+    fn assert_fragmented_udp(
+        pieces: &[Vec<u8>],
+        (source, destination): (IpAddr, IpAddr),
+        ports: (u16, u16),
+    ) {
+        let mut payload = Vec::new();
+        for frame in pieces {
+            let (wire_source, wire_destination, body) = wire_payload(frame);
+            assert_eq!((wire_source, wire_destination), (source, destination));
+            let offset = if source.is_ipv4() {
+                packet_wire::ipv4::Ipv4Packet::parse(&frame[14..])
+                    .unwrap()
+                    .fragment_offset()
+            } else {
+                ip(frame)
+                    .extensions()
+                    .find_map(|header| header.fragment())
+                    .unwrap()
+                    .fragment_offset()
+            };
+            assert_eq!(offset, payload.len());
+            payload.extend_from_slice(body);
+        }
+        let udp = packet_wire::udp::UdpPacket::parse(&payload, source, destination).unwrap();
+        assert_eq!((udp.source_port(), udp.destination_port()), ports);
+    }
+
     fn frames(device: &WireDevice) -> Vec<Vec<u8>> {
         core::mem::take(&mut device.wire.lock().unwrap().1)
     }
@@ -515,12 +738,20 @@ mod ipv6_forwarding {
         ));
     }
 
+    mod retained_policy {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/forwarding_tests/retained_policy.rs"
+        ));
+    }
+
     #[test]
     fn real_ipv6_transit_preserves_opaque_headers_and_scopes_and_resumes_without_reducing_hop_twice()
      {
         let _serial = SERIAL.lock().unwrap();
         initialize();
-        let (net, a, b) = routing_domain(89405);
+        let (net, a, b) = routing_domain_with_queues(2, 2);
+        a.receive_on.store(1, core::sync::atomic::Ordering::Relaxed);
         let addresses = [A, B].map(|address| {
             [router_protocol::configuration::Ipv6Address {
                 address,
@@ -535,6 +766,7 @@ mod ipv6_forwarding {
         let configured = prepare_configuration(&net, plans.into_iter(), None).unwrap();
         configured.activate().unwrap();
         configured.confirm().unwrap();
+        a.wire.lock().unwrap().2.receive_snapshot = stack(&net).unwrap().receive_snapshot().map(|snapshot| (2, snapshot));
         for now in [0, 1000, 2000, 2001] {
             poll(&net, now);
         }
@@ -609,6 +841,7 @@ mod ipv6_forwarding {
         expected[7] = 63;
         assert_eq!(ip(sent[0]).bytes(), expected);
         assert_eq!(&sent[0][..6], &TO_MAC);
+        assert_eq!(b.wire.lock().unwrap().2.last_transmit_queue, Some(1));
         frames(&a);
         // Destination Options 的 discard 动作仅由终点处理；同样的逐跳选项则在本路由器返回参数问题。
         let options = [253, 0, 0x80, 0, 0, 0, 0, 0];
@@ -642,6 +875,11 @@ mod ipv6_forwarding {
         inject(&a, hop.clone());
         poll(&net, 2006);
         error(&frames(&a), 4, 2, 42, &hop[14..]);
+        assert!(data(&frames(&b)).is_empty());
+        let invalid_alert = frame(FROM, TO, 9, 0, &[253, 0, 5, 1, 0, 0, 0, 0]);
+        inject(&a, invalid_alert.clone());
+        poll(&net, 2006);
+        error(&frames(&a), 4, 0, 42, &invalid_alert[14..]);
         assert!(data(&frames(&b)).is_empty());
         let expired = frame(FROM, TO, 1, 253, b"hop-limit");
         inject(&a, expired.clone());
@@ -766,5 +1004,17 @@ mod ipv6_forwarding {
         inject(&a, original);
         poll(&net, 2019);
         assert_eq!(data(&frames(&b)).len(), 1);
+
+        use core::sync::atomic::Ordering::Relaxed;
+        b.transmit_available.store(false, Relaxed);
+        let queued = frame(FROM, TO, 7, 253, b"withdraw IPv6 egress");
+        inject(&a, queued.clone());
+        poll(&net, 2020);
+        assert!(data(&frames(&b)).is_empty());
+        b.set_carrier(false);
+        b.transmit_available.store(true, Relaxed);
+        poll(&net, 2021);
+        assert!(data(&frames(&b)).is_empty());
+        error(&frames(&a), 1, 0, 0, &queued[14..]);
     }
 }

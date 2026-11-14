@@ -18,6 +18,9 @@ fn ipv4_static_route_uses_an_ipv6_neighbor_on_an_ipv6_only_egress() {
     }"#).unwrap();
     let bytes = config
         .route_source(Family::Ipv4, |name| {
+            let router_protocol::configuration::InterfaceReference::Device(name) = name else {
+                unreachable!("physical fixture");
+            };
             Ok(name.matches(b"eth1", [0; 6]).then_some(3))
         })
         .unwrap();
@@ -51,12 +54,21 @@ fn ipv4_static_route_uses_an_ipv6_neighbor_on_an_ipv6_only_egress() {
     let path = crate::inet::configuration::route_lookup(&net, lookup).unwrap();
     assert_eq!(
         (path.interface_index, path.source, path.gateway, path.table),
-        (3, Ipv4Addr::new(10, 40, 0, 15).into(), Some(PEER.into()), 254)
+        (
+            3,
+            Ipv4Addr::new(10, 40, 0, 15).into(),
+            Some(PEER.into()),
+            254
+        )
     );
     assert_eq!(
-        crate::inet::configuration::route_lookup(&net, network_protocol::routes::RouteLookup {
-            source: Ipv4Addr::new(203, 0, 113, 1).into(), ..lookup
-        }),
+        crate::inet::configuration::route_lookup(
+            &net,
+            network_protocol::routes::RouteLookup {
+                source: Ipv4Addr::new(203, 0, 113, 1).into(),
+                ..lookup
+            }
+        ),
         Err(SocketError::AddressNotAvailable)
     );
     let snapshot = route_snapshot::<Ipv4Addr>(&net).unwrap();
@@ -157,13 +169,26 @@ fn recursive_ipv4_route_follows_ipv6_underlay_preference_and_withdrawal() {
     }"#).unwrap();
     let mut routes = Routes::default();
     let mut capture = |family| {
-        let bytes = configuration.route_source(family, |device| {
-            Ok([(2, b"eth0"), (3, b"eth1")].into_iter()
-                .find_map(|(index, name)| device.matches(name, [0; 6]).then_some(index)))
-        }).unwrap();
+        let bytes = configuration
+            .route_source(family, |device| {
+                let router_protocol::configuration::InterfaceReference::Device(device) = device
+                else {
+                    unreachable!("physical fixture");
+                };
+                Ok([(2, b"eth0"), (3, b"eth1")]
+                    .into_iter()
+                    .find_map(|(index, name)| device.matches(name, [0; 6]).then_some(index)))
+            })
+            .unwrap();
         let id = routes.reserve_source().unwrap();
-        let captured = Routes::capture_source(id, CONFIGURATION_DOMAIN,
-            STATIC_PROTOCOL, 1, Batch::parse(&bytes).unwrap()).unwrap();
+        let captured = Routes::capture_source(
+            id,
+            CONFIGURATION_DOMAIN,
+            STATIC_PROTOCOL,
+            1,
+            Batch::parse(&bytes).unwrap(),
+        )
+        .unwrap();
         (id, captured)
     };
     let (source, source4) = capture(Family::Ipv4);
@@ -175,30 +200,72 @@ fn recursive_ipv4_route_follows_ipv6_underlay_preference_and_withdrawal() {
         transaction.confirm().unwrap();
         prepared.next
     };
-    let initial = routes.prepare_configuration(&routing_facts(&net), &[], &[source4, source6], None, None).unwrap();
+    let initial = routes
+        .prepare_configuration(&routing_facts(&net), &[], &[source4, source6], None, None)
+        .unwrap();
     routes = activate(initial);
     let destination = Ipv4Addr::new(203, 0, 113, 9);
-    let target = Query { address: destination.into(), prefix_length: None, resolve_via_default: false };
-    let logical = Query { address: "2001:db8:900::9".parse().unwrap(), ..target };
+    let target = Query {
+        address: destination.into(),
+        prefix_length: None,
+        resolve_via_default: false,
+    };
+    let logical = Query {
+        address: "2001:db8:900::9".parse().unwrap(),
+        ..target
+    };
     let candidate = "192.0.2.1".parse().unwrap();
     let probes = [
-        installation::Installation { interface: None, network: candidate, length: 32, next_hop: logical },
-        installation::Installation { interface: None, network: candidate, length: 32, next_hop: target },
-        installation::Installation { interface: None, network: destination.into(), length: 32, next_hop: target },
+        installation::Installation {
+            interface: None,
+            network: candidate,
+            length: 32,
+            next_hop: logical,
+        },
+        installation::Installation {
+            interface: None,
+            network: candidate,
+            length: 32,
+            next_hop: target,
+        },
+        installation::Installation {
+            interface: None,
+            network: destination.into(),
+            length: 32,
+            next_hop: target,
+        },
     ];
     let observe = |routes: &Routes, gateway: Option<router_protocol::tracking::Adjacency>| {
         let snapshot = routes.snapshot().unwrap();
         let encoded = snapshot.encode(&[target]).unwrap();
         let view = Snapshot::parse(&encoded).unwrap().records().next().unwrap();
-        assert_eq!(view.state, if gateway.is_some() { RouteState::Forward } else { RouteState::NoRoute });
+        assert_eq!(
+            view.state,
+            if gateway.is_some() {
+                RouteState::Forward
+            } else {
+                RouteState::NoRoute
+            }
+        );
         assert_eq!(view.members().next().map(|member| member.target), gateway);
         let bytes = snapshot.evaluate_installations(source, &probes).unwrap();
-        let verdicts = installation::decode_outcomes(&bytes, source, snapshot.generation(), probes.len()).unwrap();
-        assert!(verdicts.iter().map(|verdict| verdict.reachable).eq([gateway.is_some(), gateway.is_some(), false]));
+        let verdicts =
+            installation::decode_outcomes(&bytes, source, snapshot.generation(), probes.len())
+                .unwrap();
+        assert!(verdicts.iter().map(|verdict| verdict.reachable).eq([
+            gateway.is_some(),
+            gateway.is_some(),
+            false
+        ]));
     };
-    observe(&routes, Some(router_protocol::tracking::Adjacency {
-        interface_index: 3, gateway: Some(PEER.into()), on_link: false,
-    }));
+    observe(
+        &routes,
+        Some(router_protocol::tracking::Adjacency {
+            interface_index: 3,
+            gateway: Some(PEER.into()),
+            on_link: false,
+        }),
+    );
     let endpoint = scoped_endpoint(&net, InetProtocol::Udp);
     let remote = InetAddress::new(destination.into(), 41000);
     let send = |egress: &WireDevice, next: Ipv6Addr, time| {
@@ -209,24 +276,43 @@ fn recursive_ipv4_route_follows_ipv6_underlay_preference_and_withdrawal() {
         poll(&net, time + 1);
         assert!(frames(egress).iter().any(|frame| {
             let wire = EthernetFrame::parse(frame).unwrap();
-            wire.type_or_length() == 0x0800 && Ipv4Packet::parse(wire.payload()).is_ok_and(|ip| {
-                ip.destination() == destination && ip.protocol() == 17 && wire.destination() == MAC
-            })
+            wire.type_or_length() == 0x0800
+                && Ipv4Packet::parse(wire.payload()).is_ok_and(|ip| {
+                    ip.destination() == destination
+                        && ip.protocol() == 17
+                        && wire.destination() == MAC
+                })
         }));
     };
     send(&primary, PEER, 3000);
 
     configure_up(&net, 3, false).unwrap();
-    routes = activate(routes.prepare_sources(&routing_facts(&net), None, &[]).unwrap());
+    routes = activate(
+        routes
+            .prepare_sources(&routing_facts(&net), None, &[])
+            .unwrap(),
+    );
     let alternate: Ipv6Addr = "fe80::3".parse().unwrap();
-    observe(&routes, Some(router_protocol::tracking::Adjacency {
-        interface_index: 2, gateway: Some(alternate.into()), on_link: false,
-    }));
+    observe(
+        &routes,
+        Some(router_protocol::tracking::Adjacency {
+            interface_index: 2,
+            gateway: Some(alternate.into()),
+            on_link: false,
+        }),
+    );
     send(&backup, alternate, 4000);
 
-    routes = activate(routes.prepare_sources(&routing_facts(&net), None, &[underlay]).unwrap());
+    routes = activate(
+        routes
+            .prepare_sources(&routing_facts(&net), None, &[underlay])
+            .unwrap(),
+    );
     observe(&routes, None);
-    assert_eq!(endpoint.send_to(b"withdrawn", Some(remote), &[]), Err(SocketError::NetworkUnreachable));
+    assert_eq!(
+        endpoint.send_to(b"withdrawn", Some(remote), &[]),
+        Err(SocketError::NetworkUnreachable)
+    );
     endpoint.close_description();
 }
 
@@ -310,7 +396,9 @@ fn withdrawn_bgp_route_can_recover_its_failed_gateway_without_traffic() {
       "interfaces":{"uplink":{"device":{"kind":"name","value":"eth0"}}},
       "routes":[{"destination":"2001:db8:900::9","prefix_length":128,"preference":20,"action":{"kind":"forward","members":[{"target":{"kind":"direct","interface":"uplink","gateway":"fe80::2","on_link":true}}]}}]
     }"#).unwrap();
-    let bytes = configuration.route_source(Family::Ipv6, |_| Ok(Some(2))).unwrap();
+    let bytes = configuration
+        .route_source(Family::Ipv6, |_| Ok(Some(2)))
+        .unwrap();
     let empty = Batch::encode(
         Family::Ipv6,
         &[],
@@ -337,8 +425,11 @@ fn withdrawn_bgp_route_can_recover_its_failed_gateway_without_traffic() {
         transaction.confirm().unwrap();
         prepared.next
     };
-    routes =
-        install(routes.prepare_sources(&routing_facts(&net), Some(capture(&bytes)), &[]).unwrap());
+    routes = install(
+        routes
+            .prepare_sources(&routing_facts(&net), Some(capture(&bytes)), &[])
+            .unwrap(),
+    );
     let socket = socket6(&net);
     let peer = InetAddress::new(destination.into(), 44000);
     enqueue(&device, request(PEER, LOCAL));
@@ -351,27 +442,46 @@ fn withdrawn_bgp_route_can_recover_its_failed_gateway_without_traffic() {
         poll(&net, time);
     }
     frames(&device);
-    routes = install(routes.prepare_sources(&routing_facts(&net), None, &[]).unwrap());
+    routes = install(
+        routes
+            .prepare_sources(&routing_facts(&net), None, &[])
+            .unwrap(),
+    );
 
-    let destination_query =
-        Query { address: destination.into(), prefix_length: None, resolve_via_default: false };
+    let destination_query = Query {
+        address: destination.into(),
+        prefix_length: None,
+        resolve_via_default: false,
+    };
     let probe = Installation {
         network: destination.into(),
         length: 128,
         interface: core::num::NonZeroU32::new(2),
-        next_hop: Query { address: PEER.into(), ..destination_query },
+        next_hop: Query {
+            address: PEER.into(),
+            ..destination_query
+        },
     };
-    let removed = routes.prepare_source(&routing_facts(&net), capture(&empty), &[probe]).unwrap();
+    let removed = routes
+        .prepare_source(&routing_facts(&net), capture(&empty), &[probe])
+        .unwrap();
     assert!(!removed.outcomes[0].reachable);
     assert!(removed.recovery_changed);
     assert_eq!(
-        removed.next.snapshot().unwrap().lookup(destination_query).state,
+        removed
+            .next
+            .snapshot()
+            .unwrap()
+            .lookup(destination_query)
+            .state,
         RouteState::NoRoute
     );
     routes = install(removed);
 
     let facts = routing_facts(&net);
-    let unchanged = routes.prepare_source(&facts, capture(&empty), &[probe]).unwrap();
+    let unchanged = routes
+        .prepare_source(&facts, capture(&empty), &[probe])
+        .unwrap();
     assert!(!unchanged.recovery_changed);
     let retired = routes.prepare_sources(&facts, None, &[source]).unwrap();
     let batch = network_protocol::ConfigurationBatch::parse(&retired.encoded).unwrap();
@@ -379,7 +489,11 @@ fn withdrawn_bgp_route_can_recover_its_failed_gateway_without_traffic() {
     let transaction = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
     transaction.activate().unwrap();
     transaction.abort().unwrap();
-    routes = install(routes.prepare_sources(&routing_facts(&net), None, &[]).unwrap());
+    routes = install(
+        routes
+            .prepare_sources(&routing_facts(&net), None, &[])
+            .unwrap(),
+    );
 
     // 不触发应用发送，也不由邻居主动发通告。
     poll(&net, 12002);
@@ -389,7 +503,9 @@ fn withdrawn_bgp_route_can_recover_its_failed_gateway_without_traffic() {
     );
     reply_gateway(&device, PEER, &MAC);
     poll(&net, 12003);
-    let recovered = routes.prepare_source(&routing_facts(&net), capture(&bytes), &[probe]).unwrap();
+    let recovered = routes
+        .prepare_source(&routing_facts(&net), capture(&bytes), &[probe])
+        .unwrap();
     assert!(recovered.outcomes[0].reachable);
     assert!(recovered.recovery_changed);
     let batch = network_protocol::ConfigurationBatch::parse(&recovered.encoded).unwrap();
@@ -431,19 +547,32 @@ fn static_ipv6_gateway_uses_backup_until_neighbor_confirms_recovery() {
     let alternate_mac = [2, 0, 0, 0, 0, 33];
     install_static_gateway_routes(&net);
     let lookup = |destination| {
-        crate::inet::configuration::route_lookup(&net, network_protocol::routes::RouteLookup {
-            destination: core::net::IpAddr::V6(destination),
-            source: Ipv6Addr::UNSPECIFIED.into(),
-            direction: network_protocol::routes::RouteDirection::Output(None),
-        mark: 0,
-        }).unwrap()
+        crate::inet::configuration::route_lookup(
+            &net,
+            network_protocol::routes::RouteLookup {
+                destination: core::net::IpAddr::V6(destination),
+                source: Ipv6Addr::UNSPECIFIED.into(),
+                direction: network_protocol::routes::RouteDirection::Output(None),
+                mark: 0,
+            },
+        )
+        .unwrap()
     };
     let local = lookup(Ipv6Addr::LOCALHOST);
-    assert_eq!((local.interface_index, local.table, local.kind, local.gateway),
-        (1, 255, network_protocol::RouteKind::Local, None));
+    assert_eq!(
+        (
+            local.interface_index,
+            local.table,
+            local.kind,
+            local.gateway
+        ),
+        (1, 255, network_protocol::RouteKind::Local, None)
+    );
     assert_eq!(lookup(destination).gateway, Some(PEER.into()));
     let snapshot = route_snapshot::<Ipv6Addr>(&net).unwrap();
-    let paths = snapshot.iter().filter(|row| row.route.destination == destination);
+    let paths = snapshot
+        .iter()
+        .filter(|row| row.route.destination == destination);
     assert!(paths.map(|row| row.route.metric).eq([100, 1]));
 
     enqueue(&device, request(PEER, LOCAL));
@@ -470,7 +599,10 @@ fn static_ipv6_gateway_uses_backup_until_neighbor_confirms_recovery() {
         .find(|row| row.address == PEER)
         .unwrap();
     assert_eq!(gateway.state, network_protocol::NeighborState::Failed);
-    assert!(!gateway.is_router, "static configuration leaves the Router flag intact");
+    assert!(
+        !gateway.is_router,
+        "static configuration leaves the Router flag intact"
+    );
     assert!(data().is_empty());
 
     poll(&net, 12002);
@@ -503,7 +635,13 @@ fn recursive_ipv6_route_switches_and_recovers_without_traffic_to_parent_prefix()
     let changes = Arc::new(crate::Event::default());
     observe_interfaces(&net, changes.clone()).unwrap();
     let device = Arc::new(WireDevice::new());
-    let index = install_interface(&net, device.clone(), crate::Channel, crate::Event::default()).unwrap();
+    let index = install_interface(
+        &net,
+        device.clone(),
+        crate::Channel,
+        crate::Event::default(),
+    )
+    .unwrap();
     configure_up(&net, index, true).unwrap();
     ready(&net, &device);
     let mut routes = install_static_gateway_routes(&net);
@@ -512,10 +650,18 @@ fn recursive_ipv6_route_switches_and_recovers_without_traffic_to_parent_prefix()
     let destination: Ipv6Addr = "2001:db8:901::9".parse().unwrap();
     let endpoint = socket6(&net);
     let peer = InetAddress::new(destination.into(), 44333);
-    let send = || endpoint.send_to(b"recursive route", Some(peer), &[]).unwrap();
-    let prepare = |bytes| {
-        crate::inet::prepare_configuration(&net, Some(ConfigurationBatch::parse(bytes).unwrap()), None)
+    let send = || {
+        endpoint
+            .send_to(b"recursive route", Some(peer), &[])
             .unwrap()
+    };
+    let prepare = |bytes| {
+        crate::inet::prepare_configuration(
+            &net,
+            Some(ConfigurationBatch::parse(bytes).unwrap()),
+            None,
+        )
+        .unwrap()
     };
     let input_mask = NetworkInstaller::TOPOLOGY_CHANGED | NetworkInstaller::GATEWAYS_CHANGED;
     changes.signal(input_mask, 0).unwrap();
@@ -529,23 +675,34 @@ fn recursive_ipv6_route_switches_and_recovers_without_traffic_to_parent_prefix()
         poll(&net, time);
     }
     frames(&device);
-    assert_eq!(changes.0.load(Ordering::Relaxed), NetworkInstaller::GATEWAYS_CHANGED);
+    assert_eq!(
+        changes.0.load(Ordering::Relaxed),
+        NetworkInstaller::GATEWAYS_CHANGED
+    );
     changes.signal(input_mask, 0).unwrap();
 
-    let backup = routes.prepare_sources(&routing_facts(&net), None, &[]).unwrap();
+    let backup = routes
+        .prepare_sources(&routing_facts(&net), None, &[])
+        .unwrap();
     let batch = ConfigurationBatch::parse(&backup.encoded).unwrap();
     assert!(batch.gateway_probes().eq([(index, PEER.into())]));
     let transaction = prepare(&backup.encoded);
     transaction.activate().unwrap();
     transaction.abort().unwrap();
     poll(&net, 12002);
-    assert!(!sent_gateway_probe(&device, PEER), "rollback retires the new probe");
+    assert!(
+        !sent_gateway_probe(&device, PEER),
+        "rollback retires the new probe"
+    );
     let transaction = prepare(&backup.encoded);
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
     routes = backup.next;
     poll(&net, 12003);
-    assert!(sent_gateway_probe(&device, PEER), "the failed gateway stays monitored after its route retires");
+    assert!(
+        sent_gateway_probe(&device, PEER),
+        "the failed gateway stays monitored after its route retires"
+    );
 
     send();
     for time in [12004, 12005] {
@@ -558,13 +715,27 @@ fn recursive_ipv6_route_switches_and_recovers_without_traffic_to_parent_prefix()
     poll(&net, 72002);
     assert!(!sent_gateway_probe(&device, PEER));
     poll(&net, 72003);
-    assert!(sent_gateway_probe(&device, PEER), "monitor retries without new application traffic");
+    assert!(
+        sent_gateway_probe(&device, PEER),
+        "monitor retries without new application traffic"
+    );
     assert_eq!(changes.0.load(Ordering::Relaxed), 0);
     reply_gateway(&device, PEER, &MAC);
     poll(&net, 72004);
-    assert_eq!(changes.0.load(Ordering::Relaxed), NetworkInstaller::GATEWAYS_CHANGED);
-    let recovered = routes.prepare_sources(&routing_facts(&net), None, &[]).unwrap();
-    assert_eq!(ConfigurationBatch::parse(&recovered.encoded).unwrap().gateway_probes().len(), 0);
+    assert_eq!(
+        changes.0.load(Ordering::Relaxed),
+        NetworkInstaller::GATEWAYS_CHANGED
+    );
+    let recovered = routes
+        .prepare_sources(&routing_facts(&net), None, &[])
+        .unwrap();
+    assert_eq!(
+        ConfigurationBatch::parse(&recovered.encoded)
+            .unwrap()
+            .gateway_probes()
+            .len(),
+        0
+    );
     let transaction = prepare(&recovered.encoded);
     transaction.activate().unwrap();
     transaction.confirm().unwrap();

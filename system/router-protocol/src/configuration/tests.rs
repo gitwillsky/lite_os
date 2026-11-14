@@ -15,9 +15,10 @@ fn configuration_difference_keeps_ordered_arrays_null_and_escaped_object_names()
     after.interfaces.get_mut(&name).unwrap().display_name = Some("Office".into());
     after.dns.search_list.reverse();
     let changes: serde_json::Value =
-        serde_json::from_slice(&before.difference_json(&after).unwrap()).unwrap();
+        serde_json::from_slice(&Configuration::difference_json(Some(&before), &after).unwrap())
+            .unwrap();
     let changes = changes.as_array().unwrap();
-    assert_eq!(changes.len(), 2);
+    assert_eq!(changes.len(), 3);
     let display = changes
         .iter()
         .find(|change| change["path"] == "/interfaces/uplink~0~1wan/display_name")
@@ -27,12 +28,13 @@ fn configuration_difference_keeps_ordered_arrays_null_and_escaped_object_names()
     assert_eq!(display["after"], "Office");
     let search = changes
         .iter()
-        .find(|change| change["path"] == "/dns/search_list")
+        .find(|change| change["path"] == "/dns/search_list/0")
         .unwrap();
-    assert_eq!(search["after"][0], "second.test");
+    assert_eq!(search["after"], "second.test");
     after.interfaces.clear();
     let removed: serde_json::Value =
-        serde_json::from_slice(&before.difference_json(&after).unwrap()).unwrap();
+        serde_json::from_slice(&Configuration::difference_json(Some(&before), &after).unwrap())
+            .unwrap();
     let removed = removed
         .as_array()
         .unwrap()
@@ -41,6 +43,118 @@ fn configuration_difference_keeps_ordered_arrays_null_and_escaped_object_names()
         .unwrap();
     assert!(removed.as_object().unwrap().contains_key("before"));
     assert!(!removed.as_object().unwrap().contains_key("after"));
+
+    before.dns.search_list.push("third.test".into());
+    let mut after = before.clone();
+    after.dns.search_list.remove(1);
+    for (old, new, side) in [(&before, &after, "before"), (&after, &before, "after")] {
+        let delta = Configuration::difference_json(Some(old), new).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&delta).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["path"], "/dns/search_list/1");
+        assert_eq!(rows[0][side], "second.test");
+        assert_eq!(rows[0].as_object().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn ospf_review_masks_changed_keys_in_fields_and_whole_protocols() {
+    let mut before = Configuration::default();
+    before.ensure_interface(b"eth0", None).unwrap();
+    let name = before.interfaces.keys().next().unwrap().clone();
+    before.ospf = Some(
+        serde_json::from_value(serde_json::json!({
+            "router_id": "192.0.2.1",
+            "links": { (name.as_str()): {
+                "area": "0.0.0.0",
+                "v2": { "hello": 10, "dead": 40 },
+                "v3": { "timers": { "hello": 10, "dead": 40 } },
+                "v2_authentication": { "send_id": 1, "keys": { "1": "fixture-v2-before" } },
+                "v3_authentication": { "send_id": 2, "keys": { "2": "fixture-v3-before" } },
+            } }
+        }))
+        .unwrap(),
+    );
+    let mut after = before.clone();
+    let link = after.ospf.as_mut().unwrap().links.get_mut(&name).unwrap();
+    let auth = link.v2_authentication.as_mut().unwrap();
+    auth.keys.insert(
+        1,
+        crate::ospf::Secret::new("fixture-v2-after".into()).unwrap(),
+    );
+
+    let difference = |old: Option<&Configuration>, new: &Configuration| {
+        let diff = Configuration::difference_json(old, new).unwrap();
+        let diff = core::str::from_utf8(&diff).unwrap();
+        assert!(!diff.contains("fixture-v"));
+        serde_json::from_str::<Vec<serde_json::Value>>(diff).unwrap()
+    };
+    let changed = difference(Some(&before), &after);
+    assert_eq!(changed.len(), 1);
+    assert!(
+        changed[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/v2_authentication/keys/1")
+    );
+    assert_eq!(changed[0]["before"], "[已隐藏]");
+    assert_eq!(changed[0]["after"], "[已隐藏]");
+    let added = difference(None, &before);
+    let added = added.iter().find(|row| row["path"] == "/ospf").unwrap();
+    assert_eq!(
+        added["after"]["links"][name.as_str()]["v3_authentication"]["keys"]["2"],
+        "[已隐藏]"
+    );
+    after.ospf = None;
+    let removed = difference(Some(&before), &after);
+    assert_eq!(
+        removed[0]["before"]["links"][name.as_str()]["v2_authentication"]["keys"]["1"],
+        "[已隐藏]"
+    );
+    assert!(
+        core::str::from_utf8(&before.encode().unwrap())
+            .unwrap()
+            .contains("fixture-v2-before")
+    );
+
+    // 新增整个具名域时差异直接输出子树，认证密钥仍须遮蔽。
+    let mut isolated = Configuration::default();
+    let domain_name = Name::try_from("edge/~".to_string()).unwrap();
+    let mac = [2, 0, 0, 0, 0, 2];
+    let mut domain: RoutingDomain = serde_json::from_str("{}").unwrap();
+    domain
+        .interfaces
+        .insert(name.clone(), Interface::new(DeviceMatch::Mac(mac)));
+    domain.ipv4_forwarding = false;
+    domain.ospf = before.ospf.clone();
+    let session = domain.ospf_session().unwrap().unwrap();
+    assert_eq!(
+        session.links[&name].device,
+        crate::ospf::Binding::Physical(DeviceMatch::Mac(mac))
+    );
+    assert_eq!(session.forwarding, [false, true]);
+    assert!(session.needs_authentication_epoch());
+    isolated.routing_domains.insert(domain_name.clone(), domain);
+    let added = difference(None, &isolated);
+    let row = added
+        .iter()
+        .find(|row| row["path"] == "/routing_domains")
+        .unwrap();
+    assert_eq!(
+        row["after"][domain_name.as_str()]["ospf"]["links"][name.as_str()]["v3_authentication"]["keys"]
+            ["2"],
+        "[已隐藏]"
+    );
+    isolated
+        .routing_domains
+        .get_mut(&domain_name)
+        .unwrap()
+        .interfaces
+        .clear();
+    assert_eq!(
+        isolated.validate().unwrap_err().path,
+        "/routing_domains/edge~1~0/ospf/links/eth0"
+    );
 }
 
 #[test]
@@ -125,7 +239,13 @@ fn configuration_round_trip_keeps_native_identity_and_full_dns_policy() {
     let bytes = configuration.encode().unwrap();
     let loaded = Configuration::decode(&bytes).unwrap();
     assert_eq!(loaded, configuration);
-    assert!(!format!("{loaded:?}").contains("fixture-shared-key"), "configuration Debug must redact authentication secrets");
+    assert!(
+        !format!("{loaded:?}").contains("fixture-shared-key"),
+        "configuration Debug must redact authentication secrets"
+    );
+    let review = Configuration::difference_json(None, &configuration).unwrap();
+    let review = core::str::from_utf8(&review).unwrap();
+    assert!(review.contains("[已隐藏]") && !review.contains("fixture-shared-key"));
     let permit = &loaded
         .bgp
         .as_ref()
@@ -561,7 +681,11 @@ fn bgp_neighbor_scopes_and_families_survive_configuration_roundtrip() {
         br#"{
       "local_as":65000,"identifier":"192.0.2.1","neighbors":{"six":{
         "address":"fe80::2","interface":"eth0","asn":65001,"preference":20,
-        "hold_seconds":90,"retry_seconds":5,"passive":false,"ipv4_unicast":false,"ipv6_unicast":true
+        "hold_seconds":90,"retry_seconds":5,"passive":false,"ipv4_unicast":false,"ipv6_unicast":true,
+        "tcp_ao":{"send_id":9,"receive_id":19,"keys":[
+          {"send_id":9,"receive_id":19,"algorithm":"hmac_sha1","secret":"fixture-ao-old"},
+          {"send_id":10,"receive_id":20,"algorithm":"aes128_cmac","secret":"fixture-ao-new"}
+        ]}
       }}}"#,
     )
     .unwrap();
@@ -579,6 +703,63 @@ fn bgp_neighbor_scopes_and_families_survive_configuration_roundtrip() {
     };
     let loaded = Configuration::decode(&configuration.encode().unwrap()).unwrap();
     assert_eq!(loaded, configuration);
+    assert!(!format!("{loaded:?}").contains("fixture-ao-"));
+    let review = Configuration::difference_json(None, &configuration).unwrap();
+    let review = core::str::from_utf8(&review).unwrap();
+    assert!(review.contains("[已隐藏]") && !review.contains("fixture-ao-"));
+    // 整个路由域新增时，差异以一个子树输出。子树和单字段都必须遮蔽密钥。
+    let domain_name = Name::try_from("edge/~".to_string()).unwrap();
+    let mut domain: RoutingDomain = serde_json::from_value(serde_json::json!({"interfaces": {
+        "eth0": { "device": { "kind": "mac", "value": [2, 0, 0, 0, 0, 1] } },
+        "eth1": { "device": { "kind": "mac", "value": [2, 0, 0, 0, 0, 2] } }
+    }}))
+    .unwrap();
+    domain.bgp = Some(bgp.clone());
+    let mut scoped = Configuration::default();
+    scoped.routing_domains.insert(domain_name.clone(), domain);
+    let review = Configuration::difference_json(None, &scoped).unwrap();
+    let review = core::str::from_utf8(&review).unwrap();
+    assert!(review.contains("[已隐藏]") && !review.contains("fixture-ao-"));
+    let mut rotated = bgp.clone();
+    let ao = rotated
+        .neighbors
+        .get_mut(&name)
+        .unwrap()
+        .tcp_ao
+        .as_mut()
+        .unwrap();
+    ao.send_id = 10;
+    ao.receive_id = 20;
+    ao.keys.remove(0);
+    rotated.validate().unwrap();
+    assert!(bgp.supports_live_update(&rotated));
+    let mut changed = scoped.clone();
+    changed.routing_domains.get_mut(&domain_name).unwrap().bgp = Some(rotated.clone());
+    let review = Configuration::difference_json(Some(&scoped), &changed).unwrap();
+    let review = core::str::from_utf8(&review).unwrap();
+    assert!(review.contains("[已隐藏]") && !review.contains("fixture-ao-"));
+    changed
+        .routing_domains
+        .get_mut(&domain_name)
+        .unwrap()
+        .interfaces
+        .remove(&Name::try_from("eth1".to_string()).unwrap());
+    assert_eq!(
+        changed.validate().unwrap_err().path,
+        "/routing_domains/edge~1~0/bgp/neighbors/another-link/interface"
+    );
+    assert!(!bgp.neighbors[&name].shutdown);
+    rotated.neighbors.get_mut(&name).unwrap().shutdown = true;
+    let stopped = crate::bgp::Configuration::parse(&rotated.encode().unwrap()).unwrap();
+    assert!(stopped.neighbors[&name].shutdown);
+    assert!(bgp.supports_live_update(&stopped) && stopped.supports_live_update(&bgp));
+    let peer = rotated.neighbors.get_mut(&name).unwrap();
+    peer.md5_password = serde_json::from_str(r#""fixture-md5""#).unwrap();
+    assert!(rotated.validate().unwrap_err().path.ends_with("/tcp_ao"));
+    let peer = rotated.neighbors.get_mut(&name).unwrap();
+    peer.md5_password = None;
+    peer.tcp_ao = None;
+    assert!(!bgp.supports_live_update(&rotated));
     bgp.neighbors.get_mut(&name).unwrap().interface = other.interface;
     assert_eq!(
         bgp.validate().unwrap_err().message,
@@ -743,5 +924,49 @@ fn dhcp_pool_derives_its_subnet_and_rejects_the_server_in_the_range() {
     assert_eq!(
         configuration.validate().unwrap_err().path,
         "/interfaces/eth1/dhcp_v4_server"
+    );
+}
+
+// 使用实际导入格式覆盖 VLAN 名称与设备名混淆，以及缺少可用上游时的执行正文。
+#[test]
+fn dns_forwarding_accepts_vlan_bindings_and_unavailable_scoped_upstreams() {
+    use crate::dns_cache::{Binding, Settings};
+
+    let mut configuration = Configuration::decode(br#"{
+        "version":1,
+        "interfaces":{"trunk":{"device":{"kind":"name","value":"eth0"}}},
+        "bridges":{"lan":{"ports":{"trunk":{"vlans":{"10":"tagged","20":"tagged"}}},
+            "gateways":{
+                "10":{"name":"office","address":"192.0.2.1","prefix_length":24,
+                      "ipv6":[{"address":"fd00:10::1","prefix_length":64}]},
+                "20":{"name":"resolvers","ipv6":[{"address":"fd00:20::1","prefix_length":64}]}
+            }
+        }},
+        "dns":{"search_list":[],"primary_suffix":"","append_parent_suffixes":false,"forwarding":{
+            "listen":[{"interface":"office","address":"192.0.2.1"},{"interface":"office","address":"fd00:10::1"}],
+            "upstream":[{"interface":"resolvers","address":"fe80::53"}]
+        }}
+    }"#).unwrap();
+    let forwarding = configuration.dns.forwarding.as_ref().unwrap();
+    let settings = Settings {
+        listen: forwarding
+            .listen
+            .iter()
+            .map(|entry| Binding {
+                interface: 11,
+                address: entry.address,
+            })
+            .collect(),
+        upstream: Vec::new(),
+    };
+    assert_eq!(
+        Settings::decode(&settings.encode().unwrap()).unwrap(),
+        settings
+    );
+    let forwarding = configuration.dns.forwarding.as_mut().unwrap();
+    forwarding.listen[1].interface = forwarding.upstream[0].interface.clone().unwrap();
+    assert_eq!(
+        configuration.validate().unwrap_err().path,
+        "/dns/forwarding"
     );
 }

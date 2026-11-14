@@ -5,6 +5,7 @@ use core::{fmt, net::IpAddr};
 use md5::{Digest, Md5};
 use packet_wire::{
     PacketError,
+    checksum::transport_pseudo_header,
     tcp::{TcpPacket, options::TcpOption},
 };
 use subtle::ConstantTimeEq;
@@ -55,25 +56,9 @@ impl Md5Key {
         destination: IpAddr,
     ) -> Result<[u8; 16], PacketError> {
         let mut hash = Md5::new();
-        match (source, destination) {
-            (IpAddr::V4(source), IpAddr::V4(destination)) => {
-                let length =
-                    u16::try_from(packet.bytes().len()).map_err(|_| PacketError::Capacity)?;
-                hash.update(source.octets());
-                hash.update(destination.octets());
-                hash.update([0, 6]);
-                hash.update(length.to_be_bytes());
-            }
-            (IpAddr::V6(source), IpAddr::V6(destination)) => {
-                let length =
-                    u32::try_from(packet.bytes().len()).map_err(|_| PacketError::Capacity)?;
-                hash.update(source.octets());
-                hash.update(destination.octets());
-                hash.update(length.to_be_bytes());
-                hash.update([0, 0, 0, 6]);
-            }
-            _ => return Err(PacketError::Malformed),
-        }
+        transport_pseudo_header(source, destination, 6, packet.bytes().len(), |bytes| {
+            hash.update(bytes);
+        })?;
         // The original Data Offset and flags participate; all options and only the checksum are excluded.
         hash.update(&packet.bytes()[..16]);
         hash.update([0, 0]);

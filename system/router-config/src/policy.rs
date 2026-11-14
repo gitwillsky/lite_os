@@ -8,12 +8,17 @@ use core::net::Ipv4Addr;
 
 use router_protocol::{Decoder, InterfaceConfig, Invalid, Method, connection_name, dns_suffix};
 
+use router_protocol::administration::CommitId;
 use router_protocol::configuration::{Configuration, DEFAULT_MTU, Ipv4Configuration};
 
 /// 配置对象的稳定存储身份；格式迁移不创建第二份配置文件。
 pub(crate) const SETTINGS_FILE: &[u8] = b"interfaces";
 /// 版本 2 至 5 分别添加连接名称、接口 DNS 后缀、全局搜索列表和主后缀设置。
 const SETTINGS_VERSION: u8 = 5;
+/// 保留最近成功保存的导入身份；限制私有状态随长期使用的增长。
+pub(crate) const COMMIT_HISTORY_LIMIT: usize = 128;
+// 私有磁盘文件尾部，NUL 使它不能与普通 JSON 或历史正文尾部混淆。
+const SETTINGS_FOOTER: &[u8] = b"\0LITEOS-ROUTER\x01";
 
 /// 一条配置：接口名或通配符 `*`，以及该接口的设置。
 pub(crate) type Entry = (Vec<u8>, InterfaceConfig);
@@ -88,28 +93,87 @@ pub(crate) fn resolve(
     name: &[u8],
     mac: [u8; 6],
 ) -> Result<(InterfaceConfig, u32), Invalid> {
+    if saved.routing_domain_for_mac(mac).is_some() {
+        // 持久提交前可逆地停止默认域的接口。提交后由设备发现按新的归属重装。
+        let mut disabled = InterfaceConfig::dhcp();
+        disabled.method = Method::Disabled;
+        return Ok((disabled, DEFAULT_MTU));
+    }
     let inherited = defaults
         .iter()
         .find(|(entry, _)| entry.as_slice() == name)
         .or_else(|| defaults.iter().find(|(entry, _)| entry.as_slice() == b"*"))
         .map_or_else(InterfaceConfig::dhcp, |(_, config)| config.clone());
     Ok(match saved.matching(name, mac)? {
+        Some(profile) if saved.bridged_profile(name, mac).is_some() => {
+            let mut port = InterfaceConfig::dhcp();
+            port.method = Method::Disabled;
+            (port, profile.mtu)
+        }
         Some(profile) => (profile.project(inherited), profile.mtu),
         None => (inherited, DEFAULT_MTU),
     })
 }
 
-/// 当前只生成版本化原生 JSON；历史二进制没有写入路径。
-pub(crate) fn encode_settings(settings: &Configuration) -> Result<Vec<u8>, Invalid> {
-    settings.encode().map_err(|_| Invalid)
+/// 同一私有文件写入配置 JSON 和有界提交记录；导出与备份仍是纯配置 JSON。
+pub(crate) fn encode_settings(
+    settings: &Configuration,
+    commits: &[CommitId],
+) -> Result<Vec<u8>, Invalid> {
+    if commits.len() > COMMIT_HISTORY_LIMIT {
+        return Err(Invalid);
+    }
+    let mut bytes = settings.encode().map_err(|_| Invalid)?;
+    bytes
+        .try_reserve_exact(commits.len() * CommitId::BYTES + 1 + SETTINGS_FOOTER.len())
+        .map_err(|_| Invalid)?;
+    for commit in commits {
+        bytes.extend_from_slice(commit.as_bytes());
+    }
+    bytes.push(commits.len() as u8);
+    bytes.extend_from_slice(SETTINGS_FOOTER);
+    Ok(bytes)
 }
 
-/// 读取唯一当前格式，或把历史二进制 1–5 一次性迁入相同模型；不维护第二个配置 owner。
-pub(crate) fn decode_settings(bytes: &[u8]) -> Result<Configuration, String> {
-    if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{') {
-        return Configuration::decode(bytes);
+/// 恢复同一文件中的配置与提交记录。没有提交记录的旧文件只在读取时迁移。
+pub(crate) fn decode_settings(bytes: &[u8]) -> Result<(Configuration, Vec<CommitId>), String> {
+    if let Some(body) = bytes.strip_suffix(SETTINGS_FOOTER) {
+        let invalid = || "invalid configuration commit history".to_string();
+        let (&count, data) = body.split_last().ok_or_else(invalid)?;
+        let count = usize::from(count);
+        if count > COMMIT_HISTORY_LIMIT {
+            return Err(invalid());
+        }
+        let offset = data
+            .len()
+            .checked_sub(count * CommitId::BYTES)
+            .ok_or_else(invalid)?;
+        let (configuration, records) = data.split_at(offset);
+        let mut commits = Vec::new();
+        commits.try_reserve_exact(count).map_err(|_| invalid())?;
+        for bytes in records.as_chunks::<{ CommitId::BYTES }>().0 {
+            let id = CommitId::from_bytes(bytes).map_err(|_| invalid())?;
+            if commits.contains(&id) {
+                return Err(invalid());
+            }
+            commits.push(id);
+        }
+        return Ok((Configuration::decode(configuration)?, commits));
     }
-    decode_legacy(bytes).map_err(|_| "invalid historical network configuration".to_string())
+    decode_document(bytes).map(|configuration| (configuration, Vec::new()))
+}
+
+/// 导入当前 JSON 或旧版网络设置副本，返回当前配置模型。
+///
+/// # Errors
+/// 文档格式或配置语义无效。私有持久化尾部只由启动读取器处理。
+pub(crate) fn decode_document(bytes: &[u8]) -> Result<Configuration, String> {
+    match bytes.first() {
+        Some(1..=SETTINGS_VERSION) => {
+            decode_legacy(bytes).map_err(|_| "invalid historical network configuration".to_string())
+        }
+        _ => Configuration::decode(bytes),
+    }
 }
 
 // 以下只定义历史磁盘字节布局；不能调用会随当前线版本演进的 config/search_list 解码。
@@ -232,7 +296,9 @@ mod tests {
             if version >= 5 {
                 bytes.bytes(b"primary.test").u8(0);
             }
-            let migrated = decode_settings(&bytes.0).unwrap();
+            let (migrated, commits) = decode_settings(&bytes.0).unwrap();
+            assert!(commits.is_empty());
+            assert_eq!(decode_document(&bytes.0).unwrap(), migrated);
             let effective = resolve(&migrated, &[], b"eth0", [2, 0, 0, 0, 0, 1])
                 .unwrap()
                 .0;
@@ -245,11 +311,14 @@ mod tests {
             );
             assert_eq!(migrated.dns.search_list.is_empty(), version < 4);
             assert_eq!(migrated.dns.append_parent_suffixes, version < 5);
-            let current = encode_settings(&migrated).unwrap();
+            let commits = vec![CommitId::from_random_bytes([version; 16])];
+            let current = encode_settings(&migrated, &commits).unwrap();
             assert_eq!(current.first(), Some(&b'{'));
-            assert_eq!(decode_settings(&current).unwrap(), migrated);
+            assert_eq!(decode_settings(&current).unwrap(), (migrated, commits));
+            assert!(decode_document(&current).is_err());
             bytes.0.push(0);
             assert!(decode_settings(&bytes.0).is_err());
+            assert!(decode_document(&bytes.0).is_err());
         }
     }
 
@@ -257,7 +326,7 @@ mod tests {
     fn configuration_name_only_migration_preserves_default_inheritance_and_binds_selected_device() {
         let mut bytes = Encoder::default();
         bytes.u8(2).u32(0).u32(1).bytes(b"eth0").bytes(b"Office");
-        let mut migrated = decode_settings(&bytes.0).unwrap();
+        let (mut migrated, _) = decode_settings(&bytes.0).unwrap();
         let mac = [2, 0, 0, 0, 0, 1];
         let defaults = parse_defaults(b"iface * inet static\naddress 10.0.0.9\nnetmask 255.255.255.0\ndns-nameservers 1.1.1.1 2.2.2.2 3.3.3.3 4.4.4.4\n");
         let expected = resolve(&migrated, &defaults, b"eth0", mac).unwrap();

@@ -42,6 +42,8 @@ impl Reachability {
 #[derive(Clone, Copy, Debug)]
 pub struct Candidate<'a> {
     pub peer: &'a Peer,
+    /// 原邻居在当前连接上分配的路径标识。用于保留路径身份，不参与路径优先级。
+    pub path_id: Option<u32>,
     pub attributes: &'a RouteAttributes,
     /// 原始接收路径只借用 Adj-RIB-In；入口编辑不能删除本地 AS 来绕过协议去环。
     pub received_path: &'a crate::StoredPath,
@@ -95,6 +97,21 @@ impl SelectionContext {
     pub(crate) fn cluster_id(self) -> Option<Ipv4Addr> {
         self.cluster_id
     }
+    /// 按指定成员的身份检查普通路径及联盟段。
+    pub(crate) fn path_loops_at(self, path: &crate::StoredPath, member: u32) -> bool {
+        self.confederation.map_or_else(
+            || path.contains(member),
+            |identifier| {
+                path.contains(identifier)
+                    || path.segments().any(|(kind, asns)| {
+                        matches!(
+                            kind,
+                            SegmentKind::ConfederationSequence | SegmentKind::ConfederationSet
+                        ) && asns.contains(&member)
+                    })
+            },
+        )
+    }
     /// 按固定顺序检查候选是否被拒绝；不改变原始宣告，也不代替连接/下一跳 owner 的授权检查。
     pub fn rejection(self, candidate: &Candidate<'_>) -> Option<Rejection> {
         self.rejection_with::<true>(candidate)
@@ -117,23 +134,9 @@ impl SelectionContext {
         if RESOLVED && candidate.reachability == Reachability::Unresolved {
             return Some(Rejection::Unresolved);
         }
-        let looped = |path: &crate::StoredPath| {
-            self.confederation.map_or_else(
-                || path.contains(self.local_as),
-                |identifier| {
-                    path.contains(identifier)
-                        || path.segments().any(|(kind, asns)| {
-                            matches!(
-                                kind,
-                                SegmentKind::ConfederationSequence | SegmentKind::ConfederationSet
-                            ) && asns.contains(&self.local_as)
-                        })
-                },
-            )
-        };
-        if looped(candidate.received_path)
+        if self.path_loops_at(candidate.received_path, self.local_as)
             || !core::ptr::eq(candidate.received_path, candidate.attributes.path())
-                && looped(candidate.attributes.path())
+                && self.path_loops_at(candidate.attributes.path(), self.local_as)
         {
             return Some(Rejection::AsLoop);
         }
@@ -185,7 +188,7 @@ impl Selector {
             scratch: Vec::new(),
         }
     }
-    /// 从同一前缀、同一路由域且每邻居至多一条的候选中选最优项，返回原 slice 索引；全部拒绝则 None。
+    /// 从同一前缀、同一路由域的所有路径中选最优项，返回原 slice 索引；全部拒绝则 None。
     /// 调用者提供 Phase 1 结果及权威解析结果，不能用该纯选择核心替代政策/NHT 服务。
     /// # Errors
     /// 工作区扩容失败；不修改候选/路由，旧赢家不在此对象内保留。
@@ -311,8 +314,8 @@ impl Selector {
         let selected = self
             .scratch
             .iter()
-            .min_by_key(|candidate| {
-                let candidate = &candidates[candidate.index];
+            .min_by_key(|ranked| {
+                let candidate = &candidates[ranked.index];
                 (
                     candidate
                         .attributes
@@ -321,6 +324,8 @@ impl Selector {
                     candidate.attributes.cluster_list().len(),
                     candidate.peer.address,
                     candidate.peer.id,
+                    // 邻居相同且其他条件相同时保持候选的稳定输入顺序。
+                    ranked.index,
                 )
             })
             .map(|candidate| candidate.index);

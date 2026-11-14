@@ -10,7 +10,7 @@ impl<'a> Socket<'a> {
         local_mss
             .saturating_sub(TcpRepr::data_option_space(
                 self.tsval_generator.is_some(),
-                self.md5,
+                self.authentication,
             ))
             .min(self.effective_mss())
     }
@@ -247,7 +247,7 @@ impl<'a> Socket<'a> {
                 self.tsval_generator,
                 self.last_remote_tsval,
             ),
-            md5: self.md5,
+            authentication: self.authentication,
             payload: &[],
         };
 
@@ -433,7 +433,8 @@ impl<'a> Socket<'a> {
         if segment_len != 0 {
             self.congestion_controller.on_send(cx.now());
         }
-        let sequence_end = repr.seq_number + segment_len;
+        let sequence = repr.seq_number;
+        let sequence_end = sequence + segment_len;
         let ack_number = repr.ack_number;
         let window_len = repr.window_len;
 
@@ -473,6 +474,10 @@ impl<'a> Socket<'a> {
         self.remote_last_win = window_len;
 
         if segment_len > 0 {
+            // 与旧 SND.NXT 比较。失败提交、ACK、探测及首次发送均不增加重传计数。
+            if sequence < self.send_seq_no {
+                self.total_retransmissions = self.total_retransmissions.saturating_add(1);
+            }
             self.remote_last_seq = sequence_end;
             if self.remote_last_seq > self.send_seq_no {
                 self.send_seq_no = self.remote_last_seq;
@@ -504,6 +509,17 @@ impl<'a> Socket<'a> {
     /// Next required work against the same path and monotonic clock, without changing connection state.
     /// Returns Ingress when only external input can make progress; no allocation or output occurs.
     pub fn poll_at(&self, cx: &impl Context) -> PollAt {
+        self.poll_at_with(|| self.seq_to_transmit(cx))
+    }
+
+    /// Earliest possible output before choosing a path. A caller may defer route lookup until this time.
+    /// Unsent or outstanding sequence space returns Now, including when a new path MTU could change segmentation.
+    /// The selected path and actual transmit eligibility still come from `poll_at` and `dispatch`.
+    pub fn output_interest(&self) -> PollAt {
+        self.poll_at_with(|| self.pending_sequence())
+    }
+
+    fn poll_at_with(&self, sequence_ready: impl FnOnce() -> bool) -> PollAt {
         // The logic here mirrors the beginning of dispatch() closely.
         if self.tuple.is_none() {
             // No one to talk to, nothing to transmit.
@@ -514,7 +530,7 @@ impl<'a> Socket<'a> {
         } else if self.state == State::Closed {
             // Socket was aborted, we have an RST packet to transmit.
             PollAt::Now
-        } else if self.seq_to_transmit(cx) {
+        } else if sequence_ready() {
             // We have a data or flag packet to transmit.
             PollAt::Now
         } else if self.window_to_update() {

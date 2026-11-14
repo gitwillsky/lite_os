@@ -144,7 +144,7 @@ fn main(mut startup: Startup) -> i64 {
     let directory = DirectoryClient::new(Channel::from_handle(
         startup.take(audio_core::DEVICE_DIRECTORY),
     ));
-    let hub = EventHub::start().expect("audio event hub");
+    let hub = EventHub::start(None).expect("audio event hub");
     let outputs = Arc::new(Outputs {
         outputs: Mutex::new(Vec::new()),
         watchers: Mutex::new(Vec::new()),

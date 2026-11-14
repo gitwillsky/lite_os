@@ -23,5 +23,10 @@ impl fmt::Display for InterruptError {
 
 /// 设备中断处理函数。
 pub(crate) trait InterruptHandler: Send + Sync {
+    /// 可选的用户态 IRQ 线程公平调度等级，默认沿用系统普通权重。
+    fn worker_priority(&self) -> Option<u32> {
+        None
+    }
+
     fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
 }

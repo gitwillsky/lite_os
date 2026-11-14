@@ -54,10 +54,8 @@ pub(super) fn loopback(
     interface: u32,
     destination: IpAddr,
     length: usize,
-    timestamp: smoltcp::time::Instant,
     emit: impl FnOnce(&mut [u8]),
 ) {
-    use smoltcp::phy::TxToken;
     if interface == 1 || !destination.is_multicast() {
         return;
     }
@@ -87,23 +85,24 @@ pub(super) fn loopback(
         entry.device.record_transmit_drop();
         return;
     }
-    let Some(mut token) = entry.device.transmit_shared(timestamp) else {
+    let Ok(mut token) = entry.device.reserve(|_| 0) else {
         entry.device.record_transmit_drop();
         return;
     };
-    let mut meta = smoltcp::phy::PacketMeta::default();
-    meta.interface_index = Some(interface);
-    token.set_meta(meta);
-    let (_, failure) = token.consume_committed(
+    token.set_delivery(interface, false);
+    let submitted = token.consume_committed(
         length,
         if destination.is_ipv4() {
             0x0800
         } else {
             0x86dd
         },
-        emit,
+        |packet| {
+            emit(packet);
+            true
+        },
     );
-    if failure.is_some() {
+    if submitted.is_err() {
         entry.device.record_transmit_drop();
     }
 }
@@ -240,7 +239,7 @@ impl InetSocket {
                         Ipv4Addr::UNSPECIFIED,
                         group,
                         None,
-                        interfaces.iter().map(super::route::InterfaceFacts::capture),
+                        super::route::Ipv4Interfaces::live(interfaces),
                     )
                     .ok()
                     .map(|route| route.logical_interface_index)
@@ -273,6 +272,8 @@ impl InetSocket {
                 members.0 = Vec::new();
             }
             member.release(interfaces, now);
+            drop(network);
+            crate::worker::request_poll(self.namespace.id());
             return Ok(());
         }
         if previous.is_some() {
@@ -322,6 +323,8 @@ impl InetSocket {
                 address,
             },
         );
+        drop(network);
+        crate::worker::request_poll(self.namespace.id());
         Ok(())
     }
 }

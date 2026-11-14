@@ -4,6 +4,7 @@ use super::*;
 #[test]
 fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
     use network_protocol::routes::{RouteDirection, RouteLookup};
+    use router_protocol::configuration::Configuration;
     use router_protocol::firewall::counters::{Cursor, Page};
 
     let _serial = SERIAL.lock().unwrap();
@@ -59,6 +60,7 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
         "version": 1,
         "interfaces": {"a": {"device": {"kind": "name", "value": "a"}}},
         "firewall": {
+            "existing_connections": "preserve",
             "prerouting": [
                 {"ingress": "a", "destination": "10.41.0.9", "prefix_length": 32, "action": {"kind": "set_mark", "value": 99}},
                 {"ingress": "a", "destination": "2001:db8:29::9", "prefix_length": 128, "action": {"kind": "set_mark", "value": 99}},
@@ -380,11 +382,13 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
         ] {
             config.firewall.prerouting.push(PreroutingRule {
                 ingress: interface.cloned(),
+                source: None,
                 destination: Some(destination),
                 prefix_length: Some(prefix_length),
                 destination_set: None,
                 action,
                 connection_state: None,
+                transport: None,
             });
         }
     }
@@ -393,6 +397,7 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
         .with_prerouting(router_protocol::firewall::Prerouting::parse(&filter).unwrap());
     let filtering = crate::inet::prepare_configuration(&net, Some(filter), None).unwrap();
     filtering.activate().unwrap();
+    a.wire.lock().unwrap().2.receive_snapshot = stack(&net).unwrap().receive_snapshot().map(|snapshot| (2, snapshot));
     send(&a, 2005);
     assert_eq!((transit(&a), transit(&b)), (2, 0));
     send(&b, 2005);
@@ -408,6 +413,127 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
     send(&b, 2005);
     assert_eq!((transit(&a), transit(&b)), (0, 2));
     config.firewall = previous;
+
+    let prepare_firewall = |configuration: &Configuration| {
+        let bytes = configuration.firewall_source(|_| Ok(None)).unwrap();
+        let chain = router_protocol::firewall::Prerouting::parse(&bytes).unwrap();
+        let batch = network_protocol::ConfigurationBatch::default().with_prerouting(chain);
+        crate::inet::prepare_configuration(&net, Some(batch), None)
+    };
+    // 验证经索引匹配的两级跳转、显式/隐式返回、跨链赋标和绝对裁决。
+    let source = r#"{"version":1,"firewall":{
+        "address_sets":{"targets":[{"network":"10.41.0.0","length":24},{"network":"2001:db8:29::","length":64}]},
+        "prerouting":[
+            {"action":{"kind":"set_mark","value":7}},
+            {"destination_set":"targets","action":{"kind":"jump","chain":"inspect"}},
+            {"action":{"kind":"jump","chain":"empty"}},
+            {"action":{"kind":"accept"}},
+            {"action":{"kind":"drop"}}
+        ],
+        "chains":{
+            "empty":[],
+            "inspect":[{"action":{"kind":"jump","chain":"nested"}},{"action":{"kind":"return"}},{"action":{"kind":"drop"}}],
+            "nested":[
+                {"source":{"network":"2001:db8:28::","length":64},"destination":"2001:db8:29::","prefix_length":64,"action":{"kind":"accept"}},
+                {"source":{"network":"10.40.0.0","length":24},"destination_set":"targets","action":{"kind":"set_mark","value":42}},
+                {"action":{"kind":"return"}},
+                {"action":{"kind":"drop"}}
+            ],
+            "unused":[{"connection_state":"new","action":{"kind":"drop"}}]
+        }
+    }}"#;
+    let mut chained = Configuration::decode(source.as_bytes()).unwrap();
+    assert!(Configuration::decode(source.replace(r#""chain":"nested""#, r#""chain":"missing""#).as_bytes()).is_err());
+    assert!(Configuration::decode(source.replace(r#""chain":"nested""#, r#""chain":"inspect""#).as_bytes()).is_err());
+    let saved = counters(first_page);
+    let trial = prepare_firewall(&chained).unwrap();
+    trial.activate().unwrap();
+    assert!(!crate::inet::stack(&net).unwrap().lock().unwrap().firewall.inspection(false).required());
+    send(&a, 2005);
+    assert_eq!((transit(&a), transit(&b)), (1, 1));
+    let chain_hits = counters(first_page);
+    let actual: Vec<_> = chain_hits.rows.iter().map(|row| (row.chain.as_deref(), row.position, row.packets)).collect();
+    assert_eq!(actual, [
+        (None, 1, 2), (None, 2, 2), (None, 3, 1), (None, 4, 1), (None, 5, 0),
+        (Some("inspect"), 1, 2), (Some("inspect"), 2, 1), (Some("inspect"), 3, 0),
+        (Some("nested"), 1, 1), (Some("nested"), 2, 1), (Some("nested"), 3, 1), (Some("nested"), 4, 0),
+        (Some("unused"), 1, 0),
+    ]);
+    assert_eq!(chain_hits.rows[1].jump_chain.as_deref(), Some("inspect"));
+    assert_eq!(
+        chain_hits.rows[9].rule.source,
+        chained
+            .firewall
+            .chains
+            .iter()
+            .find(|(name, _)| name.as_str() == "nested")
+            .unwrap()
+            .1[1]
+            .source
+    );
+    // 同一入接口和目的地址换用其他源。既不匹配 IPv6 放行，也不匹配 IPv4 集合赋标。
+    let mut other_ipv4 = super::super::ipv4_forwarding::datagram(64, 0, &[], &[1; 6]);
+    let header = &mut other_ipv4[14..34];
+    header[12..16].copy_from_slice(&[10, 42, 0, 9]);
+    header[10..12].fill(0);
+    let checksum = packet_wire::checksum::checksum(header);
+    header[10..12].copy_from_slice(&checksum.to_be_bytes());
+    inject(&a, other_ipv4);
+    inject(
+        &a,
+        frame("2001:db8:42::9".parse().unwrap(), TO, 64, 253, &[1; 6]),
+    );
+    poll(&net, 2005);
+    assert_eq!((transit(&a), transit(&b)), (0, 2));
+    let other_hits = counters(first_page);
+    assert_eq!(
+        [
+            other_hits.rows[8].packets,
+            other_hits.rows[9].packets,
+            other_hits.rows[10].packets
+        ],
+        [1, 1, 3]
+    );
+    trial.abort().unwrap();
+    assert_eq!(counters(first_page), saved);
+
+    let nested = chained.firewall.chains.iter_mut().find(|(name, _)| name.as_str() == "nested").unwrap().1;
+    nested[0].action = PreroutingAction::Drop;
+    let trial = prepare_firewall(&chained).unwrap();
+    trial.activate().unwrap();
+    send(&a, 2005);
+    assert_eq!((transit(&a), transit(&b)), (1, 0));
+    trial.abort().unwrap();
+    let (name, inspect) = chained.firewall.chains.iter_mut().find(|(name, _)| name.as_str() == "inspect").unwrap();
+    inspect[0].action = PreroutingAction::Jump { chain: name.clone() };
+    assert!(matches!(prepare_firewall(&chained), Err(SocketError::Invalid)));
+    assert_eq!(counters(first_page), saved);
+
+    let udp_egress = |source_port| {
+        let source = InetAddress::new(flows[0].0, source_port);
+        let destination = InetAddress::new(flows[0].1, 5354);
+        inject(&a, peer_udp_frame_for(source, destination, &[0; 4]));
+        let mut payload = [0; 12];
+        packet_wire::udp::emit(&mut payload, FROM.into(), TO.into(), source_port, 5354).unwrap();
+        inject(&a, frame(FROM, TO, 64, 17, &payload));
+        poll(&net, 2005);
+        (frames(&a).len(), frames(&b).len())
+    };
+    assert_eq!(udp_egress(42000), (2, 0));
+    let replacement = Configuration::decode(
+        br#"{"version":1,"firewall":{
+            "existing_connections":"preserve",
+            "prerouting":[{"action":{"kind":"accept"}}]
+        }}"#,
+    )
+    .unwrap();
+    let trial = prepare_firewall(&replacement).unwrap();
+    trial.activate().unwrap();
+    assert_eq!(udp_egress(42000), (2, 0));
+    assert_eq!(counters(first_page).rows[0].packets, 0);
+    assert_eq!(udp_egress(42001), (0, 2));
+    assert_eq!(counters(first_page).rows[0].packets, 2);
+    trial.abort().unwrap();
 
     for route in &mut config.policy_routing.tables[0].routes {
         route.action = router_protocol::configuration::StaticAction::Prohibit;
@@ -489,16 +615,9 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
             {"destination_set":"blocked","action":{"kind":"drop"}},
             {"destination":"10.41.0.9","prefix_length":32,"action":{"kind":"accept"}}
         ]}}"#;
-    use router_protocol::configuration::Configuration;
     assert!(Configuration::decode(source.replacen("\"destination_set\":\"blocked\"", "\"destination_set\":\"undefined\"", 1).as_bytes()).is_err());
     let mut sets = Configuration::decode(source.as_bytes()).unwrap();
-    let prepare_firewall = |configuration: &Configuration| {
-        let bytes = configuration.firewall_source(|_| Ok(None)).unwrap();
-        let chain = router_protocol::firewall::Prerouting::parse(&bytes).unwrap();
-        let batch = network_protocol::ConfigurationBatch::default().with_prerouting(chain);
-        crate::inet::prepare_configuration(&net, Some(batch), None).unwrap()
-    };
-    let install = prepare_firewall(&sets);
+    let install = prepare_firewall(&sets).unwrap();
     install.activate().unwrap();
     install.confirm().unwrap();
     send(&a, 2009);
@@ -510,7 +629,7 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
     let original = classification();
 
     sets.firewall.address_sets.values_mut().next().unwrap().retain(|prefix| prefix.network.is_ipv6());
-    let update = prepare_firewall(&sets);
+    let update = prepare_firewall(&sets).unwrap();
     update.activate().unwrap();
     assert!(Arc::ptr_eq(&original, &classification()));
     send(&a, 2010);
@@ -524,4 +643,358 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
     let rolled_back = counters(first_page);
     assert_eq!(rolled_back.revision, active.revision);
     assert_eq!(rolled_back.rows.iter().map(|row| row.packets).collect::<Vec<_>>(), [5, 5, 1]);
+
+    // 双栈新连接在同一出口排队并争用同一源端口，须各自收到回包。
+    let masquerade = Configuration::decode(br#"{
+        "version": 1,
+        "interfaces": {"a": {"device": {"kind": "name", "value": "a"}}},
+        "firewall": {"prerouting": [
+            {"ingress": "a", "action": {"kind": "masquerade"}}
+        ]}
+    }"#).unwrap();
+    let encoded = masquerade.firewall_source(|_| Ok(Some(2))).unwrap();
+    let batch = network_protocol::ConfigurationBatch::default()
+        .with_prerouting(router_protocol::firewall::Prerouting::parse(&encoded).unwrap());
+    let update = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
+    update.activate().unwrap();
+    update.confirm().unwrap();
+
+    let second_ipv4 = Ipv4Addr::new(10, 40, 0, 10);
+    let second_ipv6 = "2001:db8:28::a".parse().unwrap();
+    inject(&a, peer_arp_frame_for(Ipv4Addr::new(10, 40, 0, 15), second_ipv4));
+    inject(&a, neighbor(NdMessage::NeighborSolicitation { target: A }, second_ipv6, A, FROM_MAC));
+    poll(&net, 2012);
+    frames(&a);
+    frames(&b);
+
+    let transport_frame =
+        |source, destination, protocol, payload: &[u8]| match (source, destination) {
+            (IpAddr::V4(source), IpAddr::V4(destination)) => {
+                let mut bytes = ipv4_forwarding::datagram(64, 0, &[], payload);
+                packet_wire::ipv4::Ipv4Header {
+                    source,
+                    destination,
+                    protocol,
+                    hop_limit: 64,
+                    dscp_ecn: 0,
+                    identification: 0,
+                    fragment: 0,
+                    options: &[],
+                }
+                .emit(&mut bytes[14..])
+                .unwrap();
+                bytes
+            }
+            (IpAddr::V6(source), IpAddr::V6(destination)) => {
+                frame(source, destination, 64, protocol, payload)
+            }
+            _ => unreachable!(),
+        };
+    let udp_frame = |source, destination, source_port, destination_port| {
+        let mut payload = [0; 12];
+        packet_wire::udp::emit(
+            &mut payload,
+            source,
+            destination,
+            source_port,
+            destination_port,
+        )
+        .unwrap();
+        transport_frame(source, destination, 17, &payload)
+    };
+    let wire_udp = |frame: &[u8]| {
+        let (source, destination, payload) = wire_payload(frame);
+        let udp = packet_wire::udp::UdpPacket::parse(payload, source, destination).unwrap();
+        (source, destination, udp.source_port(), udp.destination_port())
+    };
+    for ((first, remote), second, outside) in [
+        (flows[0], IpAddr::from(second_ipv4), Ipv4Addr::new(10, 41, 0, 15).into()),
+        (flows[1], second_ipv6.into(), B.into()),
+    ] {
+        b.transmit_available.store(false, Relaxed);
+        b.transmit_ready.store(false, Relaxed);
+        for host in [first, second] {
+            inject(&a, udp_frame(host, remote, 40001, 40002));
+        }
+        poll(&net, 2013);
+        assert!(frames(&b).is_empty());
+        b.transmit_available.store(true, Relaxed);
+        b.transmit_ready.store(true, Relaxed);
+        poll(&net, 2013);
+        let sent = frames(&b);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(wire_udp(&sent[0]), (outside, remote, 40001, 40002));
+        let allocated = wire_udp(&sent[1]).2;
+        assert!(allocated >= 49152);
+        assert_eq!(wire_udp(&sent[1]), (outside, remote, allocated, 40002));
+        for port in [40001, allocated] {
+            inject(&b, udp_frame(remote, outside, 40002, port));
+        }
+        poll(&net, 2014);
+        let replies = frames(&a);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(wire_udp(&replies[0]), (remote, first, 40002, 40001));
+        assert_eq!(wire_udp(&replies[1]), (remote, second, 40002, 40001));
+    }
+    let masquerade_hits = counters(first_page);
+    assert_eq!(
+        masquerade_hits.rows[0].rule.action,
+        router_protocol::firewall::PreroutingAction::Masquerade
+    );
+    assert_eq!(masquerade_hits.rows[0].packets, 4);
+
+    // 从内网访问路由器外侧地址。请求和回包都在同一物理接口收发。
+    let hairpin = Configuration::decode(br#"{
+        "version":1,
+        "firewall":{"prerouting":[
+            {"source":{"network":"10.40.0.0","length":24},
+             "destination":"10.41.0.15","prefix_length":32,
+             "transport":{"protocol":"udp","destination_port":40101},
+             "action":{"kind":"destination_nat","address":"10.40.0.10","port":40102,
+                       "source":{"kind":"fixed","address":"10.40.0.15","port":40103}}},
+            {"source":{"network":"2001:db8:28::","length":64},
+             "destination":"2001:db8:29::f","prefix_length":128,
+             "transport":{"protocol":"udp","destination_port":40101},
+             "action":{"kind":"destination_nat","address":"2001:db8:28::a","port":40102,
+                       "source":{"kind":"masquerade"}}}
+        ]}
+    }"#).unwrap();
+    let update = prepare_firewall(&hairpin).unwrap();
+    update.activate().unwrap();
+    update.confirm().unwrap();
+    for (client, public, backend, inside, port) in [
+        (flows[0].0, Ipv4Addr::new(10, 41, 0, 15).into(), second_ipv4.into(),
+         Ipv4Addr::new(10, 40, 0, 15).into(), 40103),
+        (flows[1].0, B.into(), second_ipv6.into(), A.into(), 40104),
+    ] {
+        inject(&a, udp_frame(client, public, 40104, 40101));
+        poll(&net, 2015);
+        assert!(frames(&b).is_empty());
+        let request = frames(&a).pop().unwrap();
+        assert_eq!(wire_udp(&request), (inside, backend, port, 40102));
+
+        inject(&a, udp_frame(backend, inside, 40102, port));
+        poll(&net, 2016);
+        let reply = frames(&a).pop().unwrap();
+        assert_eq!(wire_udp(&reply), (public, client, 40101, 40104));
+
+        let mut error = vec![0; 8 + request.len() - 14];
+        let packet = match (backend, inside) {
+            (IpAddr::V4(backend), IpAddr::V4(inside)) => {
+                packet_wire::icmpv4::emit_error(&mut error, 3, 4, 1200, &request[14..], &[]).unwrap();
+                let mut packet = ipv4_forwarding::datagram(64, 0, &[], &error);
+                packet_wire::ipv4::Ipv4Header {
+                    source: backend,
+                    destination: inside,
+                    protocol: 1,
+                    hop_limit: 64,
+                    dscp_ecn: 0,
+                    identification: 0,
+                    fragment: 0,
+                    options: &[],
+                }.emit(&mut packet[14..]).unwrap();
+                packet
+            }
+            (IpAddr::V6(backend), IpAddr::V6(inside)) => {
+                packet_wire::icmpv6::emit_error(&mut error, 2, 0, 1280, (backend, inside), &request[14..], &[]).unwrap();
+                frame(backend, inside, 64, 58, &error)
+            }
+            _ => unreachable!(),
+        };
+        inject(&a, packet);
+        poll(&net, 2017);
+        let returned = frames(&a).pop().unwrap();
+        let (source, destination, body) = wire_payload(&returned);
+        assert_eq!((source, destination), (public, client));
+        let original = udp_frame(client, public, 40104, 40101);
+        let (_, _, expected_udp) = wire_payload(&original);
+        if client.is_ipv4() {
+            packet_wire::icmpv4::Icmpv4Packet::parse(body).unwrap();
+            let quote = packet_wire::ipv4::Ipv4Packet::parse(&body[8..]).unwrap();
+            assert_eq!((quote.source().into(), quote.destination().into()), (client, public));
+            assert_eq!(quote.payload(), expected_udp);
+        } else {
+            let (IpAddr::V6(source), IpAddr::V6(destination)) = (source, destination) else {
+                unreachable!();
+            };
+            packet_wire::icmpv6::Icmpv6Packet::parse(body, source, destination).unwrap();
+            let quote = packet_wire::ipv6::Ipv6Packet::parse(&body[8..]).unwrap();
+            assert_eq!((quote.source().into(), quote.destination().into()), (client, public));
+            assert_eq!(quote.upper_layer().unwrap(), expected_udp);
+        }
+    }
+    assert_eq!(counters(first_page).rows.iter().map(|row| row.packets).collect::<Vec<_>>(), [1, 1]);
+
+    let update = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
+    update.activate().unwrap();
+    update.confirm().unwrap();
+    for ((client, remote), outside) in [
+        (flows[0], IpAddr::from(Ipv4Addr::new(10, 41, 0, 15))),
+        (flows[1], B.into()),
+    ] {
+        let socket = || {
+            let family = if outside.is_ipv4() {
+                network_protocol::InetFamily::Ipv4
+            } else {
+                network_protocol::InetFamily::Ipv6
+            };
+            InetSocket::new(
+                family,
+                InetProtocol::Udp,
+                Arc::new(crate::Event::default()),
+                net.clone(),
+            )
+            .unwrap()
+        };
+        let peer = InetAddress::new(remote, 40201);
+        for local_first in [true, false] {
+            let port = if local_first { 40200 } else { 49152 };
+            let peer = if local_first {
+                peer
+            } else {
+                InetAddress::new(remote, 40202)
+            };
+            let local = socket();
+            if local_first {
+                local.bind(InetAddress::new(outside, port)).unwrap();
+                local.send_to(&[0; 4], Some(peer), &[]).unwrap();
+                poll(&net, 2018);
+                let request = frames(&b).pop().unwrap();
+                assert_eq!(wire_udp(&request), (outside, remote, port, peer.port()));
+            }
+            inject(&a, udp_frame(client, remote, port, peer.port()));
+            poll(&net, 2019);
+            let request = frames(&b).pop().unwrap();
+            let translated = wire_udp(&request).2;
+            assert_eq!(translated != port, local_first);
+            assert_eq!(
+                wire_udp(&request),
+                (outside, remote, translated, peer.port())
+            );
+
+            let local_port = if local_first {
+                port
+            } else {
+                local.send_to(&[0; 4], Some(peer), &[]).unwrap();
+                poll(&net, 2020);
+                let request = frames(&b).pop().unwrap();
+                let allocated = wire_udp(&request).2;
+                assert_ne!(allocated, translated);
+                assert_eq!(
+                    wire_udp(&request),
+                    (outside, remote, allocated, peer.port())
+                );
+                allocated
+            };
+            inject(&b, udp_frame(remote, outside, peer.port(), local_port));
+            inject(&b, udp_frame(remote, outside, peer.port(), translated));
+            poll(&net, 2021);
+            let reply = frames(&a).pop().unwrap();
+            assert_eq!(wire_udp(&reply), (remote, client, peer.port(), port));
+            assert!(local.poll_state().readable);
+            let mut received = crate::receive::ReceiveBuffer::try_new(4).unwrap();
+            assert_eq!(
+                local.receive(&mut received, false).unwrap(),
+                (4, 4, Some(peer), None)
+            );
+            local.close_description();
+
+            if !local_first {
+                let bound = socket();
+                bound.bind(InetAddress::new(outside, port)).unwrap();
+                assert_eq!(bound.connect(peer), Err(SocketError::AddressInUse));
+                assert_eq!(
+                    bound.send_to(&[0; 4], Some(peer), &[]),
+                    Err(SocketError::AddressInUse)
+                );
+                let different_peer = InetAddress::new(remote, 40203);
+                bound.send_to(&[0; 4], Some(different_peer), &[]).unwrap();
+                poll(&net, 2022);
+                let request = frames(&b).pop().unwrap();
+                assert_eq!(
+                    wire_udp(&request),
+                    (outside, remote, port, different_peer.port())
+                );
+                bound.close_description();
+            }
+        }
+    }
+
+    use packet_wire::tcp::{self, TcpHeader, TcpPacket};
+    let tcp_frame = |source, destination, ports: (u16, u16), ack: Option<u32>| {
+        let mut payload = [0; 20];
+        TcpHeader {
+            source_port: ports.0,
+            destination_port: ports.1,
+            sequence: 100,
+            acknowledgment: ack.unwrap_or_default(),
+            flags: tcp::SYN | if ack.is_some() { tcp::ACK } else { 0 },
+            window: 4096,
+            urgent_pointer: 0,
+        }
+        .emit(&mut payload, 20, source, destination)
+        .unwrap();
+        transport_frame(source, destination, 6, &payload)
+    };
+    let wire_tcp = |frame: &[u8]| {
+        let (source, destination, payload) = wire_payload(frame);
+        let tcp = TcpPacket::parse(payload, source, destination)
+            .unwrap()
+            .header();
+        (
+            source,
+            destination,
+            tcp.source_port(),
+            tcp.destination_port(),
+            tcp.sequence(),
+        )
+    };
+    for ((client, remote), outside, family, time) in [
+        (
+            flows[0],
+            Ipv4Addr::new(10, 41, 0, 15).into(),
+            network_protocol::InetFamily::Ipv4,
+            2023,
+        ),
+        (flows[1], B.into(), network_protocol::InetFamily::Ipv6, 2030),
+    ] {
+        inject(&a, tcp_frame(client, remote, (49152, 40300), None));
+        poll(&net, time);
+        let nat_syn = frames(&b).pop().unwrap();
+        assert_eq!(wire_tcp(&nat_syn), (outside, remote, 49152, 40300, 100));
+
+        let local = InetSocket::new(
+            family,
+            InetProtocol::Tcp,
+            Arc::new(crate::Event::default()),
+            net.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            local.connect(InetAddress::new(remote, 40300)),
+            Err(SocketError::InProgress)
+        );
+        poll(&net, time + 1);
+        let local_syn = frames(&b).pop().unwrap();
+        let (source, destination, port, service, sequence) = wire_tcp(&local_syn);
+        assert_eq!((source, destination, service), (outside, remote, 40300));
+        assert_ne!(port, 49152);
+        inject(
+            &b,
+            tcp_frame(
+                remote,
+                outside,
+                (40300, port),
+                Some(sequence.wrapping_add(1)),
+            ),
+        );
+        inject(&b, tcp_frame(remote, outside, (40300, 49152), Some(101)));
+        poll(&net, time + 2);
+        let reply = frames(&a).pop().unwrap();
+        assert_eq!(wire_tcp(&reply), (remote, client, 40300, 49152, 100));
+        assert!(local.poll_state().writable);
+        local.close_description();
+        poll(&net, time + 3);
+        frames(&b);
+    }
 }

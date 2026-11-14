@@ -1,16 +1,42 @@
-//! 系统网络接口设置：经 linuxd 读取原生 router_config 的生效状态；修改设置需要 netdev 组。
+//! 系统网络接口设置：经 router-api 读取原生设置，修改需要 netdev 组权限。
 //!
 //! 设置的 owner 是原生网络配置服务 router_config：它持久化用户设置、运行 DHCP 并配置接口；本库只是 Linux 侧的
 //! 客户端，不再有配置文件或需要重载的 Linux 服务。没有单独设置的以太网接口按 Windows 默认处理：
 //! 启用、自动获得 IP 与 DNS。
 pub mod configuration;
+pub mod firewall;
+/// 双栈邻居的授权管理观察。
+pub mod neighbors {
+    pub use crate::gateway::NeighborObservation;
+    pub use router_protocol::neighbors::{Entry, Key, NeighborState, Page, observation};
+}
+/// 生效路由和路径的授权管理观察。
+pub mod routes {
+    pub use crate::gateway::RouteObservation;
+    pub use router_protocol::{
+        policy_routing::{TABLE_LOCAL, TABLE_MAIN},
+        route_view::{Cursor, Page, Position, RouteKind, Row, observation},
+        routing::Family,
+    };
+}
+/// 接口流量的授权管理观察。
+pub mod traffic {
+    pub use crate::gateway::{FlowObservation, TrafficObservation};
+    pub use router_protocol::management::flows::{Endpoints, Row as Flow, Sample};
+    pub use router_protocol::management::traffic::{Page, Row, Update};
+}
+mod gateway;
 mod links;
 mod settings;
+pub use gateway::{
+    Capture, CaptureResult, CaptureStop, ManagementClient, open_network_namespace, serve_router_api,
+};
 pub use links::{
     Link, LinkState, ethernet_links, ethernet_links_with_settings, link_state, rename_connection,
 };
-pub use router_protocol::ConfigurationStatus;
+pub use router_protocol::management::capture::End as CaptureEnd;
 pub use router_protocol::valid_search_list;
+pub use router_protocol::{ConfigurationStatus, Revision};
 pub use settings::{Snapshot, dhcp, snapshot, wait};
 
 use router_protocol::{InterfaceConfig, Method as RouterConfigMethod};

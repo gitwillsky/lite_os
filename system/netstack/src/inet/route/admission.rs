@@ -8,9 +8,10 @@ impl RoutingTable {
         interfaces: &[NetworkInterface],
         origin: Origin,
     ) -> Result<Record, Ipv4RouteError> {
+        let facts = Ipv4Interfaces::configured(interfaces, &[]);
         Self::admit_with(
             request,
-            interfaces.iter().map(InterfaceFacts::capture),
+            facts,
             origin,
             (interfaces, &[]),
             |destination, bound, minimum_scope| {
@@ -19,7 +20,7 @@ impl RoutingTable {
                     destination,
                     bound,
                     minimum_scope,
-                    interfaces.iter().map(InterfaceFacts::capture),
+                    facts,
                     |record| origin != Origin::Forwarding || record.origin != Origin::Forwarding,
                 )
             },
@@ -29,7 +30,7 @@ impl RoutingTable {
     /// 单条与复合配置共用字段/设备准入；调用者提供同一候选的事实和查询，不发布任何状态。
     pub(super) fn admit_with(
         mut request: Ipv4RouteRequest,
-        interfaces: impl Clone + Iterator<Item = InterfaceFacts>,
+        interfaces: Ipv4Interfaces<'_>,
         origin: Origin,
         (devices, changes): (
             &[NetworkInterface],
@@ -90,8 +91,8 @@ impl RoutingTable {
             if request.on_link {
                 let index = request.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
                 let interface = interfaces
-                    .clone()
-                    .find(|interface| interface.index == index && interface.mtu >= 68)
+                    .get(index)
+                    .filter(|interface| interface.mtu >= 68)
                     .ok_or(Ipv4RouteError::NoDevice)?;
                 if !interface.up {
                     return Err(Ipv4RouteError::NetworkDown);
@@ -114,8 +115,8 @@ impl RoutingTable {
                 }
                 let index = route.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
                 let interface = interfaces
-                    .clone()
-                    .find(|interface| interface.index == index && interface.mtu >= 68)
+                    .get(index)
+                    .filter(|interface| interface.mtu >= 68)
                     .ok_or(Ipv4RouteError::NoDevice)?;
                 if !interface.up {
                     return Err(Ipv4RouteError::NetworkDown);
@@ -128,8 +129,8 @@ impl RoutingTable {
             }
             let index = request.interface_index.ok_or(Ipv4RouteError::NoDevice)?;
             let interface = interfaces
-                .clone()
-                .find(|interface| interface.index == index && interface.mtu >= 68)
+                .get(index)
+                .filter(|interface| interface.mtu >= 68)
                 .ok_or(Ipv4RouteError::NoDevice)?;
             if request.scope < 254 && !interface.up {
                 return Err(Ipv4RouteError::NetworkDown);

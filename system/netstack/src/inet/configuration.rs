@@ -2,16 +2,19 @@ use super::{InterfaceState, NetworkStack, interface::NetworkInterface, stack};
 use crate::namespace::Namespace;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::net::Ipv4Addr;
+use core::net::{IpAddr, Ipv4Addr};
 use device_model::network::{NetworkDevice, NetworkLink};
 use network_protocol::{
     DriverName, InterfaceSnapshot, Ipv4RouteError, Ipv4RouteRequest, NetworkSnapshot, RouteChange,
     RoutingSnapshot, SocketError,
 };
+use router_protocol::neighbors;
 
 mod transaction;
 pub(super) use transaction::Transaction;
-pub(crate) use transaction::{ConfigurationSession, prepare_configuration, prepare_next_hop};
+pub(crate) use transaction::{
+    ConfigurationSession, prepare_configuration, prepare_next_hop, project_bridges,
+};
 
 /// 事务期间的接口变更事实；只在预备和逆向发布之间存续。
 pub(super) struct InterfaceChange {
@@ -41,20 +44,21 @@ fn capture(interface: &NetworkInterface, link: Option<NetworkLink>) -> Interface
         index: interface.index,
         name: interface.name,
         loopback: interface.index == 1,
+        vlan: interface.device.vlan().is_some(),
         mtu: interface.device.ip_mtu() as i32,
         mac: interface.device.mac_address(),
         address: interface.state.address,
         prefix_length: interface.state.prefix_length,
         broadcast: interface.state.broadcast,
         up: interface.state.up,
-        link,
+        link: link.or_else(|| interface.device.vlan().map(super::device::VlanLink::link)),
         driver: interface.device.driver().map(DriverName::new),
     }
 }
 
 fn physical_device(interface: &NetworkInterface) -> Option<Arc<dyn NetworkDevice>> {
     match &interface.device {
-        super::device::ProtocolDevice::Ethernet(device) => Some(device.network_device()),
+        super::device::ProtocolDevice::Ethernet(device) => device.network_device(),
         super::device::ProtocolDevice::Loopback(_) => None,
     }
 }
@@ -68,32 +72,32 @@ pub(crate) fn install_interface(
     device: alloc::sync::Arc<dyn device_model::network::NetworkDevice>,
     lifetime: native_runtime::Channel,
     link_changed: native_runtime::Event,
+    queues: crate::worker::DeviceQueues,
 ) -> Result<u32, SocketError> {
     let mut network = stack(scope)?.lock()?;
+    let reserved = network
+        .configuration
+        .as_deref()
+        .map_or(0, Transaction::pending_gateway_slots);
     network
         .interfaces
-        .try_reserve(1)
+        .try_reserve(1 + reserved)
         .map_err(|_| SocketError::NoMemory)?;
     let index = network.next_ethernet_index;
     let unit = network.free_ethernet_unit();
-    {
-        let event = network.interface_observer.clone();
-        device.bind_link_activity(
-            alloc::sync::Arc::try_new(move || {
-                crate::worker::request_poll();
-                link_changed
-                    .signal(0, native_runtime::native_abi::signals::USER_0)
-                    .expect("link observer event remains valid");
-                if let Some(event) = &event {
-                    event
-                        .signal(0, network_protocol::NetworkInstaller::TOPOLOGY_CHANGED)
-                        .expect("routing input event remains valid");
-                }
-            })
-            .map_err(|_| SocketError::NoMemory)?,
-        );
-    }
-    let interface = NetworkInterface::ethernet(scope.id(), index, unit, device, Some(lifetime))?;
+    let event = network.interface_observer.clone();
+    let activity = scope.link_activity(move || {
+        link_changed
+            .signal(0, native_runtime::native_abi::signals::USER_0)
+            .expect("link observer event remains valid");
+        if let Some(event) = &event {
+            event
+                .signal(0, network_protocol::NetworkInstaller::TOPOLOGY_CHANGED)
+                .expect("routing input event remains valid");
+        }
+    })?;
+    let mut interface =
+        NetworkInterface::ethernet(scope, index, unit, device.clone(), Some(lifetime))?;
     let ipv6_routing = super::route::Ipv6Routes::prepare(
         network
             .interfaces
@@ -113,11 +117,37 @@ pub(crate) fn install_interface(
             transaction.include_interface(interfaces.iter().chain(core::iter::once(&interface)))?;
         }
     }
+    let super::device::ProtocolDevice::Ethernet(adapter) = &mut interface.device else {
+        unreachable!("physical interface has an Ethernet adapter");
+    };
+    queues.publish_ingress(index);
+    adapter.bind_queues(queues);
     network.interfaces.push(interface);
     network.ipv6_routing = ipv6_routing;
     network.next_ethernet_index = index + 1;
     network.notify_interfaces();
+    // 绑定时补发一次，覆盖构造时取样之后及接口发表前的链路变化。
+    device.bind_link_activity(activity);
+    drop(network);
+    // 队列可在接口发表前准备好一批。安装后补发，确保该批一定可被域消费。
+    crate::worker::request_poll(scope.id());
     Ok(index)
+}
+
+/// 通过接口原有撤回路径退休本域中的物理设备。
+/// # Errors
+/// 当前域不可用或配置事务尚未结束。不存在的接口视为已释放。
+pub(crate) fn release_interface(scope: &Namespace, index: u32) -> Result<(), SocketError> {
+    let mut network = stack(scope)?.lock()?;
+    if network.configuration.is_some() {
+        return Err(SocketError::Again);
+    }
+    let removed = network.remove_interface(index);
+    drop(network);
+    if removed {
+        crate::worker::request_poll(scope.id());
+    }
+    Ok(())
 }
 
 /// 在 NIC 发布前装配唯一通知源；调用者保留同一 Event 供授权控制面订阅，不复制接口事实。
@@ -138,6 +168,15 @@ pub(crate) fn observe_interfaces(
     }
     network.interface_observer = Some(event);
     Ok(())
+}
+
+/// 借用当前域唯一的路由输入通知对象；调用方只经安装能力取得通知。
+pub(crate) fn routing_inputs(scope: &Namespace) -> Result<Arc<native_runtime::Event>, SocketError> {
+    stack(scope)?
+        .lock()?
+        .interface_observer
+        .clone()
+        .ok_or(SocketError::NoDevice)
 }
 
 pub(crate) fn interface_index(scope: &Namespace, name: &[u8]) -> Result<u32, SocketError> {
@@ -184,10 +223,15 @@ pub(crate) fn interface_snapshot(
 ) -> Result<InterfaceSnapshot, SocketError> {
     let network = stack(scope)?.lock()?;
     let interface = network.interface(index)?;
+    if !network.interface_visible(interface) {
+        return Err(SocketError::NoDevice);
+    }
     let mut snapshot = capture(interface, None);
     let device = physical_device(interface);
     drop(network);
-    snapshot.link = device.and_then(|device| device.link().ok());
+    if let Some(device) = device {
+        snapshot.link = device.link().ok();
+    }
     Ok(snapshot)
 }
 pub(crate) fn interface_snapshots(
@@ -204,15 +248,16 @@ pub(crate) fn interface_snapshots(
         .map_err(|_| SocketError::NoMemory)?;
     snapshots.extend(
         network
-            .interfaces
-            .iter()
+            .visible_interfaces()
             .map(|interface| capture(interface, None)),
     );
-    devices.extend(network.interfaces.iter().map(physical_device));
+    devices.extend(network.visible_interfaces().map(physical_device));
     // 只借 NET 捕获逻辑字段，Arc 在锁外保活设备会话；物理事实不扩大逻辑状态临界区。
     drop(network);
     for (snapshot, device) in snapshots.iter_mut().zip(devices) {
-        snapshot.link = device.and_then(|device| device.link().ok());
+        if let Some(device) = device {
+            snapshot.link = device.link().ok();
+        }
     }
     Ok(snapshots)
 }
@@ -226,11 +271,16 @@ pub(crate) fn network_snapshot(scope: &Namespace) -> Result<Vec<NetworkSnapshot>
     devices
         .try_reserve_exact(network.interfaces.len())
         .map_err(|_| SocketError::NoMemory)?;
-    snapshots.extend(network.interfaces.iter().map(|interface| NetworkSnapshot {
-        name: interface.name,
-        statistics: interface.device.local_statistics(),
-    }));
-    devices.extend(network.interfaces.iter().map(physical_device));
+    snapshots.extend(
+        network
+            .visible_interfaces()
+            .map(|interface| NetworkSnapshot {
+                index: interface.index,
+                name: interface.name,
+                statistics: interface.device.local_statistics(),
+            }),
+    );
+    devices.extend(network.visible_interfaces().map(physical_device));
     drop(network);
     for (snapshot, device) in snapshots.iter_mut().zip(devices) {
         if let Some(device) = device {
@@ -241,6 +291,7 @@ pub(crate) fn network_snapshot(scope: &Namespace) -> Result<Vec<NetworkSnapshot>
 }
 /// Linux SIOCSIFMTU配置唯一实际device；变更同步刷新库分段mechanism，低于68销毁IPv4 record。
 pub(crate) fn configure_mtu(scope: &Namespace, index: u32, mtu: i32) -> Result<(), SocketError> {
+    require_direct_configuration(scope)?;
     let mut network = stack(scope)?.lock()?;
     network.configuration_writable()?;
     let interface = network.interface(index)?;
@@ -266,10 +317,11 @@ pub(crate) fn configure_mtu(scope: &Namespace, index: u32, mtu: i32) -> Result<(
     interface.configure_mtu(mtu)?;
     if let Some((next, prepared)) = invalidated {
         // 低于 68 销毁 IPv4 成员；FIB/prefsrc 已完整预备，OOM 不会留下半次 MTU/地址变化。
-        interface.state = next;
-        interface.apply_state();
+        let previous = core::mem::replace(&mut interface.state, next);
+        interface.apply_state(previous);
         network.routing.replace_interface(prepared);
     }
+    network.publish_output_change();
     network.notify_interfaces();
     Ok(())
 }
@@ -278,6 +330,7 @@ pub(crate) fn configure_address(
     index: u32,
     address: Ipv4Addr,
 ) -> Result<(), SocketError> {
+    require_direct_configuration(scope)?;
     // Linux inet_abc_len：zeronet/limited broadcast /0，A/B/C /8,/16,/24，class E /32；组播 EINVAL。
     let first = address.octets()[0];
     let prefix = if first == 0 || address.is_broadcast() {
@@ -295,6 +348,9 @@ pub(crate) fn configure_address(
     };
     let mut network = stack(scope)?.lock()?;
     network.configuration_writable()?;
+    if network.switching.contains(index) && !address.is_unspecified() {
+        return Err(SocketError::Invalid);
+    }
     let interface = network.interface_mut(index)?;
     if interface.device.ip_mtu() < 68 {
         return Err(SocketError::NoBuffer);
@@ -322,6 +378,7 @@ pub(crate) fn configure_netmask(
     index: u32,
     mask: Ipv4Addr,
 ) -> Result<(), SocketError> {
+    require_direct_configuration(scope)?;
     let mut network = stack(scope)?.lock()?;
     network.configuration_writable()?;
     let interface = network.interface_mut(index)?;
@@ -351,6 +408,7 @@ pub(crate) fn configure_broadcast(
     index: u32,
     address: Ipv4Addr,
 ) -> Result<(), SocketError> {
+    require_direct_configuration(scope)?;
     let mut network = stack(scope)?.lock()?;
     network.configuration_writable()?;
     let interface = network.interface_mut(index)?;
@@ -366,6 +424,7 @@ pub(crate) fn configure_broadcast(
     network.publish_interface_state(index, state)
 }
 pub(crate) fn configure_up(scope: &Namespace, index: u32, up: bool) -> Result<(), SocketError> {
+    require_direct_configuration(scope)?;
     let mut network = stack(scope)?.lock()?;
     network.configuration_writable()?;
     let interface = network.interface_mut(index)?;
@@ -387,6 +446,7 @@ pub(crate) fn configure_route(
     request: Ipv4RouteRequest,
     change: RouteChange,
 ) -> Result<(), Ipv4RouteError> {
+    require_direct_configuration(scope).map_err(|_| Ipv4RouteError::OperationNotPermitted)?;
     let mut network = scope
         .protocol()
         .ok_or(Ipv4RouteError::NetworkUnreachable)?
@@ -411,6 +471,16 @@ pub(crate) fn configure_route(
             change.exclusive,
             change.append,
         )
+    }?;
+    network.publish_output_change();
+    Ok(())
+}
+
+fn require_direct_configuration(scope: &Namespace) -> Result<(), SocketError> {
+    if scope.permits_direct_configuration() {
+        Ok(())
+    } else {
+        Err(SocketError::OperationNotPermitted)
     }
 }
 /// 冻结本域的真实地址，轻量接口事实不持动态地址列表；未知非零接口拒绝。
@@ -432,13 +502,12 @@ pub(super) fn capture_addresses(
 ) -> Result<network_protocol::AddressSnapshot, SocketError> {
     use core::net::IpAddr;
     use network_protocol::{AddressState, InterfaceAddress};
-    if index != 0 {
-        network.interface(index)?;
+    if index != 0 && !network.interface_visible(network.interface(index)?) {
+        return Err(SocketError::NoDevice);
     }
     network_protocol::AddressSnapshot::capture(
         network
-            .interfaces
-            .iter()
+            .visible_interfaces()
             .filter(|interface| index == 0 || interface.index == index)
             .flat_map(|interface| {
                 let ready = interface.state.up
@@ -494,23 +563,80 @@ pub(crate) fn neighbor_snapshot(
     index: u32,
 ) -> Result<network_protocol::NeighborSnapshot, SocketError> {
     let network = stack(scope)?.lock()?;
-    if index != 0 {
-        network.interface(index)?;
+    if index != 0 && !network.interface_visible(network.interface(index)?) {
+        return Err(SocketError::NoDevice);
     }
     network_protocol::NeighborSnapshot::capture(
         network
-            .interfaces
-            .iter()
+            .visible_interfaces()
             .filter(|interface| index == 0 || interface.index == index)
-            .flat_map(|interface| {
-                interface.arp.rows(interface.index).chain(
-                    interface
-                        .ipv6
-                        .iter()
-                        .flat_map(move |state| state.neighbors(interface.index)),
-                )
-            }),
+            .flat_map(|interface| interface_neighbors(interface, None)),
     )
+}
+
+fn interface_neighbors(
+    interface: &NetworkInterface,
+    after: Option<IpAddr>,
+) -> impl Iterator<Item = neighbors::Neighbor> + Clone {
+    let ipv4 = match after {
+        Some(IpAddr::V6(_)) => None,
+        Some(IpAddr::V4(address)) => Some(interface.arp.rows(interface.index, Some(address))),
+        None => Some(interface.arp.rows(interface.index, None)),
+    };
+    let ipv6_after = match after {
+        Some(IpAddr::V6(address)) => Some(address),
+        _ => None,
+    };
+    ipv4.into_iter().flatten().chain(
+        interface
+            .ipv6
+            .iter()
+            .flat_map(move |state| state.neighbors(interface.index, ipv6_after)),
+    )
+}
+
+/// 读取同域中游标后的首批邻居。只从相关缓存的有序索引续读。
+/// # Errors
+/// 域、分页缓冲或编码失败。
+pub(crate) fn neighbor_page(
+    scope: &Namespace,
+    after: Option<neighbors::Key>,
+) -> Result<Vec<u8>, SocketError> {
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(neighbors::LIMIT)
+        .map_err(|_| SocketError::NoMemory)?;
+    let network = stack(scope)?.lock()?;
+    let mut more = false;
+    // 安装递增编号，网桥发布按编号排序，移除保留顺序。ARP 和 ND 也分别按地址有序。
+    let first = after.map_or(0, |key| {
+        network
+            .interfaces
+            .partition_point(|interface| interface.index < key.interface)
+    });
+    let interfaces = network.interfaces[first..]
+        .iter()
+        .filter(|interface| network.interface_visible(interface));
+    'interfaces: for interface in interfaces {
+        let address = after
+            .filter(|key| key.interface == interface.index)
+            .map(|key| key.address);
+        let mut name = [0; 16];
+        name[..interface.name().len()].copy_from_slice(interface.name());
+        for neighbor in interface_neighbors(interface, address) {
+            if rows.len() == neighbors::LIMIT {
+                more = true;
+                break 'interfaces;
+            }
+            rows.push(neighbors::Entry {
+                neighbor,
+                interface_name: name,
+            });
+        }
+    }
+    drop(network);
+    neighbors::Page { rows, more }
+        .encode()
+        .map_err(|_| SocketError::Invalid)
 }
 
 /// 在本域同一读取 guard 内查询输入或输出路径。
@@ -664,7 +790,7 @@ impl NetworkStack {
                 }
             }
         }
-        crate::worker::request_poll();
+        crate::worker::request_poll(self.domain);
     }
 
     pub(super) fn notify_routing_inputs(&self, signals: u32) {
@@ -676,13 +802,27 @@ impl NetworkStack {
         }
     }
 
+    /// Reconsider pending output in this round using the currently published path facts.
+    pub(super) fn retry_output(&mut self, now: ::tcp::time::Instant) {
+        self.retry_udp(now);
+        self.retry_raw(now);
+        self.retry_tcp(now);
+        self.forwarding.retry(now);
+    }
+
+    /// Wake output after a synchronous configuration or device retirement publishes new paths.
+    pub(super) fn publish_output_change(&mut self) {
+        self.retry_output(super::now());
+        crate::worker::request_poll(self.domain);
+    }
+
     /// 在同一 NET guard 下退休失效地址的路径估计，再发布接口变化；观察者不能读到旧地址的派生状态。
     pub(super) fn notify_interfaces(&mut self) {
         self.path_mtu.retain(|path| {
             let min_mtu = if path.source.is_ipv4() { 68 } else { 1280 };
             self.interfaces.iter().any(|interface| {
                 interface.index == path.interface
-                    && interface.state.up
+                    && interface.link_active()
                     && interface.device.ip_mtu() >= min_mtu
             }) && self.interfaces.iter().any(|interface| match path.source {
                 core::net::IpAddr::V4(source) => {
@@ -721,62 +861,88 @@ impl NetworkStack {
             .routing
             .prepare_interface(index, old, next, &self.interfaces, false)?;
         self.interface_mut(index)?.state = next;
-        self.interface_mut(index)?.apply_state();
+        self.interface_mut(index)?.apply_state(old);
         self.routing.replace_interface(prepared);
+        if old.up != next.up {
+            self.switching.forget(index);
+            if !next.up {
+                self.retire_disabled_fragments(index);
+            }
+        }
         if old != next {
+            self.publish_output_change();
             self.notify_interfaces();
         }
         Ok(())
     }
 }
 
-/// packet socket捕获同一NET的实际link owner；返回值只持本次操作snapshot与硬件Arc。
-pub(crate) fn packet_interface(
+/// 在域协议锁内查询实际接口并运行 `inspect`，以便绑定与接口退休串行。
+/// # Errors
+/// 域或接口不可用、无法取得协议锁，或 `inspect` 返回的 socket 错误。
+pub(crate) fn packet_interface<R>(
     scope: &Namespace,
     index: u32,
-) -> Result<
-    (
+    inspect: impl FnOnce(
         InterfaceSnapshot,
         Option<alloc::sync::Arc<dyn device_model::network::NetworkDevice>>,
-    ),
-    SocketError,
-> {
+    ) -> Result<R, SocketError>,
+) -> Result<R, SocketError> {
     let network = stack(scope)?.lock()?;
     let interface = network.interface(index)?;
-    let device = match &interface.device {
-        super::device::ProtocolDevice::Ethernet(device) => Some(device.network_device()),
-        super::device::ProtocolDevice::Loopback(_) => None,
-    };
-    Ok((capture(interface, None), device))
+    if !network.interface_visible(interface) {
+        return Err(SocketError::NoDevice);
+    }
+    let device = physical_device(interface);
+    inspect(capture(interface, None), device)
 }
-/// native packet loopback injection沿同一IP-medium队列，不复制设备或绕开NET owner。
-pub(crate) fn inject_loopback(
+/// 将 packet socket 帧交给回环队列，或沿 VLAN 当前交换路径直接提交。
+pub(crate) fn inject_virtual_packet(
     scope: &Namespace,
+    index: u32,
     header: [u8; 14],
     packet: &[u8],
     sender: usize,
 ) -> Result<(), SocketError> {
     let network = stack(scope)?.lock()?;
-    let interface = network.interface(1)?;
-    if !interface.state.up {
+    let interface = network.interface(index)?;
+    if !network.interface_visible(interface) {
+        return Err(SocketError::NoDevice);
+    }
+    if !interface.link_active() {
         return Err(SocketError::NetworkDown);
     }
-    let super::device::ProtocolDevice::Loopback(device) = &interface.device else {
-        unreachable!("actual lo mechanism")
-    };
-    device.inject(header, packet, sender)
+    match &interface.device {
+        super::device::ProtocolDevice::Loopback(device) => device.inject(header, packet, sender),
+        super::device::ProtocolDevice::Ethernet(_) => network
+            .switching
+            .submit_gateway_packet(
+                &network.interfaces,
+                index,
+                (header, packet),
+                (scope.packets(), sender),
+                super::now(),
+            )
+            .map_err(crate::packet::network_error),
+    }
 }
-/// 无等待packet writable观察；只读实际interface/device，不持packet registry进入protocol锁。
+/// 在 socket 请求上下文观察实际出口；调用者已经释放 packet registry。
 pub(crate) fn packet_transmit_available(scope: &Namespace, index: i32) -> Option<bool> {
-    let network = scope.protocol()?.try_observe()?;
+    let network = scope.protocol()?.lock().ok()?;
     Some(
         network
-            .interfaces
-            .iter()
+            .visible_interfaces()
             .filter(|interface| index == 0 || interface.index == index as u32)
             .any(|interface| match &interface.device {
                 super::device::ProtocolDevice::Ethernet(device) => {
-                    device.network_device().transmit_available(0)
+                    if interface.device.vlan().is_some() {
+                        interface.link_active()
+                            && network
+                                .switching
+                                .gateway_writable(&network.interfaces, interface.index)
+                    } else {
+                        device.transmit_available()
+                    }
                 }
                 super::device::ProtocolDevice::Loopback(device) => device.can_transmit(),
             }),
