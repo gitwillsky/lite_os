@@ -1,7 +1,7 @@
 # BGP 契约
 
 本文件拥有 BGP 的格式边界与实现限制；固定来源见[网络规范基线](../standards-baseline/network.md#bgp)。
-当前已有原生 IPv4/IPv6 邻居会话、入口配置、反馈选路及受授权来源下发。支持 [MD5 与 TCP-AO 认证](tcp-authentication.md)，尚未完成来宾运行与协议互通验收。
+当前已有原生 IPv4/IPv6 邻居会话、配置、反馈选路及来源下发，支持 [MD5 与 TCP-AO 认证](tcp-authentication.md)。来宾验证范围见[扩展消息与验收范围](#扩展消息与验收范围)。
 逐邻居入口和出口策略、候选安装检查、双栈发布、路由反射与 AS 联盟已接通。IPv4 单播可使用 IPv6 下一跳，范围见[下一跳契约](bgp-next-hop.md)。
 
 ## 原生服务与授权入口

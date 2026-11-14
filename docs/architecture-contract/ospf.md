@@ -62,7 +62,10 @@ v3 点对点反向链路必须匹配两端 Interface ID，网关保留链路范�
 
 数据库内容改变合并在一次 SPF 中，只有序列或年龄更新的通告不触发重算。邻接失效直接重算，按地址族完整替换候选，空批次撤回所有旧候选。
 路由管理距离缺省 110，协议编号 188。RIB 按已有准入政策和设备事实确认并安装。实例关闭即释放来源，RIB 退出则由配置服务重建授权。OSPF 进程不持有 FIB 写入能力。
-实机互通仍待完成。[Linux rtnetlink 路由来源编号](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/rtnetlink.h)
+隔离 AArch64 来宾已与 FRR 10.6.1 完成单区域双栈广播邻接。两端均达到 Full，FRR 当选 DR，LiteOS 当选 BDR。
+LiteOS 可查询 FRR 宣告的 IPv4 和 IPv6 路由，双栈探测经过实际转发。FRR 删除两条直连通告后路由撤回，恢复地址后重新安装。FRR 也学到 LiteOS 被动接口的双栈前缀。
+FRR 链路停用后，LiteOS 在两个地址族上接任 DR。链路恢复后重新达到 Full，LiteOS 保持 DR，FRR 成为 BDR。
+三台路由器的 2-Way 路径、跨区和认证互通待验收。[Linux rtnetlink 路由来源编号](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/rtnetlink.h)
 
 ## 本机网络通告
 
