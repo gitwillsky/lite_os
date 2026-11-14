@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 原生配置工厂与状态接口的线版本。
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// 路由来源标识，对应 Linux 的 RTPROT_OSPF。
 pub const ROUTE_PROTOCOL: u8 = 188;
@@ -19,7 +19,7 @@ pub const ROUTE_PROTOCOL: u8 = 188;
 /// 本地路由管理距离，和链路代价独立。
 pub const PREFERENCE: u32 = 110;
 
-/// 本路由实例的标识和按稳定接口名称配置的点到点链路。
+/// 本路由实例的标识和按稳定接口名称配置的链路。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
@@ -40,6 +40,9 @@ pub struct Link {
     /// 仅通告接口网络，不在该链路发送 Hello 或建立邻接。
     #[serde(default)]
     pub passive: bool,
+    /// 广播链路参与 DR 选举的优先级。0 表示不参选，缺省使用点到点模式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broadcast_priority: Option<u8>,
     pub v2: Option<Timers>,
     pub v3: Option<V3>,
     /// RFC 5709 HMAC-SHA-256 的密钥组。
@@ -96,6 +99,7 @@ impl Link {
     /// 判断链路版本、定时与认证配置是否可一起使用。接口引用由配置验证。
     pub fn valid(&self) -> bool {
         (self.v2.is_some() || self.v3.is_some())
+            && (!self.passive || self.broadcast_priority.is_none())
             && self.v2.is_none_or(Timers::valid)
             && self.v3.is_none_or(|v3| {
                 v3.instance < 32 && v3.timers.valid() && u16::try_from(v3.timers.dead).is_ok()
@@ -281,6 +285,7 @@ impl Session {
 #[serde(rename_all = "snake_case")]
 pub enum NeighborState {
     Init,
+    TwoWay,
     ExStart,
     Exchange,
     Loading,
@@ -304,9 +309,18 @@ pub struct LinkStatus {
     pub area: Ipv4Addr,
     pub version: u8,
     pub passive: bool,
+    pub broadcast: Option<BroadcastStatus>,
     pub authentication: AuthenticationStatus,
     pub local: Option<IpAddr>,
     pub neighbors: Vec<Neighbor>,
+}
+
+/// 广播链路的选举结果。v2 显示接口 IPv4 地址，v3 显示 Router ID。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BroadcastStatus {
+    pub designated: Option<Ipv4Addr>,
+    pub backup: Option<Ipv4Addr>,
 }
 
 /// 邻接诊断只包含认证模式和拒绝原因。

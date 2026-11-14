@@ -83,13 +83,13 @@ impl Protocol {
                 links
                     .iter()
                     .filter(|link| link.version == version)
-                    .filter_map(|link| link.root(now))
+                    .flat_map(|link| link.roots(now))
             };
             if !roots().eq(family.roots.iter().copied()) {
                 family.roots.clear();
                 family
                     .roots
-                    .try_reserve(links.len())
+                    .try_reserve(roots().count())
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 family.roots.extend(roots());
                 family.at = now;

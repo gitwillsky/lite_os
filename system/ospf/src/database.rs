@@ -48,6 +48,10 @@ impl Identity {
         .then_some(area)
     }
 
+    pub(super) fn is_link_lsa(self) -> bool {
+        self.version() == Version::V3 && self.key.kind == 8
+    }
+
     pub(super) fn is_summary(self) -> bool {
         matches!(
             (self.version(), self.key.kind),
@@ -157,6 +161,11 @@ pub(super) struct Record {
 }
 
 impl Record {
+    pub(super) fn live_lsa(&self, version: Version, now: i64) -> Option<Lsa<'_>> {
+        (!self.instance(now).is_max_age())
+            .then(|| Lsa::parse(version, &self.bytes).ok())
+            .flatten()
+    }
     fn expires_at(&self) -> i64 {
         self.received
             .saturating_add(i64::from(MAX_AGE - self.instance.age) * SECOND)
@@ -244,13 +253,7 @@ impl Database {
                     && identity.scope == first.scope
                     && identity.key.kind <= last_kind
             })
-            .filter_map(move |(_, record)| {
-                if record.instance(now).is_max_age() {
-                    None
-                } else {
-                    Lsa::parse(version, &record.bytes).ok()
-                }
-            })
+            .filter_map(move |(_, record)| record.live_lsa(version, now))
     }
     pub(super) fn get(&self, identity: Identity) -> Option<&Record> {
         self.records.get(&identity)
@@ -273,7 +276,7 @@ impl Database {
             if previous.is_some_and(|record| now.saturating_sub(record.received) < SECOND) {
                 return Ok(None);
             }
-            if identity.topology_area(lsa.header().version()).is_some() {
+            if identity.topology_area(lsa.header().version()).is_some() || identity.is_link_lsa() {
                 let live = !instance.is_max_age();
                 topology_changed = previous.map_or(live, |record| {
                     let previous_live = !record.instance(now).is_max_age()

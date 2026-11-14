@@ -1,4 +1,4 @@
-# OSPF 邻接与区域内选路契约
+# OSPF 邻接与区域选路契约
 
 [命令行使用方式](../../user/libraries/network-config/README.md#ospf-邻居发现)
 
@@ -10,7 +10,7 @@
 `component-manager` 只把 `liteos.ospf.Configuration` 路由给 `router-config`。OSPF 实例取得指定域的网络连接和路由来源。
 具名域的 `ospf` 只引用本域接口配置。邻居、组播订阅和采用路由归各自域；协议失败独立重试。状态和生效路由可按域查询。[配置与查询](../../user/libraries/network-config/README.md#在具名路由域配置-ospf)
 工厂 `OPEN` 请求携带 `u32` 版本、`u64` 字节数、含 `Session` 正文的 VMO 及同域来源和网络 channel，回复一个实例 channel。
-实例 `SNAPSHOT` 请求携带 `u32` 版本，回复字节数及一个含 `Snapshot` 正文的 VMO。当前版本为 6。创建方确认实例能响应后才登记寿命。Linux 管理入口通过已有 `netview` 或 `netdev` 授权查询 `OSPF_STATUS`。
+实例 `SNAPSHOT` 请求携带 `u32` 版本，回复字节数及一个含 `Snapshot` 正文的 VMO。当前版本为 7，广播链路附带 DR 与 BDR。创建方确认实例能响应后才登记寿命。Linux 管理入口通过已有 `netview` 或 `netdev` 授权查询 `OSPF_STATUS`。
 
 ## 链路与邻居寿命
 
@@ -20,6 +20,20 @@
 
 点对点链路最多保留一个当前对端。按版本校验区域、定时参数和校验和，v3 另校验实例号。收到有效 Hello 后记录 `Init`，确认双向通信后进入 `ExStart`，超过失效间隔时删除邻居。
 普通区域可按版本启用邻居认证。允许基础报文携带格式合法的 LLS 扩展区，跳过扩展内容。[RFC 2328 §10.5](https://www.rfc-editor.org/rfc/rfc2328.html#section-10.5)、[RFC 5613 §2](https://www.rfc-editor.org/rfc/rfc5613.html#section-2)
+
+### 广播以太网
+
+配置 `broadcast_priority` 时启用广播，值为 0–255，零只参与邻接。每个链路版本各自保留邻居及死计时器。达到 2-Way 的合格邻居与本机参加 DR/BDR 选举。已选定的角色享有优先权，失效后由原 BDR 接任。
+广播链路在本机或对端是 DR/BDR 时才同步数据库。其余双向邻居保持 2-Way。v2 在 Hello 中携带接口地址作为 DR/BDR 标识并检查子网掩码，v3 使用 Router ID。各路由器加入 AllSPFRouters，DR 和 BDR 加入 AllDRouters。
+Hello 使用组播，数据库描述与请求使用邻居地址。新 LSA 按接口角色在相应组播组发送，确认和重传按邻接追踪。原 DR/BDR 来包及 BDR 同链路收到的更新跳过立即回送，必要时按邻居单播重传。
+[RFC 2328 §§9.4、10.4、13.3](https://www.rfc-editor.org/rfc/rfc2328.html#section-9.4)、[RFC 5340 §4.2](https://www.rfc-editor.org/rfc/rfc5340.html#section-4.2)
+
+出现 Full 邻接时，DR 发布 Network-LSA，附上已同步的成员。v3 DR 依据本机和当前成员的 Link-LSA 汇总中转网段前缀并发布 Intra-Area-Prefix-LSA。失去 DR 角色时撤回该网段的本机通告。
+SPF 验证本机和目标路由器与中转网段之间的双向图边，使用实际二层网段上的对端地址作为下一跳，包括同网段 2-Way 邻居。点到点共用原邻接、数据库及 RIB 下发。
+[RFC 2328 §§12.4.2、16.1](https://www.rfc-editor.org/rfc/rfc2328.html#section-16.1)、[RFC 5340 §§4.4、4.8](https://www.rfc-editor.org/rfc/rfc5340.html#section-4.8)
+
+邻居容量按活动接口 MTU 约束，避免本机 Hello 或 Network-LSA 因成员过多丢失。选举和洪泛只在 OSPF 控制面运行，组播只为每接口保留待首发的 LSA 身份。
+整机使用共享 VLAN 上的 FRR/BIRD 对端验证双栈选举、同链路洪泛、DR 失联后的收敛及转发，同时测量规模增大后的控制包量。
 
 ## 邻居认证
 

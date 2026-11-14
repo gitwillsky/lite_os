@@ -1,6 +1,6 @@
 //! RFC 2328 §16.1 与 RFC 5340 §4.8 的区域内 SPF。只从已建立的邻接引出本机第一跳。
 
-use super::database::Database;
+use super::{database::Database, origination::Transit};
 use alloc::{collections::BinaryHeap, rc::Rc, vec::Vec};
 use core::{
     cmp::{Ordering, Reverse},
@@ -41,6 +41,7 @@ pub(super) struct Neighbor {
     pub(super) remote_interface: u32,
     pub(super) gateway: IpAddr,
     pub(super) cost: u16,
+    pub(super) transit: Option<Transit>,
 }
 
 #[derive(Clone)]
@@ -111,6 +112,14 @@ struct Graph {
 }
 
 impl Graph {
+    fn local_transit(&self, root: Vertex, network: Vertex) -> bool {
+        matches!(network, Vertex::Network(..))
+            && self.edges.get(&root).is_some_and(|edges| {
+                edges
+                    .iter()
+                    .any(|edge| edge.destination == network && self.has_backlink(root, *edge))
+            })
+    }
     fn edge(&mut self, source: Vertex, edge: Edge) -> Result<(), Status> {
         if let Some(edges) = self.edges.get_mut(&source) {
             edges
@@ -329,7 +338,37 @@ impl Graph {
                 remote,
                 cost: neighbor.cost,
             };
-            if !self.has_backlink(root, edge) {
+            let reachable = if let Some(transit) = neighbor.transit {
+                let network = Vertex::Network(
+                    if version == Version::V2 {
+                        0
+                    } else {
+                        transit.designated
+                    },
+                    transit.id,
+                );
+                let attached = self.edges.get(&root).is_some_and(|edges| {
+                    edges.iter().any(|edge| {
+                        edge.destination == network
+                            && edge.local == local
+                            && self.has_backlink(root, *edge)
+                    })
+                });
+                attached
+                    && self.edges.get(&network).is_some_and(|edges| {
+                        edges
+                            .iter()
+                            .any(|candidate| candidate.destination == edge.destination)
+                    })
+                    && self.edges.get(&edge.destination).is_some_and(|edges| {
+                        edges
+                            .iter()
+                            .any(|back| back.destination == network && back.local == remote)
+                    })
+            } else {
+                self.has_backlink(root, edge)
+            };
+            if !reachable {
                 continue;
             }
             let mut members = Vec::new();
@@ -358,6 +397,7 @@ impl Graph {
             let path = path.clone();
             for &edge in self.edges.get(&node).into_iter().flatten() {
                 if edge.destination != root
+                    && !self.local_transit(root, edge.destination)
                     && self.has_backlink(node, edge)
                     && let Some(cost) = cost.checked_add(u32::from(edge.cost))
                 {
@@ -440,11 +480,14 @@ pub(super) fn select(
         }
         let paths = graph.shortest(router, &roots[start..start + count], version)?;
         for &(node, prefix, cost) in &graph.prefixes {
-            let path = if node == Vertex::Router(router) {
+            let root = Vertex::Router(router);
+            let path = if node == root {
                 Some(Path {
                     cost: u32::from(cost),
                     members: local.clone(),
                 })
+            } else if graph.local_transit(root, node) {
+                graph.connected_prefix(root, node, version, cost, &local)?
             } else {
                 extend_path(&paths, node, u32::from(cost))
             };
@@ -516,6 +559,53 @@ pub(super) fn select(
         batch: encode_routes(&prefixes, version)?,
         summaries,
     })
+}
+
+impl Graph {
+    fn connected_prefix(
+        &self,
+        root: Vertex,
+        network: Vertex,
+        version: Version,
+        metric: u16,
+        local: &Rc<Vec<Member>>,
+    ) -> Result<Option<Path>, Status> {
+        let edges = self
+            .edges
+            .get(&root)
+            .into_iter()
+            .flatten()
+            .filter(|edge| edge.destination == network);
+        let Some(cost) = edges.clone().map(|edge| edge.cost).min() else {
+            return Ok(None);
+        };
+        let members = if version == Version::V2 {
+            local.clone()
+        } else {
+            // RFC 5340 §4.8.2. A directly connected network can advertise prefixes that
+            // this router did not configure. Reach them on-link without a router gateway.
+            let outgoing = edges.filter(|edge| edge.cost == cost);
+            let mut members = Vec::new();
+            members
+                .try_reserve_exact(outgoing.clone().count())
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            members.extend(outgoing.map(|edge| Member {
+                target: Target::Direct {
+                    interface_index: edge.local,
+                    gateway: None,
+                    on_link: false,
+                },
+                weight: 1,
+            }));
+            members.sort_unstable();
+            members.dedup();
+            Rc::try_new(members).map_err(|_| native_abi::ERR_NO_MEMORY)?
+        };
+        Ok(Some(Path {
+            cost: u32::from(cost) + u32::from(metric),
+            members,
+        }))
+    }
 }
 
 fn extend_path(paths: &Paths, node: Vertex, cost: u32) -> Option<Path> {

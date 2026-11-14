@@ -203,7 +203,7 @@ async fn edit_link(
     interfaces: &[&ConfigurationName],
     current: Option<&Link>,
 ) -> liteos_ui::Result<Option<(ConfigurationName, Link)>> {
-    let (window, mut events, root) = form(dialogs, parent, "OSPF 接口属性", 525, 390)?;
+    let (window, mut events, root) = form(dialogs, parent, "OSPF 接口属性", 525, 423)?;
     let interfaces_row = child(&root, WidgetKind::Row, "", row())?;
     let _label = child(
         &interfaces_row,
@@ -221,6 +221,10 @@ async fn edit_link(
     let cost = current.map_or(NonZeroU16::MIN, |link| link.cost);
     let (_, area) = field(&root, "区域 ID", &area.to_string())?;
     let (_, cost) = field(&root, "链路代价", &cost.to_string())?;
+    let priority = current
+        .and_then(|link| link.broadcast_priority)
+        .map_or_else(String::new, |priority| priority.to_string());
+    let (_, priority) = field(&root, "广播优先级（留空为点到点）", &priority)?;
     let passive = checkbox(
         &root,
         "仅通告本网段",
@@ -322,6 +326,16 @@ async fn edit_link(
                 let v2_enabled = checked(&v2_fields.enabled)?;
                 let v3_enabled = checked(&v3_fields.enabled)?;
                 let passive_mode = checked(&passive)?;
+                let text = priority.text()?;
+                let broadcast_priority = if text.trim().is_empty() || passive_mode {
+                    None
+                } else if let Ok(priority) = text.trim().parse::<u8>() {
+                    Some(priority)
+                } else {
+                    status.set_text("广播优先级须为 0–255，0 表示不参与选举。")?;
+                    priority.focus()?;
+                    continue;
+                };
                 let v2 = if v2_enabled {
                     v2_fields.timers()?
                 } else {
@@ -339,6 +353,7 @@ async fn edit_link(
                     area,
                     cost,
                     passive: passive_mode,
+                    broadcast_priority,
                     v2,
                     v3,
                     v2_authentication: (v2_enabled && !passive_mode)

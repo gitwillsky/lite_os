@@ -139,6 +139,7 @@ pub fn ospf_neighbor_state(state: ospf::NeighborState) -> &'static str {
     use ospf::NeighborState;
     match state {
         NeighborState::Init => "Init",
+        NeighborState::TwoWay => "2-Way",
         NeighborState::ExStart => "ExStart",
         NeighborState::Exchange => "Exchange",
         NeighborState::Loading => "Loading",

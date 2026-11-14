@@ -23,6 +23,7 @@ pub(super) struct Wire<'a> {
     pub(super) socket: &'a Socket,
     pub(super) index: u32,
     pub(super) source: IpAddr,
+    pub(super) destination: IpAddr,
     pub(super) mtu: u16,
     pub(super) header: Header,
     pub(super) authentication: Option<&'a Authentication>,
@@ -66,7 +67,10 @@ impl Wire<'_> {
             IpAddr::V4(_) => ChecksumContext::V2,
             IpAddr::V6(source) => ChecksumContext::V3 {
                 source,
-                destination: ALL_V3,
+                destination: match self.destination {
+                    IpAddr::V6(address) => address,
+                    _ => unreachable!("v6 destination"),
+                },
             },
         };
         let wire_length = length + self.authentication_overhead();
@@ -83,10 +87,12 @@ impl Wire<'_> {
             ospf::write_checksum(&mut self.buffer[..length], checksum)
                 .map_err(|_| native_abi::ERR_BAD_STATE)?;
         }
-        match self
-            .socket
-            .send(self.index, self.source, &self.buffer[..wire_length])
-        {
+        match self.socket.send(
+            self.index,
+            self.source,
+            self.destination,
+            &self.buffer[..wire_length],
+        ) {
             Err(SocketError::NetworkDown | SocketError::BrokenPipe) => {
                 Err(native_abi::ERR_PEER_CLOSED)
             }
@@ -111,6 +117,12 @@ impl Socket {
             .socket(family, InetProtocol::Raw(PROTOCOL))
             .map_err(status)?;
         let socket = RemoteInetSocket::new(endpoint.channel).map_err(status)?;
+        socket
+            .set_option(match version {
+                Version::V2 => InetOptionChange::HopLimit(Some(1)),
+                Version::V3 => InetOptionChange::Ipv6HopLimit(Some(1)),
+            })
+            .map_err(status)?;
         let options = match version {
             Version::V2 => [
                 InetOptionChange::PacketInfo(true),
@@ -138,17 +150,26 @@ impl Socket {
         &self,
         version: Version,
         interface: u32,
+        designated: bool,
         join: bool,
     ) -> Result<(), SocketError> {
         self.endpoint.set_option(match version {
             Version::V2 => InetOptionChange::Ipv4Membership {
-                group: ALL_V2,
+                group: if designated {
+                    Ipv4Addr::new(224, 0, 0, 6)
+                } else {
+                    ALL_V2
+                },
                 interface,
                 address: Ipv4Addr::UNSPECIFIED,
                 join,
             },
             Version::V3 => InetOptionChange::Ipv6Membership {
-                group: ALL_V3,
+                group: if designated {
+                    Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 6)
+                } else {
+                    ALL_V3
+                },
                 interface,
                 join,
             },
@@ -159,23 +180,25 @@ impl Socket {
         &self,
         interface: u32,
         source: IpAddr,
+        target: IpAddr,
         bytes: &[u8],
     ) -> Result<(), SocketError> {
-        let (destination, control) = match source {
-            IpAddr::V4(address) => (
-                InetAddress::new(ALL_V2.into(), 0),
+        let (destination, control) = match (source, target) {
+            (IpAddr::V4(address), IpAddr::V4(target)) => (
+                InetAddress::new(target.into(), 0),
                 InternetSendPacketInfo::Ipv4 {
                     interface_index: Some(interface),
                     source_address: address,
                 },
             ),
-            IpAddr::V6(address) => (
-                InetAddress::V6(SocketAddrV6::new(ALL_V3, 0, 0, interface)),
+            (IpAddr::V6(address), IpAddr::V6(target)) => (
+                InetAddress::V6(SocketAddrV6::new(target, 0, 0, interface)),
                 InternetSendPacketInfo::Ipv6 {
                     interface_index: Some(interface),
                     source_address: address,
                 },
             ),
+            _ => return Err(SocketError::Invalid),
         };
         let sent = self
             .endpoint

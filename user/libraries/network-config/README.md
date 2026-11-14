@@ -547,6 +547,9 @@ ipconfig /domain lab /routes
 v2 要求接口有 IPv4 地址，v3 使用 IPv6 链路本地地址。`cost` 是本端链路代价，省略时为 1。将 `ospf` 设为 `null` 可停用所有链路。
 
 `ipconfig /ospf` 显示链路版本、区域、本地地址和邻居状态。`Init` 表示已收到对端 Hello。`ExStart`、`Exchange` 和 `Loading` 分别表示正在协商、交换摘要和补齐通告。`Full` 表示初始数据库同步完成。
+
+同一以太网有多台 OSPF 路由器时，在各端启用广播模式。LiteOS 在对应 `links` 条目填写 `"broadcast_priority": 1`。可用 0–255，0 表示不竞选 DR 或 BDR。省略此字段时使用点到点。
+`ipconfig /ospf` 可查看 DR、BDR 和邻居状态。两台未当选的路由器之间保持 `2-Way`，并通过 DR 交换通告。
 邻居失联超过 `dead` 秒后从列表消失。[邻居认证](#ospf-邻居认证)
 
 邻接同步完成后，可在桌面网络管理器的路由表或 `ip route`、`ip -6 route` 查看采用的区域内路由、出口和下一跳。OSPF 的路由来源编号为 188。

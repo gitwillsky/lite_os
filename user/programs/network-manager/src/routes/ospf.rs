@@ -205,8 +205,15 @@ fn show_details(
         .authentication
         .last_failure
         .map_or("—", ospf_authentication_failure);
+    let election = link.broadcast.map_or_else(String::new, |roles| {
+        let dr = roles
+            .designated
+            .map_or_else(|| "—".into(), |id| id.to_string());
+        let bdr = roles.backup.map_or_else(|| "—".into(), |id| id.to_string());
+        format!("  ·  DR {dr}  ·  BDR {bdr}")
+    });
     detail.set_text(&format!(
-        "区域 {}  ·  本地 {local}  ·  邻居 {peer}\n认证 {authentication}  ·  已拒绝 {} 个报文  ·  最近原因 {failure}",
+        "区域 {}  ·  本地 {local}  ·  邻居 {peer}{election}\n认证 {authentication}  ·  已拒绝 {} 个报文  ·  最近原因 {failure}",
         link.area, link.authentication.rejected
     ))
 }

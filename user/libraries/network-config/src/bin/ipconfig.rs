@@ -53,6 +53,13 @@ fn show_ospf(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<
                 writeln!(output, "    最近拒绝原因  {reason}")?;
             }
         }
+        if let Some(roles) = link.broadcast {
+            let dr = roles
+                .designated
+                .map_or_else(|| "—".into(), |id| id.to_string());
+            let bdr = roles.backup.map_or_else(|| "—".into(), |id| id.to_string());
+            writeln!(output, "    广播链路  DR {dr}  BDR {bdr}")?;
+        }
         for neighbor in link.neighbors {
             let state = ospf_neighbor_state(neighbor.state);
             writeln!(

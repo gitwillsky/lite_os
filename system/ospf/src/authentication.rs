@@ -53,7 +53,6 @@ struct Replay {
 pub(super) struct Authentication {
     send_id: u16,
     keys: FallibleMap<u16, Sha256Mac>,
-    v2_received: Option<u32>,
     // 按 Router ID 和报文类型记高水位，v3 邻接超时或接口重绑定时仍拒绝旧报文。
     v3_received: FallibleMap<u32, Replay>,
 }
@@ -87,7 +86,6 @@ impl Authentication {
         Ok(Self {
             send_id: configuration.send_id,
             keys,
-            v2_received: None,
             v3_received: FallibleMap::default(),
         })
     }
@@ -155,11 +153,12 @@ impl Authentication {
         Ok(())
     }
 
-    pub(super) fn reset_v2(&mut self) {
-        self.v2_received = None;
-    }
-
-    pub(super) fn verify(&mut self, packet: Packet<'_>, source: IpAddr) -> Result<(), Failure> {
+    pub(super) fn verify(
+        &mut self,
+        packet: Packet<'_>,
+        source: IpAddr,
+        v2_received: &mut Option<u32>,
+    ) -> Result<(), Failure> {
         match packet.header().fields {
             HeaderFields::V2 {
                 authentication_type: 2,
@@ -180,10 +179,10 @@ impl Authentication {
                 mac.update(&APAD);
                 mac.verify_slice(digest)
                     .map_err(|_| Failure::InvalidDigest)?;
-                if self.v2_received.is_some_and(|previous| sequence < previous) {
+                if v2_received.is_some_and(|previous| sequence < previous) {
                     return Err(Failure::Replay);
                 }
-                self.v2_received = Some(sequence);
+                *v2_received = Some(sequence);
             }
             HeaderFields::V2 { .. } => return Err(Failure::Missing),
             HeaderFields::V3 { .. } => {

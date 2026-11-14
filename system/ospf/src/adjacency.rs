@@ -113,23 +113,32 @@ impl Adjacency {
         &mut self,
         database: &Database,
         key: Identity,
-        now: i64,
-    ) -> Result<(), Status> {
+        timing: (i64, bool),
+    ) -> Result<bool, Status> {
+        let (now, multicast) = timing;
         if self.phase == Phase::ExStart {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(&expected) = self.missing.get(&key.key) {
             let instance = database.get(key).expect("published LSA").instance(now);
             match instance.compare(expected) {
-                Ordering::Less => return Ok(()),
+                Ordering::Less => return Ok(false),
                 Ordering::Equal => {
                     self.satisfy(key.key, instance, now);
-                    return Ok(());
+                    return Ok(false);
                 }
                 Ordering::Greater => self.satisfy(key.key, instance, now),
             }
         }
-        self.queue_update(key, now)
+        self.queue_update(
+            key,
+            if multicast {
+                now.saturating_add(RETRANSMIT)
+            } else {
+                now
+            },
+        )?;
+        Ok(true)
     }
 
     fn queue_update(&mut self, key: Identity, now: i64) -> Result<(), Status> {

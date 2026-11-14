@@ -2,10 +2,10 @@
 
 use super::{
     adjacency::{Adjacency, Exchange},
-    authentication::{self, Authentication, SendSequence},
+    authentication::{Authentication, SendSequence},
     database::{Database, Domain, Identity, SECOND},
-    origination::{Attachment, Origination},
-    socket::{ALL_V2, ALL_V3, Socket, Wire, status},
+    origination::{AttachedRouter, Attachment, Origination},
+    socket::{Socket, Wire, status},
     spf,
 };
 use alloc::{vec, vec::Vec};
@@ -21,20 +21,19 @@ use network_protocol::{
 };
 use packet_wire::{
     ipv4::Ipv4Packet,
-    ospf::{
-        self, Body, ChecksumContext, Header, HeaderFields, Hello, HelloLink, HelloParameters, Kind,
-        Packet, Version,
-    },
+    ospf::{self, Body, ChecksumContext, Header, HeaderFields, HelloParameters, Packet, Version},
 };
 use router_protocol::{
     configuration::Name,
     ospf::{
-        AuthenticationFailure, AuthenticationStatus, Binding, LinkStatus, Neighbor, NeighborState,
-        Session, Snapshot, Timers,
+        AuthenticationStatus, Binding, LinkStatus, Neighbor, NeighborState, Session, Snapshot,
+        Timers,
     },
 };
 
+mod neighbors;
 mod publication;
+use neighbors::Election;
 use publication::{Publication, topology_changed};
 
 const CONTROL: u64 = 1;
@@ -60,6 +59,9 @@ struct Seen {
     interface: u32,
     adjacency: Option<Adjacency>,
     expires: i64,
+    parameters: HelloParameters,
+    two_way: bool,
+    sequence: Option<u32>,
 }
 
 #[derive(Default)]
@@ -84,8 +86,11 @@ struct Link {
     authentication: Option<Authentication>,
     auth_status: AuthenticationStatus,
     active: Option<Active>,
-    // 点到点链路最多一个对端。邻居超时或设备换代后才允许另一 Router ID 接管。
-    peer: Option<Seen>,
+    peers: Vec<Seen>,
+    broadcast_priority: Option<u8>,
+    election: Election,
+    // 待首次组播的 LSA 身份。各邻接独立保留确认和重传状态。
+    flood_pending: Vec<Identity>,
     hello_at: i64,
 }
 
@@ -122,7 +127,12 @@ impl Link {
                 ..AuthenticationStatus::default()
             },
             active: None,
-            peer: None,
+            peers: Vec::new(),
+            broadcast_priority: (!settings.passive)
+                .then_some(settings.broadcast_priority)
+                .flatten(),
+            election: Election::default(),
+            flood_pending: Vec::new(),
             hello_at: native_abi::DEADLINE_INFINITE,
         })
     }
@@ -226,14 +236,28 @@ impl Link {
         if self.active == next {
             return Ok(());
         }
-        self.peer = None;
+        self.peers.clear();
+        self.flood_pending.clear();
+        if self.election.member {
+            let active = self.active.expect("multicast group has an active link");
+            socket
+                .membership(self.version, active.index, true, false)
+                .or_else(|error| match error {
+                    SocketError::NoDevice
+                    | SocketError::NoEntry
+                    | SocketError::AddressNotAvailable => Ok(()),
+                    error => Err(status(error)),
+                })?;
+        }
+        self.election
+            .reset(self.broadcast_priority, now, self.dead());
         self.hello_at = native_abi::DEADLINE_INFINITE;
         let previous = self.active.take();
         let previous_index = previous.map(|active| active.index);
         let next_index = next.map(|active| active.index);
         if previous_index != next_index {
             if let Some(index) = previous_index {
-                match socket.membership(self.version, index, false) {
+                match socket.membership(self.version, index, false, false) {
                     Ok(())
                     | Err(
                         SocketError::NoDevice
@@ -244,7 +268,7 @@ impl Link {
                 }
             }
             if let Some(index) = next_index {
-                match socket.membership(self.version, index, true) {
+                match socket.membership(self.version, index, false, true) {
                     Ok(()) => {}
                     Err(
                         SocketError::NoDevice
@@ -258,151 +282,38 @@ impl Link {
         self.active = next;
         if self.active.is_some() {
             self.hello_at = now;
+        } else {
+            self.election = Election::default();
         }
         Ok(())
-    }
-
-    fn send_hello(&self, wire: &mut Wire<'_>, active: Active) -> Result<(), Status> {
-        let (link, options) = match active.source {
-            IpAddr::V4(_) => (
-                HelloLink::V2(Ipv4Addr::from(
-                    u32::MAX
-                        .checked_shl(32 - u32::from(active.prefix))
-                        .unwrap_or(0),
-                )),
-                2,
-            ),
-            IpAddr::V6(_) => (HelloLink::V3(active.index), 0x03),
-        };
-        let params = HelloParameters {
-            link,
-            options,
-            priority: 0,
-            hello_interval: self.timers.hello,
-            dead_interval: self.timers.dead,
-            designated_router: 0,
-            backup_router: 0,
-        };
-        let neighbors = self.peer.as_ref().map(|seen| u32::from(seen.router));
-        wire.send(Kind::Hello, 20 + 4 * neighbors.as_slice().len(), |body| {
-            Hello::write(body, params, neighbors.as_slice())
-        })
-    }
-
-    fn admit(
-        &mut self,
-        packet: Packet<'_>,
-        checksum: ChecksumContext,
-        source: IpAddr,
-        router: Ipv4Addr,
-        now: i64,
-    ) -> bool {
-        let header = packet.header();
-        if header.router_id == 0
-            || header.router_id == u32::from(router)
-            || header.area_id != u32::from(self.area)
-        {
-            return false;
-        }
-        match (self.version, header.fields) {
-            (Version::V2, HeaderFields::V2 { .. }) => {}
-            (Version::V3, HeaderFields::V3 { instance }) if instance == self.instance => {}
-            _ => return false,
-        }
-        let live = self.peer.as_ref().filter(|peer| peer.expires > now);
-        let hello = matches!(packet.body(), Body::Hello(_));
-        if live.is_some_and(|peer| {
-            u32::from(peer.router) != header.router_id || !hello && peer.address != source
-        }) || live.is_none() && !hello
-        {
-            return false;
-        }
-        let result = if let Some(auth) = &mut self.authentication {
-            if live.is_none() {
-                auth.reset_v2();
-            }
-            auth.verify(packet, source)
-        } else if authentication::present(packet) {
-            Err(AuthenticationFailure::Unexpected)
-        } else {
-            return packet.verify_checksum(checksum).is_ok();
-        };
-        match result {
-            Ok(()) => true,
-            Err(failure) => {
-                self.auth_status.rejected = self.auth_status.rejected.saturating_add(1);
-                self.auth_status.last_failure = Some(failure);
-                false
-            }
-        }
-    }
-
-    fn receive_hello(
-        &mut self,
-        hello: Hello<'_>,
-        remote: Ipv4Addr,
-        source: IpAddr,
-        router: Ipv4Addr,
-        now: i64,
-    ) {
-        let params = hello.parameters;
-        let interface = match params.link {
-            HelloLink::V2(_) => 0,
-            HelloLink::V3(interface) => interface,
-        };
-        if params.hello_interval != self.timers.hello
-            || params.dead_interval != self.timers.dead
-            || params.options & 0x0a != 2
-        {
-            return;
-        }
-        if self
-            .peer
-            .as_ref()
-            .is_some_and(|seen| seen.expires > now && seen.router != remote)
-        {
-            return;
-        }
-        let adjacency = hello
-            .neighbors()
-            .any(|neighbor| neighbor == u32::from(router))
-            .then(|| {
-                self.peer
-                    .take()
-                    .filter(|seen| {
-                        seen.expires > now && seen.address == source && seen.interface == interface
-                    })
-                    .and_then(|seen| seen.adjacency)
-                    .unwrap_or_else(|| {
-                        Adjacency::new(router.into(), remote.into(), (now / SECOND) as u32, now)
-                    })
-            });
-        self.peer = Some(Seen {
-            router: remote,
-            address: source,
-            interface,
-            adjacency,
-            expires: now.saturating_add(self.dead()),
-        });
     }
 
     fn dead(&self) -> i64 {
         i64::from(self.timers.dead) * SECOND
     }
 
-    fn root(&self, now: i64) -> Option<spf::Neighbor> {
-        let active = self.active?;
-        let peer = self.peer.as_ref()?;
-        if peer.expires <= now || peer.adjacency.as_ref()?.state() != NeighborState::Full {
-            return None;
-        }
-        Some(spf::Neighbor {
-            area: self.area.into(),
-            router: peer.router.into(),
-            interface: active.index,
-            remote_interface: peer.interface,
-            gateway: peer.address,
-            cost: self.cost,
+    fn roots(&self, now: i64) -> impl Iterator<Item = spf::Neighbor> + '_ {
+        self.active.into_iter().flat_map(move |active| {
+            let transit = self.transit(active, now);
+            self.peers
+                .iter()
+                .filter(move |peer| {
+                    peer.expires > now
+                        && if transit.is_some() {
+                            peer.two_way
+                        } else {
+                            self.broadcast_priority.is_none() && peer.full()
+                        }
+                })
+                .map(move |peer| spf::Neighbor {
+                    area: self.area.into(),
+                    router: peer.router.into(),
+                    interface: active.index,
+                    remote_interface: peer.interface,
+                    gateway: peer.address,
+                    cost: self.cost,
+                    transit,
+                })
         })
     }
 
@@ -415,10 +326,31 @@ impl Link {
             length: active.prefix,
             cost: self.cost,
             passive: self.passive,
+            priority: self.broadcast_priority.unwrap_or(0),
             peer: self
-                .root(now)
+                .roots(now)
+                .next()
+                .filter(|_| self.broadcast_priority.is_none())
                 .map(|peer| (peer.router, peer.remote_interface)),
+            transit: self.transit(active, now),
         })
+    }
+
+    fn attached_routers(&self, now: i64) -> impl Iterator<Item = AttachedRouter> + Clone + '_ {
+        self.active
+            .into_iter()
+            .filter(move |_| self.election.designated())
+            .flat_map(move |active| {
+                self.peers
+                    .iter()
+                    .filter(move |peer| peer.expires > now && peer.full())
+                    .map(move |peer| AttachedRouter {
+                        version: self.version,
+                        index: active.index,
+                        router: peer.router.into(),
+                        remote_interface: peer.interface,
+                    })
+            })
     }
 
     fn advance(
@@ -428,14 +360,13 @@ impl Link {
         protocol: &mut Protocol,
         now: i64,
     ) -> Result<i64, Status> {
-        if self.peer.as_ref().is_some_and(|peer| now >= peer.expires) {
-            self.peer = None;
-        }
         let (Some(active), Some(socket)) = (self.active, socket.filter(|_| !self.passive)) else {
             return Ok(native_abi::DEADLINE_INFINITE);
         };
+        let multicast = self.all_routers();
         let mut wire = Wire {
             socket,
+            destination: multicast,
             index: active.index,
             source: active.source,
             mtu: active.mtu,
@@ -448,9 +379,29 @@ impl Link {
             self.send_hello(&mut wire, active)?;
             self.hello_at = now.saturating_add(i64::from(self.timers.hello) * SECOND);
         }
-        let mut deadline = self.hello_at;
+        let mut deadline = self.hello_at.min(self.election.wait_until);
+        let flood_destination = if self.election.member {
+            multicast
+        } else {
+            self.all_designated()
+        };
+        Self::send_floods(
+            &mut self.flood_pending,
+            flood_destination,
+            &mut wire,
+            &protocol.database,
+            now,
+        )?;
+        if !self.flood_pending.is_empty() {
+            deadline = now;
+        }
         let dead = self.dead();
-        if let Some(peer) = &mut self.peer {
+        for peer in &mut self.peers {
+            wire.destination = if self.broadcast_priority.is_some() {
+                peer.address
+            } else {
+                multicast
+            };
             deadline = deadline.min(peer.expires);
             if let Some(adjacency) = &mut peer.adjacency {
                 deadline =
@@ -584,6 +535,13 @@ pub(super) fn run(
             }
             scan_at = now.saturating_add(ADDRESS_SCAN_NS);
         }
+        for link in &mut links {
+            if let Some((active, socket)) = link.active.zip(socket(link.version))
+                && !link.passive
+            {
+                link.update_election(socket, active, session.router_id, now)?;
+            }
+        }
         for _ in 0..RECEIVE_BUDGET {
             let Some((key, announce)) = protocol.database.expire(now) else {
                 break;
@@ -591,18 +549,19 @@ pub(super) fn run(
             if announce {
                 flood(&mut links, &protocol.database, key, None, now)?;
                 topology_changed(&mut protocol.publication, key, now);
+                if key.is_link_lsa() {
+                    protocol.origination.invalidate(now);
+                }
             }
             let pending = links.iter().any(|link| {
                 link.active
                     .is_some_and(|active| link.domain(active).contains(key))
                     && link
-                        .peer
-                        .as_ref()
+                        .peers
+                        .iter()
                         .filter(|peer| peer.expires > now)
-                        .and_then(|peer| peer.adjacency.as_ref())
-                        .is_some_and(|adjacency| {
-                            adjacency.synchronizing() || adjacency.pending(key)
-                        })
+                        .filter_map(|peer| peer.adjacency.as_ref())
+                        .any(|adjacency| adjacency.synchronizing() || adjacency.pending(key))
             });
             if !pending {
                 protocol.database.retire(key);
@@ -619,9 +578,13 @@ pub(super) fn run(
             .iter()
             .filter(|link| session.forwarding[link.version as usize])
             .filter_map(|link| link.attachment(now));
+        let routers = links
+            .iter()
+            .filter(|link| session.forwarding[link.version as usize])
+            .flat_map(|link| link.attached_routers(now));
         let (originate_at, originated) = protocol.origination.advance(
             &mut protocol.database,
-            attachments,
+            (attachments, routers),
             protocol.publication.each_ref().map(|family| {
                 if family.areas.border {
                     family.summaries.as_slice()
@@ -734,6 +697,7 @@ fn receive(
             };
             if ip.fragmented()
                 || ip.protocol() != ospf::PROTOCOL
+                || ip.hop_limit() != 1
                 || ip.destination() != destination
                 || ip.source().is_unspecified()
                 || ip.source().is_loopback()
@@ -772,17 +736,15 @@ fn receive(
             )
         }
     };
-    let all: IpAddr = match version {
-        Version::V2 => ALL_V2.into(),
-        Version::V3 => ALL_V3.into(),
-    };
     let Some(position) = links.iter().position(|link| {
         !link.passive
             && link.version == version
             && link.active.is_some_and(|active| {
                 active.index == index
                     && active.source != source
-                    && (destination == all || destination == active.source)
+                    && (destination == link.all_routers()
+                        || destination == active.source
+                        || (link.election.member && destination == link.all_designated()))
             })
     }) else {
         return Ok(());
@@ -791,12 +753,25 @@ fn receive(
     let Ok(packet) = Packet::parse(bytes) else {
         return Ok(());
     };
-    if !link.admit(packet, checksum, source, router, now) {
+    if link.broadcast_priority.is_some()
+        && matches!(
+            packet.body(),
+            Body::DatabaseDescription(_) | Body::LinkStateRequest(_)
+        )
+        && link
+            .active
+            .is_some_and(|active| destination != active.source)
+    {
         return Ok(());
     }
+    let Some(sequence) = link.admit(packet, checksum, source, router, now) else {
+        return Ok(());
+    };
     let remote = Ipv4Addr::from(packet.header().router_id);
     if let Body::Hello(hello) = packet.body() {
-        link.receive_hello(hello, remote, source, router, now);
+        link.receive_hello(hello, remote, source, router, now, sequence)?;
+        let active = link.active.expect("selected active link");
+        link.update_election(socket, active, router, now)?;
         return Ok(());
     }
     let active = link.active.expect("selected active link");
@@ -804,6 +779,11 @@ fn receive(
     let dead = link.dead();
     let mut wire = Wire {
         socket,
+        destination: if link.broadcast_priority.is_some() {
+            source
+        } else {
+            link.all_routers()
+        },
         index,
         source: active.source,
         mtu: active.mtu,
@@ -813,14 +793,19 @@ fn receive(
         buffer: &mut protocol.frame,
     };
     let Some(peer) = link
-        .peer
-        .as_mut()
-        .filter(|peer| peer.router == remote && peer.address == source && peer.expires > now)
+        .peers
+        .iter_mut()
+        .find(|peer| peer.router == remote && peer.address == source && peer.expires > now)
     else {
         return Ok(());
     };
+    peer.sequence = sequence;
     let body = packet.body();
-    if peer.adjacency.is_none() && matches!(body, Body::DatabaseDescription(_)) {
+    if link.broadcast_priority.is_none()
+        && peer.adjacency.is_none()
+        && matches!(body, Body::DatabaseDescription(_))
+    {
+        peer.two_way = true;
         // RFC 2328 §10.6：已知邻居的数据库描述同样证明双向通信。
         peer.adjacency = Some(Adjacency::new(
             router.into(),
@@ -851,9 +836,18 @@ fn receive(
     }
     for position_in_batch in 0..protocol.changed.len() {
         let (key, changed_topology) = protocol.changed[position_in_batch];
-        flood(links, &protocol.database, key, Some(position), now)?;
+        flood(
+            links,
+            &protocol.database,
+            key,
+            Some((position, remote)),
+            now,
+        )?;
         if changed_topology {
             topology_changed(&mut protocol.publication, key, now);
+            if key.is_link_lsa() {
+                protocol.origination.invalidate(now);
+            }
         }
         if key.key.advertising_router == u32::from(router) {
             protocol.origination.invalidate(now);
@@ -871,7 +865,7 @@ fn withdraw_originated<'a>(
     let now = monotonic();
     let (_, withdrawn) = protocol.origination.advance(
         &mut protocol.database,
-        core::iter::empty(),
+        (core::iter::empty(), core::iter::empty()),
         [&[], &[]],
         [false; 2],
         router.into(),
@@ -897,21 +891,37 @@ fn flood(
     links: &mut [Link],
     database: &Database,
     key: Identity,
-    except: Option<usize>,
+    except: Option<(usize, Ipv4Addr)>,
     now: i64,
 ) -> Result<(), Status> {
     for (position, link) in links.iter_mut().enumerate() {
-        if except != Some(position)
-            && link
-                .active
-                .is_some_and(|active| link.domain(active).contains(key))
-            && let Some(adjacency) = link
-                .peer
-                .as_mut()
-                .filter(|peer| peer.expires > now)
-                .and_then(|peer| peer.adjacency.as_mut())
+        if link
+            .active
+            .is_some_and(|active| link.domain(active).contains(key))
         {
-            adjacency.flood(database, key, now)?;
+            let received = except.filter(|(ingress, _)| *ingress == position);
+            let multicast = link.broadcast_priority.is_some();
+            let send = multicast
+                && link.election.send_on_ingress(
+                    received.and_then(|(_, router)| {
+                        link.peers.iter().find(|peer| peer.router == router)
+                    }),
+                );
+            let mut pending = false;
+            for peer in &mut link.peers {
+                if except != Some((position, peer.router))
+                    && peer.expires > now
+                    && let Some(adjacency) = &mut peer.adjacency
+                {
+                    pending |= adjacency.flood(database, key, (now, multicast))?;
+                }
+            }
+            if send && pending {
+                link.flood_pending
+                    .try_reserve(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                link.flood_pending.push(key);
+            }
         }
     }
     Ok(())
@@ -941,20 +951,24 @@ fn serve_snapshot(control: &Channel, links: &[Link]) -> Result<bool, Status> {
                         area: link.area,
                         version: if link.version == Version::V2 { 2 } else { 3 },
                         passive: link.passive,
+                        broadcast: link.broadcast_priority.map(|_| link.election.snapshot()),
                         authentication: link.auth_status,
                         local: link.active.map(|active| active.source),
                         neighbors: link
-                            .peer
-                            .as_ref()
+                            .peers
+                            .iter()
                             .map(|seen| Neighbor {
                                 router_id: seen.router,
                                 address: seen.address,
-                                state: seen
-                                    .adjacency
-                                    .as_ref()
-                                    .map_or(NeighborState::Init, Adjacency::state),
+                                state: seen.adjacency.as_ref().map_or(
+                                    if seen.two_way {
+                                        NeighborState::TwoWay
+                                    } else {
+                                        NeighborState::Init
+                                    },
+                                    Adjacency::state,
+                                ),
                             })
-                            .into_iter()
                             .collect(),
                     })
                     .collect(),

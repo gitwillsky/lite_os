@@ -10,8 +10,8 @@ use fallible_tree::FallibleMap;
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status};
 use network_protocol::AddressSnapshot;
 use packet_wire::ospf::{
-    InterAreaPrefixLsa, IntraAreaPrefixLsa, Ipv6Prefix, LinkLsa, LsaKey, RouterLinkV2,
-    RouterLinkV3, RouterLsaV2, RouterLsaV3, Version,
+    InterAreaPrefixLsa, IntraAreaPrefixLsa, Ipv6Prefix, LinkLsa, LsaKey, NetworkLsa,
+    NetworkParameters, RouterLinkV2, RouterLinkV3, RouterLsaV2, RouterLsaV3, Version,
 };
 
 const IPV6_ROUTER_OPTIONS: u32 = 0x13;
@@ -26,7 +26,24 @@ pub(super) struct Attachment {
     pub(super) length: u8,
     pub(super) cost: u16,
     pub(super) passive: bool,
+    pub(super) priority: u8,
     pub(super) peer: Option<(u32, u32)>,
+    pub(super) transit: Option<Transit>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct Transit {
+    pub(super) designated: u32,
+    pub(super) id: u32,
+    pub(super) local: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct AttachedRouter {
+    pub(super) version: Version,
+    pub(super) index: u32,
+    pub(super) router: u32,
+    pub(super) remote_interface: u32,
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -38,6 +55,7 @@ struct Prefix {
 
 pub(super) struct Origination {
     attachments: Vec<Attachment>,
+    routers: Vec<AttachedRouter>,
     prefixes: Vec<Prefix>,
     scan: Vec<Prefix>,
     published: Vec<Identity>,
@@ -51,6 +69,7 @@ impl Default for Origination {
     fn default() -> Self {
         Self {
             attachments: Vec::new(),
+            routers: Vec::new(),
             prefixes: Vec::new(),
             scan: Vec::new(),
             published: Vec::new(),
@@ -113,18 +132,30 @@ impl Origination {
     pub(super) fn advance(
         &mut self,
         database: &mut Database,
-        attachments: impl Iterator<Item = Attachment> + Clone,
+        topology: (
+            impl Iterator<Item = Attachment> + Clone,
+            impl Iterator<Item = AttachedRouter> + Clone,
+        ),
         summaries: [&[Summary]; 2],
         border: [bool; 2],
         router: u32,
         now: i64,
     ) -> Result<(i64, &[Identity]), Status> {
+        let (attachments, routers) = topology;
         if !attachments.clone().eq(self.attachments.iter().copied()) {
             self.attachments.clear();
             self.attachments
                 .try_reserve(attachments.clone().count())
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             self.attachments.extend(attachments);
+            self.invalidate(now);
+        }
+        if !routers.clone().eq(self.routers.iter().copied()) {
+            self.routers.clear();
+            self.routers
+                .try_reserve(routers.clone().count())
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            self.routers.extend(routers);
             self.invalidate(now);
         }
         self.changes.clear();
@@ -146,8 +177,8 @@ impl Origination {
             .attachments
             .chunk_by(|left, right| left.area == right.area)
         {
-            area.ipv4(links, border[0])?;
-            area.ipv6(links, &self.prefixes, border[1])?;
+            area.ipv4(links, &self.routers, border[0])?;
+            area.ipv6(links, &self.prefixes, &self.routers, border[1])?;
         }
         for (version, entries) in [Version::V2, Version::V3].into_iter().zip(summaries) {
             for target in entries.chunk_by(|left, right| left.area == right.area) {
@@ -202,7 +233,12 @@ impl Publication<'_> {
         Ok(())
     }
 
-    fn ipv4(&mut self, links: &[Attachment], border: bool) -> Result<(), Status> {
+    fn ipv4(
+        &mut self,
+        links: &[Attachment],
+        routers: &[AttachedRouter],
+        border: bool,
+    ) -> Result<(), Status> {
         let mut descriptions = Vec::new();
         for link in links {
             let IpAddr::V4(address) = link.address else {
@@ -224,6 +260,38 @@ impl Publication<'_> {
             let mask = u32::MAX
                 .checked_shl(32 - u32::from(link.length))
                 .unwrap_or(0);
+            if let Some(transit) = link.transit {
+                push(
+                    &mut descriptions,
+                    RouterLinkV2 {
+                        kind: 2,
+                        link_id: transit.id,
+                        link_data: address,
+                        cost: link.cost,
+                        tos_metrics: &[],
+                    },
+                )?;
+                if transit.local {
+                    let members = self.network_routers(routers, Version::V2, link.interface)?;
+                    let size = NetworkLsa::write(
+                        self.prepare(4 + members.len() * 4)?,
+                        NetworkParameters::V2 { mask: mask.into() },
+                        &members,
+                    )
+                    .map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
+                    self.publish(
+                        Domain {
+                            version: Version::V2,
+                            area: link.area,
+                            interface: link.interface,
+                        },
+                        2,
+                        transit.id,
+                        size,
+                    )?;
+                }
+                continue;
+            }
             push(
                 &mut descriptions,
                 RouterLinkV2 {
@@ -258,6 +326,7 @@ impl Publication<'_> {
         &mut self,
         links: &[Attachment],
         prefixes: &[Prefix],
+        routers: &[AttachedRouter],
         border: bool,
     ) -> Result<(), Status> {
         let area = links[0].area;
@@ -282,6 +351,18 @@ impl Publication<'_> {
                     },
                 )?;
             }
+            if let Some(transit) = link.transit {
+                push(
+                    &mut descriptions,
+                    RouterLinkV3 {
+                        kind: 2,
+                        cost: link.cost,
+                        interface: link.interface,
+                        neighbor_interface: transit.id,
+                        neighbor_router: transit.designated,
+                    },
+                )?;
+            }
             let domain = Domain {
                 version: Version::V3,
                 area,
@@ -299,7 +380,9 @@ impl Publication<'_> {
                     length: row.length,
                     options: 0,
                 };
-                push(&mut connected, (prefix, link.cost))?;
+                if link.transit.is_none() {
+                    push(&mut connected, (prefix, link.cost))?;
+                }
                 if !link.passive {
                     push(&mut local_prefixes, prefix)?;
                 }
@@ -307,13 +390,16 @@ impl Publication<'_> {
             if !link.passive {
                 let size = LinkLsa::write(
                     self.prepare(24 + local_prefixes.len() * 20)?,
-                    0,
+                    link.priority,
                     IPV6_ROUTER_OPTIONS,
                     address,
                     &local_prefixes,
                 )
                 .map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
                 self.publish(domain, 8, link.interface, size)?;
+            }
+            if link.transit.is_some_and(|transit| transit.local) {
+                self.publish_transit_v3(domain, routers, &local_prefixes)?;
             }
             if !connected.is_empty() {
                 let reference = LsaKey {
@@ -354,6 +440,91 @@ impl Publication<'_> {
             )
             .map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
             self.publish(domain, 0x2001, id as u32, size)?;
+        }
+        Ok(())
+    }
+
+    fn network_routers(
+        &self,
+        routers: &[AttachedRouter],
+        version: Version,
+        index: u32,
+    ) -> Result<Vec<u32>, Status> {
+        let mut members = Vec::new();
+        push(&mut members, self.router)?;
+        for router in routers
+            .iter()
+            .filter(|row| row.version == version && row.index == index)
+        {
+            push(&mut members, router.router)?;
+        }
+        members.sort_unstable();
+        Ok(members)
+    }
+
+    fn publish_transit_v3(
+        &mut self,
+        domain: Domain,
+        routers: &[AttachedRouter],
+        local: &[Ipv6Prefix],
+    ) -> Result<(), Status> {
+        let members = self.network_routers(routers, Version::V3, domain.interface)?;
+        let mut prefixes = Vec::new();
+        let mut options = IPV6_ROUTER_OPTIONS;
+        for &prefix in local {
+            push(&mut prefixes, (prefix, 0))?;
+        }
+        for peer in routers
+            .iter()
+            .filter(|row| row.version == Version::V3 && row.index == domain.interface)
+        {
+            let identity = domain
+                .identify(LsaKey {
+                    kind: 8,
+                    link_state_id: peer.remote_interface,
+                    advertising_router: peer.router,
+                })
+                .expect("link scope");
+            if let Some(lsa) = self
+                .database
+                .get(identity)
+                .and_then(|record| record.live_lsa(Version::V3, self.now))
+                && let Ok(lsa) = LinkLsa::parse(lsa)
+            {
+                options |= lsa.options;
+                for prefix in lsa.prefixes().filter(|prefix| prefix.options & 1 == 0) {
+                    push(&mut prefixes, (prefix, 0))?;
+                }
+            }
+        }
+        prefixes.sort_unstable_by_key(|(prefix, _)| (prefix.network, prefix.length));
+        prefixes.dedup_by(|next, current| {
+            if (next.0.network, next.0.length) != (current.0.network, current.0.length) {
+                return false;
+            }
+            current.0.options |= next.0.options;
+            true
+        });
+        let size = NetworkLsa::write(
+            self.prepare(4 + members.len() * 4)?,
+            NetworkParameters::V3 { options },
+            &members,
+        )
+        .map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
+        self.publish(domain, 0x2002, domain.interface, size)?;
+        if !prefixes.is_empty() {
+            let reference = LsaKey {
+                kind: 0x2002,
+                link_state_id: domain.interface,
+                advertising_router: self.router,
+            };
+            let size = IntraAreaPrefixLsa::write(
+                self.prepare(12 + prefixes.len() * 20)?,
+                reference,
+                &prefixes,
+            )
+            .map_err(|_| native_abi::ERR_OUT_OF_RANGE)?;
+            self.publish(domain, 0x2009, domain.interface, size)?;
         }
         Ok(())
     }
