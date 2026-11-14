@@ -772,17 +772,19 @@ fn weighted_groups_keep_l3_flows_stable_and_withdraw_members_without_reviving_th
     .unwrap();
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
-    let cursor = Cursor { family: Family::Ipv4, start: Position::default() };
+    let cursor = Cursor {
+        family: Family::Ipv4,
+        start: Position::default(),
+        prefix: Some("198.51.100.0/24".parse().unwrap()),
+    };
     let observed = Page::parse(&crate::inet::route_page(&net, cursor).unwrap(), cursor).unwrap();
-    let paths: Vec<_> = observed.rows.iter()
-        .filter(|row| row.prefix.network == core::net::IpAddr::from(request.destination))
-        .collect();
+    let paths = &observed.rows;
     assert_eq!(paths.len(), 2);
     assert_eq!((paths[0].hop.unwrap().interface, paths[0].hop.unwrap().weight), (2, 3));
     assert_eq!((paths[1].hop.unwrap().interface, paths[1].hop.unwrap().weight), (3, 1));
     let continuation = Cursor { start: paths[1].position, ..cursor };
     let page = Page::parse(&crate::inet::route_page(&net, continuation).unwrap(), continuation).unwrap();
-    assert_eq!(page.rows.first(), Some(paths[1]));
+    assert_eq!(page.rows, paths[1..]);
     let destination = Ipv4Addr::new(198, 51, 100, 9);
     {
         let network = net.protocol().unwrap().lock().unwrap();

@@ -11937,6 +11937,7 @@ system/netstack/src/inet/route/nexthop.rs :: pub (super) type Id  = NonZeroU32
 system/netstack/src/inet/route/nexthop.rs :: pub (super) type Name  = NonZeroU64
 system/netstack/src/inet/route/nexthop.rs :: pub (super) type NextHop < A > = network_protocol :: routes :: NextHopMember < A >
 system/netstack/src/inet/route/observation.rs :: pub (crate) fn route_page (scope : & Namespace , cursor : Cursor) -> Result < Vec < u8 > , SocketError >
+system/netstack/src/inet/route/observation.rs :: pub (super) impl Capture :: fn prefix (& self) -> Option < IpPrefix >
 system/netstack/src/inet/route/observation.rs :: pub (super) impl Capture :: fn route < A : RouteAddress + Into < IpAddr > > (& mut self , route : usize , attributes : RouteAttributes < A > , members : & [NextHopMember < A >] , interfaces : & [NetworkInterface] ,) -> Result < bool , SocketError >
 system/netstack/src/inet/route/observation.rs :: pub (super) impl Capture :: fn start (& self) -> usize
 system/netstack/src/inet/route/observation.rs :: pub (super) struct Capture

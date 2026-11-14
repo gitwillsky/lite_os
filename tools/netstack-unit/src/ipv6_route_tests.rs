@@ -366,12 +366,14 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
     let cursor = router_protocol::route_view::Cursor {
         family: router_protocol::routing::Family::Ipv6,
         start: Default::default(),
+        prefix: Some("::/0".parse().unwrap()),
     };
     let observe = || {
         use router_protocol::route_view::Page;
         Page::parse(&crate::inet::route_page(&net, cursor).unwrap(), cursor).unwrap()
     };
     let before = observe();
+    assert_eq!(before.rows.len(), 2);
     assert_eq!(
         before_removal
             .iter()
@@ -391,6 +393,7 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
     );
     let after_removal = route_snapshot::<Ipv6Addr>(&net).unwrap();
     let after = observe();
+    assert_eq!(after.rows.len(), 1);
     assert!(before.rows.iter().any(|row| row.hop.is_some_and(|hop| hop.interface == inserted)));
     assert!(after.rows.iter().all(|row| row.hop.is_none_or(|hop| hop.interface != inserted)));
     {

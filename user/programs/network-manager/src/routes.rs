@@ -26,6 +26,7 @@ pub(super) struct Page {
     visible: bool,
     domain: Option<Arc<str>>,
     family: Family,
+    filter: Option<IpPrefix>,
     // 生效路径按当前位置读取，返回前一页只需保留访问过的页首位置。
     anchors: Vec<Position>,
 }
@@ -41,6 +42,8 @@ struct View {
     bgp: Widget,
     ipv4: Widget,
     ipv6: Widget,
+    destination: Widget,
+    filter: Widget,
     status: Widget,
     background: Background,
     clock: Clock,
@@ -67,6 +70,17 @@ impl Page {
         ipv4.state = state::CHECKED;
         let ipv4 = bar.child(ipv4)?;
         let ipv6 = bar.child(WidgetSpec::new(WidgetKind::Radio, "IPv6"))?;
+        child(&bar, WidgetKind::Label, "目的网段", Layout::default())?;
+        let destination = child(
+            &bar,
+            WidgetKind::Edit,
+            "",
+            Layout {
+                width: 260,
+                ..button
+            },
+        )?;
+        let filter = child(&bar, WidgetKind::Button, "筛选", button)?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -124,6 +138,8 @@ impl Page {
         let view = View {
             ipv4,
             ipv6,
+            destination,
+            filter,
             list,
             details,
             background,
@@ -154,6 +170,7 @@ impl Page {
             visible: false,
             domain: None,
             family: Family::Ipv4,
+            filter: None,
             anchors: vec![Position::default()],
         })
     }
@@ -256,11 +273,47 @@ impl Page {
         } else {
             None
         };
-        if let Some(family) = family {
+        if event.node == self.view.filter.id() {
+            let text = self.view.destination.text()?;
+            let filter = if text.trim().is_empty() {
+                None
+            } else if let Some(prefix) = prefix(&text) {
+                Some(prefix)
+            } else {
+                let message = app.dialogs().message(
+                    window,
+                    "筛选路由",
+                    "请输入规范的目的网段，例如 192.0.2.0/24 或 2001:db8::/32。",
+                    MessageButtons::Ok,
+                    MessageIcon::Warning,
+                )?;
+                self.dialog = Some(app.spawn_local(window, async move {
+                    let _ = message.await;
+                })?);
+                return Ok(());
+            };
+            if let Some(prefix) = filter {
+                self.family = if prefix.network.is_ipv4() {
+                    Family::Ipv4
+                } else {
+                    Family::Ipv6
+                };
+                for (family, button) in [
+                    (Family::Ipv4, &self.view.ipv4),
+                    (Family::Ipv6, &self.view.ipv6),
+                ] {
+                    button.set_state(if family == self.family { state::CHECKED } else { 0 })?;
+                }
+            }
+            self.filter = filter;
+            self.anchors.truncate(1);
+        } else if let Some(family) = family {
             if self.family == family {
                 return Ok(());
             }
             self.family = family;
+            self.filter = None;
+            self.view.destination.set_text("")?;
             self.anchors.truncate(1);
         } else if event.node == self.view.previous.id() && self.anchors.len() > 1 {
             self.anchors.pop();
@@ -294,6 +347,7 @@ impl Page {
         let cursor = Cursor {
             family: self.family,
             start: *self.anchors.last().expect("first page anchor"),
+            prefix: self.filter,
         };
         let domain = self.domain.clone();
         self.task = Some(app.spawn_local(window, async move {
@@ -312,12 +366,7 @@ impl Page {
 }
 
 fn prefix(text: &str) -> Option<IpPrefix> {
-    let (address, length) = text.trim().split_once('/')?;
-    let value = IpPrefix {
-        network: address.parse().ok()?,
-        length: length.parse().ok()?,
-    };
-    value.valid().then_some(value)
+    text.parse().ok()
 }
 
 fn form(

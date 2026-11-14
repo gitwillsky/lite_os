@@ -521,6 +521,7 @@ ipconfig /domain lab /routes
 ```
 
 第一条显示 `lab` 域的链路、邻接和认证结果。第二条分页显示当前生效的双栈路径，OSPF 学到并采用的路由在来源列标为 `OSPF`。分页期间可能发生重新选路。省略 `/domain lab` 查询默认域。
+在 `/routes` 后加规范 CIDR，例如 `ipconfig /domain lab /routes 2001:db8:1::/64`，可直接查看目的网段完全匹配的路径。
 
 ### OSPF 邻居发现
 

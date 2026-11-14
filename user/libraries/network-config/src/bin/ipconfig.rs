@@ -15,6 +15,8 @@ use std::{
 mod bgp;
 #[path = "ipconfig/configuration.rs"]
 mod configuration;
+#[path = "ipconfig/routes.rs"]
+mod routes;
 
 fn show_ospf(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<()> {
     let snapshot = client.ospf_status(domain)?;
@@ -58,55 +60,6 @@ fn show_ospf(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<
                 "    {}  {}  {state}",
                 neighbor.router_id, neighbor.address
             )?;
-        }
-    }
-    Ok(())
-}
-
-fn show_routes(client: &mut ManagementClient, domain: Option<&str>) -> io::Result<()> {
-    use router_protocol::{route_view::Cursor, routing::Family};
-
-    let mut output = io::stdout().lock();
-    writeln!(output, "目的网段  表  代价  来源  类型  出接口  网关  权重")?;
-    for family in [Family::Ipv4, Family::Ipv6] {
-        let mut cursor = Cursor {
-            family,
-            start: Default::default(),
-        };
-        loop {
-            let page = client.route_page(domain, cursor)?;
-            for row in page.rows {
-                write!(
-                    output,
-                    "{}/{}  {}  {}  ",
-                    row.prefix.network, row.prefix.length, row.table, row.metric
-                )?;
-                match row.protocol {
-                    router_protocol::ospf::ROUTE_PROTOCOL => write!(output, "OSPF")?,
-                    router_protocol::bgp::ROUTE_PROTOCOL => write!(output, "BGP")?,
-                    protocol => write!(output, "{protocol}")?,
-                }
-                write!(output, "  {:?}  ", row.kind)?;
-                if let Some(hop) = row.hop {
-                    let end = hop
-                        .name
-                        .iter()
-                        .position(|&byte| byte == 0)
-                        .unwrap_or(hop.name.len());
-                    let name = std::str::from_utf8(&hop.name[..end]).unwrap_or("?");
-                    write!(output, "{name}  ")?;
-                    if let Some(gateway) = hop.gateway {
-                        write!(output, "{gateway}")?;
-                    } else {
-                        write!(output, "—")?;
-                    }
-                    writeln!(output, "  {}", hop.weight)?;
-                } else {
-                    writeln!(output, "—  —  —")?;
-                }
-            }
-            let Some(next) = page.next else { break };
-            cursor.start = next;
         }
     }
     Ok(())
@@ -709,7 +662,7 @@ fn run(
     arguments: impl Iterator<Item = std::ffi::OsString>,
     remote: bool,
 ) -> ExitCode {
-    const USAGE: &str = "用法：ipconfig [/remote wss://主机[:端口]/router 账号 CA.pem] [/all | /ospf | /routes | /bgp [IP网段/长度] | /bgp-refresh 邻居名 ipv4|ipv6\n                 | /leases 接口名 | /firewall [路由域] | /connections [游标] | /watch-connections\n                 | /clear-connection 连接标识 | /renew [适配器] | /release [适配器]\n                 | /schema 文件 | /validate 文件 | /diff 候选文件 差异文件\n                 | /export 文件 | /import 文件 预期代际 | /commit-status 提交编号 | /watch-config\n                 | /backups | /backup | /backup-export 编号 文件 | /backup-delete 编号 | /backup-restore 编号 预期代际]\n适配器使用连接名称，支持 * 和 ? 通配符。\n路由、BGP、OSPF 和转发连接操作前可加 /domain 路由域。\n本机启动程序：ipconfig /domain 路由域 /exec 程序 [参数]";
+    const USAGE: &str = "用法：ipconfig [/remote wss://主机[:端口]/router 账号 CA.pem] [/all | /ospf | /routes [IP网段/长度] | /bgp [IP网段/长度] | /bgp-refresh 邻居名 ipv4|ipv6\n                 | /leases 接口名 | /firewall [路由域] | /connections [游标] | /watch-connections\n                 | /clear-connection 连接标识 | /renew [适配器] | /release [适配器]\n                 | /schema 文件 | /validate 文件 | /diff 候选文件 差异文件\n                 | /export 文件 | /import 文件 预期代际 | /commit-status 提交编号 | /watch-config\n                 | /backups | /backup | /backup-export 编号 文件 | /backup-delete 编号 | /backup-restore 编号 预期代际]\n适配器使用连接名称，支持 * 和 ? 通配符。\n路由、BGP、OSPF 和转发连接操作前可加 /domain 路由域。\n本机启动程序：ipconfig /domain 路由域 /exec 程序 [参数]";
     let mut arguments = arguments.peekable();
     let domain = if arguments
         .peek()
@@ -798,8 +751,10 @@ fn run(
         Some(option) if option.eq_ignore_ascii_case(b"/ospf") && adapter.is_none() && !extra => {
             show_ospf(client, domain)
         }
-        Some(option) if option.eq_ignore_ascii_case(b"/routes") && adapter.is_none() => {
-            show_routes(client, domain)
+        Some(option)
+            if option.eq_ignore_ascii_case(b"/routes") && generation.is_none() && !extra =>
+        {
+            routes::show(client, domain, adapter.as_deref())
         }
         Some(option)
             if option.eq_ignore_ascii_case(b"/bgp-refresh")

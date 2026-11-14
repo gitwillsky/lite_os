@@ -54,6 +54,10 @@ impl Capture {
         self.cursor.start.route as usize
     }
 
+    pub(super) fn prefix(&self) -> Option<IpPrefix> {
+        self.cursor.prefix
+    }
+
     pub(super) fn route<A: RouteAddress + Into<IpAddr>>(
         &mut self,
         route: usize,
@@ -61,6 +65,13 @@ impl Capture {
         members: &[NextHopMember<A>],
         interfaces: &[NetworkInterface],
     ) -> Result<bool, SocketError> {
+        let prefix = IpPrefix {
+            network: attributes.destination.into(),
+            length: attributes.prefix_length,
+        };
+        if self.cursor.prefix.is_some_and(|expected| expected != prefix) {
+            return Ok(false);
+        }
         let route = u32::try_from(route).map_err(|_| SocketError::NoSpace)?;
         let start = if route == self.cursor.start.route {
             self.cursor.start.member as usize
@@ -69,10 +80,7 @@ impl Capture {
         };
         let row = Row {
             position: Position { route, member: 0 },
-            prefix: IpPrefix {
-                network: attributes.destination.into(),
-                length: attributes.prefix_length,
-            },
+            prefix,
             table: attributes.table,
             metric: attributes.metric,
             scope: attributes.scope,

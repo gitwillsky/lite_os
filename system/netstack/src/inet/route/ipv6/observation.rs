@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::inet::{ipv6::LearnedRoute, route::observation::Capture};
+use core::net::IpAddr;
 use network_protocol::routes::{NextHopConfiguration, NextHopMember};
 
 fn learned_routes(
@@ -49,7 +50,19 @@ impl Ipv6Routes {
         interfaces: &[NetworkInterface],
     ) -> Result<(), SocketError> {
         let start = capture.start();
-        for (position, entry) in self.entries.iter().enumerate().skip(start) {
+        let prefix = capture.prefix().map(|prefix| {
+            let IpAddr::V6(address) = prefix.network else {
+                unreachable!("validated IPv6 cursor");
+            };
+            (u128::from(address), prefix.length)
+        });
+        let indexed_start = prefix.map_or(start, |prefix| {
+            start.max(self.entries.partition_point(|entry| entry.prefix() < prefix))
+        });
+        for (position, entry) in self.entries.iter().enumerate().skip(indexed_start) {
+            if prefix.is_some_and(|prefix| entry.prefix() != prefix) {
+                break;
+            }
             let single;
             let members = match entry.path {
                 Path::Local(index) | Path::Direct(index) => {

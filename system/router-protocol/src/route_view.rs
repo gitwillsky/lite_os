@@ -10,7 +10,8 @@ pub use crate::routing::RouteKind;
 /// 最多展示的路径条目数。
 pub const LIMIT: usize = 64;
 /// 分页查询的固定字节数。
-pub const CURSOR_BYTES: usize = 13;
+pub const CURSOR_BYTES: usize = 31;
+const CURSOR_VERSION: u32 = 2;
 const VERSION: u32 = 1;
 const HEADER: usize = 14;
 const ROW_BYTES: usize = 96;
@@ -45,28 +46,43 @@ pub struct Cursor {
     pub family: Family,
     /// 从这个位置起观察。
     pub start: Position,
+    /// 如指定，只读该规范目的网段在各表的生效路径。
+    pub prefix: Option<IpPrefix>,
 }
 
 impl Cursor {
     /// 编码固定宽度的页起点。
     pub fn encode(self) -> [u8; CURSOR_BYTES] {
         let mut bytes = [0; CURSOR_BYTES];
-        bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
+        bytes[..4].copy_from_slice(&CURSOR_VERSION.to_le_bytes());
         bytes[4] = match self.family {
             Family::Ipv4 => 4,
             Family::Ipv6 => 6,
         };
         bytes[5..9].copy_from_slice(&self.start.route.to_le_bytes());
-        bytes[9..].copy_from_slice(&self.start.member.to_le_bytes());
+        bytes[9..13].copy_from_slice(&self.start.member.to_le_bytes());
+        if let Some(prefix) = self.prefix {
+            match prefix.network {
+                IpAddr::V4(address) => {
+                    bytes[13] = 4;
+                    bytes[14..18].copy_from_slice(&address.octets());
+                }
+                IpAddr::V6(address) => {
+                    bytes[13] = 6;
+                    bytes[14..30].copy_from_slice(&address.octets());
+                }
+            }
+            bytes[30] = prefix.length;
+        }
         bytes
     }
 
     /// 解码地址族和位置。
     /// # Errors
-    /// 版本、长度或地址族不合法。
+    /// 版本、长度、地址族或指定网段不合法。
     pub fn parse(bytes: &[u8]) -> Result<Self, Invalid> {
         let mut input = Decoder::new(bytes);
-        if input.u32()? != VERSION {
+        if input.u32()? != CURSOR_VERSION {
             return Err(Invalid);
         }
         let family = match input.u8()? {
@@ -75,8 +91,24 @@ impl Cursor {
             _ => return Err(Invalid),
         };
         let start = Position::read(&mut input)?;
+        let network = read_address(&mut input)?;
+        let length = input.u8()?;
+        if network.is_none() && length != 0 {
+            return Err(Invalid);
+        }
         input.finish()?;
-        Ok(Self { family, start })
+        let cursor = Self {
+            family,
+            start,
+            prefix: network.map(|network| IpPrefix { network, length }),
+        };
+        cursor.valid().then_some(cursor).ok_or(Invalid)
+    }
+
+    fn valid(self) -> bool {
+        self.prefix.is_none_or(|prefix| {
+            prefix.valid() && prefix.network.is_ipv4() == (self.family == Family::Ipv4)
+        })
     }
 }
 
@@ -266,12 +298,17 @@ fn read_header(input: &mut Decoder<'_>) -> Result<(usize, Option<Position>), Inv
 
 impl Page {
     fn validate(&self, cursor: Cursor) -> Result<(), Invalid> {
-        if self.rows.len() > LIMIT
+        if !cursor.valid()
+            || self.rows.len() > LIMIT
             || !self.rows.is_sorted_by(|a, b| a.position < b.position)
             || self
                 .rows
                 .iter()
-                .any(|row| !row.valid(cursor.family) || row.position < cursor.start)
+                .any(|row| {
+                    !row.valid(cursor.family)
+                        || row.position < cursor.start
+                        || cursor.prefix.is_some_and(|prefix| prefix != row.prefix)
+                })
             || self.next.is_some_and(|next| {
                 self.rows.len() != LIMIT || self.rows.last().is_none_or(|row| next <= row.position)
             })

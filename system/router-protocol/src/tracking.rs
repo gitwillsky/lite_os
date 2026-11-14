@@ -20,6 +20,20 @@ pub struct IpPrefix {
     /// 有效前缀位数，IPv4 为 0..=32，IPv6 为 0..=128。
     pub length: u8,
 }
+
+impl core::str::FromStr for IpPrefix {
+    type Err = Invalid;
+
+    fn from_str(text: &str) -> Result<Self, Invalid> {
+        let (network, length) = text.trim().split_once('/').ok_or(Invalid)?;
+        let prefix = Self {
+            network: network.parse().map_err(|_| Invalid)?,
+            length: length.parse().map_err(|_| Invalid)?,
+        };
+        prefix.valid().then_some(prefix).ok_or(Invalid)
+    }
+}
+
 impl IpPrefix {
     /// 校验规范前缀；非法长度或主机位返回 false。
     pub fn valid(self) -> bool {

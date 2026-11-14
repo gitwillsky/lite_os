@@ -286,7 +286,20 @@ impl Fib {
         capture: &mut observation::Capture,
         interfaces: &[NetworkInterface],
     ) -> Result<(), SocketError> {
-        for (position, entry) in self.entries.iter().enumerate().skip(capture.start()) {
+        let mut start = capture.start();
+        let prefix = capture.prefix().map(|prefix| {
+            let IpAddr::V4(address) = prefix.network else {
+                unreachable!("validated IPv4 cursor");
+            };
+            (u32::from(address), prefix.length)
+        });
+        if let Some(prefix) = prefix {
+            start = start.max(self.entries.partition_point(|entry| entry.prefix() < prefix));
+        }
+        for (position, entry) in self.entries.iter().enumerate().skip(start) {
+            if prefix.is_some_and(|prefix| entry.prefix() != prefix) {
+                break;
+            }
             let record = entry.record;
             let members = record.next_hop.map_or(&[][..], |id| self.hops.members(id));
             if capture.route(position, record.attributes(), members, interfaces)? {
