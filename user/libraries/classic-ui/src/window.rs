@@ -26,7 +26,8 @@ impl FrameKind {
     }
 }
 
-pub(crate) const CAPTION_HEIGHT: i32 = 19;
+/// 经典标题栏的逻辑像素高度。
+pub const CAPTION_HEIGHT: i32 = 19;
 
 /// 标题栏按钮。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,20 @@ pub enum CaptionButton {
 const BUTTON_WIDTH: i32 = 16;
 const BUTTON_HEIGHT: i32 = 14;
 
+/// 返回贴标题栏右边的标准窗口按钮矩形。
+pub fn trailing_caption_button(rect: Rect) -> Rect {
+    caption_button_at(rect, rect.right() - 2)
+}
+
+fn caption_button_at(rect: Rect, right: i32) -> Rect {
+    Rect::new(
+        right - BUTTON_WIDTH,
+        rect.y + (rect.height - 1 - BUTTON_HEIGHT) / 2,
+        BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+    )
+}
+
 pub(crate) fn caption_button_rects(
     rect: Rect,
     buttons: &[(CaptionButton, bool)],
@@ -53,12 +68,7 @@ pub(crate) fn caption_button_rects(
         {
             right_edge -= 2;
         }
-        let area = Rect::new(
-            right_edge - BUTTON_WIDTH,
-            rect.y + (rect.height - 1 - BUTTON_HEIGHT) / 2,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        );
+        let area = caption_button_at(rect, right_edge);
         areas.push((*button, *enabled, area));
         right_edge -= BUTTON_WIDTH;
     }

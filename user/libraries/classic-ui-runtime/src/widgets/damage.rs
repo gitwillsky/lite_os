@@ -2,6 +2,7 @@
 use super::{Node, Nodes, Tree};
 use canvas::Rect;
 use classic_ui::Painter;
+use classic_ui_abi::widget;
 use std::time::Instant;
 
 /// 每节点最后一次成功提交的绘制基线；只有 presented 更新，等待/失败不消费变更。
@@ -12,6 +13,7 @@ pub(super) struct Snapshot {
     revision: u64,
     focused: bool,
     pressed: bool,
+    caption: (bool, bool),
     pointer: Option<(i32, i32)>,
 }
 #[derive(Clone, Copy)]
@@ -20,9 +22,17 @@ struct Visual {
     armed: Option<u64>,
     pointer: (i32, i32),
     bounds: Rect,
+    keyboard_focus: bool,
 }
 impl Snapshot {
-    fn of(id: u64, node: &Node, visual: Visual, painter: &Painter<'_>, now: Instant) -> Self {
+    fn of(
+        id: u64,
+        node: &Node,
+        visual: Visual,
+        painter: &Painter<'_>,
+        now: Instant,
+        caption: (bool, bool),
+    ) -> Self {
         let mut overlay = Rect::default();
         if let Some(menu) = &node.menu {
             for rect in menu.state.popup_rects() {
@@ -46,6 +56,7 @@ impl Snapshot {
             },
             overlay: overlay.intersect(visual.bounds),
             revision: node.revision,
+            caption,
             focused: visual.focus == Some(id),
             pressed: visual.armed == Some(id) && node.contains(visual.pointer.0, visual.pointer.1),
             pointer: node.menu.as_ref().map(|_| visual.pointer),
@@ -73,6 +84,7 @@ impl Tree {
             focus: self.focus.filter(|_| keyboard_focus),
             armed: self.armed,
             pointer: self.pointer,
+            keyboard_focus,
             bounds: self
                 .layout_bounds
                 .map_or_else(Rect::default, |(bounds, _)| bounds),
@@ -84,6 +96,22 @@ impl Tree {
             .and_then(|node| node.menu.as_ref())
             .is_some_and(|menu| menu.state.cues_visible())
     }
+    fn snapshot(
+        &self,
+        id: u64,
+        node: &Node,
+        visual: Visual,
+        painter: &Painter<'_>,
+        now: Instant,
+    ) -> Snapshot {
+        let caption = if node.kind == widget::CHILD_FRAME && node.visible() {
+            self.caption_state(id, node, visual.keyboard_focus)
+        } else {
+            (false, false)
+        };
+        Snapshot::of(id, node, visual, painter, now, caption)
+    }
+
     /// 相对上次成功提交的旧/新覆盖。移除项、焦点和覆盖层也参与，不能只看仍存在的脏节点。
     pub(crate) fn damage(
         &self,
@@ -97,11 +125,11 @@ impl Tree {
             damage.push(visual.bounds);
         }
         for (&id, node) in self.nodes.iter() {
-            let current = Snapshot::of(id, node, visual, painter, now);
-            if node.painted == Some(current) {
+            let current = self.snapshot(id, node, visual, painter, now);
+            if node.painted.get() == Some(current) {
                 continue;
             }
-            if let Some(previous) = node.painted {
+            if let Some(previous) = node.painted.get() {
                 damage.extend([previous.clip, previous.overlay]);
             }
             damage.extend([current.clip, current.overlay]);
@@ -114,11 +142,12 @@ impl Tree {
         let visual = self.visual(keyboard_focus);
         self.painted_cues = self.cues();
         self.retired.clear();
-        for (&id, node) in &mut self.nodes.entries {
-            node.painted = Some(Snapshot::of(id, node, visual, painter, now));
+        for (&id, node) in self.nodes.iter() {
+            node.painted.set(Some(self.snapshot(id, node, visual, painter, now)));
         }
     }
 }
+
 impl Nodes {
     /// 非可视计时推进不改变绘制版本；普通输入借用仍经 get_mut/matching_mut。
     pub(crate) fn animate(&mut self, now: Instant, last: Instant) -> bool {

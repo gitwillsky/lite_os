@@ -338,7 +338,7 @@ async fn set_shutdown(
         dialogs,
         parent,
         background,
-        status,
+        Some(status),
         candidate,
         Some(revision),
     )

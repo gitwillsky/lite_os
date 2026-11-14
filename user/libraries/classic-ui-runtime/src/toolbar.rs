@@ -368,6 +368,7 @@ impl Tree {
         out: &mut Vec<abi::Event>,
     ) -> (bool, bool) {
         let pointer = self.pointer;
+        let hovered_frame = self.hit().and_then(|id| self.containing_frame(id));
         let ids: Vec<u64> = self
             .nodes
             .iter()
@@ -377,8 +378,9 @@ impl Tree {
         let mut consumed = false;
         let mut repaint = false;
         for id in ids {
+            let unobscured = self.containing_frame(id) == hovered_frame;
             let node = self.nodes.get_mut(&id).expect("toolbar node");
-            let inside = Toolbar::contains(node.clip, pointer);
+            let inside = unobscured && Toolbar::contains(node.clip, pointer);
             let model = node.toolbar.as_mut().expect("toolbar model");
             match input {
                 EventKind::PointerEnter { .. } | EventKind::PointerMove { .. } => {

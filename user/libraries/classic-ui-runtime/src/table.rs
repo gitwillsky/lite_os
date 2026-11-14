@@ -229,6 +229,9 @@ impl Node {
 }
 impl Tree {
     pub fn cursor(&self) -> CursorShape {
+        if let Some(cursor) = self.workspace_cursor() {
+            return cursor;
+        }
         let Some(id) = self.armed.or_else(|| self.hit()) else {
             return CursorShape::Default;
         };

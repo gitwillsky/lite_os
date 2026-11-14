@@ -17,13 +17,17 @@ mod bgp;
 mod editor;
 mod ospf;
 
-pub(super) use editor::Section;
+pub(super) use editor::{InterfaceAction, Section};
 
 #[derive(Clone, Copy)]
 pub(super) enum Dialog {
     Settings(Option<Section>),
     Ospf,
     Bgp,
+    Interface {
+        row: network_config::traffic::Row,
+        action: InterfaceAction,
+    },
 }
 
 type Error = Box<dyn std::error::Error>;
@@ -75,17 +79,24 @@ impl Page {
                 ..Default::default()
             },
         )?;
+        let family = Layout {
+            width: 58,
+            ..Default::default()
+        };
         let mut ipv4 = WidgetSpec::new(WidgetKind::Radio, "IPv4");
+        ipv4.layout = family;
         ipv4.state = state::CHECKED;
         let ipv4 = bar.child(ipv4)?;
-        let ipv6 = bar.child(WidgetSpec::new(WidgetKind::Radio, "IPv6"))?;
+        let ipv6 = child(&bar, WidgetKind::Radio, "IPv6", family)?;
         child(&bar, WidgetKind::Label, "目的网段", Layout::default())?;
         let destination = child(
             &bar,
             WidgetKind::Edit,
             "",
             Layout {
-                width: 260,
+                width: 230,
+                grow: 1,
+                min_width: 52,
                 ..button
             },
         )?;
@@ -328,6 +339,18 @@ impl Page {
                 Dialog::Settings(section) => (
                     "路由设置",
                     editor::run(&dialogs, &parent, &background, domain.as_deref(), section).await,
+                ),
+                Dialog::Interface { row, action } => (
+                    "接口配置",
+                    editor::edit_live_interface(
+                        &dialogs,
+                        &parent,
+                        &background,
+                        domain,
+                        row,
+                        action,
+                    )
+                    .await,
                 ),
                 Dialog::Ospf => (
                     "OSPF 邻居",

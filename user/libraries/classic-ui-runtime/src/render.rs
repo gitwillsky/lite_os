@@ -248,6 +248,8 @@ impl Tree {
                         rebar.paint(p, rect);
                     }
                 }
+                widget::WORKSPACE => p.fill(rect, C::AppWorkspace),
+                widget::CHILD_FRAME => self.paint_frame(id, node, p, keyboard_focus),
                 widget::GROUP => p.group_box(rect, node.text()),
                 widget::CALENDAR => node.calendar.as_ref().expect("calendar model").paint(
                     rect,

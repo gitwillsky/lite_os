@@ -55,7 +55,7 @@ pub use prompt::Prompt;
 pub use scroll::Scroll;
 pub use tooltip::Tooltip;
 pub use trackbar::{Trackbar, TrackbarDrag, TrackbarStyle};
-pub use window::{CaptionButton, FrameKind};
+pub use window::{CAPTION_HEIGHT, CaptionButton, FrameKind, trailing_caption_button};
 
 #[cfg(test)]
 mod tests;

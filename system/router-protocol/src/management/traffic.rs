@@ -4,7 +4,7 @@ use super::{OBSERVATION_HEARTBEAT, page_delta};
 use crate::{Decoder, Encoder, Invalid};
 use alloc::vec::Vec;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// 每页最多显示的接口数。
 pub const PAGE_ROWS: usize = 64;
 
@@ -14,6 +14,10 @@ pub struct Row {
     pub index: u32,
     /// 接口名保留原始字节，尾部以零填充。
     pub name: [u8; 16],
+    /// 以太网链路地址，用于把当前行关联到稳定的配置设备。
+    pub ethernet_address: Option<[u8; 6]>,
+    /// 运行中接口的管理状态。
+    pub up: bool,
     /// 与 rtnl_link_stats64 顺序一致的前八项。
     pub counters: [u64; 8],
     /// 接收及发送的每秒字节数。首次采样或计数重置时缺席。
@@ -30,6 +34,15 @@ impl Row {
     fn read(input: &mut Decoder<'_>) -> Result<Self, Invalid> {
         let index = input.u32()?;
         let name = input.take(16)?.try_into().map_err(|_| Invalid)?;
+        let flags = input.u8()?;
+        if flags & !3 != 0 {
+            return Err(Invalid);
+        }
+        let ethernet_address = if flags & 2 != 0 {
+            Some(input.take(6)?.try_into().map_err(|_| Invalid)?)
+        } else {
+            None
+        };
         let mut counters = [0; 8];
         for counter in &mut counters {
             *counter = input.u64()?;
@@ -42,6 +55,8 @@ impl Row {
         Ok(Self {
             index,
             name,
+            ethernet_address,
+            up: flags & 1 != 0,
             counters,
             bytes_per_second,
         })
@@ -50,6 +65,10 @@ impl Row {
     fn write(self, bytes: &mut Vec<u8>) -> Result<(), Invalid> {
         bytes.extend_from_slice(&self.index.to_le_bytes());
         bytes.extend_from_slice(&self.name);
+        bytes.push(u8::from(self.up) | (u8::from(self.ethernet_address.is_some()) << 1));
+        if let Some(address) = self.ethernet_address {
+            bytes.extend_from_slice(&address);
+        }
         for counter in self.counters {
             bytes.extend_from_slice(&counter.to_le_bytes());
         }

@@ -1,7 +1,7 @@
 //! 同一份逻辑矩形用于绘制、裁剪与命中；剩余像素按累计权重分配，不产生缩放缝隙。
 use super::widgets::Tree;
 use canvas::Rect;
-use classic_ui::Painter;
+use classic_ui::{CAPTION_HEIGHT, FrameKind, Painter};
 use classic_ui_abi::{state, widget};
 
 impl Tree {
@@ -105,6 +105,7 @@ impl Tree {
                     )
                 }
             }
+            widget::WORKSPACE | widget::CHILD_FRAME => (0, 0),
             widget::LABEL if node.state & state::WRAP != 0 => {
                 let width = if node.layout.width >= 0 {
                     node.layout.width
@@ -312,201 +313,210 @@ impl Tree {
             cursor = cursor
                 .saturating_add(if row { rect.width } else { rect.height })
                 .saturating_add(gap);
-            let intersection = intersect(rect, clip);
-            let strip = (self.nodes[&id].kind == widget::TABS).then(|| {
-                let pages: Vec<_> = self.nodes[&id]
-                    .children
-                    .iter()
-                    .filter(|page| self.nodes[page].visible())
-                    .map(|page| {
-                        let text = self.nodes[page].text();
-                        (
-                            *page,
-                            ((font.text_width(text, false) + scale - 1) / scale + 20).max(48),
-                        )
-                    })
-                    .collect();
-                super::tab_strip::TabStrip::new(
-                    rect.inset(rule.padding),
-                    font.line_height(),
-                    &pages,
-                )
-            });
-            // 隐藏或删除的选中页失效后回到第一个可用页；禁用页保留表头但不作为默认页。
-            let fallback = strip.as_ref().and_then(|strip| {
-                strip
-                    .headers
-                    .iter()
-                    .map(|(page, _)| *page)
-                    .find(|page| self.nodes[page].enabled())
-                    .or_else(|| strip.headers.first().map(|(page, _)| *page))
-            });
-            let node = self.nodes.get_mut(&id).expect("layout child");
-            if let Some(strip) = strip {
-                node.selected = node
-                    .selected
-                    .filter(|selected| strip.headers.iter().any(|(page, _)| page == selected))
-                    .or(fallback);
-                node.tabs = strip;
+            self.place_child(id, rect, clip, font);
+        }
+    }
+
+    pub(super) fn place_child(&mut self, id: u64, rect: Rect, clip: Rect, font: &Painter<'_>) {
+        let scale = font.scale();
+        let rule = self.nodes[&id].layout;
+        let intersection = intersect(rect, clip);
+        let strip = (self.nodes[&id].kind == widget::TABS).then(|| {
+            let pages: Vec<_> = self.nodes[&id]
+                .children
+                .iter()
+                .filter(|page| self.nodes[page].visible())
+                .map(|page| {
+                    let text = self.nodes[page].text();
+                    (
+                        *page,
+                        ((font.text_width(text, false) + scale - 1) / scale + 20).max(48),
+                    )
+                })
+                .collect();
+            super::tab_strip::TabStrip::new(rect.inset(rule.padding), font.line_height(), &pages)
+        });
+        // 隐藏或删除的选中页失效后回到第一个可用页；禁用页保留表头但不作为默认页。
+        let fallback = strip.as_ref().and_then(|strip| {
+            strip
+                .headers
+                .iter()
+                .map(|(page, _)| *page)
+                .find(|page| self.nodes[page].enabled())
+                .or_else(|| strip.headers.first().map(|(page, _)| *page))
+        });
+        let node = self.nodes.get_mut(&id).expect("layout child");
+        if let Some(strip) = strip {
+            node.selected = node
+                .selected
+                .filter(|selected| strip.headers.iter().any(|(page, _)| page == selected))
+                .or(fallback);
+            node.tabs = strip;
+        }
+        node.rect = rect;
+        node.clip = intersection;
+        node.row_height = if node.kind == widget::COMBO {
+            node.combo_item_height(font.line_height())
+        } else {
+            font.line_height() + 6
+        };
+        if node.kind == widget::LIST {
+            // 小图标/列表的条目宽度取最宽标签 + 图标与内边距（comctl32 按最宽项排列），大图标取主题图标间距。
+            let widest = (0..node.row_count())
+                .filter_map(|index| node.row_at(index))
+                .map(|(_, text)| {
+                    let label = text.split('\t').next().unwrap_or("");
+                    (font.text_width(label, false) + scale - 1) / scale
+                })
+                .max()
+                .unwrap_or(0);
+            let metrics = &font.theme().window;
+            if let Some(table) = node.table.as_mut() {
+                table.cells = (
+                    (metrics.icon_spacing, metrics.icon_vertical_spacing),
+                    (widest + 2 + 16 + 2 + 4 + 12).min(rect.width.max(1)),
+                );
             }
-            node.rect = rect;
-            node.clip = intersection;
-            node.row_height = if node.kind == widget::COMBO {
-                node.combo_item_height(font.line_height())
-            } else {
-                font.line_height() + 6
-            };
-            if node.kind == widget::LIST {
-                // 小图标/列表的条目宽度取最宽标签 + 图标与内边距（comctl32 按最宽项排列），大图标取主题图标间距。
-                let widest = (0..node.row_count())
-                    .filter_map(|index| node.row_at(index))
-                    .map(|(_, text)| {
-                        let label = text.split('\t').next().unwrap_or("");
-                        (font.text_width(label, false) + scale - 1) / scale
+        }
+        if matches!(node.kind, widget::LIST | widget::TREE) {
+            if node
+                .table
+                .as_ref()
+                .is_some_and(|table| table.columns.is_empty())
+            {
+                let width = (0..node.row_count())
+                    .map(|index| {
+                        let (id, text) = node.row_at(index).expect("visible row");
+                        let text = (font.text_width(text, false) + scale - 1) / scale;
+                        let icon = node
+                            .row_icons
+                            .get(id)
+                            .is_some_and(|icons| icons.0.is_some());
+                        match &node.outline {
+                            // 树与绘制共用行几何：缩进列、图标与标签留白。
+                            Some(outline) => {
+                                outline.row(Rect::new(0, 0, 0, 0), index, icon).label
+                                    + super::outline::Outline::label_width(text)
+                                    + 2
+                            }
+                            None => {
+                                let check = node.table.as_ref().and_then(|table| table.check(*id));
+                                text + 8
+                                    + if icon { 20 } else { 0 }
+                                    + if check.is_some() {
+                                        super::table::CHECK_GUTTER
+                                    } else {
+                                        0
+                                    }
+                            }
+                        }
                     })
                     .max()
                     .unwrap_or(0);
-                let metrics = &font.theme().window;
-                if let Some(table) = node.table.as_mut() {
-                    table.cells = (
-                        (metrics.icon_spacing, metrics.icon_vertical_spacing),
-                        (widest + 2 + 16 + 2 + 4 + 12).min(rect.width.max(1)),
-                    );
+                node.table.as_mut().expect("list model").content_width = width;
+            }
+            node.clamp_list();
+        }
+        if let Some(editor) = &mut node.editor {
+            editor.layout(rect, font);
+        }
+        if let Some(toolbar) = &mut node.toolbar {
+            toolbar.layout(rect, font);
+        }
+        let kind = node.kind;
+        let nested = node.children.clone();
+        let selected = node.selected;
+        let mut inner = rect.inset(node.inset());
+        if kind == widget::CHILD_FRAME {
+            inner = inner.inset(FrameKind::Resizable.border());
+            inner.y += CAPTION_HEIGHT;
+            inner.height = (inner.height - CAPTION_HEIGHT).max(0);
+        }
+        if kind == widget::GROUP {
+            let top = font.line_height() + 8;
+            inner.y += top;
+            inner.height = (inner.height - top).max(0);
+        }
+        if kind == widget::WORKSPACE {
+            let clip = intersect(inner, intersection);
+            for (index, child) in nested.into_iter().enumerate() {
+                if self.nodes[&child].visible() {
+                    let position = self.place_frame(child, inner, index);
+                    self.place_child(child, position, clip, font);
                 }
             }
-            if matches!(node.kind, widget::LIST | widget::TREE) {
-                if node
-                    .table
-                    .as_ref()
-                    .is_some_and(|table| table.columns.is_empty())
-                {
-                    let width = (0..node.row_count())
-                        .map(|index| {
-                            let (id, text) = node.row_at(index).expect("visible row");
-                            let text = (font.text_width(text, false) + scale - 1) / scale;
-                            let icon = node
-                                .row_icons
-                                .get(id)
-                                .is_some_and(|icons| icons.0.is_some());
-                            match &node.outline {
-                                // 树与绘制共用行几何：缩进列、图标与标签留白。
-                                Some(outline) => {
-                                    outline.row(Rect::new(0, 0, 0, 0), index, icon).label
-                                        + super::outline::Outline::label_width(text)
-                                        + 2
-                                }
-                                None => {
-                                    let check =
-                                        node.table.as_ref().and_then(|table| table.check(*id));
-                                    text + 8
-                                        + if icon { 20 } else { 0 }
-                                        + if check.is_some() {
-                                            super::table::CHECK_GUTTER
-                                        } else {
-                                            0
-                                        }
-                                }
-                            }
-                        })
-                        .max()
-                        .unwrap_or(0);
-                    node.table.as_mut().expect("list model").content_width = width;
-                }
-                node.clamp_list();
+            return;
+        }
+        if kind == widget::REBAR {
+            let bands: Vec<u64> = nested
+                .iter()
+                .copied()
+                .filter(|band| self.nodes[band].visible())
+                .collect();
+            let heights: Vec<i32> = bands
+                .iter()
+                .map(|band| self.natural(*band, rect.width, font, scale).1)
+                .collect();
+            let areas = self
+                .nodes
+                .get_mut(&id)
+                .and_then(|node| node.rebar.as_mut())
+                .map(|rebar| rebar.layout(rect, &heights))
+                .unwrap_or_default();
+            for (band, area) in bands.into_iter().zip(areas) {
+                self.place_children(&[band], area, intersect(area, intersection), false, 0, font);
             }
-            if let Some(editor) = &mut node.editor {
-                editor.layout(rect, font);
-            }
-            if let Some(toolbar) = &mut node.toolbar {
-                toolbar.layout(rect, font);
-            }
-            let kind = node.kind;
-            let nested = node.children.clone();
-            let selected = node.selected;
-            let mut inner = rect.inset(node.inset());
-            if kind == widget::GROUP {
-                let top = font.line_height() + 8;
-                inner.y += top;
-                inner.height = (inner.height - top).max(0);
-            }
-            if kind == widget::REBAR {
-                let bands: Vec<u64> = nested
-                    .iter()
-                    .copied()
-                    .filter(|band| self.nodes[band].visible())
-                    .collect();
-                let heights: Vec<i32> = bands
-                    .iter()
-                    .map(|band| self.natural(*band, rect.width, font, scale).1)
-                    .collect();
-                let areas = self
-                    .nodes
-                    .get_mut(&id)
-                    .and_then(|node| node.rebar.as_mut())
-                    .map(|rebar| rebar.layout(rect, &heights))
-                    .unwrap_or_default();
-                for (band, area) in bands.into_iter().zip(areas) {
-                    self.place_children(
-                        &[band],
-                        area,
-                        intersect(area, intersection),
-                        false,
-                        0,
-                        font,
-                    );
-                }
-                continue;
-            }
-            if kind == widget::TABS {
-                inner = node.tabs.page_area();
-                if let Some(page) = selected {
-                    self.place_children(
-                        &[page],
-                        inner,
-                        intersect(inner, intersection),
-                        false,
-                        rule.gap,
-                        font,
-                    );
-                }
-            } else if self.nodes[&id].scrolling() {
-                // 1. 以未滚动的自然高度量内容；溢出时扣去滚动条，再量一次换行高度。
-                let height = |width| {
-                    let mut count = 0i32;
-                    let sum = nested
-                        .iter()
-                        .filter(|child| self.nodes[child].visible())
-                        .fold(0i32, |sum, child| {
-                            count += 1;
-                            sum.saturating_add(self.natural(*child, width, font, scale).1)
-                        });
-                    sum.saturating_add(rule.gap.saturating_mul(count.saturating_sub(1)))
-                };
-                let mut extent = height(inner.width);
-                if extent > inner.height {
-                    inner.width = (inner.width - classic_ui::SCROLLBAR_WIDTH).max(0);
-                    extent = height(inner.width);
-                }
-                // 2. range 只保存当前排版几何，position 在内容收缩/窗口变大时夹回合法范围。
-                let node = self.nodes.get_mut(&id).expect("viewport owner");
-                node.range.page = inner.height.max(1);
-                node.range.maximum = extent.max(node.range.page).saturating_sub(1);
-                node.position.clamp(extent - node.range.page);
-                let clip = intersect(inner, intersection);
-                inner.y = inner.y.saturating_sub(node.position.position);
-                inner.height = extent.max(inner.height);
-                // 3. 布局、命中与绘制使用同一份平移矩形和未平移视口裁剪。
-                self.place_children(&nested, inner, clip, false, rule.gap, font);
-            } else {
+            return;
+        }
+        if kind == widget::TABS {
+            inner = node.tabs.page_area();
+            if let Some(page) = selected {
                 self.place_children(
-                    &nested,
+                    &[page],
                     inner,
                     intersect(inner, intersection),
-                    kind == widget::ROW,
+                    false,
                     rule.gap,
                     font,
                 );
             }
+        } else if self.nodes[&id].scrolling() {
+            // 1. 以未滚动的自然高度量内容；溢出时扣去滚动条，再量一次换行高度。
+            let height = |width| {
+                let mut count = 0i32;
+                let sum = nested
+                    .iter()
+                    .filter(|child| self.nodes[child].visible())
+                    .fold(0i32, |sum, child| {
+                        count += 1;
+                        sum.saturating_add(self.natural(*child, width, font, scale).1)
+                    });
+                sum.saturating_add(rule.gap.saturating_mul(count.saturating_sub(1)))
+            };
+            let mut extent = height(inner.width);
+            if extent > inner.height {
+                inner.width = (inner.width - classic_ui::SCROLLBAR_WIDTH).max(0);
+                extent = height(inner.width);
+            }
+            // 2. range 只保存当前排版几何，position 在内容收缩/窗口变大时夹回合法范围。
+            let node = self.nodes.get_mut(&id).expect("viewport owner");
+            node.range.page = inner.height.max(1);
+            node.range.maximum = extent.max(node.range.page).saturating_sub(1);
+            node.position.clamp(extent - node.range.page);
+            let clip = intersect(inner, intersection);
+            inner.y = inner.y.saturating_sub(node.position.position);
+            inner.height = extent.max(inner.height);
+            // 3. 布局、命中与绘制使用同一份平移矩形和未平移视口裁剪。
+            self.place_children(&nested, inner, clip, false, rule.gap, font);
+        } else {
+            self.place_children(
+                &nested,
+                inner,
+                intersect(inner, intersection),
+                kind == widget::ROW,
+                rule.gap,
+                font,
+            );
         }
     }
 }

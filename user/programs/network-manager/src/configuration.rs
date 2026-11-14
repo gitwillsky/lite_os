@@ -422,7 +422,7 @@ impl View {
             &self.dialogs,
             parent,
             &self.background,
-            &self.status,
+            Some(&self.status),
             self.draft()?,
             None,
         )
@@ -448,11 +448,13 @@ pub(super) async fn review_and_save(
     dialogs: &Dialogs,
     parent: &Window,
     background: &Background,
-    status: &Widget,
+    status: Option<&Widget>,
     candidate: impl AsRef<[u8]> + Send + 'static,
     expected: Option<Revision>,
 ) -> Result<ReviewResult, Error> {
-    status.set_text("正在校验并比较配置…")?;
+    if let Some(status) = status {
+        status.set_text("正在校验并比较配置…")?;
+    }
     let (candidate, revision, comparison, recovery) = background
         .run(move || {
             let mut client = ManagementClient::local();
@@ -483,7 +485,9 @@ pub(super) async fn review_and_save(
         });
     }
     let commit = background.run(new_commit_id)?.await?;
-    status.set_text(&format!("正在保存，提交编号 {commit}"))?;
+    if let Some(status) = status {
+        status.set_text(&format!("正在保存，提交编号 {commit}"))?;
+    }
     let result = background
         .run(move || {
             let mut client = ManagementClient::local();

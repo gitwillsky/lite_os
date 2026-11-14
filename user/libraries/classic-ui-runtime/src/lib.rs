@@ -27,6 +27,7 @@ mod toolbar;
 mod toplevel;
 mod updown;
 mod widgets;
+mod workspace;
 use context_api::{
     arm, clipboard_get, clipboard_set, color, create, destroy, error_text, step, unwatch, watch,
 };

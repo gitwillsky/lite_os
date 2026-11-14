@@ -214,11 +214,16 @@ pub(super) unsafe extern "C" fn set_layout(
             if old.layout == value {
                 return Ok(());
             }
-            host.controls_mut()?
-                .nodes
-                .get_mut(&id)
-                .expect("validated widget")
-                .layout = value;
+            let node = host.controls_mut()?.nodes.get_mut(&id).expect("validated widget");
+            if let Some(frame) = node.child_frame.as_deref_mut() {
+                if node.layout.width != value.width {
+                    frame.width = super::workspace::initial_width(value);
+                }
+                if node.layout.height != value.height {
+                    frame.height = super::workspace::initial_height(value);
+                }
+            }
+            node.layout = value;
             host.controls_mut()?.layout_dirty = true;
             host.frame.invalidate();
             Ok(())
@@ -665,6 +670,7 @@ pub(super) unsafe extern "C" fn selection(
                 .get(&id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
             let selected = match node.kind {
+                abi::widget::WORKSPACE => tree.front_frame(node),
                 abi::widget::LIST | abi::widget::TREE | abi::widget::COMBO => node.selected,
                 abi::widget::TABS => node
                     .selected
@@ -692,6 +698,15 @@ pub(super) unsafe extern "C" fn select(
     // SAFETY: 唯一 context 借用，条目校验后才发布选择与布局失效。
     unsafe {
         invoke(pointer, |context| {
+            let workspace = context.host(window)?.controls()?.nodes.get(&id)
+                .is_some_and(|node| node.kind == abi::widget::WORKSPACE);
+            if workspace {
+                context.layout(window)?;
+                let host = context.host_mut(window)?;
+                host.controls_mut()?.raise_frame(id, value, true)?;
+                host.frame.invalidate();
+                return Ok(());
+            }
             let host = context.host_mut(window)?;
             let tree = host.controls_mut()?;
             let node = tree

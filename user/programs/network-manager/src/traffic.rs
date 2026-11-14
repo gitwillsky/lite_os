@@ -1,6 +1,10 @@
 //! 网络管理器的链路流量页。
 
-use crate::{child, observation::receive};
+use crate::{
+    child,
+    observation::receive,
+    routes::{Dialog, InterfaceAction},
+};
 use liteos_ui::{
     Application, Background, Clock, Column, Event, EventKind, Layout, ListOptions, ListStyle, Task,
     Widget, WidgetKind, Window, state,
@@ -28,6 +32,9 @@ struct View {
     next: Widget,
     refresh: Widget,
     analyze: Widget,
+    properties: Widget,
+    enable: Widget,
+    disable: Widget,
     background: Background,
     clock: Clock,
     page: RefCell<Option<TrafficPage>>,
@@ -40,6 +47,21 @@ impl Page {
         background: Background,
         button: Layout,
     ) -> liteos_ui::Result<Self> {
+        let actions = child(
+            parent,
+            WidgetKind::Row,
+            "",
+            Layout {
+                gap: 6,
+                ..Layout::default()
+            },
+        )?;
+        let properties = child(&actions, WidgetKind::Button, "属性…", button)?;
+        let enable = child(&actions, WidgetKind::Button, "启用", button)?;
+        let disable = child(&actions, WidgetKind::Button, "停用", button)?;
+        for widget in [&properties, &enable, &disable] {
+            widget.set_state(state::DISABLED)?;
+        }
         let list = child(
             parent,
             WidgetKind::List,
@@ -57,7 +79,8 @@ impl Page {
             },
         )?;
         let columns = [
-            ("接口", 98),
+            ("接口", 86),
+            ("管理状态", 86),
             ("接收速率", 94),
             ("发送速率", 94),
             ("接收总量", 94),
@@ -65,7 +88,7 @@ impl Page {
             ("接收丢包", 81),
             ("发送丢包", 81),
         ];
-        list.set_columns(&std::array::from_fn::<_, 7, _>(|index| Column {
+        list.set_columns(&std::array::from_fn::<_, 8, _>(|index| Column {
             id: index as u64 + 1,
             title: columns[index].0,
             width: columns[index].1,
@@ -101,6 +124,9 @@ impl Page {
             next,
             refresh,
             analyze,
+            properties,
+            enable,
+            disable,
             background,
             clock: app.clock(),
             page: RefCell::default(),
@@ -149,6 +175,35 @@ impl Page {
         Ok(())
     }
 
+    pub(super) fn configuration_requested(
+        &self,
+        event: &Event,
+    ) -> liteos_ui::Result<Option<Dialog>> {
+        if !self.visible || !matches!(event.kind, EventKind::Activate { .. }) {
+            return Ok(None);
+        }
+        let view = &self.view;
+        let action = if event.node == view.properties.id() || event.node == view.list.id() {
+            InterfaceAction::Properties
+        } else if event.node == view.enable.id() {
+            InterfaceAction::SetEnabled(true)
+        } else if event.node == view.disable.id() {
+            InterfaceAction::SetEnabled(false)
+        } else {
+            return Ok(None);
+        };
+        let selected = view.selected()?;
+        Ok(selected
+            .filter(|row| {
+                row.ethernet_address.is_some()
+                    && match action {
+                        InterfaceAction::Properties => true,
+                        InterfaceAction::SetEnabled(enabled) => enabled != row.up,
+                    }
+            })
+            .map(|row| Dialog::Interface { row, action }))
+    }
+
     pub(super) fn handle(
         &mut self,
         app: &mut Application,
@@ -183,16 +238,13 @@ impl Page {
             }
             return Ok(());
         }
-        if self
-            .capture
-            .handle(
-                app,
-                window,
-                event.node,
-                self.domain.clone(),
-                self.view.list.selection()?,
-            )?
-        {
+        if self.capture.handle(
+            app,
+            window,
+            event.node,
+            self.domain.clone(),
+            self.view.list.selection()?,
+        )? {
             return Ok(());
         }
         if event.node == self.view.previous.id() && self.cursors.len() > 1 {
@@ -219,7 +271,7 @@ impl Page {
         view.page.borrow_mut().take();
         view.list.set_rows(&[])?;
         view.details.set_text("")?;
-        view.analyze.set_state(state::DISABLED)?;
+        view.show_details()?;
         for button in [&view.previous, &view.next, &view.refresh] {
             button.set_state(state::DISABLED)?;
         }
@@ -277,10 +329,16 @@ impl View {
     }
 
     fn present(&self, page: TrafficPage, number: usize) -> liteos_ui::Result<()> {
-        let selection = self
-            .list
-            .selection()?
-            .filter(|&id| page.rows.iter().any(|row| u64::from(row.index) == id));
+        let selection = self.selected()?.and_then(|selected| {
+            page.rows
+                .iter()
+                .find(|row| {
+                    row.index == selected.index
+                        && row.name == selected.name
+                        && row.ethernet_address == selected.ethernet_address
+                })
+                .map(|row| u64::from(row.index))
+        });
         let text: Vec<_> = page.rows.iter().map(row_text).collect();
         let rows: Vec<_> = page
             .rows
@@ -301,18 +359,30 @@ impl View {
         self.show_details()
     }
 
-    fn show_details(&self) -> liteos_ui::Result<()> {
+    fn selected(&self) -> liteos_ui::Result<Option<Row>> {
         let selected = self.list.selection()?;
-        let page = self.page.borrow();
-        let Some(row) = page.as_ref().and_then(|page| {
+        Ok(self.page.borrow().as_ref().and_then(|page| {
             page.rows
                 .iter()
                 .find(|row| Some(u64::from(row.index)) == selected)
-        }) else {
-            self.analyze.set_state(state::DISABLED)?;
+                .copied()
+        }))
+    }
+
+    fn show_details(&self) -> liteos_ui::Result<()> {
+        let row = self.selected()?;
+        let editable = row.filter(|row| row.ethernet_address.is_some());
+        for (control, available) in [
+            (&self.properties, editable.is_some()),
+            (&self.enable, editable.is_some_and(|row| !row.up)),
+            (&self.disable, editable.is_some_and(|row| row.up)),
+            (&self.analyze, row.is_some()),
+        ] {
+            control.set_state(if available { 0 } else { state::DISABLED })?;
+        }
+        let Some(row) = row else {
             return self.details.set_text("");
         };
-        self.analyze.set_state(0)?;
         let [received, sent, rx_bytes, tx_bytes, rx_errors, tx_errors, ..] = row.counters;
         self.details.set_text(&format!(
             "{}　接收 {received} 包 / {rx_bytes} B，错误 {rx_errors}　发送 {sent} 包 / {tx_bytes} B，错误 {tx_errors}",

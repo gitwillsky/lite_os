@@ -78,6 +78,9 @@ impl RoutingDomains {
         window: &Window,
         visible: bool,
     ) -> liteos_ui::Result<()> {
+        if self.visible == visible {
+            return Ok(());
+        }
         self.visible = visible;
         self.bar
             .set_state(if visible { 0 } else { state::HIDDEN })?;

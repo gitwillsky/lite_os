@@ -32,6 +32,7 @@ struct View {
     previous: Widget,
     next: Widget,
     refresh: Widget,
+    configure: Widget,
     status: Widget,
     background: Background,
     clock: Clock,
@@ -107,6 +108,7 @@ impl Page {
             previous: child(&bar, WidgetKind::Button, "上一页", button)?,
             next: child(&bar, WidgetKind::Button, "下一页", button)?,
             refresh: child(&bar, WidgetKind::Button, "刷新", button)?,
+            configure: child(&bar, WidgetKind::Button, "规则与 NAT…", Layout { width: 110, ..button })?,
             status: child(parent, WidgetKind::Status, "", Layout::default())?,
             background,
             clock: app.clock(),
@@ -152,6 +154,10 @@ impl Page {
             self.task = None;
         }
         Ok(())
+    }
+
+    pub(super) fn configure_requested(&self, event: &Event) -> bool {
+        self.visible && event.node == self.view.configure.id() && matches!(event.kind, EventKind::Activate { .. })
     }
 
     pub(super) fn handle(

@@ -267,6 +267,10 @@ pub enum WidgetKind {
     Combo,
     /// 微调钮：值用 [`Widget::set_range`]，按下或按住时发出 Changed。
     UpDown,
+    /// 经典多文档工作区；仅接受 [`Self::ChildFrame`]，用 [`Widget::select`] 置前。
+    Workspace,
+    /// 工作区内可移动、缩放的窗口。标题用文本，初始大小用 Layout；关闭按钮发出 Activate。
+    ChildFrame,
 }
 /// 系统字体用途，对应主题 `[Fonts]` 中的逻辑字体。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,7 +512,7 @@ impl Widget {
     pub fn child(&self, spec: WidgetSpec<'_>) -> Result<Self> {
         Self::new(self.inner.window.clone(), Some(self.inner.clone()), spec)
     }
-    fn call(&self, operation: impl FnOnce(&Connection, u64, u64) -> i32) -> Result<()> {
+    pub(crate) fn call(&self, operation: impl FnOnce(&Connection, u64, u64) -> i32) -> Result<()> {
         self.inner.window.check()?;
         let c = &self.inner.window.connection;
         c.check(operation(c, self.inner.window.id, self.id()))
@@ -618,7 +622,7 @@ impl Widget {
             unsafe { (c.api.menus)(c.context.as_ptr(), w, id, menus.as_ptr(), menus.len()) }
         })
     }
-    /// 读取共享运行库中的列表/标签页选择；没有选择返回 None，错误控件类型返回 Err。
+    /// 读取列表/标签页的选择或工作区最前面的子窗口。没有选择返回 None，控件类型不符返回错误。
     pub fn selection(&self) -> Result<Option<u64>> {
         let mut value = 0;
         self.call(|c, w, id| {
@@ -627,7 +631,7 @@ impl Widget {
         })?;
         Ok((value != 0).then_some(value))
     }
-    /// 设置已有条目的选择；None 清除列表选择，不触发业务动作或复制第二份选择状态。
+    /// 选择列表条目/标签页，或将给定可用子窗口置前。None 只用于清除列表选择；错误条目返回错误。
     pub fn select(&self, value: Option<u64>) -> Result<()> {
         self.call(|c, w, id| {
             // SAFETY: 句柄由同一连接创建，运行库验证条目标识。

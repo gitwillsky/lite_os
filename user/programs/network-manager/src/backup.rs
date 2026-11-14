@@ -330,7 +330,7 @@ impl View {
             &self.dialogs,
             parent,
             &self.background,
-            &self.status,
+            Some(&self.status),
             candidate,
             Some(revision),
         )

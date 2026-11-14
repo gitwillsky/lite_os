@@ -31,6 +31,8 @@ pub(super) fn serve(session: &mut Session, control: &[u8]) -> io::Result<()> {
                     Row {
                         index: link.index,
                         name: link.name,
+                        ethernet_address: link.ethernet_address,
+                        up: link.up,
                         counters: link.counters,
                         bytes_per_second: None,
                     },
@@ -60,6 +62,8 @@ pub(super) fn serve(session: &mut Session, control: &[u8]) -> io::Result<()> {
 
 fn rates(previous: &Row, current: &Row, elapsed_ns: u128) -> Option<[u64; 2]> {
     if elapsed_ns == 0
+        || previous.name != current.name
+        || previous.ethernet_address != current.ethernet_address
         || current
             .counters
             .iter()

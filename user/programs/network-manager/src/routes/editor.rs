@@ -20,6 +20,7 @@ mod bgp;
 mod entries;
 mod firewall;
 mod interfaces;
+pub(crate) use interfaces::{InterfaceAction, edit_live_interface};
 mod ipv6;
 mod ospf;
 mod policy;
@@ -581,7 +582,7 @@ pub(super) async fn run(
                         dialogs,
                         &window,
                         background,
-                        &status,
+                        Some(&status),
                         candidate,
                         Some(revision),
                     )

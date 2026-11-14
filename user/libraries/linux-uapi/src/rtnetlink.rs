@@ -25,6 +25,10 @@ pub struct LinkStatistics {
     pub index: u32,
     /// Linux 接口名，尾部以零填充。
     pub name: [u8; 16],
+    /// 六字节以太网链路地址。回环与其他链路类型没有这份身份。
+    pub ethernet_address: Option<[u8; 6]>,
+    /// IFF_UP，接口是否被管理员启用。
+    pub up: bool,
     /// 收到、发出的报文数、字节数、错误数和丢弃数，各组接收在前。
     pub counters: [u64; 8],
 }
@@ -217,7 +221,10 @@ fn parse_link(body: &[u8]) -> io::Result<LinkStatistics> {
     if index <= 0 {
         return Err(io::ErrorKind::InvalidData.into());
     }
+    let ethernet = u16::from_ne_bytes(info[2..4].try_into().expect("ifi_type")) == 1;
+    let flags = u32::from_ne_bytes(info[8..12].try_into().expect("ifi_flags"));
     let mut name = None;
+    let mut ethernet_address = None;
     let mut counters = None;
     while !attributes.is_empty() {
         let header = attributes
@@ -231,6 +238,12 @@ fn parse_link(body: &[u8]) -> io::Result<LinkStatistics> {
             .get(length.next_multiple_of(4)..)
             .ok_or(io::ErrorKind::InvalidData)?;
         match u16::from_ne_bytes([header[2], header[3]]) & 0x3fff {
+            1 if ethernet => {
+                if ethernet_address.is_some() {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                ethernet_address = Some(value.try_into().map_err(|_| io::ErrorKind::InvalidData)?);
+            }
             3 if name.is_none() => {
                 let text = value
                     .strip_suffix(&[0])
@@ -256,6 +269,8 @@ fn parse_link(body: &[u8]) -> io::Result<LinkStatistics> {
     Ok(LinkStatistics {
         index: index as u32,
         name: name.ok_or(io::ErrorKind::InvalidData)?,
+        ethernet_address,
+        up: flags & 1 != 0,
         counters: counters.ok_or(io::ErrorKind::InvalidData)?,
     })
 }

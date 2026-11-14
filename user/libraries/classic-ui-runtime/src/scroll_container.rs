@@ -49,11 +49,13 @@ impl Tree {
                 return false;
             }
             scrolling |= node.scrolling();
-            if let Some(parent) = self.nodes.get(&node.parent)
-                && parent.kind == widget::TABS
-                && parent.selected != Some(id)
-            {
-                return false;
+            if let Some(parent) = self.nodes.get(&node.parent) {
+                if parent.kind == widget::TABS && parent.selected != Some(id) {
+                    return false;
+                }
+                if parent.kind == widget::WORKSPACE && self.front_frame(parent) != Some(id) {
+                    return false;
+                }
             }
             id = node.parent;
         }

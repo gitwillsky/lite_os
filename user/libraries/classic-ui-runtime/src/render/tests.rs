@@ -173,7 +173,7 @@ fn scrolling_container_reveals_keyboard_focus_without_undoing_wheel_scroll() {
 #[test]
 fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_popup_changes() {
     for scale in [1, 2] {
-        let bounds = Rect::new(0, 0, 220, 130);
+        let bounds = Rect::new(0, 0, 490, 420);
         let theme = Theme::classic();
         let catalog = typeface::FontCatalog::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts"),
@@ -232,6 +232,28 @@ fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_pop
             title: String::new(),
             items: vec![classic_ui::DropItem::new("打开".into(), String::new(), 1)],
         }];
+        let workspace = tree
+            .insert(0, spec(widget::WORKSPACE), String::new())
+            .unwrap();
+        let area = Rect::new(0, 90, 490, 330);
+        let node = tree.nodes.get_mut(&workspace).unwrap();
+        node.rect = area;
+        node.clip = area;
+        let frame_spec = classic_ui_abi::Widget {
+            layout: classic_ui_abi::Layout {
+                width: 282,
+                height: 180,
+                ..Default::default()
+            },
+            ..spec(widget::CHILD_FRAME)
+        };
+        let route = tree.insert(workspace, frame_spec, "路由表".into()).unwrap();
+        let firewall = tree.insert(workspace, frame_spec, "防火墙".into()).unwrap();
+        for (index, id) in [route, firewall].into_iter().enumerate() {
+            let rect = tree.place_frame(id, area, index);
+            tree.place_child(id, rect, area, &probe);
+        }
+
         let (width, height) = (bounds.width * scale, bounds.height * scale);
         let paint = |tree: &Tree, pixels: &mut [u32], regions: &[Rect]| {
             let mut painter = Painter::new(
@@ -250,7 +272,7 @@ fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_pop
         let mut retained = vec![0; (width * height) as usize];
         paint(&tree, &mut retained, &[bounds]);
         tree.presented(&probe, true, now);
-        for step in 0..6 {
+        for step in 0..10 {
             match step {
                 0 => tree.nodes.get_mut(&label).unwrap().text = "新的内容".into(),
                 1 => tree.focus = Some(button),
@@ -274,6 +296,85 @@ fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_pop
                     .state
                     .close(),
                 5 => tree.remove(label).unwrap(),
+                6 => {
+                    let overlap = tree.nodes[&route]
+                        .rect
+                        .intersect(tree.nodes[&firewall].rect);
+                    tree.pointer = (overlap.x + 6, overlap.y + 8);
+                    assert_eq!(tree.hit(), Some(firewall));
+                    tree.raise_frame(workspace, route, true).unwrap();
+                    assert_eq!(tree.hit(), Some(route));
+                }
+                7 => {
+                    let origin = tree.nodes[&route].rect;
+                    let button = |pressed| classic_ui::EventKind::Button {
+                        code: 0x110,
+                        pressed,
+                        serial: 1,
+                    };
+                    tree.pointer = (origin.x + 60, origin.y + 12);
+                    let mut out = Vec::new();
+                    tree.workspace_input(1, &button(true), &probe, &mut out);
+                    tree.pointer = (tree.pointer.0 + 40, tree.pointer.1 + 60);
+                    tree.workspace_input(
+                        1,
+                        &classic_ui::EventKind::PointerMove {
+                            x: f64::from(tree.pointer.0),
+                            y: f64::from(tree.pointer.1),
+                        },
+                        &probe,
+                        &mut out,
+                    );
+                    tree.workspace_input(1, &button(false), &probe, &mut out);
+                    assert!(out.is_empty());
+                    assert_eq!(
+                        tree.nodes[&route].rect,
+                        Rect::new(origin.x + 40, origin.y + 60, origin.width, origin.height)
+                    );
+                }
+                8 => {
+                    let frame = tree.nodes[&route].rect;
+                    let caption = Rect::new(
+                        frame.x + 4,
+                        frame.y + 4,
+                        frame.width - 8,
+                        classic_ui::CAPTION_HEIGHT,
+                    );
+                    let button = classic_ui::trailing_caption_button(caption);
+                    tree.pointer = (button.x + 1, button.y + 1);
+                    let mut out = Vec::new();
+                    tree.workspace_input(
+                        1,
+                        &classic_ui::EventKind::Button {
+                            code: 0x110,
+                            pressed: true,
+                            serial: 1,
+                        },
+                        &probe,
+                        &mut out,
+                    );
+                    assert!(out.is_empty());
+                }
+                9 => {
+                    let mut out = Vec::new();
+                    tree.workspace_input(
+                        1,
+                        &classic_ui::EventKind::Button {
+                            code: 0x110,
+                            pressed: false,
+                            serial: 1,
+                        },
+                        &probe,
+                        &mut out,
+                    );
+                    assert_eq!(out.len(), 1);
+                    assert_eq!(
+                        (out[0].node, out[0].kind),
+                        (route, classic_ui_abi::event::ACTIVATE)
+                    );
+                    tree.remove(route).unwrap();
+                    assert_eq!(tree.front_frame(&tree.nodes[&workspace]), Some(firewall));
+                }
                 _ => unreachable!(),
             }
             let damage = tree.damage(&probe, true, now);

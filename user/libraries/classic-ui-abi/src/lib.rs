@@ -150,6 +150,10 @@ pub mod widget {
     pub const COMBO: u32 = 24;
     /// 微调钮（msctls_updown32，UDS_WRAP）：值用 range 接口，按下/按住步进时发出 CHANGED。
     pub const UPDOWN: u32 = 25;
+    /// 承载可重叠的子窗口。仅接受 CHILD_FRAME 子项。
+    pub const WORKSPACE: u32 = 26;
+    /// 工作区内由运行库装饰的子窗口。关闭按钮发出 ACTIVATE，应用决定何时隐藏。
+    pub const CHILD_FRAME: u32 = 27;
 }
 /// 控件状态位；HIDDEN 不参与布局、命中和焦点。
 pub mod state {
@@ -479,9 +483,9 @@ pub struct Api {
     pub toplevel_state: unsafe extern "C" fn(*mut c_void, u64, *mut u32) -> i32,
     /// action=0 激活、1 关闭、2 最小化、3 还原、4 最大化、5 取消最大化。
     pub toplevel_action: unsafe extern "C" fn(*mut c_void, u64, u32) -> i32,
-    /// 列表/标签页当前稳定选择，零表示没有选择；不返回应用侧镜像。
+    /// 列表/标签页的选择，或工作区最前面的可用子窗口。零表示没有选择。
     pub selection: unsafe extern "C" fn(*mut c_void, u64, u64, *mut u64) -> i32,
-    /// 设置列表/标签页选择；零清除列表选择，非零必须是已有条目。
+    /// 设置列表/标签页选择，或将给定可用子窗口置前。零仅用于清除列表选择。
     pub select: unsafe extern "C" fn(*mut c_void, u64, u64, u64) -> i32,
     /// 原子替换树数据；节点标识唯一、父先子后，旧节点保留展开状态。
     pub tree_rows: unsafe extern "C" fn(*mut c_void, u64, u64, *const TreeRow, usize) -> i32,

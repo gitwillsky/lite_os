@@ -2,7 +2,7 @@
 use canvas::Rect;
 use classic_ui::{Edit, Scroll};
 use classic_ui_abi::{self as abi, state, widget};
-use std::{collections::BTreeMap, io, ops::Deref, rc::Rc};
+use std::{cell::Cell, collections::BTreeMap, io, ops::Deref, rc::Rc};
 mod damage;
 use damage::Snapshot;
 
@@ -15,7 +15,7 @@ pub type RowIcons = (
 pub struct Node {
     // OWNER: 只经 Nodes 的可变入口推进；与已成功提交的 Snapshot 比较，不代表布局失效。
     revision: u64,
-    painted: Option<Snapshot>,
+    painted: Cell<Option<Snapshot>>,
     pub parent: u64,
     pub children: Vec<u64>,
     pub kind: u32,
@@ -52,6 +52,8 @@ pub struct Node {
     pub status_parts: Vec<i32>,
     /// 容器背景：底色与左上角不平铺的位图（CSS `background: color url() no-repeat`）；None 透明。
     pub background: Option<(Option<classic_theme::Rgb>, Option<Rc<classic_ui::Bitmap>>)>,
+    // 子窗口独占工作区相对位置。其他节点不为这份几何分配空间。
+    pub child_frame: Option<Box<Rect>>,
     /// 微调钮的按住状态。
     pub updown: Option<super::updown::UpDown>,
     /// 横向滑块的凹槽自绘；None 画标准凹陷凹槽。
@@ -86,7 +88,7 @@ impl PartialEq for Command {
 
 impl Node {
     pub fn new(parent: u64, mut spec: abi::Widget, text: String) -> io::Result<Self> {
-        if !(widget::COLUMN..=widget::UPDOWN).contains(&spec.kind) {
+        if !(widget::COLUMN..=widget::CHILD_FRAME).contains(&spec.kind) {
             return Err(invalid("unknown widget kind"));
         }
         if spec.kind == widget::POPUP_MENU {
@@ -98,7 +100,7 @@ impl Node {
         validate_state(spec.kind, spec.state)?;
         Ok(Self {
             revision: 1,
-            painted: None,
+            painted: Cell::new(None),
             parent,
             label_edit: None,
             image: None,
@@ -141,6 +143,13 @@ impl Node {
             font: None,
             status_parts: Vec::new(),
             background: None,
+            child_frame: (spec.kind == widget::CHILD_FRAME).then(|| {
+                Box::new(Rect::new(
+                    -1, 0,
+                    super::workspace::initial_width(spec.layout),
+                    super::workspace::initial_height(spec.layout),
+                ))
+            }),
             updown: None,
             channel: None,
         })
@@ -299,6 +308,15 @@ impl Nodes {
         }
         self.entries.values_mut()
     }
+    /// 子窗口置前只改变它覆盖的区域。工作区自身的底色、几何和其余兄弟的相对顺序保持原样。
+    pub(super) fn raise_child_frame(&mut self, parent: u64, frame: u64) {
+        let children = &mut self.entries.get_mut(&parent).expect("workspace").children;
+        let position = children.iter().position(|child| *child == frame).expect("workspace child");
+        children.remove(position);
+        children.push(frame);
+        self.entries.get_mut(&frame).expect("child frame").changed();
+    }
+
     /// 外部图像资源到达时内容字段不变，但依赖该资源的控件像素已经失效。
     pub fn invalidate_where(&mut self, mut selected: impl FnMut(&Node) -> bool) {
         for node in self.entries.values_mut().filter(|node| selected(node)) {
@@ -341,6 +359,8 @@ pub struct Tree {
     /// 显式焦点请求在下一次排版后滚入视口；消费后清空，普通滚轮不把旧焦点拉回。
     pub reveal: Option<u64>,
     pub armed: Option<u64>,
+    /// 仅在标题栏、关闭按钮或尺寸手柄按下后占用；释放或失焦即清除。
+    pub workspace_gesture: Option<super::workspace::Gesture>,
     pub file_press: Option<super::interaction::FilePress>,
     /// 一次选中标签的单击（控件、行与等待双击的截止时刻）。
     pub rename_click: Option<(u64, u64, std::time::Instant)>,
@@ -366,6 +386,7 @@ impl Tree {
             focus: None,
             reveal: None,
             armed: None,
+            workspace_gesture: None,
             file_press: None,
             rename_click: None,
             pointer: (-1, -1),
@@ -393,14 +414,16 @@ impl Tree {
                 .ok_or_else(|| invalid("unknown parent"))?
                 .parent;
         }
-        if parent != 0
-            && !self.nodes.get(&parent).is_some_and(|p| {
-                matches!(
-                    p.kind,
-                    widget::COLUMN | widget::ROW | widget::TABS | widget::GROUP | widget::REBAR
-                )
-            })
-        {
+        if !match (self.nodes.get(&parent).map(|node| node.kind), spec.kind) {
+            (Some(widget::WORKSPACE), widget::CHILD_FRAME) => true,
+            (_, widget::CHILD_FRAME) | (Some(widget::WORKSPACE), _) => false,
+            (None, _) => parent == 0,
+            (Some(kind), _) => matches!(
+                kind,
+                widget::COLUMN | widget::ROW | widget::TABS | widget::GROUP
+                    | widget::REBAR | widget::CHILD_FRAME
+            ),
+        } {
             return Err(invalid("parent is not a layout container"));
         }
         if spec.kind == widget::MENU_BAR && self.menubar.is_some() {
@@ -442,7 +465,7 @@ impl Tree {
             .entries
             .remove(&id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
-        if let Some(painted) = node.painted {
+        if let Some(painted) = node.painted.get() {
             for rect in [painted.clip, painted.overlay] {
                 if !rect.is_empty() {
                     self.retired.push(rect);
@@ -473,6 +496,9 @@ impl Tree {
         if self.armed == Some(id) {
             self.armed = None;
         }
+        if self.workspace_gesture.is_some_and(|gesture| gesture.frame() == id) {
+            self.workspace_gesture = None;
+        }
         Ok(())
     }
     pub fn roots(&self) -> Vec<u64> {
@@ -490,7 +516,7 @@ impl Tree {
         }
         true
     }
-    fn focus_order(&self, id: u64, order: &mut Vec<u64>) {
+    pub(super) fn focus_order(&self, id: u64, order: &mut Vec<u64>) {
         let node = &self.nodes[&id];
         if !self.focus_available(id) {
             return;
@@ -541,7 +567,7 @@ impl Tree {
             .or_else(|| {
                 // 微调钮可点击但不是 Tab 停靠点（msctls_updown32 没有 WS_TABSTOP）。
                 let clickable = node.kind == widget::UPDOWN && node.enabled() && node.visible();
-                (node.focusable() || clickable || node.scrolling()).then_some(id)
+                (node.focusable() || clickable || node.scrolling() || node.kind == widget::CHILD_FRAME).then_some(id)
             })
     }
 }

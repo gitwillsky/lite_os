@@ -46,18 +46,7 @@ impl Dialogs {
             Some(widget.id()),
             widget.scope(),
         )?;
-        let (x, y) = at.unwrap_or((0, 0));
-        // SAFETY: 句柄和连接均属于本 UI 线程；运行库已经复制菜单，不保留 Rust 对象。
-        self.connection.check(unsafe {
-            (self.connection.api.popup)(
-                self.connection.context.as_ptr(),
-                parent.id(),
-                widget.id(),
-                x,
-                y,
-                u32::from(at.is_some()),
-            )
-        })?;
+        widget.open_popup(at)?;
         Ok(PopupMenuFuture {
             widget: Some(widget),
             events,
@@ -65,6 +54,27 @@ impl Dialogs {
         })
     }
 }
+impl Widget {
+    /// 打开已填充菜单项的 PopupMenu。at 指定窗内逻辑位置，None 使用当前指针。
+    /// 菜单命令和取消事件仍由本控件发出。控件类型错误或窗口未配置时返回错误。
+    pub fn open_popup(&self, at: Option<(i32, i32)>) -> Result<()> {
+        let (x, y) = at.unwrap_or((0, 0));
+        self.call(|connection, window, id| {
+            // SAFETY: call 校验窗口和线程；运行库在同步调用中消费坐标与控件标识。
+            unsafe {
+                (connection.api.popup)(
+                    connection.context.as_ptr(),
+                    window,
+                    id,
+                    x,
+                    y,
+                    u32::from(at.is_some()),
+                )
+            }
+        })
+    }
+}
+
 impl Future for PopupMenuFuture {
     type Output = Result<Option<u64>>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

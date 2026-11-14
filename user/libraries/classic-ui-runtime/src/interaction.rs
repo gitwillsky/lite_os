@@ -169,11 +169,15 @@ impl Tree {
         if combo_handled {
             return (out, true, combo_repaint);
         }
+        let (frame_handled, frame_repaint) = self.workspace_input(window, input, probe, &mut out);
+        if frame_handled {
+            return (out, true, frame_repaint || menu_repaint || combo_repaint);
+        }
         let (toolbar_handled, toolbar_repaint) = self.toolbar_input(window, input, &mut out);
         if toolbar_handled {
             return (out, true, true);
         }
-        let menu_repaint = menu_repaint || toolbar_repaint || combo_repaint;
+        let menu_repaint = menu_repaint || toolbar_repaint || combo_repaint || frame_repaint;
         if self.calendar_input(window, input, &mut out) {
             return (out, true, true);
         }
@@ -321,7 +325,7 @@ impl Tree {
             && let Some(id) = self.nodes.iter().find_map(|(id, node)| {
                 (node.kind == widget::BUTTON
                     && node.state & state::DEFAULT != 0
-                    && self.active(*id))
+                    && self.focus_available(*id))
                 .then_some(*id)
             })
         {

@@ -301,6 +301,9 @@ pub(super) unsafe extern "C" fn focus(pointer: *mut c_void, window: u64, id: u64
                 current = parent;
                 parent = ancestor.parent;
             }
+            if let Some(frame) = tree.containing_frame(id) {
+                tree.raise_frame(tree.nodes[&frame].parent, frame, false)?;
+            }
             tree.focus = Some(id);
             tree.request_reveal(id);
             host.frame.invalidate();
