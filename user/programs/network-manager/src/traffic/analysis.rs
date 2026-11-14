@@ -13,6 +13,7 @@ use std::{
     net::SocketAddr,
     os::fd::AsFd,
     pin::pin,
+    sync::Arc,
 };
 
 const HISTORY: usize = 10;
@@ -20,6 +21,7 @@ const HISTORY: usize = 10;
 pub(super) fn open(
     app: &mut Application,
     parent: &Window,
+    domain: Option<Arc<str>>,
     interface: u32,
     name: &str,
     background: Background,
@@ -100,7 +102,7 @@ pub(super) fn open(
             }
         });
         let mut observing = pin!(async {
-            if let Err(error) = view.observe(&window, interface, background).await {
+            if let Err(error) = view.observe(&window, domain, interface, background).await {
                 let _ = view.status.set_text(&format!("流量观察已停止。{error}"));
             }
             pending::<()>().await;
@@ -157,11 +159,12 @@ impl View {
     async fn observe(
         &self,
         window: &Window,
+        domain: Option<Arc<str>>,
         interface: u32,
         background: Background,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut stream = background
-            .run(move || FlowObservation::start(interface))?
+            .run(move || FlowObservation::start(domain.as_deref(), interface))?
             .await?;
         let mut fd = window.watch(stream.as_fd().try_clone_to_owned()?)?;
         let mut history = VecDeque::with_capacity(HISTORY);

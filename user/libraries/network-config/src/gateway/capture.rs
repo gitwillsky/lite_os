@@ -33,22 +33,19 @@ pub struct CaptureResult {
 }
 
 impl Capture {
-    /// 启动指定接口抓包。握手可能阻塞，应从后台调用。
+    /// 在所选路由域启动指定接口抓包。握手可能阻塞，应从后台调用。
     /// # Errors
     /// 网关不可用或验证、发送失败。权限不足在读取回复时报告。
-    pub fn start(interface: u32) -> io::Result<(Self, CaptureStop)> {
+    pub fn start(domain: Option<&str>, interface: u32) -> io::Result<(Self, CaptureStop)> {
+        let control = administration::scoped_query(domain, &capture::request(interface))
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
         let mut session = local_session()?;
         let SessionIo::Unix(stream) = session.get_ref() else {
             unreachable!("local capture")
         };
         let stop = CaptureStop(stream.socket.try_clone()?);
         session.get_mut().reset(RPC_TIMEOUT);
-        send_request(
-            &mut session,
-            management::CAPTURE,
-            &capture::request(interface),
-            None,
-        )?;
+        send_request(&mut session, management::CAPTURE, &control, None)?;
         Ok((Self(session), stop))
     }
 
@@ -107,11 +104,14 @@ pub(super) fn serve(session: &mut Session, control: &[u8]) -> io::Result<()> {
     use tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
 
     let result = (|| {
-        let index = capture::parse_request(control).map_err(|_| io::ErrorKind::InvalidData)?;
+        let (domain, query) =
+            administration::parse_scoped_query(control).map_err(|_| io::ErrorKind::InvalidData)?;
+        let index = capture::parse_request(query).map_err(|_| io::ErrorKind::InvalidData)?;
         let SessionIo::Unix(stream) = session.get_ref() else {
             return Err(io::ErrorKind::PermissionDenied.into());
         };
         let peer = stream.socket.try_clone()?;
+        server::enter_observation_domain(domain)?;
         let receiver = Receiver::open(index)?;
         receiver.check_error()?;
         let mut header = message(1, capture::HEADER.len());

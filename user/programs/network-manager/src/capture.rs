@@ -10,6 +10,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
 };
 
 pub(super) struct Controls {
@@ -70,6 +71,7 @@ impl Controls {
         app: &mut Application,
         window: &Window,
         node: u64,
+        domain: Option<Arc<str>>,
         selected: Option<u64>,
     ) -> liteos_ui::Result<bool> {
         if node == self.view.stop.id() {
@@ -94,7 +96,7 @@ impl Controls {
         let view = self.view.clone();
         view.start.set_state(state::DISABLED)?;
         self.task = Some(app.spawn_local(window, async move {
-            let result = view.save(&parent, index).await;
+            let result = view.save(&parent, domain, index).await;
             view.cancellation.borrow_mut().take();
             let _ = view.stop.set_state(state::DISABLED);
             let _ = view.start.set_state(0);
@@ -112,6 +114,7 @@ impl View {
     async fn save(
         &self,
         parent: &Window,
+        domain: Option<Arc<str>>,
         index: u32,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let directory = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
@@ -132,7 +135,10 @@ impl View {
             return Ok("已取消抓包".into());
         };
         self.status.set_text("正在启动抓包…")?;
-        let (capture, stop) = self.background.run(move || Capture::start(index))?.await?;
+        let (capture, stop) = self
+            .background
+            .run(move || Capture::start(domain.as_deref(), index))?
+            .await?;
         *self.cancellation.borrow_mut() = Some(stop);
         self.stop.set_state(0)?;
         self.status.set_text("正在抓包，最多 60 秒。")?;

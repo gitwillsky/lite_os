@@ -27,11 +27,14 @@ pub(super) fn serve(session: &mut Session, control: &[u8]) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn sample(session: &mut Session, control: &[u8]) -> io::Result<()> {
-    let interface = flows::parse_request(control).map_err(|_| io::ErrorKind::InvalidData)?;
+    let (domain, query) =
+        administration::parse_scoped_query(control).map_err(|_| io::ErrorKind::InvalidData)?;
+    let interface = flows::parse_request(query).map_err(|_| io::ErrorKind::InvalidData)?;
     let SessionIo::Unix(stream) = session.get_ref() else {
         return Err(io::ErrorKind::PermissionDenied.into());
     };
     let peer = stream.socket.try_clone()?;
+    enter_observation_domain(domain)?;
     let receiver = Receiver::open(interface)?;
     receiver.check_error()?;
     let mut counters = [Leaders::new(), Leaders::new()];

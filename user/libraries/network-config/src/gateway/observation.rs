@@ -247,12 +247,13 @@ pub struct TrafficObservation {
 }
 
 impl TrafficObservation {
-    /// 订阅指定接口索引之后的一页，0 表示首页。应在后台握手。
+    /// 订阅所选路由域中指定接口索引之后的一页，0 表示首页。应在后台握手。
     /// # Errors
     /// 网关不可用、身份不符、握手或发送失败。
-    pub fn start(after: u32) -> io::Result<Self> {
-        let transport = LocalObservation::start(
+    pub fn start(domain: Option<&str>, after: u32) -> io::Result<Self> {
+        let transport = LocalObservation::start_scoped(
             management::WATCH_LINK_TRAFFIC,
+            domain,
             &management::traffic::request(after),
             RPC_TIMEOUT,
         )?;
@@ -286,12 +287,13 @@ impl AsFd for TrafficObservation {
 pub struct FlowObservation(LocalObservation);
 
 impl FlowObservation {
-    /// 在后台握手并订阅本地接口。
+    /// 在后台握手并订阅所选路由域中的本地接口。
     /// # Errors
     /// 网关不可用、身份不符、握手或发送失败。
-    pub fn start(interface: u32) -> io::Result<Self> {
-        LocalObservation::start(
+    pub fn start(domain: Option<&str>, interface: u32) -> io::Result<Self> {
+        LocalObservation::start_scoped(
             management::WATCH_FLOWS,
+            domain,
             &management::flows::request(interface),
             RPC_TIMEOUT,
         )

@@ -223,6 +223,7 @@ fn run() -> liteos_ui::Result<()> {
                     firewall_root.id(),
                     neighbors_root.id(),
                     routes_root.id(),
+                    traffic_root.id(),
                 ]
                 .contains(&page),
             )?;
@@ -237,7 +238,8 @@ fn run() -> liteos_ui::Result<()> {
             connections.select_domain(app, &window, domain.clone())?;
             firewall.select_domain(app, &window, domain.clone())?;
             neighbors.select_domain(app, &window, domain.clone())?;
-            routes.select_domain(app, &window, domain)?;
+            routes.select_domain(app, &window, domain.clone())?;
+            traffic.select_domain(app, &window, domain)?;
         }
         connections.handle(app, &window, &event)?;
         firewall.handle(app, &window, &event)?;

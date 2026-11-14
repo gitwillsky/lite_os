@@ -6,7 +6,7 @@ use liteos_ui::{
     Widget, WidgetKind, Window, state,
 };
 use network_config::traffic::{Page as TrafficPage, Row, TrafficObservation, Update};
-use std::{cell::RefCell, io, os::fd::AsFd, rc::Rc};
+use std::{cell::RefCell, io, os::fd::AsFd, rc::Rc, sync::Arc};
 
 mod analysis;
 
@@ -14,6 +14,7 @@ pub(super) struct Page {
     view: Rc<View>,
     task: Option<Task<()>>,
     visible: bool,
+    domain: Option<Arc<str>>,
     cursors: Vec<u32>,
     capture: crate::capture::Controls,
     analysis: Option<Task<()>>,
@@ -108,10 +109,26 @@ impl Page {
             view: Rc::new(view),
             task: None,
             visible: false,
+            domain: None,
             cursors: vec![0],
             capture,
             analysis: None,
         })
+    }
+
+    pub(super) fn select_domain(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        domain: Option<Arc<str>>,
+    ) -> liteos_ui::Result<()> {
+        self.domain = domain;
+        self.cursors.truncate(1);
+        self.analysis = None;
+        if self.visible {
+            self.subscribe(app, window)?;
+        }
+        Ok(())
     }
 
     pub(super) fn selected_tab(
@@ -158,6 +175,7 @@ impl Page {
                 self.analysis = Some(analysis::open(
                     app,
                     window,
+                    self.domain.clone(),
                     row.index,
                     &String::from_utf8_lossy(row.name()),
                     self.view.background.clone(),
@@ -167,7 +185,13 @@ impl Page {
         }
         if self
             .capture
-            .handle(app, window, event.node, self.view.list.selection()?)?
+            .handle(
+                app,
+                window,
+                event.node,
+                self.domain.clone(),
+                self.view.list.selection()?,
+            )?
         {
             return Ok(());
         }
@@ -201,8 +225,9 @@ impl Page {
         }
         view.status.set_text("正在读取接口流量…")?;
         let parent = window.clone();
+        let domain = self.domain.clone();
         self.task = Some(app.spawn_local(window, async move {
-            if let Err(error) = view.observe(&parent, after, number).await {
+            if let Err(error) = view.observe(&parent, domain, after, number).await {
                 if number > 1 {
                     let _ = view.previous.set_state(0);
                 }
@@ -220,12 +245,13 @@ impl View {
     async fn observe(
         &self,
         window: &Window,
+        domain: Option<Arc<str>>,
         after: u32,
         number: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut stream = self
             .background
-            .run(move || TrafficObservation::start(after))?
+            .run(move || TrafficObservation::start(domain.as_deref(), after))?
             .await?;
         let mut fd = window.watch(stream.as_fd().try_clone_to_owned()?)?;
         loop {

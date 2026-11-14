@@ -5,8 +5,11 @@ use linux_uapi::rtnetlink::LinkReader;
 use router_protocol::management::traffic::{self, PAGE_ROWS, Page, Row};
 
 pub(super) fn serve(session: &mut Session, control: &[u8]) -> io::Result<()> {
-    let after = traffic::parse_request(control).map_err(|_| io::ErrorKind::InvalidData)?;
     let result = (|| {
+        let (domain, query) = administration::parse_scoped_query(control)
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        let after = traffic::parse_request(query).map_err(|_| io::ErrorKind::InvalidData)?;
+        enter_observation_domain(domain)?;
         let mut reader = LinkReader::open()?;
         let mut previous: Option<(Instant, Page)> = None;
         observation::stream(session, || {

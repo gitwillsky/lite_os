@@ -1,7 +1,7 @@
 # 双栈转发契约
 
 本文件拥有原生 NET 的 IPv4/IPv6 单播和静态组播跨接口执行、等待和错误返回。路由来源及选路见[RIB 与执行 FIB](ipc-network.md#rib-候选目录)。
-当前已接通生产 NIC 接收、同域 FIB 选择、出口邻居解析及实际 TX；尚未完成来宾多网卡和成熟路由器互通验收，不声明完整双栈路由系统已交付。
+生产 NIC 已接通同域 FIB 选择、出口邻居解析及实际 TX。来宾多网卡双栈转发和单域多队列吞吐已有[运行验证](../development/desktop-verification.md#单个路由域的多核吞吐)，成熟路由器互通待整机验收。
 
 ## 入口与职责
 
@@ -496,5 +496,5 @@ benchmark 决策：新增实际转发热路径，完整系统可用后沿计划�
 ## 未完成范围
 
 静态 [VLAN 网关](switching.md#vlan-网关)使用同一双栈转发 owner。
-VRF、其余 NAT 能力、其余转发参数、ICMP Redirect、IPv4 源路由策略及其余选项、多核数据面仍在路由计划内。组播当前支持静态配置，动态组播协议待实现。
+其余 NAT 能力及转发参数、ICMP Redirect、IPv4 源路由策略及其余选项仍待实现。组播当前支持静态配置，动态组播协议待实现。
 本机 IPv4、IPv6、ARP 与设备收发均沿原生路径。生产网络栈和 DHCP 服务统一使用 packet-wire。固定 smoltcp 只用于宿主测试的格式对照。[本机 IPv4](ipv4-transports.md)

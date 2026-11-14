@@ -267,6 +267,16 @@ fn read_management_page(operation: u32, domain: Option<&str>, query: &[u8]) -> i
     Ok(bytes)
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn enter_observation_domain(domain: Option<&str>) -> io::Result<()> {
+    if let Some(domain) = domain {
+        // 此类订阅独占会话线程，返回即退出。只影响进入后打开的网络描述符。
+        let namespace = open_network_namespace(domain)?;
+        linux_uapi::process::enter_network_namespace(namespace.as_fd())?;
+    }
+    Ok(())
+}
+
 fn forward(operation: u32, frame: &[u8], input: Option<&MemFd>) -> io::Result<BackendReply> {
     let socket = anonymous_datagram()?;
     let path = if operation == ordinal::GET {
