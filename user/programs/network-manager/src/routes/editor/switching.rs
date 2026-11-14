@@ -3,7 +3,7 @@
 use super::{button, checkbox, checked, entries, field, form, form_buttons, row};
 use crate::child;
 use liteos_ui::{Column, Dialogs, EventKind, Layout, WidgetKind, Window, state};
-use network_config::configuration::{Bridge, ConfigurationName, RouterConfiguration};
+use network_config::configuration::{Bridge, ConfigurationName, RouterInterface};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -16,10 +16,10 @@ mod port;
 pub(super) async fn edit(
     dialogs: &Dialogs,
     parent: &Window,
-    config: &mut RouterConfiguration,
+    interfaces: &mut BTreeMap<ConfigurationName, RouterInterface>,
+    draft: &mut BTreeMap<ConfigurationName, Bridge>,
 ) -> liteos_ui::Result<bool> {
-    let saved = config
-        .bridges
+    let saved = draft
         .iter()
         .map(|(name, bridge)| (name.clone(), Cow::Borrowed(bridge)));
     let Some(bridges) = entries::edit(
@@ -69,7 +69,7 @@ pub(super) async fn edit(
             )
         },
         async |window, items, index| {
-            Ok(edit_bridge(dialogs, window, config, items, index)
+            Ok(edit_bridge(dialogs, window, interfaces, items, index)
                 .await?
                 .map(|(name, bridge)| (name, Cow::Owned(bridge))))
         },
@@ -78,10 +78,10 @@ pub(super) async fn edit(
     else {
         return Ok(false);
     };
-    if bridges.len() == config.bridges.len()
+    if bridges.len() == draft.len()
         && bridges
             .iter()
-            .all(|(name, bridge)| config.bridges.get(name) == Some(bridge.as_ref()))
+            .all(|(name, bridge)| draft.get(name) == Some(bridge.as_ref()))
     {
         return Ok(false);
     }
@@ -99,7 +99,7 @@ pub(super) async fn edit(
             )
         })
         .collect();
-    let mut previous = mem::take(&mut config.bridges);
+    let mut previous = mem::take(draft);
     let next: BTreeMap<_, _> = staged
         .into_iter()
         .map(|(name, replacement)| {
@@ -110,8 +110,7 @@ pub(super) async fn edit(
         .collect();
 
     for name in next.values().flat_map(|bridge| bridge.ports.keys()) {
-        let profile = config
-            .interfaces
+        let profile = interfaces
             .get_mut(name)
             .expect("bridge member comes from the interface draft");
         // 新成员的三层配置清除已由端口对话框确认。只处理最终保留的成员。
@@ -120,14 +119,14 @@ pub(super) async fn edit(
         profile.dhcp_v4_server = None;
         profile.default_route = None;
     }
-    config.bridges = next;
+    *draft = next;
     Ok(true)
 }
 
 async fn edit_bridge(
     dialogs: &Dialogs,
     parent: &Window,
-    config: &RouterConfiguration,
+    interfaces: &BTreeMap<ConfigurationName, RouterInterface>,
     bridges: &[(ConfigurationName, Cow<'_, Bridge>)],
     index: Option<usize>,
 ) -> liteos_ui::Result<Option<(ConfigurationName, Bridge)>> {
@@ -189,7 +188,7 @@ async fn edit_bridge(
             EventKind::Activate { .. } if event.node == ports.id() => {
                 let used: BTreeSet<_> = other().flat_map(|bridge| bridge.ports.keys()).collect();
                 if let Some(next) =
-                    port::edit(dialogs, &window, &config.interfaces, &used, &draft.ports).await?
+                    port::edit(dialogs, &window, interfaces, &used, &draft.ports).await?
                 {
                     draft.ports = next;
                     status.set_text(&format!("已设置 {} 个物理端口。", draft.ports.len()))?;
@@ -197,8 +196,7 @@ async fn edit_bridge(
             }
             EventKind::Activate { .. } if event.node == gateways.id() => {
                 let used: BTreeSet<_> =
-                    config
-                        .interfaces
+                    interfaces
                         .keys()
                         .chain(other().flat_map(|bridge| {
                             bridge.gateways.values().map(|gateway| &gateway.name)

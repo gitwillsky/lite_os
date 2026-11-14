@@ -167,11 +167,10 @@ pub(super) fn downstream(
         })
 }
 
-fn vlan_subnet(config: Option<&Configuration>, name: &[u8; 16]) -> Option<u64> {
+/// Find the configured downstream subnet for a name from the domain's VLAN snapshot.
+pub(super) fn vlan_subnet(config: Option<&PrefixDelegation>, name: &[u8; 16]) -> Option<u64> {
     let end = name.iter().position(|&byte| byte == 0)?;
     config?
-        .prefix_delegation
-        .as_ref()?
         .downstream
         .iter()
         .find_map(|(key, &subnet)| (key.as_str().as_bytes() == &name[..end]).then_some(subnet))
@@ -212,6 +211,26 @@ pub(super) fn vlan_assignments<'a>(
     )>,
     Status,
 > {
+    let intent = candidate.and_then(|config| config.prefix_delegation.as_ref());
+    assign_vlan_prefixes(ports, intent, |subnet| {
+        RouterConfig::delegated_prefixes(inner, candidate, subnet, now, retain)
+    })
+}
+
+/// Prepare prefix changes for each resolved VLAN, including withdrawal when its mapping is absent.
+/// # Errors
+/// Reserving the projection or deriving the prefixes failed.
+pub(super) fn assign_vlan_prefixes<'a>(
+    ports: Ports<'a>,
+    intent: Option<&PrefixDelegation>,
+    mut prefixes: impl FnMut(Option<u64>) -> Result<Vec<DelegatedPrefix>, Status>,
+) -> Result<
+    Vec<(
+        router_protocol::switching::Gateway<'a>,
+        Vec<DelegatedPrefix>,
+    )>,
+    Status,
+> {
     let mut assignments = Vec::new();
     let gateways = ports
         .gateways()
@@ -220,10 +239,8 @@ pub(super) fn vlan_assignments<'a>(
         .try_reserve_exact(gateways.clone().count())
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for gateway in gateways {
-        let subnet = vlan_subnet(candidate, &gateway.name);
         // 全量重放只知道当前持久决定。无映射也显式清空，确认丢失后不会遗留旧前缀。
-        let prefixes = RouterConfig::delegated_prefixes(inner, candidate, subnet, now, retain)?;
-        assignments.push((gateway, prefixes));
+        assignments.push((gateway, prefixes(vlan_subnet(intent, &gateway.name))?));
     }
     Ok(assignments)
 }
@@ -436,7 +453,13 @@ impl RouterConfig {
         let now = native_runtime::system::monotonic();
         for snapshot in snapshots {
             let (subnet, route) = if snapshot.vlan {
-                (vlan_subnet(candidate, &snapshot.name), None)
+                (
+                    vlan_subnet(
+                        candidate.and_then(|config| config.prefix_delegation.as_ref()),
+                        &snapshot.name,
+                    ),
+                    None,
+                )
             } else {
                 let Some(interface) = inner
                     .interfaces

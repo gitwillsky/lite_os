@@ -265,11 +265,19 @@ fn compile(
             desired.push((interface.index, pool));
         }
     }
-    for gateway in configuration
-        .bridges
-        .values()
-        .flat_map(|bridge| bridge.gateways.values())
-    {
+    append_vlan_pools(&mut desired, configuration.bridges.values(), binding)?;
+    Ok(desired)
+}
+
+/// Append the DHCP pools for resolved VLAN gateways; absent VLANs have no active listener.
+/// # Errors
+/// Invalid DHCP settings, an insufficient VLAN MTU or allocation failure.
+pub(super) fn append_vlan_pools<'a>(
+    desired: &mut Vec<(u32, Pool)>,
+    bridges: impl Iterator<Item = &'a router_protocol::configuration::Bridge>,
+    binding: impl Fn(&Name) -> Option<(u32, u32)>,
+) -> Result<(), Status> {
+    for gateway in bridges.flat_map(|bridge| bridge.gateways.values()) {
         if gateway.dhcp_v4_server.is_none() {
             continue;
         }
@@ -288,7 +296,21 @@ fn compile(
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         desired.push((index, pool));
     }
-    Ok(desired)
+    Ok(())
+}
+
+/// Read a VLAN pool binding from one active snapshot of its own routing domain.
+pub(super) fn active_vlan_binding(
+    snapshots: &[network_protocol::InterfaceSnapshot],
+    name: &Name,
+) -> Option<(u32, u32)> {
+    let bytes = name.as_str().as_bytes();
+    let snapshot = snapshots.iter().find(|snapshot| {
+        snapshot.vlan
+            && snapshot.name.get(..bytes.len()) == Some(bytes)
+            && snapshot.name.get(bytes.len()) == Some(&0)
+    })?;
+    Some((snapshot.index, snapshot.mtu as u32))
 }
 
 pub(super) fn stage(
@@ -396,15 +418,7 @@ impl RouterConfig {
                         .iter()
                         .any(|snapshot| snapshot.index == interface.index && snapshot.up)
                 },
-                |name| {
-                    let bytes = name.as_str().as_bytes();
-                    let snapshot = snapshots.iter().find(|snapshot| {
-                        snapshot.vlan
-                            && snapshot.name.get(..bytes.len()) == Some(bytes)
-                            && snapshot.name.get(bytes.len()) == Some(&0)
-                    })?;
-                    Some((snapshot.index, snapshot.mtu as u32))
-                },
+                |name| active_vlan_binding(&snapshots, name),
             )?;
             StagedPools::prepare(&mut inner.pools, desired, |index| {
                 snapshots.iter().any(|snapshot| snapshot.index == index)

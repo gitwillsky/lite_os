@@ -192,7 +192,6 @@ pub(super) async fn run(
         remove.set_state(disabled(selected.is_none()))?;
         delete_table.set_state(disabled(selected_table == 0))?;
         delete_domain.set_state(disabled(selected_domain.is_none()))?;
-        bridges.set_state(disabled(selected_domain.is_some()))?;
         review.set_state(disabled(!dirty))?;
         summary.set_text(&format!(
             "显示 {}–{} 条，共 {} 条{}",
@@ -409,9 +408,19 @@ pub(super) async fn run(
                     dirty = true;
                     status.set_text("")?;
                 }
-            } else if event.node == bridges.id() && selected_domain.is_none() {
-                if switching::edit(dialogs, &window, &mut config).await? {
-                    interfaces = interface_names(&config, None);
+            } else if event.node == bridges.id() {
+                let (profiles, topology) = match selected_domain.as_ref() {
+                    Some(name) => {
+                        let domain = config
+                            .routing_domains
+                            .get_mut(name)
+                            .expect("selected domain");
+                        (&mut domain.interfaces, &mut domain.bridges)
+                    }
+                    None => (&mut config.interfaces, &mut config.bridges),
+                };
+                if switching::edit(dialogs, &window, profiles, topology).await? {
+                    interfaces = interface_names(&config, selected_domain.as_ref());
                     dirty = true;
                     status.set_text("")?;
                 }
@@ -422,24 +431,24 @@ pub(super) async fn run(
                     status.set_text("")?;
                 }
             } else if event.node == ospf.id() {
-                let (configuration, links) = if let Some(name) = &selected_domain {
-                    let domain = config
-                        .routing_domains
-                        .get_mut(name)
-                        .expect("selected domain");
-                    (&mut domain.ospf, interfaces.iter().collect::<Vec<_>>())
-                } else {
-                    let links = interfaces
-                        .iter()
-                        .filter(|name| {
-                            !config
-                                .bridges
-                                .values()
-                                .any(|bridge| bridge.ports.contains_key(*name))
-                        })
-                        .collect();
-                    (&mut config.ospf, links)
+                let (configuration, bridges) = match selected_domain.as_ref() {
+                    Some(name) => {
+                        let domain = config
+                            .routing_domains
+                            .get_mut(name)
+                            .expect("selected domain");
+                        (&mut domain.ospf, &domain.bridges)
+                    }
+                    None => (&mut config.ospf, &config.bridges),
                 };
+                let links: Vec<_> = interfaces
+                    .iter()
+                    .filter(|name| {
+                        !bridges
+                            .values()
+                            .any(|bridge| bridge.ports.contains_key(*name))
+                    })
+                    .collect();
                 if ospf::edit(dialogs, &window, configuration, &links).await? {
                     dirty = true;
                     status.set_text("")?;
@@ -626,19 +635,14 @@ fn interface_names(
     config: &RouterConfiguration,
     domain: Option<&ConfigurationName>,
 ) -> Vec<ConfigurationName> {
-    if let Some(name) = domain {
-        return config.routing_domains[name]
-            .interfaces
-            .keys()
-            .cloned()
-            .collect();
-    }
-    config
-        .interfaces
+    let (interfaces, bridges) = domain.map_or((&config.interfaces, &config.bridges), |name| {
+        let domain = &config.routing_domains[name];
+        (&domain.interfaces, &domain.bridges)
+    });
+    interfaces
         .keys()
         .chain(
-            config
-                .bridges
+            bridges
                 .values()
                 .flat_map(|bridge| bridge.gateways.values().map(|gateway| &gateway.name)),
         )

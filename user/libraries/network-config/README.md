@@ -469,7 +469,7 @@ IPv6 同样适用，源网段填写 IPv6 前缀。TCP、UDP 优先保留原源�
 
 通过同一 `ipconfig /import` 保存并应用。把下游 `dhcp_v4_server.dns` 设为 `["192.168.50.1"]`，
 客户端取得或续订租约后通过该地址解析域名。省略 `forwarding` 或设为 `null` 停用服务。
-具名域将此对象作为 `routing_domains.<域名>.dns_forwarding`，监听地址和链路本地上游只引用本域物理接口。各域可复用相同地址和端口，分别通过自己的上游查询并缓存结果。
+具名域将此对象作为 `routing_domains.<域名>.dns_forwarding`，监听地址和链路本地上游引用本域的物理接口或 VLAN 网关。各域可复用相同地址和端口，分别通过自己的上游查询并缓存结果。
 IPv6 链路本地上游还须设置 `interface`，如 `{"address":"fe80::1","interface":"wan"}`。
 若启用[网桥与 VLAN](#网桥与-vlan)示例中的 `lan10`，可在 `listen` 中指定 `{"interface":"lan10","address":"192.168.10.1"}` 和 `{"interface":"lan10","address":"fd10::1"}`，并将对应地址填入 VLAN 的 DHCPv4 和 IPv6 通告 DNS 列表。
 监听在网关地址可用后启动。链路本地上游失联时，查询可使用列表中其他可用的上游。
@@ -490,7 +490,7 @@ IPv6 链路本地上游还须设置 `interface`，如 `{"address":"fe80::1","int
 ### DHCPv6 前缀委派
 
 可在导出的配置根对象中加入 `prefix_delegation`。上联使用 `interfaces` 中的路由接口名称，下游使用物理接口的配置名或 VLAN 网关名。
-在具名域使用时，将同一对象放在 `routing_domains.<域名>.prefix_delegation`，上联与下游只引用本域的物理接口配置。用 `ipconfig /domain lab /routes` 查看该域分配的 /64。
+在具名域使用时，将同一对象放在 `routing_domains.<域名>.prefix_delegation`。上联引用本域物理接口，下游可引用本域物理接口或 VLAN 网关。用 `ipconfig /domain lab /routes` 查看该域分配的 /64。
 
 ```json
 "prefix_delegation": {
@@ -759,6 +759,8 @@ LiteOS 在常规 BGP OPEN 中公布扩展消息能力，允许邻居发送最长
 ### 网桥与 VLAN
 
 用 `ipconfig /export` 导出完整配置，在 `interfaces` 中给网桥成员建立接口配置名，再添加 `bridges`。保存后用 `ipconfig /import 文件 预期代际` 提交。物理成员的接口配置只指定设备、管理状态或 MTU，移除成员上的 IP、默认路由和 DHCP 配置。
+
+在具名域使用相同的 `bridges` 结构，将其放在 `routing_domains.<域名>` 下。端口引用该域的 MAC 绑定接口，网关可用于本域地址分发、DNS、路由和防火墙。
 
 例如将接入口 `desk` 接入 VLAN 10，将 `uplink` 用作带标签的上联。两个名称都须引用 `interfaces` 中现有对象。
 

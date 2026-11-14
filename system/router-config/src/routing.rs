@@ -1,7 +1,7 @@
 //! 静态来源的实际设备绑定；配置模型/来源编码各沿已有 owner，不持额外配置副本。
 use super::*;
 use router_protocol::{
-    configuration::{InterfaceReference, StaticTarget},
+    configuration::{InterfaceReference, Name, StaticTarget},
     switching::Ports,
 };
 
@@ -110,6 +110,17 @@ pub(super) fn bridges(
         .unwrap_or(&empty)
         .bridge_source(|device| resolve_device(interfaces, device))
         .map_err(encode_status)?;
+    project_bridges(installer, bytes, plans)
+}
+
+/// Obtain the candidate VLAN bindings from the same domain that will apply them.
+/// # Errors
+/// The bridge document is invalid or RIB could not project the candidate in NET.
+pub(super) fn project_bridges(
+    installer: &network_protocol::routing::RoutingConfigurator,
+    bytes: Vec<u8>,
+    plans: &[router_protocol::interface::InterfaceConfiguration<'_>],
+) -> Result<Vec<u8>, Status> {
     let ports = Ports::parse(&bytes).map_err(encode_status)?;
     if ports.projected() {
         Ok(bytes)
@@ -125,16 +136,22 @@ fn resolve_reference(
 ) -> Result<Option<u32>, router_protocol::Invalid> {
     match reference {
         InterfaceReference::Device(device) => resolve_device(interfaces, device),
-        InterfaceReference::Vlan(name) => {
-            let ports = ports
-                .filter(|ports| ports.projected())
-                .ok_or(router_protocol::Invalid)?;
-            let gateway = ports
-                .gateway(name.as_str().as_bytes())
-                .ok_or(router_protocol::Invalid)?;
-            Ok((gateway.binding.index != 0).then_some(gateway.binding.index))
-        }
+        InterfaceReference::Vlan(name) => resolve_vlan(ports, name),
     }
+}
+
+/// Resolve a configured VLAN name against the candidate bridge plan for this domain.
+/// # Errors
+/// The plan has not been resolved or does not contain the configured gateway.
+pub(super) fn resolve_vlan(
+    ports: Option<Ports<'_>>,
+    name: &Name,
+) -> Result<Option<u32>, router_protocol::Invalid> {
+    let gateway = ports
+        .filter(|ports| ports.projected())
+        .and_then(|ports| ports.gateway(name.as_str().as_bytes()))
+        .ok_or(router_protocol::Invalid)?;
+    Ok((gateway.binding.index != 0).then_some(gateway.binding.index))
 }
 
 pub(super) fn has_gateways(configuration: &Configuration) -> bool {

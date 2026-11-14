@@ -969,4 +969,32 @@ fn dns_forwarding_accepts_vlan_bindings_and_unavailable_scoped_upstreams() {
         configuration.validate().unwrap_err().path,
         "/dns/forwarding"
     );
+    let forwarding = configuration.dns.forwarding.as_mut().unwrap();
+    forwarding.listen[1].interface = forwarding.listen[0].interface.clone();
+    // 同一 VLAN 名称在两个域独立解析，其他域的网关不能补齐本域缺少的引用。
+    let trunk = Name::try_from("trunk".to_string()).unwrap();
+    let mut profile = configuration.interfaces.remove(&trunk).unwrap();
+    profile.device = DeviceMatch::Mac([2, 0, 0, 0, 0, 1]);
+    let domain = RoutingDomain {
+        interfaces: BTreeMap::from([(trunk.clone(), profile)]),
+        bridges: core::mem::take(&mut configuration.bridges),
+        dns_forwarding: configuration.dns.forwarding.take(),
+        ..Default::default()
+    };
+    let blue = Name::try_from("blue".to_string()).unwrap();
+    let mut other = domain.clone();
+    other.interfaces.get_mut(&trunk).unwrap().device = DeviceMatch::Mac([2, 0, 0, 0, 0, 2]);
+    configuration.routing_domains.insert(blue.clone(), domain);
+    configuration.routing_domains.insert(Name::try_from("red".to_string()).unwrap(), other);
+    configuration.validate().unwrap();
+    let domain = configuration.routing_domains.get_mut(&blue).unwrap();
+    let bytes = domain.bridge_source(|_| Ok(Some(2))).unwrap();
+    let ports = crate::switching::Ports::parse(&bytes).unwrap();
+    assert_eq!(ports.iter().next().unwrap().index, 2);
+    assert!(ports.gateway(b"office").is_some());
+    domain.bridges.get_mut(&Name::try_from("lan".to_string()).unwrap()).unwrap().gateways.remove(&10);
+    assert_eq!(
+        configuration.validate().unwrap_err().path,
+        "/routing_domains/blue/dns_forwarding"
+    );
 }

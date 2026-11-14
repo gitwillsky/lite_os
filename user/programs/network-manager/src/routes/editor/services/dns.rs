@@ -248,12 +248,10 @@ fn listen_addresses(
             }));
         }
     }
-    for gateway in config
-        .bridges
-        .values()
-        .filter(|_| domain.is_none())
-        .flat_map(|bridge| bridge.gateways.values())
-    {
+    let bridges = domain.map_or(&config.bridges, |name| {
+        &config.routing_domains[name].bridges
+    });
+    for gateway in bridges.values().flat_map(|bridge| bridge.gateways.values()) {
         if let Some(address) = gateway.address {
             addresses.push(DnsListener {
                 interface: gateway.name.clone(),

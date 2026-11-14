@@ -86,6 +86,9 @@ pub(super) async fn edit(
         .flat_map(|value| value.downstream.iter())
         .map(|(name, id)| (name.clone(), *id))
         .collect();
+    let bridges = domain.map_or(&config.bridges, |name| {
+        &config.routing_domains[name].bridges
+    });
     let advertised: Vec<_> = interfaces
         .iter()
         .filter(|&name| {
@@ -93,15 +96,12 @@ pub(super) async fn edit(
                 .get(name)
                 .and_then(|profile| profile.ipv6.as_ref())
                 .is_some_and(|ipv6| ipv6.advertise != RouterAdvertisements::Disabled)
-                || domain.is_none()
-                    && config
-                        .bridges
-                        .values()
-                        .flat_map(|bridge| bridge.gateways.values())
-                        .any(|gateway| {
-                            gateway.name == *name
-                                && gateway.advertise != RouterAdvertisements::Disabled
-                        })
+                || bridges
+                    .values()
+                    .flat_map(|bridge| bridge.gateways.values())
+                    .any(|gateway| {
+                        gateway.name == *name && gateway.advertise != RouterAdvertisements::Disabled
+                    })
         })
         .collect();
     let set_enabled = |on: bool| {

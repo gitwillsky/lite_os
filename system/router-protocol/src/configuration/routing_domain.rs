@@ -17,6 +17,13 @@ pub struct RoutingDomain {
     /// 按配置名称索引的接口，使用 MAC 确定物理归属。
     #[serde(default, deserialize_with = "unique_objects")]
     pub interfaces: BTreeMap<Name, Interface>,
+    /// 本域独立的二层网桥、VLAN 成员和三层网关。
+    #[serde(
+        default,
+        deserialize_with = "unique_objects",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub bridges: BTreeMap<Name, Bridge>,
     /// 本域的双栈静态路由。
     #[serde(default)]
     pub routes: Vec<StaticRoute>,
@@ -53,6 +60,7 @@ impl Default for RoutingDomain {
     fn default() -> Self {
         Self {
             interfaces: Default::default(),
+            bridges: Default::default(),
             routes: Vec::new(),
             policy_routing: Default::default(),
             firewall: Default::default(),
@@ -69,10 +77,18 @@ impl Default for RoutingDomain {
 
 impl RoutingDomain {
     /// 返回本域接口的持久设备引用。找不到接口时返回 `None`。
-    pub fn interface_reference(&self, name: &Name) -> Option<InterfaceReference<'_>> {
-        self.interfaces
-            .get(name)
-            .map(|row| InterfaceReference::Device(&row.device))
+    pub fn interface_reference<'a>(&'a self, name: &'a Name) -> Option<InterfaceReference<'a>> {
+        switching::interface_reference(&self.interfaces, &self.bridges, name)
+    }
+
+    /// Encode this domain's bridge membership using only its attached devices.
+    /// # Errors
+    /// A port, gateway, device binding or encoding is invalid, or allocation failed.
+    pub fn bridge_source(
+        &self,
+        resolve: impl FnMut(&DeviceMatch) -> Result<Option<u32>, Invalid>,
+    ) -> Result<Vec<u8>, EncodeError> {
+        switching::bridge_source(&self.interfaces, &self.bridges, resolve)
     }
 
     /// 捕获本域 OSPF 会话配置，运行时接口按本域设备身份匹配。
@@ -156,11 +172,10 @@ impl Configuration {
                 error
             };
             validate_interfaces(&domain.interfaces).map_err(at_domain)?;
-            routes::validate(&domain.routes, "/routes", |name| {
-                domain.interfaces.contains_key(name)
-            })
-            .map_err(at_domain)?;
-            let interface_exists = |name: &Name| domain.interfaces.contains_key(name);
+            switching::validate_bridges(&domain.interfaces, &domain.bridges).map_err(at_domain)?;
+            let interface_exists = |name: &Name| domain.interface_reference(name).is_some();
+            let gateway = |name: &Name| switching::vlan_gateway(&domain.bridges, name);
+            routes::validate(&domain.routes, "/routes", interface_exists).map_err(at_domain)?;
             domain
                 .policy_routing
                 .validate(interface_exists)
@@ -173,23 +188,39 @@ impl Configuration {
             if let Some(delegation) = &domain.prefix_delegation {
                 delegation
                     .validate(
-                        |name| domain.interfaces.contains_key(name),
+                        |name| {
+                            domain.interfaces.contains_key(name)
+                                && !domain
+                                    .bridges
+                                    .values()
+                                    .any(|bridge| bridge.ports.contains_key(name))
+                        },
                         |name| {
                             domain
                                 .interfaces
                                 .get(name)
                                 .is_some_and(Interface::advertises_ipv6)
+                                || gateway(name).is_some_and(|gateway| {
+                                    gateway.advertise != RouterAdvertisements::Disabled
+                                })
                         },
                     )
                     .map_err(at_domain)?;
             }
             if let Some(forwarding) = &domain.dns_forwarding {
                 forwarding
-                    .validate(&domain.interfaces, |_| None, "/dns_forwarding")
+                    .validate(&domain.interfaces, gateway, "/dns_forwarding")
                     .map_err(at_domain)?;
             }
             if let Some(ospf) = &domain.ospf {
-                ospf.validate_links(interface_exists).map_err(at_domain)?;
+                ospf.validate_links(|name| {
+                    interface_exists(name)
+                        && !domain
+                            .bridges
+                            .values()
+                            .any(|bridge| bridge.ports.contains_key(name))
+                })
+                .map_err(at_domain)?;
             }
             if let Some(bgp) = &domain.bgp {
                 bgp.validate().map_err(at_domain)?;

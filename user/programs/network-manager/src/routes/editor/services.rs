@@ -18,27 +18,22 @@ pub(super) async fn edit(
     domain: Option<&ConfigurationName>,
 ) -> liteos_ui::Result<bool> {
     let (window, mut events, root) = form(dialogs, parent, "地址分发与 DNS", 531, 228)?;
-    let physical: Vec<_> = match domain {
-        Some(name) => config.routing_domains[name]
-            .interfaces
-            .keys()
-            .cloned()
-            .collect(),
-        None => config
-            .interfaces
-            .keys()
-            .filter(|&name| {
-                !config
-                    .bridges
-                    .values()
-                    .any(|bridge| bridge.ports.contains_key(name))
-            })
-            .cloned()
-            .collect(),
-    };
+    let (interfaces, bridges) = domain.map_or((&config.interfaces, &config.bridges), |name| {
+        let domain = &config.routing_domains[name];
+        (&domain.interfaces, &domain.bridges)
+    });
+    let physical: Vec<_> = interfaces
+        .keys()
+        .filter(|&name| {
+            !bridges
+                .values()
+                .any(|bridge| bridge.ports.contains_key(name))
+        })
+        .cloned()
+        .collect();
     let mut names = physical.clone();
     let mut vlans = Vec::new();
-    for (bridge_name, bridge) in config.bridges.iter().filter(|_| domain.is_none()) {
+    for (bridge_name, bridge) in bridges {
         for (&id, gateway) in &bridge.gateways {
             names.push(gateway.name.clone());
             vlans.push((bridge_name.clone(), id));
@@ -88,10 +83,8 @@ pub(super) async fn edit(
         WidgetKind::Label,
         if names.is_empty() {
             "先在路由接口中保存下游接口配置。"
-        } else if domain.is_none() {
-            "选择要分发地址的物理接口或 VLAN 网关。"
         } else {
-            "选择本路由域中要分发地址的接口。"
+            "选择要分发地址的物理接口或 VLAN 网关。"
         },
         Layout::default(),
     )?;
@@ -207,8 +200,17 @@ pub(super) async fn edit(
                     }
                 } else {
                     let (bridge, id) = &vlans[index - physical.len()];
-                    let gateway = config
-                        .bridges
+                    let bridges = match domain {
+                        Some(name) => {
+                            &mut config
+                                .routing_domains
+                                .get_mut(name)
+                                .expect("selected domain")
+                                .bridges
+                        }
+                        None => &mut config.bridges,
+                    };
+                    let gateway = bridges
                         .get_mut(bridge)
                         .and_then(|bridge| bridge.gateways.get_mut(id))
                         .expect("VLAN gateway from draft");

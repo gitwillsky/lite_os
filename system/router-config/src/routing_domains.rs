@@ -512,6 +512,7 @@ fn execution_changed(before: Option<&RoutingDomain>, after: Option<&RoutingDomai
     };
     let RoutingDomain {
         interfaces,
+        bridges,
         routes,
         policy_routing,
         firewall,
@@ -524,6 +525,7 @@ fn execution_changed(before: Option<&RoutingDomain>, after: Option<&RoutingDomai
         prefix_delegation,
     } = before;
     *interfaces != after.interfaces
+        || *bridges != after.bridges
         || *routes != after.routes
         || *policy_routing != after.policy_routing
         || *firewall != after.firewall
@@ -542,8 +544,7 @@ fn ospf_changed(before: Option<&RoutingDomain>, after: Option<&RoutingDomain>) -
                 before.ipv4_forwarding != after.ipv4_forwarding
                     || before.ipv6_forwarding != after.ipv6_forwarding
                     || ospf.links.keys().any(|name| {
-                        before.interfaces.get(name).map(|link| &link.device)
-                            != after.interfaces.get(name).map(|link| &link.device)
+                        before.interface_reference(name) != after.interface_reference(name)
                     })
             })
         })
@@ -634,11 +635,22 @@ impl Scope {
                 bgp.neighbors
                     .values()
                     .filter_map(|peer| peer.interface.as_ref())
-                    .any(|name| {
-                        profile
-                            .interfaces
-                            .get(name)
-                            .is_some_and(|port| port.device == DeviceMatch::Mac(mac))
+                    .any(|name| match profile.interface_reference(name) {
+                        Some(InterfaceReference::Device(device)) => {
+                            *device == DeviceMatch::Mac(mac)
+                        }
+                        Some(InterfaceReference::Vlan(name)) => {
+                            profile.bridges.values().any(|bridge| {
+                                bridge
+                                    .gateways
+                                    .values()
+                                    .any(|gateway| gateway.name == *name)
+                                    && bridge.ports.keys().any(|name| {
+                                        profile.interfaces[name].device == DeviceMatch::Mac(mac)
+                                    })
+                            })
+                        }
+                        None => false,
                     })
             })
         });
@@ -656,8 +668,10 @@ impl Scope {
                     .values()
                     .filter_map(|peer| peer.interface.as_ref())
                     .any(|name| {
-                        before.interfaces.get(name).map(|port| &port.device)
-                            != after.interfaces.get(name).map(|port| &port.device)
+                        let binding = after.interface_reference(name);
+                        before.interface_reference(name) != binding
+                            || matches!(binding, Some(InterfaceReference::Vlan(_)))
+                                && before.bridges != after.bridges
                     })
             })
         });
@@ -694,16 +708,21 @@ impl Scope {
             .try_reserve_exact(bgp.neighbors.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         for peer in bgp.neighbors.values() {
-            let index = peer
+            let index = match peer
                 .interface
                 .as_ref()
-                .and_then(|name| profile.interfaces.get(name))
-                .and_then(|interface| {
-                    self.interfaces
-                        .iter()
-                        .find(|port| interface.device == DeviceMatch::Mac(port.mac))
-                })
-                .map_or(0, |port| port.index);
+                .and_then(|name| profile.interface_reference(name))
+            {
+                Some(InterfaceReference::Device(device)) => self.device_index(device).unwrap_or(0),
+                Some(InterfaceReference::Vlan(name)) => {
+                    match self.network.interface_index(name.as_str().as_bytes()) {
+                        Ok(index) => index,
+                        Err(SocketError::NoDevice) => 0,
+                        Err(error) => return Err(configuration_status(error)),
+                    }
+                }
+                None => 0,
+            };
             indices.push(index);
         }
         self.bgp = Some(owner.start_bgp(&self.controller, bgp, Some(&indices))?);
@@ -716,6 +735,31 @@ impl Scope {
         domain: &RoutingDomain,
         next_key: &mut u64,
     ) -> Result<(), Status> {
+        if self.pending {
+            self.dns.pause()?;
+            if domain.dns_forwarding.is_some() {
+                self.dns.retry_at = Some(native_runtime::system::monotonic());
+            }
+            return self.apply_network(owner, domain, next_key);
+        }
+        let snapshots = self
+            .network
+            .interface_snapshots()
+            .map_err(configuration_status)?;
+        let mut desired = self.physical_pools(domain)?;
+        dhcp_server::append_vlan_pools(&mut desired, domain.bridges.values(), |name| {
+            dhcp_server::active_vlan_binding(&snapshots, name)
+        })?;
+        let pools = StagedPools::prepare(&mut self.pools, desired, |index| {
+            snapshots.iter().any(|snapshot| snapshot.index == index)
+        })?;
+        self.apply_pools(owner, pools, next_key)
+    }
+
+    fn physical_pools(
+        &self,
+        domain: &RoutingDomain,
+    ) -> Result<Vec<(u32, router_protocol::dhcp_server::Pool)>, Status> {
         let mut desired = Vec::new();
         for port in &self.interfaces {
             let profile = domain.interfaces.values().find(|profile| {
@@ -732,25 +776,25 @@ impl Scope {
                 desired.push((port.index, pool));
             }
         }
-        let mut pools = StagedPools::prepare(&mut self.pools, desired, |index| {
-            self.interfaces.iter().any(|port| port.index == index)
-        })?;
-        if self.pending {
-            self.dns.pause()?;
-            if domain.dns_forwarding.is_some() {
-                self.dns.retry_at = Some(native_runtime::system::monotonic());
-            }
-            // The new decision is already durable. An obsolete pool must remain paused if the
-            // interface transaction fails or its confirmation is lost, until replay succeeds.
-            if let Err(status) = self.apply_network(owner, domain, next_key) {
-                pools.hold(&mut self.pools);
-                return Err(status);
-            }
-            self.pending = false;
-        }
+        Ok(desired)
+    }
+
+    fn apply_pools(
+        &mut self,
+        owner: &RouterConfig,
+        pools: StagedPools,
+        next_key: &mut u64,
+    ) -> Result<(), Status> {
         let result = pools.apply(owner, &mut self.pools, next_key, &self.network);
         self.pools.retry_at = result.is_err().then(transaction::retry_at);
         result
+    }
+
+    fn device_index(&self, device: &DeviceMatch) -> Option<u32> {
+        self.interfaces
+            .iter()
+            .find(|port| *device == DeviceMatch::Mac(port.mac))
+            .map(|port| port.index)
     }
 
     fn apply_dns(
@@ -786,30 +830,6 @@ impl Scope {
         domain: &RoutingDomain,
         next_key: &mut u64,
     ) -> Result<(), Status> {
-        let resolve = |reference: InterfaceReference<'_>| {
-            let InterfaceReference::Device(DeviceMatch::Mac(mac)) = reference else {
-                return Err(router_protocol::Invalid);
-            };
-            Ok(self
-                .interfaces
-                .iter()
-                .find(|port| port.mac == *mac)
-                .map(|port| port.index))
-        };
-        let ipv4 = domain
-            .route_source(Family::Ipv4, resolve)
-            .map_err(routing::encode_status)?;
-        let ipv6 = domain
-            .route_source(Family::Ipv6, resolve)
-            .map_err(routing::encode_status)?;
-        let policy_routing = domain
-            .policy_source(resolve)
-            .map_err(routing::encode_status)?;
-        let firewall = domain
-            .firewall_source(resolve)
-            .map_err(routing::encode_status)?;
-        let prerouting = router_protocol::firewall::Prerouting::parse(&firewall)
-            .expect("encoded firewall policy");
         let mut plans = Vec::new();
         plans
             .try_reserve_exact(self.interfaces.len())
@@ -860,46 +880,107 @@ impl Scope {
                 advertise: Some(ipv6.map_or_else(Default::default, |policy| policy.advertise)),
             });
         }
+        let bridges = domain
+            .bridge_source(|device| Ok(self.device_index(device)))
+            .map_err(routing::encode_status)?;
+        let bridges = routing::project_bridges(&self.controller, bridges, &plans)?;
+        let ports =
+            router_protocol::switching::Ports::parse(&bridges).map_err(routing::encode_status)?;
+        let vlan_assignments = self.vlan_assignments(domain, ports, retain_delegation, now)?;
+        plans
+            .try_reserve_exact(vlan_assignments.len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        for (gateway, prefixes) in &vlan_assignments {
+            plans.push(delegation::prefix_plan(
+                (
+                    gateway.binding.index,
+                    true,
+                    gateway.address,
+                    gateway.prefix_length,
+                ),
+                prefixes,
+                None,
+            )?);
+        }
+        let resolve = |reference: InterfaceReference<'_>| match reference {
+            InterfaceReference::Device(device) => Ok(self.device_index(device)),
+            InterfaceReference::Vlan(name) => routing::resolve_vlan(Some(ports), name),
+        };
+        let ipv4 = domain
+            .route_source(Family::Ipv4, resolve)
+            .map_err(routing::encode_status)?;
+        let ipv6 = domain
+            .route_source(Family::Ipv6, resolve)
+            .map_err(routing::encode_status)?;
+        let policy_routing = domain
+            .policy_source(resolve)
+            .map_err(routing::encode_status)?;
+        let firewall = domain
+            .firewall_source(resolve)
+            .map_err(routing::encode_status)?;
+        let prerouting = router_protocol::firewall::Prerouting::parse(&firewall)
+            .expect("encoded firewall policy");
         let mut started = Vec::new();
         started
             .try_reserve_exact(self.interfaces.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let transaction = transaction::activate_execution(self.controller.prepare_configuration(
-            &plans,
-            [Some(&ipv4), Some(&ipv6)],
-            Some(&domain.route_policy),
-            Some(&policy_routing),
-            network_protocol::ExecutionPolicy {
-                forwarding: Some(network_protocol::Forwarding {
-                    ipv4: domain.ipv4_forwarding,
-                    ipv6: domain.ipv6_forwarding,
-                }),
-                prerouting: Some(prerouting),
-                ..Default::default()
-            },
-        ))
-        .map_err(StageError::status)?;
-        for (position, port) in self.interfaces.iter().enumerate() {
-            if !port.wants_dhcp(domain) || port.dhcp.is_some() {
-                continue;
-            }
-            let result = (|| {
-                let key = *next_key;
-                *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
-                Ok((
-                    key,
-                    owner.open_dhcp(&self.network, port.index, port.mac, key)?,
+        let mut desired = self.physical_pools(domain)?;
+        dhcp_server::append_vlan_pools(&mut desired, domain.bridges.values(), |name| {
+            let binding = ports.gateway(name.as_str().as_bytes())?.binding;
+            (binding.index != 0).then_some((binding.index, u32::from(binding.mtu)))
+        })?;
+        let mut pools = StagedPools::prepare(&mut self.pools, desired, |index| {
+            self.interfaces.iter().any(|port| port.index == index)
+                || ports
+                    .gateways()
+                    .any(|gateway| gateway.binding.index == index)
+        })?;
+        let result = (|| {
+            let transaction =
+                transaction::activate_execution(self.controller.prepare_configuration(
+                    &plans,
+                    [Some(&ipv4), Some(&ipv6)],
+                    Some(&domain.route_policy),
+                    Some(&policy_routing),
+                    network_protocol::ExecutionPolicy {
+                        forwarding: Some(network_protocol::Forwarding {
+                            ipv4: domain.ipv4_forwarding,
+                            ipv6: domain.ipv6_forwarding,
+                        }),
+                        prerouting: Some(prerouting),
+                        bridges: Some(ports),
+                        ..Default::default()
+                    },
                 ))
-            })();
-            match result {
-                Ok(session) => started.push((position, session)),
-                Err(status) => {
-                    drop(started);
-                    return Err(transaction::abort_execution(transaction, status).status());
+                .map_err(StageError::status)?;
+            for (position, port) in self.interfaces.iter().enumerate() {
+                if !port.wants_dhcp(domain) || port.dhcp.is_some() {
+                    continue;
+                }
+                let result = (|| {
+                    let key = *next_key;
+                    *next_key = key.checked_add(1).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+                    Ok((
+                        key,
+                        owner.open_dhcp(&self.network, port.index, port.mac, key)?,
+                    ))
+                })();
+                match result {
+                    Ok(session) => started.push((position, session)),
+                    Err(status) => {
+                        started.clear();
+                        return Err(transaction::abort_execution(transaction, status).status());
+                    }
                 }
             }
+            transaction.confirm().map_err(configuration_status)
+        })();
+        if let Err(status) = result {
+            // 配置已持久。上一次执行结果不明时保留旧池的暂停，直到本域重放成功。
+            pools.hold(&mut self.pools);
+            return Err(status);
         }
-        transaction.confirm().map_err(configuration_status)?;
+        self.pending = false;
         if !retain_delegation {
             self.delegation.retire();
         }
@@ -913,6 +994,6 @@ impl Scope {
         for (position, session) in started {
             self.interfaces[position].dhcp = Some(session);
         }
-        Ok(())
+        self.apply_pools(owner, pools, next_key)
     }
 }

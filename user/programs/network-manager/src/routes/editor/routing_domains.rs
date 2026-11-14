@@ -170,31 +170,23 @@ pub(super) async fn assign(
                 };
                 let conflict = match target {
                     Some(domain) => config.routing_domains[domain]
-                        .interfaces
-                        .contains_key(&alias_name),
-                    None => {
-                        config.interfaces.contains_key(&alias_name)
-                            || config.bridges.values().any(|bridge| {
-                                bridge
-                                    .gateways
-                                    .values()
-                                    .any(|gateway| gateway.name == alias_name)
-                            })
-                    }
+                        .interface_reference(&alias_name)
+                        .is_some(),
+                    None => config.interface_reference(&alias_name).is_some(),
                 };
                 if conflict {
                     status.set_text("目标路由域已使用此名称。")?;
                     alias.focus()?;
                     continue;
                 }
-                if row.domain.is_none()
-                    && row.key.is_some_and(|key| {
-                        config
-                            .bridges
-                            .values()
-                            .any(|bridge| bridge.ports.contains_key(key))
-                    })
-                {
+                let source_bridges = row.domain.map_or(&config.bridges, |name| {
+                    &config.routing_domains[name].bridges
+                });
+                if row.key.is_some_and(|key| {
+                    source_bridges
+                        .values()
+                        .any(|bridge| bridge.ports.contains_key(key))
+                }) {
                     status.set_text("请先在原路由域将这块网卡移出网桥。")?;
                     continue;
                 }

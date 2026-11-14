@@ -63,6 +63,26 @@ impl Scope {
         Ok(assignments)
     }
 
+    pub(super) fn vlan_assignments<'a>(
+        &self,
+        domain: &RoutingDomain,
+        ports: router_protocol::switching::Ports<'a>,
+        retain: bool,
+        now: i64,
+    ) -> Result<
+        Vec<(
+            router_protocol::switching::Gateway<'a>,
+            Vec<DelegatedPrefix>,
+        )>,
+        Status,
+    > {
+        let intent = domain.prefix_delegation.as_ref().filter(|_| retain);
+        delegation::assign_vlan_prefixes(ports, intent, |subnet| match intent.zip(subnet) {
+            Some((intent, subnet)) => self.delegation.subnets(intent, subnet, now),
+            None => Ok(Vec::new()),
+        })
+    }
+
     pub(super) fn start_delegation(
         &mut self,
         owner: &RouterConfig,
@@ -127,6 +147,42 @@ impl Scope {
                 ),
                 prefixes,
                 route,
+            )?);
+        }
+        let mut vlan_prefixes = Vec::new();
+        if !domain.bridges.is_empty() {
+            vlan_prefixes
+                .try_reserve_exact(intent.downstream.len())
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            for snapshot in self
+                .network
+                .interface_snapshots()
+                .map_err(configuration_status)?
+            {
+                if !snapshot.vlan {
+                    continue;
+                }
+                let Some(subnet) = delegation::vlan_subnet(Some(intent), &snapshot.name) else {
+                    continue;
+                };
+                let prefixes = if retain {
+                    self.delegation.subnets(intent, subnet, now)?
+                } else {
+                    Vec::new()
+                };
+                vlan_prefixes.push((snapshot, prefixes));
+            }
+        }
+        for (snapshot, prefixes) in &vlan_prefixes {
+            plans.push(delegation::prefix_plan(
+                (
+                    snapshot.index,
+                    snapshot.up,
+                    snapshot.address,
+                    snapshot.prefix_length,
+                ),
+                prefixes,
+                None,
             )?);
         }
         if plans.is_empty() {
