@@ -78,7 +78,7 @@ while [ ! -f /var/tmp/shell-finished ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1));
 EXPECTED_INFO = (
     r"interface: 'wl_compositor',\s+version:\s+6,\s+name:\s+1",
     r"interface: 'wl_shm',\s+version:\s+1,\s+name:\s+2",
-    r"interface: 'xdg_wm_base',\s+version:\s+3,\s+name:\s+3",
+    r"interface: 'xdg_wm_base',\s+version:\s+6,\s+name:\s+3",
     r"interface: 'wl_output',\s+version:\s+4,\s+name:\s+4",
     r"'AR24'",
     r"'XR24'",
