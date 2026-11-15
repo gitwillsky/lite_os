@@ -135,6 +135,7 @@
   与 Linux virtgpu 一致，`RESOURCE_CREATE` 的 `size=0` 分配一个来宾页。
   合成器保留两张原分辨率扫描纹理，通过 VirGL2 双向 `COPY_TRANSFER3D` 使用独立暂存。
   启动画面只占用一块暂存，首次桌面合成时释放；RFB 按请求矩形扩充暂存，由连接持有到断开。
+  启动局部刷新使用暂存图像中损伤矩形的字节偏移和完整行距；RFB 与 SHM 的连续像素仍从暂存偏移零传输。
   暂存和扫描纹理都登记提交 fence；启动画面等前次 flip 完成才重写，截图等暂存 fence 完成才读。
 - DRM `DeviceFile::write_file_information` 在现有 GEM namespace 锁内只捕获数值、锁外格式化标准
   `drm-driver`、`drm-client-id`、`drm-total-memory`、`drm-shared-memory`、`drm-resident-memory`。client-id 来自唯一设备的

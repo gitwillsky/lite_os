@@ -151,7 +151,8 @@ impl Gpu {
             *staging = Some(self.context.create_vertex_buffer(size)?);
         }
         let staging = staging.as_mut().expect("capture backing");
-        self.context.staged_transfer(target, staging, rect, true)?;
+        self.context
+            .staged_transfer(target, staging, rect, None, true)?;
         staging.wait()?;
         output.extend_from_slice(&staging.bytes_mut()[..size as usize]);
         Ok(())
@@ -196,6 +197,7 @@ impl Gpu {
                     rect.width as u32,
                     rect.height as u32,
                 ],
+                Some([rect.x as u32, rect.y as u32]),
                 false,
             )?;
         }

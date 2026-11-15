@@ -90,6 +90,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let configuration = display
             .configuration(window)
             .ok_or("event before configure")?;
+        if matches!(
+            event.kind,
+            EventKind::PointerEnter { .. } | EventKind::PointerMove { .. }
+        ) && let Some(request) = pending_drag.take()
+        {
+            display.request(window, request)?;
+            println!("ui-probe: decoration {request:?}");
+        }
         match decoration.event(&event.kind, configuration) {
             Some(DecorationAction::Request(request)) => {
                 if matches!(
@@ -131,10 +139,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 pointer = (x, y);
-                if let Some(request) = pending_drag.take() {
-                    display.request(window, request)?;
-                    println!("ui-probe: decoration {request:?}");
-                }
                 dirty = true;
             }
             EventKind::PointerLeave | EventKind::Focus(_) => dirty = true,

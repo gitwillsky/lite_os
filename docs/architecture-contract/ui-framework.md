@@ -453,6 +453,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   只扩展既有抓取记录和语义事件，没有新锁、分配或全局状态；成本沿用 GPU/显示门禁。
   实际 classic-ui 探针故意在 motion 后发送 move/resize，原位置与尺寸像素断言裁决延迟交错；
   Decoder host 测试保护同批轴值→按钮→后续轴值的顺序边界。
+- 可缩放窗口的 `Decoration` 区分标题栏单击与拖动：左键移动出双击区后才用按下 serial 请求 move，
+  原地释放再双击则根据已确认的 configure 请求最大化或还原。Wayland move 接管时会撤掉指针焦点，
+  因此不能在首次按下时就启动拖动；按钮、图标和尺寸边框仍按各自命中分派。
 - Stack 从活动窗口的父链推导全屏组；该组及其 popup 位于 Top 外壳之上、Overlay 之下，绘制与命中共用同一分界。
   非全屏窗口激活后恢复普通层序；全屏对话框保持所属组，不另存层级状态。成本为栈/父链遍历，无新增逐帧分配，交互由桌面验收验证。
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。

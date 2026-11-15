@@ -454,6 +454,7 @@ def check_classic_ui(session) -> None:
     pointer_to(session, 150, 88)
     mark = console.mark()
     button(session, True)
+    pointer_to(session, 162, 96)
     console.wait_for(("ui-probe: drag armed",), after=mark)
     pointer_to(session, 210, 128)
     console.wait_for(("ui-probe: decoration Move",), after=mark)
@@ -479,6 +480,19 @@ def check_classic_ui(session) -> None:
     button(session, True)
     button(session, False)
     console.wait_for(("ui-probe: configure 420x300",), after=mark)
+    # 一次发送两次点击；等待真实 xdg_toplevel.configure 与上屏后，再从最大化还原。
+    for x, y, geometry, pixels in (
+        (210, 128, "1280x800", [((10, 50), face), ((40, 70), white)]),
+        (210, 10, "420x300", [((0, 0), back), ((148, 158), face)]),
+    ):
+        pointer_to(session, x, y)
+        mark = console.mark()
+        session.qmp.execute("input-send-event", {"events": [
+            {"type": "btn", "data": {"down": down, "button": "left"}}
+            for down in (True, False, True, False)
+        ]})
+        console.wait_for((f"ui-probe: configure {geometry}",), after=mark)
+        wait_screen(session, pixels, f"classic-ui title double click ({geometry})")
     pointer_to(session, 546, 128)
     mark = console.mark()
     button(session, True)

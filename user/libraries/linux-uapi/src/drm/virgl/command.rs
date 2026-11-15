@@ -69,12 +69,13 @@ impl CommandEncoder {
         staging: u32,
         [x, y, width, height]: [u32; 4],
         stride: u32,
+        offset: u32,
         readback: bool,
     ) {
         self.header_raw(COPY_TRANSFER3D, 0, 14);
         let flags = 1 | (u32::from(readback) << 1); // SYNCHRONIZED | READ_FROM_HOST
         self.words.extend([
-            texture, 0, 0, stride, 0, x, y, 0, width, height, 1, staging, 0, flags,
+            texture, 0, 0, stride, 0, x, y, 0, width, height, 1, staging, offset, flags,
         ]);
     }
 

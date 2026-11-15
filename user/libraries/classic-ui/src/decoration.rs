@@ -30,10 +30,21 @@ pub struct Decoration {
     icon: Option<std::rc::Rc<Bitmap>>,
     /// 上一次单击标题栏图标的时刻；两次单击间隔在 [`DOUBLE_CLICK`] 内视为双击关闭窗口，缺少它双击图标只会重复弹出菜单。
     icon_click: Option<Instant>,
+    /// 标题栏按下时保留点击位置与 serial，释放后记为单击。立即请求 Move 会让 Wayland 撤走指针焦点，无法辨别单击和拖动。
+    title_click: Option<TitleClick>,
     /// 已经通知过调用者的光标形状；缺少它每个指针移动事件都会重复请求同一形状。
     shape: CursorShape,
     /// 客户区内容（状态栏）登记的尺寸手柄矩形，surface 局部坐标；缺少它手柄只是图案，拖动不能缩放窗口。
     grip: Option<Rect>,
+}
+
+#[derive(Debug)]
+enum TitleClick {
+    Pressed {
+        click: crate::ItemClick<bool>,
+        serial: u32,
+    },
+    Released(crate::ItemClick<bool>),
 }
 
 impl Decoration {
@@ -45,6 +56,7 @@ impl Decoration {
             armed: None,
             icon: None,
             icon_click: None,
+            title_click: None,
             shape: CursorShape::Default,
             grip: None,
         }
@@ -213,19 +225,38 @@ impl Decoration {
 
     fn act(&mut self, event: &EventKind, configuration: Configuration) -> Option<DecorationAction> {
         match event {
-            EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
+            EventKind::PointerEnter { x, y } => {
                 self.pointer = Some((x.floor() as i32, y.floor() as i32))
+            }
+            EventKind::PointerMove { x, y } => {
+                let point = (x.floor() as i32, y.floor() as i32);
+                self.pointer = Some(point);
+                if let Some(TitleClick::Pressed { click, .. } | TitleClick::Released(click)) =
+                    &self.title_click
+                    && !click.near(point)
+                    && let Some(TitleClick::Pressed { serial, .. }) = self.title_click.take()
+                    && !configuration.maximized
+                    && !configuration.fullscreen
+                {
+                    return Some(DecorationAction::Request(WindowRequest::Move { serial }));
+                }
             }
             EventKind::PointerLeave => {
                 self.pointer = None;
                 self.armed = None;
+                self.title_click = None;
             }
-            EventKind::Focus(false) => self.armed = None,
+            EventKind::Focus(false) => {
+                self.armed = None;
+                self.title_click = None;
+            }
+            EventKind::Configure(config) if config.fullscreen => self.title_click = None,
             EventKind::Button {
                 code: 0x111,
                 pressed: true,
                 serial,
             } if !configuration.fullscreen => {
+                self.title_click = None;
                 let point = self.pointer?;
                 if contains(self.caption(configuration), point) {
                     return Some(DecorationAction::Request(WindowRequest::ShowMenu {
@@ -241,6 +272,7 @@ impl Decoration {
                 serial,
             } if !configuration.fullscreen => {
                 if *pressed {
+                    let previous = self.title_click.take();
                     self.armed = self.button_at(configuration);
                     if self.armed.is_some() {
                         return None;
@@ -278,12 +310,38 @@ impl Decoration {
                                 edges,
                             }));
                         }
-                        if !configuration.maximized && contains(self.caption(configuration), point)
-                        {
-                            return Some(DecorationAction::Request(WindowRequest::Move {
-                                serial: *serial,
-                            }));
+                        if contains(self.caption(configuration), point) {
+                            if self.kind == FrameKind::Resizable {
+                                let now = Instant::now();
+                                if let Some(TitleClick::Released(click)) = previous
+                                    && click.follows(configuration.maximized, point, now)
+                                {
+                                    return Some(DecorationAction::Request(
+                                        WindowRequest::Maximize(!configuration.maximized),
+                                    ));
+                                }
+                                self.title_click = Some(TitleClick::Pressed {
+                                    click: crate::ItemClick::new(
+                                        configuration.maximized,
+                                        point,
+                                        now,
+                                    ),
+                                    serial: *serial,
+                                });
+                            } else if !configuration.maximized {
+                                return Some(DecorationAction::Request(WindowRequest::Move {
+                                    serial: *serial,
+                                }));
+                            }
                         }
+                    }
+                } else if let Some(TitleClick::Pressed { click, .. }) = self.title_click.take() {
+                    if self.pointer.is_some_and(|point| {
+                        contains(self.caption(configuration), point)
+                            && !contains(self.icon_rect(configuration), point)
+                    }) && self.button_at(configuration).is_none()
+                    {
+                        self.title_click = Some(TitleClick::Released(click));
                     }
                 } else if let Some(button) = self
                     .armed
@@ -373,16 +431,41 @@ mod tests {
         }
     }
     #[test]
+    fn double_clicking_the_title_toggles_the_configured_maximized_state() {
+        let mut decoration = Decoration::new(FrameKind::Resizable);
+        for maximized in [false, true] {
+            let configuration = Configuration {
+                maximized,
+                ..configuration()
+            };
+            decoration.event(&EventKind::PointerEnter { x: 50.0, y: 10.0 }, configuration);
+            assert!(decoration.event(&button(true), configuration).is_none());
+            decoration.event(&button(false), configuration);
+            assert!(matches!(
+                decoration.event(&button(true), configuration),
+                Some(DecorationAction::Request(WindowRequest::Maximize(next))) if next != maximized
+            ));
+            decoration.event(&button(false), configuration);
+        }
+    }
+    #[test]
     fn title_drag_and_corner_resize_carry_the_actual_button_serial() {
         let mut decoration = Decoration::new(FrameKind::Resizable);
         let configuration = configuration();
         decoration.event(&EventKind::PointerEnter { x: 50.0, y: 10.0 }, configuration);
+        assert!(decoration.event(&button(true), configuration).is_none());
+        assert!(
+            decoration
+                .event(&EventKind::PointerMove { x: 53.0, y: 10.0 }, configuration)
+                .is_none()
+        );
         assert!(matches!(
-            decoration.event(&button(true), configuration),
+            decoration.event(&EventKind::PointerMove { x: 57.0, y: 10.0 }, configuration),
             Some(DecorationAction::Request(WindowRequest::Move {
                 serial: 17
             }))
         ));
+        decoration.event(&button(false), configuration);
         decoration.event(
             &EventKind::PointerMove { x: 319.0, y: 199.0 },
             configuration,

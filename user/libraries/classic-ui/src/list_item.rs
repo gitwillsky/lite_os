@@ -9,6 +9,7 @@ use classic_theme::SystemColor;
 pub const ITEM_DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// 最近一次列表项点击，用于区分同位置双击和图标、标签之间的两次点击。
+#[derive(Debug)]
 pub struct ItemClick<T> {
     item: T,
     point: (i32, i32),

@@ -252,11 +252,13 @@ impl VirglContext {
         })
     }
 
-    /// Transfers a packed ARGB/XRGB rectangle between a host texture and another GEM's backing.
+    /// Transfers an ARGB/XRGB rectangle between a host texture and another GEM's backing.
     ///
     /// `rect` is [x, y, width, height] in texture pixels. `readback` selects texture to
-    /// backing. The staging resource must cover the complete packed rectangle from offset
-    /// zero. Wait on it before the CPU reads or reuses its bytes.
+    /// backing. With `staging_origin = None`, the staging bytes are packed from offset zero.
+    /// With `Some([x, y])`, the staging resource is an ARGB/XRGB image and the transfer starts
+    /// at that pixel using the image's row pitch. Wait on the staging resource before the CPU
+    /// reads or reuses its bytes.
     ///
     /// Returns InvalidInput for invalid format or bounds, Unsupported if the required
     /// VirGL capabilities are absent, or the submission error.
@@ -265,10 +267,11 @@ impl VirglContext {
         texture: &VirglResource,
         staging: &VirglResource,
         rect: [u32; 4],
+        staging_origin: Option<[u32; 2]>,
         readback: bool,
     ) -> io::Result<()> {
         let [x, y, width, height] = rect;
-        let stride = width
+        let row_bytes = width
             .checked_mul(4)
             .ok_or_else(|| invalid_input("staged transfer stride overflow"))?;
         if !matches!(
@@ -278,9 +281,31 @@ impl VirglContext {
             || height == 0
             || x.checked_add(width).is_none_or(|end| end > texture.width)
             || y.checked_add(height).is_none_or(|end| end > texture.height)
-            || u64::from(stride) * u64::from(height) > staging.size() as u64
         {
             return Err(invalid_input("staged transfer rectangle is invalid"));
+        }
+        let (offset, stride) = if let Some([x, y]) = staging_origin {
+            if !matches!(
+                staging.format,
+                FORMAT_B8G8R8X8_UNORM | FORMAT_B8G8R8A8_UNORM
+            ) || x.checked_add(width).is_none_or(|end| end > staging.width)
+                || y.checked_add(height).is_none_or(|end| end > staging.height)
+            {
+                return Err(invalid_input("staged transfer image rectangle is invalid"));
+            }
+            let offset = y
+                .checked_mul(staging.stride)
+                .and_then(|row| row.checked_add(x.checked_mul(4)?))
+                .ok_or_else(|| invalid_input("staged transfer offset overflow"))?;
+            (offset, staging.stride)
+        } else {
+            (0, row_bytes)
+        };
+        // The final row ends at the right edge of the rectangle, before the row's padding.
+        let end =
+            u64::from(offset) + u64::from(stride) * u64::from(height - 1) + u64::from(row_bytes);
+        if end > staging.size() as u64 {
+            return Err(invalid_input("staged transfer exceeds backing"));
         }
         if !self.capabilities.supports_staged_transfer() {
             return Err(io::ErrorKind::Unsupported.into());
@@ -291,6 +316,7 @@ impl VirglContext {
             staging.resource_id,
             rect,
             stride,
+            offset,
             readback,
         );
         self.exec(commands.words(), &[texture, staging])
@@ -321,7 +347,7 @@ impl VirglContext {
         };
         // 在 fill 期间不持 RefCell 借用；失败时尚未提交，局部暂存随返回释放。
         fill(&staging)?;
-        self.staged_transfer(texture, &staging, rect, false)?;
+        self.staged_transfer(texture, &staging, rect, None, false)?;
         *self.upload.borrow_mut() = Some((staging, Instant::now()));
         Ok(())
     }

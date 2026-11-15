@@ -269,6 +269,7 @@ impl Content {
                     texture,
                     &staging,
                     [0, 0, self.width as u32, self.height as u32],
+                    None,
                     true,
                 )?;
                 staging.wait()?;
