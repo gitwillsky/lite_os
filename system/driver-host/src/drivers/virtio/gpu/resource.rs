@@ -568,6 +568,11 @@ impl ResourceTarget {
             Self::New { .. } => false,
         }
     }
+
+    /// 返回 `self` 是否为 `resources` 中当前显示的 2D 资源。
+    pub(super) fn is_scanned_out(&self, resources: &ResourceSet) -> bool {
+        matches!(self, Self::Resident(slot) if resources.active == Some(*slot))
+    }
 }
 
 impl ResidentResource {

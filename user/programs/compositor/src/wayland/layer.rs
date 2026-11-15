@@ -57,7 +57,6 @@ pub struct LayerState {
 
 pub struct LayerSurface {
     pub surface: ObjectId,
-    pub namespace: String,
     pending: LayerState,
     pub current: LayerState,
     outstanding: Vec<u32>,
@@ -89,7 +88,6 @@ impl LayerSurface {
 /// 一个已映射的 layer surface。
 pub struct LayerView<'a> {
     pub surface: ObjectId,
-    pub namespace: &'a str,
     pub state: &'a LayerState,
     pub content: &'a Content,
 }
@@ -161,7 +159,6 @@ impl Client {
             id,
             surface,
             layer,
-            namespace,
             ..
         } = request
         else {
@@ -194,7 +191,6 @@ impl Client {
         };
         let layer_surface = LayerSurface {
             surface,
-            namespace,
             pending: initial,
             current: initial,
             outstanding: Vec::new(),
@@ -407,7 +403,6 @@ impl Client {
             };
             Some(LayerView {
                 surface: layer.surface,
-                namespace: &layer.namespace,
                 state: &layer.current,
                 content: surface.current.content.as_ref()?,
             })

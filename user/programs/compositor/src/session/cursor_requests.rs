@@ -46,10 +46,7 @@ impl Session {
         let position = self.input.pointer().position();
         let scale = self.scale;
         match self.shape {
-            Shape::Hidden => {
-                self.applied_client_cursor = None;
-                return self.scanout.hide_cursor(position);
-            }
+            Shape::Hidden => return self.hide_cursor(position),
             Shape::Client {
                 client,
                 surface,
@@ -58,10 +55,7 @@ impl Session {
             } => {
                 match self.server.cursor_image(client, surface) {
                     // 无 buffer 的光标 surface 不可见；后续 commit 再更新硬件图像。
-                    None => {
-                        self.applied_client_cursor = None;
-                        return self.scanout.hide_cursor(position);
-                    }
+                    None => return self.hide_cursor(position),
                     Some(content) => {
                         let (width, height) = content.output_size(scale as i32);
                         let physical = |hot: i32, offset: i64, origin: i64| {
@@ -79,10 +73,10 @@ impl Session {
                             && matches!(hot, (Some(x), Some(y)) if (0..64).contains(&x) && (0..64).contains(&y))
                         {
                             let physical_hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
-                            if self.applied_client_cursor.as_ref().is_some_and(
-                                |(image, previous)| {
-                                    *previous == physical_hot && image.same_image(content)
-                                },
+                            if matches!(
+                                &self.applied_cursor,
+                                Some(AppliedCursor::Client { image, hotspot })
+                                    if *hotspot == physical_hot && image.same_image(content)
                             ) {
                                 return Ok(());
                             }
@@ -106,10 +100,15 @@ impl Session {
                                 canvas::Rect::new(0, 0, width, height),
                                 content.source,
                             );
-                            let hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
-                            self.scanout
-                                .show_cursor(&self.hardware_cursor, position, hot)?;
-                            self.applied_client_cursor = Some((content.clone(), hot));
+                            self.scanout.show_cursor(
+                                &self.hardware_cursor,
+                                position,
+                                physical_hot,
+                            )?;
+                            self.applied_cursor = Some(AppliedCursor::Client {
+                                image: content.clone(),
+                                hotspot: physical_hot,
+                            });
                             return Ok(());
                         }
                         // 硬件光标最大 64×64；更大的图像退回默认光标。
@@ -118,19 +117,35 @@ impl Session {
             }
             Shape::Default | Shape::Named(_) => {}
         }
-        self.applied_client_cursor = None;
         let name = match self.shape {
             Shape::Named(name) => name,
             _ => "arrow",
         };
-        let image = self
-            .cursors
-            .get(name)
-            .or_else(|| self.cursors.get("arrow"))
-            .ok_or_else(|| io::Error::other("cursor set has no `arrow`"))?;
+        let (name, image) = match self.cursors.get(name) {
+            Some(image) => (name, image),
+            None => (
+                "arrow",
+                self.cursors
+                    .get("arrow")
+                    .ok_or_else(|| io::Error::other("cursor set has no `arrow`"))?,
+            ),
+        };
+        if matches!(self.applied_cursor, Some(AppliedCursor::Builtin(current)) if current == name) {
+            return Ok(());
+        }
         let (edge, frame) = image.frame(scale, 0);
         cursor::blit_to_hardware(&mut self.hardware_cursor, edge, frame)?;
         self.scanout
-            .show_cursor(&self.hardware_cursor, position, image.hotspot(scale))
+            .show_cursor(&self.hardware_cursor, position, image.hotspot(scale))?;
+        self.applied_cursor = Some(AppliedCursor::Builtin(name));
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self, position: (i32, i32)) -> io::Result<()> {
+        if !matches!(self.applied_cursor, Some(AppliedCursor::Hidden)) {
+            self.scanout.hide_cursor(position)?;
+            self.applied_cursor = Some(AppliedCursor::Hidden);
+        }
+        Ok(())
     }
 }

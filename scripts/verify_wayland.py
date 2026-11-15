@@ -305,6 +305,17 @@ def check_window_interaction(session) -> None:
     console.wait_for(("wayland-probe: requested window drag at",), after=mark)
     pointer_to(session, 160, 90)
     wait_screen(session, [((105, 85), window), ((45, 45), back), ((299, 199), window), ((301, 201), back)], "title-bar drag")
+    # 上一次拖动释放和下一次按下处于同一输入报告，且指针未移动。
+    mark = console.mark()
+    session.qmp.execute("input-send-event", {"events": [
+        {"type": "btn", "data": {"down": down, "button": "left"}}
+        for down in (False, True)
+    ]})
+    console.wait_for(("wayland-probe: requested window drag at",), after=mark)
+    pointer_to(session, 180, 110)
+    wait_screen(session, [((105, 85), back), ((310, 210), window)], "drag again without pointer motion between presses")
+    pointer_to(session, 160, 90)
+    wait_screen(session, [((105, 85), window), ((310, 210), back)], "restore position after consecutive drags")
     button(session, False)
     # 2. 拖右下角缩放：窗口现在是 (100,80)-(300,200)；拖角 +100,+100 → 300×220。
     mark = console.mark()

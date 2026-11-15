@@ -89,6 +89,20 @@ impl DirectoryChanges {
     ///
     /// Returns the first invalid path or watch error. Successfully registered directories remain watched.
     pub fn follow<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) -> io::Result<()> {
+        self.scan(|watch| {
+            for path in paths {
+                watch(path);
+            }
+        })
+        .1
+    }
+
+    /// Replace the watch set while reading a directory snapshot. Register each directory
+    /// through `watch` before enumerating it so changes during the scan remain observable.
+    ///
+    /// Returns the snapshot and the first registration error, if any. Old watches remain
+    /// active during the scan and only successfully registered directories are retained.
+    pub fn scan<T>(&mut self, scan: impl FnOnce(&mut dyn FnMut(&Path)) -> T) -> (T, io::Result<()>) {
         #[cfg(target_os = "linux")]
         {
             use std::{ffi::CString, os::unix::ffi::OsStrExt};
@@ -97,7 +111,7 @@ impl DirectoryChanges {
             const ONLY_DIRECTORY: u32 = 0x0100_0000;
             let mut next = Vec::new();
             let mut result = Ok(());
-            for path in paths {
+            let snapshot = scan(&mut |path| {
                 let add = (|| {
                     let path = CString::new(path.as_os_str().as_bytes())
                         .map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -120,19 +134,18 @@ impl DirectoryChanges {
                     Err(error) if result.is_ok() => result = Err(error),
                     _ => {}
                 }
-            }
+            });
             for old in std::mem::replace(&mut self.watches, next) {
                 if !self.watches.contains(&old) {
                     // SAFETY: fd remains live; removing an already retired watch is harmless.
                     let _ = unsafe { crate::raw::inotify_rm_watch(self.file.as_raw_fd(), old) };
                 }
             }
-            result
+            (snapshot, result)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = paths;
-            Err(io::ErrorKind::Unsupported.into())
+            (scan(&mut |_| {}), Err(io::ErrorKind::Unsupported.into()))
         }
     }
 

@@ -79,7 +79,7 @@ impl Desktop {
             EventKind::Focus(false)
                 if (event.window == self.background || event.window == self.taskbar)
                     && self.overlay.is_none()
-                    && self.menu.is_none() =>
+                    && self.menu.visible().is_none() =>
             {
                 self.task_focus = None
             }
@@ -92,7 +92,7 @@ impl Desktop {
         if self.task_focus.is_none()
             || (event.window != self.background && event.window != self.taskbar)
             || self.overlay.is_some()
-            || self.menu.is_some()
+            || self.menu.visible().is_some()
         {
             return Ok(false);
         }
@@ -190,7 +190,7 @@ impl Desktop {
         if control_escape && !modifiers.shift {
             self.toggle_menu(display)?;
         } else {
-            if self.menu.is_some() {
+            if self.menu.visible().is_some() {
                 self.toggle_menu(display)?;
             }
             match key.code {
@@ -376,7 +376,7 @@ impl Desktop {
         }
         if self.leave_at.is_some_and(|at| {
             at.elapsed() >= HIDE_DELAY
-                && self.menu.is_none()
+                && self.menu.visible().is_none()
                 && self.overlay.is_none()
                 && self.task_focus.is_none()
         }) {

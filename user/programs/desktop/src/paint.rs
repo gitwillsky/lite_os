@@ -440,7 +440,7 @@ pub fn present_popup(
     c: Configuration,
     art: &mut Art,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let start = (Some(id) == s.menu).then(|| s.menu_geometry(c));
+    let start = (Some(id) == s.menu.visible()).then(|| s.menu_geometry(c));
     let overlay = s.overlay.as_ref().filter(|(root, _)| *root == id);
     let mut bounds = Rect::default();
     let mut cover = |rect: Rect| {
@@ -533,7 +533,7 @@ pub fn frame(
         let rects = areas(s, d, id, c);
         p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
         p.edge(Rect::new(0, 0, c.width, c.height + 2), Edge::RaisedInner);
-        let start = s.menu.is_some();
+        let start = s.menu.visible().is_some();
         p.push_button(
             rects[0],
             "",

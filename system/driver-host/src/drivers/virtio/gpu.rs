@@ -617,7 +617,10 @@ impl DisplayDevice for VirtIOGpuDevice {
             let used = match control.queue.used() {
                 Ok(Some(used)) => used,
                 Ok(None) => {
-                    if !control.commands.has_pending() && control.config_change_pending {
+                    if !control.commands.has_pending()
+                        && control.operation.is_none()
+                        && control.config_change_pending
+                    {
                         control.config_change_pending = false;
                         if self.publish_display_info(&mut control).is_err() {
                             drop(control);
@@ -663,7 +666,12 @@ impl DisplayDevice for VirtIOGpuDevice {
                 return Err(self.fail_device());
             }
         };
-        if !control.commands.has_pending() && control.config_change_pending {
+        // 下一批 damage 使用独立命令槽。操作退休前混入 DISPLAY_INFO 会让 damage
+        // 回收器把它的 used 描述符当成错误的 TRANSFER 响应。
+        if !control.commands.has_pending()
+            && control.operation.is_none()
+            && control.config_change_pending
+        {
             control.config_change_pending = false;
             if self.publish_display_info(&mut control).is_err() {
                 drop(control);

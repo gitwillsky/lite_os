@@ -375,9 +375,28 @@ pub fn volume_panel(
 
 impl Desktop {
     pub(super) fn toggle_menu(&mut self, display: &mut Display) -> io::Result<()> {
-        if let Some(menu) = self.menu.take() {
+        if self.menu.visible().is_some() {
+            self.retire_menu(display)?;
+            // 在关闭时发出下一次 configure；直到打开才创建像素和提交缓冲。
+            self.menu = start::Surface::Prepared(start::prepare_layer(display)?);
+        } else {
+            self.menu_selection = start::Selection::default();
+            let window = match self.menu.window() {
+                Some(window) => window,
+                None => start::prepare_layer(display)?,
+            };
+            self.menu = start::Surface::Open(window);
+        }
+        Ok(())
+    }
+
+    pub(super) fn retire_menu(&mut self, display: &mut Display) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.menu, start::Surface::Absent);
+        if let Some(menu) = previous.window() {
             self.popup_surfaces.remove(&menu);
             display.destroy_window(menu)?;
+        }
+        if previous.visible().is_some() {
             // 栈的活动窗口由标准 foreign-toplevel 快照提供；关闭菜单后交还键盘，不另存焦点历史。
             let active = display
                 .toplevels()
@@ -386,17 +405,6 @@ impl Desktop {
             if let Some(active) = active {
                 display.control_toplevel(active, ToplevelRequest::Activate)?;
             }
-        } else {
-            self.menu_selection = start::Selection::default();
-            self.menu = Some(display.create_layer(
-                "org.liteos.start",
-                LayerSettings {
-                    layer: Layer::Overlay,
-                    exclusive_zone: -1,
-                    keyboard: KeyboardInteractivity::Exclusive,
-                    ..Default::default()
-                },
-            )?);
         }
         Ok(())
     }
@@ -414,7 +422,7 @@ impl Desktop {
 
     fn open_overlay(&mut self, display: &mut Display, overlay: Overlay) -> io::Result<()> {
         self.close_overlay(display)?;
-        if self.menu.is_some() {
+        if self.menu.visible().is_some() {
             self.toggle_menu(display)?;
         }
         let window = display.create_layer(

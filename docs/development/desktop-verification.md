@@ -108,7 +108,7 @@ Delete、右键“删除”与拖入桌面回收站打开独立确认框。确�
   连接快捷方式、多地址、DNS 动态注册、WINS 与 TCP/IP 筛选未提供。
   旧开发镜像的 `/etc/group` 属于用户数据、不被同步覆盖：非 root 用户在 reset-rootfs 之后才有 netdev/adm 组。
 网络与设备管理器、记事本使用从原版 `netshell.dll`/`devmgr.dll`/`notepad.exe` 提取的专用图标，随受 Git 管理的资源集安装，来源见[资源清单](../design/classic-desktop/assets.md)。
-开始菜单程序项的图标来自各桌面条目的 `Icon=`，缺素材时退回通用图标。
+开始菜单程序项的图标来自桌面条目的 `Icon=`，缺素材时退回通用图标。应用目录由 inotify 驱动刷新，扫描时先登记目录再读取目录项；通知不可用时回到周期扫描。
 文件关联：桌面条目的 `MimeType=` 与 `Exec` 的 `%f` 决定谁打开文件，扩展名到类型的映射在 `desktop-entry`；`.wav` 交给媒体播放机 `/bin/mplay`，常见文本扩展名交给记事本 `/bin/notepad`，资源管理器与桌面图标共用这套查找。
 资源管理器单目录最多 4096 项；不编辑文件、不预览内容。
 系统声音按 Windows 2000 默认方案（`sound::Event` 是唯一的事件到文件表，控制面板“声音”页共用）：消息框按 MB_ICON*

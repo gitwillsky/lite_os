@@ -2,8 +2,44 @@
 use crate::paint::Art;
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
-use classic_ui::{Ink, Painter};
+use classic_ui::{Display, Ink, KeyboardInteractivity, Layer, LayerSettings, Painter, WindowId};
 use desktop_entry::Entry as Application;
+use std::io;
+
+/// 隐藏时只保留已请求配置的图层。未附加缓冲的图层不可见，也不参与输入焦点。
+pub(super) enum Surface {
+    Absent,
+    Prepared(WindowId),
+    Open(WindowId),
+}
+
+impl Surface {
+    pub(super) fn window(&self) -> Option<WindowId> {
+        match *self {
+            Self::Prepared(id) | Self::Open(id) => Some(id),
+            Self::Absent => None,
+        }
+    }
+
+    pub(super) fn visible(&self) -> Option<WindowId> {
+        match *self {
+            Self::Open(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn prepare_layer(display: &mut Display) -> io::Result<WindowId> {
+    display.create_layer(
+        "org.liteos.start",
+        LayerSettings {
+            layer: Layer::Overlay,
+            exclusive_zone: -1,
+            keyboard: KeyboardInteractivity::Exclusive,
+            ..Default::default()
+        },
+    )
+}
 
 /// 左侧竖幅宽度；条目从它右边开始。
 const BANNER: i32 = 24;
