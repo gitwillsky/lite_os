@@ -106,7 +106,7 @@ fn parent(icon: &str, label: &str, submenu: Vec<Row>) -> Row {
     }
 }
 
-/// 菜单内容：程序、文档、设置是子菜单；运行与会话操作是叶子。
+/// 菜单内容：程序、文档、设置、搜索是子菜单；运行与会话操作是叶子。
 pub fn rows(apps: &[Application]) -> Vec<Row> {
     let mut programs: Vec<Row> = apps
         .iter()
@@ -334,10 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn programs_documents_and_settings_open_submenus_and_the_rest_act() {
+    fn programs_documents_settings_and_search_open_submenus_and_the_rest_act() {
         let rows = menu();
         let kinds: Vec<_> = rows.iter().map(|r| r.action.is_some()).collect();
-        assert_eq!(kinds, [false, false, false, true, true, true, true]);
+        assert_eq!(kinds, [false, false, false, false, true, true, true, true]);
         assert!(
             rows.iter()
                 .all(|r| r.action.is_some() != !r.submenu.is_empty())
@@ -350,8 +350,10 @@ mod tests {
         let g = geometry(&rows, (800, 600), 28, None);
         assert_eq!(g.panel.bottom(), 600 - 28);
         assert!(g.tops.windows(2).all(|w| w[0].bottom() <= w[1].y));
-        assert_eq!(g.tops[5].y - g.tops[4].bottom(), 0);
-        assert_eq!(g.tops[4].y - g.tops[3].bottom(), SEPARATOR);
+        for (bounds, row) in g.tops.windows(2).zip(&rows[1..]) {
+            let gap = if row.separator_before { SEPARATOR } else { 0 };
+            assert_eq!(bounds[1].y - bounds[0].bottom(), gap, "{}", row.label);
+        }
         assert!(g.flyout.is_none());
     }
 
