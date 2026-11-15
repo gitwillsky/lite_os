@@ -149,9 +149,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 - Outline 只持有父子关系、展开状态和可见索引，文本仍在 Node.rows；父先子后、ID 唯一且深度不超过 64。
   数据刷新按稳定 ID 保留展开，折叠选择对应分支；与列表复用滚动与双击时序，不在应用持有展开镜像。
-- TextEditor 持有 Document、选区、滚动轴与行宽索引。编辑同步更新受影响的宽度，避免逐键扫描全文。比例变化时重建索引。
-  ABI 文本读取只在调用时拼接副本。编辑动作和剪贴板复用单行控件通知路径。
-  `READ_ONLY` 保留导航、选择和复制，拒绝键盘及编辑命令写入。进入只读时取消在途粘贴，以免旧请求写进下一份草稿。
+- TextEditor 持有 Document、选区、滚动轴和行宽索引，增量更新行宽，缩放时重建；ABI 按需拼接文本，编辑和剪贴板复用单行通知路径。
+  Edit 和 TextEditor 的 `READ_ONLY` 保留导航、选择和复制，拒绝写入并取消在途粘贴，以免旧请求写进下一份草稿。
+  单行只读字段采用控件背景和正常文字色，参照 [Win32 WM_CTLCOLORSTATIC](https://learn.microsoft.com/en-us/windows/win32/controls/wm-ctlcolorstatic)。
   可编辑组合框复用单行输入的编辑能力判断，程序化全选和文本剪贴板与键盘输入一致；下拉列表式组合框不接收文本编辑。
 - Dialogs 与 Application 共用 Rc<RefCell> 窗口表和订阅 owner，不复制登记表；只允许 UI 线程使用。
   Future 可在 await 之后开下一项对话框；所有借用在返回 Future 之前结束，不跨 await 保留可变借用。
@@ -210,10 +210,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Wayland wire 以头部 16-bit 长度和四字节对齐接收至 65532 字节的消息；socket 分批读取不限制消息长度。
   编码/解码拒绝内部 NUL；编码错误原子回滚消息及其 FD。动态窗口文本在分配角色前验证。
 
-- Scanout::Backend 只持有一种输出后端；back/pending/sequence 由 Scanout 唯一拥有。
-  BootSurface 仅为启动位图投影 CPU/GPU 目标的可写像素行，不拥有协议或第二份像素存储。
-  GPU boot transfer、合成与 page flip 均使用同一对资源；目标 Drop 先移除 FBO，再释放 GEM。
-  Benchmark 决策：沿用 canvas 与 GPU gate；删除两块冗余全屏缓冲，不据此宣称帧率提升数值。
+- Scanout::Backend 只持有一种输出后端；back/flip/sequence 由 Scanout 唯一拥有，后缓冲依次经过绘制、待提交和在途三个阶段。
+  BootSurface 仅投影启动画面可写的像素行，不另存像素；扫描目标析构先移除 framebuffer，再释放 GEM。
+  启动和桌面合成共用双缓冲。MODE_ATOMIC 非阻塞忙时，已绘制帧及损伤保持原样，下一刷新周期复用同一帧提交；输入和 Wayland 继续分派。
+  KMS 接收后才等待 flip 事件，收到事件才交换缓冲、发出本帧回调。正常路径仍由事件驱动；背压分支使用现有 poll 超时，无额外线程或缓冲。
 
 ## comctl32 控件、级联菜单与状态栏
 
@@ -229,16 +229,16 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   `sound::Event` 是默认声音方案唯一的事件到文件表，消息框、资源管理器、桌面与控制面板共用，调用处不写文件名。
 - MenuBar 的命令在鼠标松开时执行（USER32 语义）：press 只高亮普通条目、展开子菜单父条目，release 在可用普通条目上
   交出命令，松开在菜单外不关闭（打开上下文菜单的那次松开不会立即关掉它）；运行库与桌面外壳都把松开交给 release。
-  show_popup 按 TrackPopupMenu 定位：右侧/下方放不下先翻到指针另一侧，仍越界才平移。桌面外壳的右键菜单只用这一状态机，
-  不再保留自己的扁平菜单实现。
+  show_popup 按 TrackPopupMenu 翻转或平移。弹出层保留受客户区约束的视口偏移，滚轮和键盘共用可见行几何，
+  超长菜单仍能命中后部条目。桌面外壳复用同一菜单状态机。
 - MenuItem 追加 `parent` 字段、state bit3 为默认项；产品处于开发期，按用户决定不保留旧布局。新增 ABI 槽位
   status_parts、background 追加到表尾。
 - Toolbar 持有按钮矩形、悬停/按下与工具提示计时；同一组按钮刷新状态时保留交互，按钮组变化才复位。
   Tree.animated 记录上次推进定时状态的时刻，使提示只在越过显示时刻时重绘一次；缺少它会每次唤醒都重绘。
 - 尺寸手柄：Tree.size_grip 由窗口 owner 每次布局写入（可缩放且未最大化/全屏），状态栏只画；Decoration.grip
   是同一矩形的命中副本，由 layout_record 在同一入口刷新，按下发起 xdg_toplevel.resize(BottomRight)。
-- Table.cells 是图标/列表视图条目格子的唯一来源（布局时由主题图标间距与最宽标签写入），绘制、命中与重命名框共用；
-  Table.full_row 只由 list_style 标志位设置。list_style 的第二个参数由布尔多选改为标志位（多选、整行选择）。
+- Table.cells 由布局写入，绘制、命中和重命名共用条目格子。list_style 标志位决定多选与整行选择。
+  ABI 表尾 `list_find` 为带列的整行详细列表发布字面查询与匹配位置；仅绘制可见单元格，复用表格滚动，不改变操作选区或键盘焦点。
 - Node.updown 只持有按住方向与下一次重复时刻，数值仍由 range/position 唯一持有；缺少重复时刻按住不会连续步进。
   定时推进返回的 CHANGED 由 Context 收集后入应用事件队列。CalWnd 的 Calendar 只持有选定日期，显示月份即该日期所在月。
 - Node.status_parts 与 Node.background 只保存复制后的分格宽度、底色和共享位图引用；位图由资源上下文保活。
@@ -252,7 +252,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   缺图不画；Command 相等只比较应用提交字段（位图由名称唯一决定），资源缓存逐出不会造成误判重绘。
 - Canvas kind 9 将单行文字逆时针旋转 90°，按字形转置并裁剪到命令矩形。`set_font` 可为 Canvas 文字命令 3/4/6/9 指定字体。
 - 工具栏的选择性文字按钮没有位图条时不保留图像位（comctl32 `I_IMAGENONE`），纯文字命令与图标按钮可混排在同一工具栏。
-- ABI 表尾的 `text_width(window, role, text, out)` 按当前 scale 和共享的主题字体用途度量逻辑宽度，用于状态栏分格等布局（GetTextExtentPoint32）。
+- `text_width(window, role, text, out)` 按当前 scale 和共享的主题字体用途度量逻辑宽度，用于状态栏分格等布局（GetTextExtentPoint32）。
 - 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
 - Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；沿用现有 canvas/GPU 基线，不新增该操作的 wall-clock 阈值。
 

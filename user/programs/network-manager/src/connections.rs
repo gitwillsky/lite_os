@@ -1,10 +1,13 @@
-//! 转发连接观察。服务按身份分页，窗口只持有当前页和一条前瞻记录。
+//! 转发连接观察。按已应用条件读取匹配页，并用同一谓词回放实时变化。
 
+mod filter;
 mod property;
 
 use crate::{
     child,
-    item_list::{Glyph, Item, Summary, Tool, toolbar},
+    item_list::{
+        Find, FindAction, Glyph, Item, Scan, Summary, Tool, filter as list_filter, spacer, toolbar,
+    },
     workspace::Workspace,
 };
 use liteos_ui::{
@@ -38,7 +41,10 @@ const WINDOW_ROWS: usize = DISPLAY_ROWS + 1;
 
 pub(super) struct Page {
     view: Rc<View>,
+    filter: list_filter::Panel<Field>,
+    _toolbar: [Widget; 2],
     observer: Option<Task<()>>,
+    search: Option<Task<()>>,
     clear: Option<Task<()>>,
     family: Family,
     domain: Option<Arc<str>>,
@@ -50,8 +56,25 @@ struct Snapshot {
     rows: Vec<Connection>,
 }
 
+struct Query<'a> {
+    family: Family,
+    domain: Option<&'a Arc<str>>,
+    conditions: Arc<[filter::Condition]>,
+}
+
+impl Query<'_> {
+    fn matches(&self, row: &Connection) -> bool {
+        self.family.includes(row.source.ip())
+            && self
+                .conditions
+                .iter()
+                .all(|condition| condition.matches(row))
+    }
+}
+
 struct View {
     list: Widget,
+    find: Find,
     previous: Tool,
     next: Tool,
     refresh: Tool,
@@ -68,6 +91,8 @@ struct View {
     changed: Cell<Option<Waker>>,
     // 只记录走过的页边界，回退无需从第一条扫描。
     anchors: RefCell<Vec<u64>>,
+    // 筛选草稿属于控件。快照和增量读取同一份已应用条件，请求变化时废弃旧查询结果。
+    applied: RefCell<Arc<[filter::Condition]>>,
     snapshot: RefCell<Snapshot>,
     property: RefCell<Option<Property>>,
     // 读取和补页未完成时，屏幕上仍可能有旧行，暂不允许使用这些行执行操作。
@@ -83,7 +108,11 @@ impl Page {
         background: Background,
         family: Family,
     ) -> liteos_ui::Result<Self> {
-        let [clear] = toolbar(parent, [Item::Command(Glyph::Remove, "删除")])?;
+        let bar = child(parent, WidgetKind::Row, "", Layout::default())?;
+        let [clear] = toolbar(&bar, [Item::Command(Glyph::Remove, "删除")])?;
+        let space = spacer(&bar)?;
+        let find = Find::new(&bar)?;
+        let filter = list_filter::Panel::new(parent, &bar, &filter::FIELDS)?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -122,6 +151,7 @@ impl Page {
         )?;
         let view = View {
             list,
+            find,
             previous,
             next,
             refresh,
@@ -135,6 +165,7 @@ impl Page {
             request: Cell::new(0),
             changed: Cell::default(),
             anchors: RefCell::new(vec![0]),
+            applied: RefCell::default(),
             snapshot: RefCell::default(),
             property: RefCell::default(),
             available: Cell::new(false),
@@ -143,7 +174,10 @@ impl Page {
         view.controls()?;
         Ok(Self {
             view: Rc::new(view),
+            filter,
+            _toolbar: [bar, space],
             observer: None,
+            search: None,
             clear: None,
             family,
             domain: None,
@@ -157,11 +191,13 @@ impl Page {
         domain: Option<Arc<str>>,
     ) -> liteos_ui::Result<()> {
         self.observer = None;
+        self.search = None;
         self.view.changed.take();
         self.domain = domain;
         self.view.available.set(false);
         self.view.anchors.borrow_mut().truncate(1);
         self.view.property.borrow_mut().take();
+        self.view.find.locate(&self.view.list, None)?;
         *self.view.snapshot.borrow_mut() = Snapshot::default();
         self.view.present(true)?;
         if self.view.visible.get() {
@@ -182,22 +218,17 @@ impl Page {
         if visible {
             self.reload(app, window)
         } else {
+            self.search = None;
             self.view.property.borrow_mut().take();
             Ok(())
         }
     }
 
     fn reload(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
+        self.search = None;
         let view = &self.view;
-        view.property.borrow_mut().take();
-        view.refresh.set_enabled(false)?;
-        view.request.set(view.request.get().wrapping_add(1));
-        view.available.set(false);
-        view.controls()?;
-        view.summary.notice("正在读取转发连接…")?;
-        if let Some(waker) = view.changed.take() {
-            waker.wake();
-        }
+        view.find.locate(&view.list, None)?;
+        view.begin_reload()?;
         if self.observer.as_ref().is_none_or(Task::is_finished) {
             let view = view.clone();
             let parent = window.clone();
@@ -233,6 +264,32 @@ impl Page {
         let view = &self.view;
         if !view.visible.get() {
             return Ok(());
+        }
+        if let Some(action) = view.find.handle(event)? {
+            self.search = None;
+            view.find.present(&view.list)?;
+            if let FindAction::Find(scan) = action
+                && !scan.is_empty()
+                && view.snapshot.borrow().cursor.epoch != 0
+            {
+                self.search(app, window, scan)?;
+            }
+            return Ok(());
+        }
+        let action = self.filter.handle(event, &view.applied.borrow())?;
+        match action {
+            list_filter::Action::Apply(conditions) => {
+                if conditions.as_slice() != view.applied.borrow().as_ref() {
+                    *view.applied.borrow_mut() = conditions.into();
+                    view.anchors.borrow_mut().truncate(1);
+                    view.list.select(None)?;
+                    view.list.set_rows(&[])?;
+                    self.reload(app, window)?;
+                }
+                return Ok(());
+            }
+            list_filter::Action::Invalid(message) => return view.summary.notice(&message),
+            list_filter::Action::None => {}
         }
         if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
             if view.available.get() {
@@ -316,9 +373,57 @@ impl Page {
         }
         Ok(())
     }
+
+    fn search(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        scan: Scan<()>,
+    ) -> liteos_ui::Result<()> {
+        let view = &self.view;
+        let after = *view.anchors.borrow().last().expect("first anchor");
+        let snapshot = view.snapshot.borrow();
+        if view.available.get() {
+            let rows = snapshot
+                .rows
+                .iter()
+                .take(DISPLAY_ROWS)
+                .map(|row| (row.id, row_text(row)));
+            if let Some(position) = scan.on_page(after, rows) {
+                return view.find.locate(&view.list, Some(position));
+            }
+        }
+        let epoch = snapshot.cursor.epoch;
+        let request = view.request.get();
+        let scope = self.domain.clone();
+        let family = self.family;
+        let view = view.clone();
+        self.search = Some(app.spawn_local(window, async move {
+            let query = view.query(family, scope.as_ref());
+            if let Err(error) = view.search(&query, request, epoch, scan).await
+                && view.current(request)
+            {
+                let _ = view.summary.notice(&format!("无法完成查找。{error}"));
+            }
+        })?);
+        Ok(())
+    }
 }
 
 impl View {
+    fn begin_reload(&self) -> liteos_ui::Result<()> {
+        self.property.borrow_mut().take();
+        self.refresh.set_enabled(false)?;
+        self.request.set(self.request.get().wrapping_add(1));
+        self.available.set(false);
+        self.controls()?;
+        self.summary.notice("正在读取转发连接…")?;
+        if let Some(waker) = self.changed.take() {
+            waker.wake();
+        }
+        Ok(())
+    }
+
     fn selected(&self) -> liteos_ui::Result<Option<(Identity, Connection)>> {
         if !self.available.get() {
             return Ok(None);
@@ -348,6 +453,8 @@ impl View {
 
     fn controls(&self) -> liteos_ui::Result<()> {
         let available = self.available.get();
+        self.find
+            .set_enabled(self.snapshot.borrow().cursor.epoch != 0)?;
         let previous = self.anchors.borrow().len() > 1;
         let next = self.snapshot.borrow().rows.len() > DISPLAY_ROWS;
         self.previous.set_enabled(available && previous)?;
@@ -383,6 +490,7 @@ impl View {
             .map(|(row, text)| (row.id, text.as_str()))
             .collect();
         self.list.set_rows(&rows)?;
+        self.find.present(&self.list)?;
         drop(snapshot);
         let mut property = self.property.borrow_mut();
         if let Some(current) = property.as_ref() {
@@ -426,21 +534,36 @@ impl View {
             if displayed != Some(request) || restart.is_some() {
                 let after = *self.anchors.borrow().last().expect("first page anchor");
                 let epoch = self.snapshot.borrow().cursor.epoch;
-                let baseline = restart.take();
-                let scope = domain.cloned();
-                let result = self
-                    .background
-                    .run(move || snapshot(scope.as_deref(), family, after, epoch, baseline))?
-                    .await;
-                if !self.visible.get() || self.request.get() != request {
+                let cursor = if let Some(cursor) = restart.take() {
+                    cursor
+                } else {
+                    let scope = domain.cloned();
+                    let result = self
+                        .background
+                        .run(move || {
+                            ManagementClient::local()
+                                .connection_changes(scope.as_deref(), changes::Cursor::default())
+                        })?
+                        .await;
+                    if !self.current(request) {
+                        continue;
+                    }
+                    result?.cursor
+                };
+                let first_page = cursor.epoch != epoch;
+                let query = self.query(family, domain);
+                let after = if first_page { 0 } else { after };
+                let Some(rows) = self
+                    .read_rows(&query, request, cursor.epoch, after, WINDOW_ROWS)
+                    .await?
+                else {
                     continue;
-                }
-                let (page, first_page) = result?;
+                };
                 if first_page {
                     self.anchors.borrow_mut().truncate(1);
                     waiting = None;
                 }
-                *self.snapshot.borrow_mut() = page;
+                *self.snapshot.borrow_mut() = Snapshot { cursor, rows };
                 self.available.set(true);
                 self.present(true)?;
                 displayed = Some(request);
@@ -513,6 +636,7 @@ impl View {
         batch: changes::Batch,
         request: u64,
     ) -> Result<(), Error> {
+        let query = self.query(family, domain);
         let after = *self.anchors.borrow().last().expect("first page anchor");
         let epoch = batch.cursor.epoch;
         let (changed, refill) = {
@@ -530,17 +654,22 @@ impl View {
                         }
                     }
                     changes::Change::Added(row) | changes::Change::Updated(row)
-                        if family.includes(row.source.ip())
-                            && row.id > after
-                            && last_known.is_none_or(|last| row.id <= last) =>
+                        if row.id > after && last_known.is_none_or(|last| row.id <= last) =>
                     {
-                        match rows.binary_search_by_key(&row.id, |item| item.id) {
-                            Ok(index) => {
+                        match (
+                            rows.binary_search_by_key(&row.id, |item| item.id),
+                            query.matches(&row),
+                        ) {
+                            (Ok(index), true) => {
                                 changed |= (rows[index].phase, rows[index].seen_reply)
                                     != (row.phase, row.seen_reply);
                                 rows[index] = row;
                             }
-                            Err(index) if index < WINDOW_ROWS => {
+                            (Ok(index), false) => {
+                                rows.remove(index);
+                                changed = true;
+                            }
+                            (Err(index), true) if index < WINDOW_ROWS => {
                                 rows.insert(index, row);
                                 rows.truncate(WINDOW_ROWS);
                                 changed = true;
@@ -560,30 +689,121 @@ impl View {
         if let Some((tail, missing)) = refill {
             self.available.set(false);
             self.controls()?;
-            let scope = domain.cloned();
-            let result = self
-                .background
-                .run(move || {
-                    read_rows(
-                        &mut ManagementClient::local(),
-                        scope.as_deref(),
-                        family,
-                        epoch,
-                        tail,
-                        missing,
-                    )
-                })?
-                .await;
-            if self.request.get() != request || !self.visible.get() {
+            let Some(rows) = self
+                .read_rows(&query, request, epoch, tail, missing)
+                .await?
+            else {
                 return Ok(());
-            }
-            self.snapshot.borrow_mut().rows.extend(result?);
+            };
+            self.snapshot.borrow_mut().rows.extend(rows);
             self.available.set(true);
         }
         if changed {
             self.present(false)?;
         }
         Ok(())
+    }
+
+    fn current(&self, request: u64) -> bool {
+        self.visible.get() && self.request.get() == request
+    }
+
+    fn query<'a>(&self, family: Family, domain: Option<&'a Arc<str>>) -> Query<'a> {
+        Query {
+            family,
+            domain,
+            conditions: self.applied.borrow().clone(),
+        }
+    }
+
+    /// 查找当前条件下的整份列表。沿正常翻页边界扫描，命中后交还观察器装载整页并续订。
+    async fn search(
+        &self,
+        query: &Query<'_>,
+        request: u64,
+        epoch: u64,
+        scan: Scan<()>,
+    ) -> Result<(), Error> {
+        let mut matches = scan.sources();
+        let mut anchors = vec![0];
+        loop {
+            let after = *anchors.last().expect("first anchor");
+            let Some(rows) = self
+                .read_rows(query, request, epoch, after, WINDOW_ROWS)
+                .await?
+            else {
+                return Ok(());
+            };
+            let found = rows
+                .iter()
+                .take(DISPLAY_ROWS)
+                .any(|row| matches.visit(row.id, &row_text(row), anchors.len()));
+            if found || rows.len() <= DISPLAY_ROWS {
+                break;
+            }
+            anchors.push(rows[DISPLAY_ROWS - 1].id);
+        }
+        let Some((position, page)) = matches.found() else {
+            self.find.locate(&self.list, None)?;
+            return Ok(());
+        };
+        self.find.locate(&self.list, Some(position))?;
+        let after = anchors[page - 1];
+        if self.anchors.borrow().last().copied() != Some(after) {
+            anchors.truncate(page);
+            *self.anchors.borrow_mut() = anchors;
+            self.begin_reload()?;
+        }
+        Ok(())
+    }
+
+    // 每次后台任务只读一个有界服务页。稀疏筛选可以在页间取消，让其它观察共享工作线程。
+    async fn read_rows(
+        &self,
+        query: &Query<'_>,
+        request: u64,
+        epoch: u64,
+        after: u64,
+        limit: usize,
+    ) -> Result<Option<Vec<Connection>>, Error> {
+        let mut cursor = Cursor {
+            family: query.family,
+            epoch: if after == 0 { 0 } else { epoch },
+            after,
+        };
+        let mut rows = Vec::with_capacity(limit);
+        loop {
+            let domain = query.domain.cloned();
+            let result = self
+                .background
+                .run(move || ManagementClient::local().connections(domain.as_deref(), cursor))?
+                .await;
+            if !self.current(request) {
+                return Ok(None);
+            }
+            let page = result?;
+            if page.epoch != epoch {
+                return Err(
+                    io::Error::new(io::ErrorKind::Interrupted, "转发服务实例已更换").into(),
+                );
+            }
+            rows.extend(
+                page.rows
+                    .into_iter()
+                    .filter(|row| query.matches(row))
+                    .take(limit - rows.len()),
+            );
+            match page.next {
+                Some(after) if rows.len() < limit => {
+                    cursor = Cursor {
+                        after,
+                        epoch,
+                        ..cursor
+                    }
+                }
+                _ => return Ok(Some(rows)),
+            }
+        }
     }
 
     async fn clear_connection(
@@ -617,77 +837,6 @@ impl View {
             .run(move || ManagementClient::local().clear_connection(domain.as_deref(), identity))?
             .await?;
         Ok(())
-    }
-}
-
-fn snapshot(
-    domain: Option<&str>,
-    family: Family,
-    after: u64,
-    epoch: u64,
-    baseline: Option<changes::Cursor>,
-) -> io::Result<(Snapshot, bool)> {
-    let mut client = ManagementClient::local();
-    let cursor = match baseline {
-        Some(cursor) => cursor,
-        None => {
-            client
-                .connection_changes(domain, changes::Cursor::default())?
-                .cursor
-        }
-    };
-    let first_page = cursor.epoch != epoch;
-    let rows = read_rows(
-        &mut client,
-        domain,
-        family,
-        cursor.epoch,
-        if first_page { 0 } else { after },
-        WINDOW_ROWS,
-    )?;
-    Ok((Snapshot { cursor, rows }, first_page))
-}
-
-fn read_rows(
-    client: &mut ManagementClient,
-    domain: Option<&str>,
-    family: Family,
-    epoch: u64,
-    after: u64,
-    limit: usize,
-) -> io::Result<Vec<Connection>> {
-    let mut cursor = if after == 0 {
-        Cursor {
-            family,
-            ..Cursor::default()
-        }
-    } else {
-        Cursor {
-            family,
-            epoch,
-            after,
-        }
-    };
-    let mut rows = Vec::with_capacity(limit);
-    loop {
-        let page = client.connections(domain, cursor)?;
-        if page.epoch != epoch {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "转发服务实例已更换",
-            ));
-        }
-        rows.extend(page.rows.into_iter().take(limit - rows.len()));
-        match page.next {
-            Some(after) if rows.len() < limit => {
-                cursor = Cursor {
-                    after,
-                    epoch,
-                    ..cursor
-                }
-            }
-            _ => return Ok(rows),
-        }
     }
 }
 

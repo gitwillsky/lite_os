@@ -10,7 +10,7 @@ use network_config::{
 };
 use std::{io, sync::Arc};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Key {
     pub(super) chain: Option<ConfigurationName>,
     pub(super) index: usize,
@@ -169,7 +169,7 @@ impl Catalog {
     }
 }
 
-fn read_configuration(
+pub(super) fn read_configuration(
     client: &mut ManagementClient,
 ) -> io::Result<(Revision, RouterConfiguration)> {
     let (revision, bytes) = client.export()?;
@@ -189,7 +189,7 @@ pub(super) fn candidate(
     domain: Option<&str>,
     expected: Revision,
     change: Change,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, Option<Key>)> {
     let (revision, mut configuration) = read_configuration(&mut ManagementClient::local())?;
     if revision != expected {
         return Err(io::Error::other("配置已变化，请从最新规则列表重新打开。"));
@@ -203,21 +203,31 @@ pub(super) fn candidate(
     } else {
         &mut configuration.firewall
     };
-    change.apply(firewall)?;
-    configuration.encode().map_err(io::Error::other)
+    let key = change.apply(firewall)?;
+    Ok((configuration.encode().map_err(io::Error::other)?, key))
 }
 
 impl Change {
-    fn apply(self, firewall: &mut Firewall) -> io::Result<()> {
-        match self {
-            Self::Add(rule) => firewall.prerouting.push(rule),
-            Self::Put(key, rule) => key.rules(firewall)?[key.index] = rule,
-            Self::Enable(key, enabled) => key.rules(firewall)?[key.index].disabled = !enabled,
+    fn apply(self, firewall: &mut Firewall) -> io::Result<Option<Key>> {
+        Ok(match self {
+            Self::Add(rule) => {
+                let index = firewall.prerouting.len();
+                firewall.prerouting.push(rule);
+                Some(Key { chain: None, index })
+            }
+            Self::Put(key, rule) => {
+                key.rules(firewall)?[key.index] = rule;
+                Some(key)
+            }
+            Self::Enable(key, enabled) => {
+                key.rules(firewall)?[key.index].disabled = !enabled;
+                Some(key)
+            }
             Self::Remove(key) => {
                 key.rules(firewall)?.remove(key.index);
+                None
             }
-        }
-        Ok(())
+        })
     }
 }
 

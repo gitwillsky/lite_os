@@ -214,6 +214,13 @@ impl Tree {
                         ));
                     }
                 }
+                widget::EDIT if node.state & state::READ_ONLY != 0 && !disabled => p.edit_read_only(
+                    rect,
+                    node.edit.as_ref().expect("edit node"),
+                    self.focus == Some(id) && keyboard_focus,
+                    node.state & state::PASSWORD != 0,
+                    node.state & state::BORDERLESS == 0,
+                ),
                 widget::EDIT if node.state & state::BORDERLESS != 0 => p.edit_borderless(
                     rect,
                     node.edit.as_ref().expect("edit node"),
@@ -500,6 +507,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 node.row_height,
             );
             let selected = node.row_selected(*id);
+            let current = table.find.current.filter(|mark| mark.row == *id);
             let image = node.row_icons.get(id).and_then(|icons| icons.0.as_ref());
             if let Some(outline) = node.outline.as_ref().filter(|_| table.columns.is_empty()) {
                 paint_tree_row(
@@ -611,19 +619,37 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                             2 => available - text_width,
                             _ => 0,
                         };
-                        p.text(
-                            x + 4 + leading + offset.max(0),
-                            row.y + 3,
-                            &shown,
-                            ink,
-                            false,
-                        );
+                        let text_x = x + 4 + leading + offset.max(0);
+                        let needle = &table.find.needle;
+                        if needle.is_empty() {
+                            p.text(text_x, row.y + 3, &shown, ink, false);
+                        } else {
+                            // 省略号不属于单元格原文，截断后只标记仍完整可见的匹配。
+                            let visible = if shown == text {
+                                shown.len()
+                            } else {
+                                shown.strip_suffix("...").map_or(0, str::len)
+                            };
+                            let matches = text
+                                .match_indices(needle)
+                                .take_while(|(at, matched)| at + matched.len() <= visible)
+                                .map(|(at, matched)| {
+                                    let active = current.is_some_and(|mark| {
+                                        mark.column as usize == column && mark.offset as usize == at
+                                    });
+                                    (at..at + matched.len(), active)
+                                });
+                            p.text_marked(text_x, row.y + 3, &shown, ink, matches);
+                        }
                     });
                     x += width;
                 }
             }
             if caret && full_row {
                 p.focus_rect(row);
+            }
+            if current.is_some() {
+                p.outline(row, C::Hilight);
             }
         }
     });

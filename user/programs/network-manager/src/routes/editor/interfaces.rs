@@ -1,6 +1,6 @@
-//! 编辑当前路由域的接口及转发开关，返回时保留在上层路由设置草稿中。
+//! 编辑当前路由域的接口，返回时保留在上层路由设置草稿中。
 
-use super::{button, checkbox, checked, disabled, form, grow, row, selection};
+use super::{button, disabled, form, grow, row, selection};
 use crate::child;
 use liteos_ui::{Column, Dialogs, EventKind, Layout, ListOptions, ListStyle, WidgetKind, Window};
 use network_config::{
@@ -182,12 +182,6 @@ impl Draft<'_> {
         }
     }
 
-    fn forwarding(&mut self) -> (&mut bool, &mut bool) {
-        match self {
-            Self::Default(config) => (&mut config.ipv4_forwarding, &mut config.ipv6_forwarding),
-            Self::Named(domain) => (&mut domain.ipv4_forwarding, &mut domain.ipv6_forwarding),
-        }
-    }
 }
 
 enum Target<'a> {
@@ -202,10 +196,6 @@ pub(super) async fn edit(
     mut draft: Draft<'_>,
 ) -> liteos_ui::Result<bool> {
     let (window, mut events, root) = form(dialogs, parent, "路由接口", 690, 405)?;
-    let forwarding = child(&root, WidgetKind::Row, "", row())?;
-    let (v4, v6) = draft.forwarding();
-    let ipv4 = checkbox(&forwarding, "启用 IPv4 转发", *v4)?;
-    let ipv6 = checkbox(&forwarding, "启用 IPv6 转发", *v6)?;
     let list = child(&root, WidgetKind::List, "", grow())?;
     list.set_list_style(
         ListStyle::Details,
@@ -333,10 +323,6 @@ pub(super) async fn edit(
                 _ => {}
             }
         }
-        let (next_ipv4, next_ipv6) = (checked(&ipv4)?, checked(&ipv6)?);
-        let (v4, v6) = draft.forwarding();
-        changed |= (*v4, *v6) != (next_ipv4, next_ipv6);
-        (*v4, *v6) = (next_ipv4, next_ipv6);
         return Ok(changed);
     }
 }

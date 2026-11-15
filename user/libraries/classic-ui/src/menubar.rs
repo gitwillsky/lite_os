@@ -51,7 +51,7 @@ pub struct MenuBar {
 #[derive(PartialEq, Eq)]
 pub struct MenuVisual {
     menu: Option<usize>,
-    popups: [Option<(Rect, Option<usize>)>; MENU_DEPTH],
+    popups: [Option<(Rect, Option<usize>, i32)>; MENU_DEPTH],
     focus: Option<usize>,
     cues: bool,
 }
@@ -77,7 +77,7 @@ impl MenuBar {
     pub fn visual(&self) -> MenuVisual {
         let mut popups = [None; MENU_DEPTH];
         for (slot, popup) in popups.iter_mut().zip(&self.popups) {
-            *slot = Some((popup.rect, popup.hover));
+            *slot = Some((popup.rect, popup.hover, popup.offset()));
         }
         MenuVisual {
             menu: self.open_menu(),
@@ -112,6 +112,7 @@ impl MenuBar {
             return;
         }
         let mut popup = Popup::open(p, menus, 0, Rect::new(point.0, point.1, 0, 0));
+        popup.limit_height(bounds.height);
         let place = |origin: i32, size: i32, low: i32, high: i32| {
             let flipped = if origin + size > high {
                 origin - size
@@ -174,6 +175,9 @@ impl MenuBar {
     ) {
         let titles = title_rects(p, bar, menus);
         let mut popup = Popup::open(p, menus, index, titles[index]);
+        if let Some(bounds) = self.bounds {
+            popup.limit_height(bounds.bottom() - popup.rect.y);
+        }
         if keyboard {
             popup.step(&menus[index].items, 1);
         }
@@ -209,6 +213,20 @@ impl MenuBar {
         self.popups
             .iter()
             .rposition(|popup| inside(popup.rect, point))
+    }
+
+    /// 以垂直滚轮移动指针所在的菜单视口。滚动会撤销以旧几何定位的子菜单。
+    /// 指针在菜单外时返回 false；命中菜单时消费滚轮。
+    pub fn wheel(&mut self, point: (i32, i32), notches: i32) -> bool {
+        let Some(layer) = self.layer_at(point) else {
+            return false;
+        };
+        if self.popups[layer].wheel(notches) {
+            self.popups[layer].hover = None;
+            self.popups.truncate(layer + 1);
+            self.pending = None;
+        }
+        true
     }
 
     fn item<'a, T, S>(
@@ -467,7 +485,7 @@ impl MenuBar {
                             if matches.next().is_none() {
                                 return self.activate(p, menus, index, true);
                             }
-                            popup.hover = Some(index);
+                            popup.highlight(items, index);
                         }
                     }
                 }

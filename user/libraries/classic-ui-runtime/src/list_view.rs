@@ -1,5 +1,5 @@
 //! 共享列表的稳定 ABI：视图方式、实际多选集合与列对齐；Rust 集合不跨边界。
-use super::{invalid, invoke};
+use super::{invalid, invoke, text};
 use classic_ui_abi::{self as abi, widget};
 use std::{collections::BTreeSet, ffi::c_void, slice};
 pub(super) unsafe extern "C" fn style(
@@ -32,6 +32,9 @@ pub(super) unsafe extern "C" fn style(
                 table.last_click = None;
             }
             table.full_row = flags & abi::list::FULL_ROW != 0;
+            if mode != 0 || !table.full_row {
+                table.find = Default::default();
+            }
             if table.multiple != (multiple != 0) {
                 table.multiple = multiple != 0;
                 table.selection.clear();
@@ -39,6 +42,70 @@ pub(super) unsafe extern "C" fn style(
                 table.anchor = node.selected;
             }
             host.controls_mut()?.layout_dirty |= layout_changed;
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+/// 更新查找投影，位置过期时仍保留查询文字并绘制其它匹配。
+pub(super) unsafe extern "C" fn find(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    query: abi::Text,
+    mark: abi::ListMatch,
+) -> i32 {
+    // SAFETY: 输入是本次调用的 UTF-8 借用，invoke 独占当前 context。
+    unsafe {
+        invoke(pointer, |context| {
+            let needle = text(query)?;
+            if mark.row != 0 {
+                context.layout(window)?;
+            }
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .filter(|node| node.kind == widget::LIST)
+                .ok_or_else(|| invalid("not a list"))?;
+            let table = node.table.as_ref().expect("list model");
+            if table.mode != 0 || !table.full_row || table.columns.is_empty() {
+                return Err(invalid(
+                    "find requires a full-row details list with columns",
+                ));
+            }
+            let column = mark.column as usize;
+            let target = if !needle.is_empty() && mark.row != 0 && column < table.columns.len() {
+                node.rows.iter().position(|(row, value)| {
+                    *row == mark.row
+                        && value.split('\t').nth(column).is_some_and(|cell| {
+                            cell.match_indices(needle.as_str())
+                                .any(|(start, _)| start == mark.offset as usize)
+                        })
+                })
+            } else {
+                None
+            };
+            let current = target.map(|_| mark);
+            if table.find.current == current && table.find.needle == needle {
+                return Ok(());
+            }
+            if let Some(index) = target {
+                let geometry = node.list_geometry();
+                node.reveal_list_row(index, geometry);
+                let table = node.table.as_mut().expect("list model");
+                let left: i32 = (0..column).map(|index| table.header.width(index)).sum();
+                let width = table.header.width(column).min(geometry.rows.width);
+                table.horizontal.position = table
+                    .horizontal
+                    .position
+                    .min(left)
+                    .max(left + width - geometry.rows.width);
+                node.clamp_list();
+            }
+            node.table.as_mut().expect("list model").find = super::table::Find { needle, current };
             host.frame.invalidate();
             Ok(())
         })

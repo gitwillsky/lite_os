@@ -18,6 +18,7 @@ mod configuration;
 /// 设置、DHCP 和连接观察共用的在途等待名额。
 const WAIT_LIMIT: usize = 4;
 const _: () = assert!(bridge::CONNECTION_WATCH_BUSY == native_abi::ERR_NO_RESOURCES);
+const _: () = assert!(bridge::NOT_FOUND == native_abi::ERR_NOT_FOUND);
 // OWNER: 阻塞请求的在途计数，在线程派生前递增、完成等待时递减。否则客户端能创建无界数量的内核线程。
 static WAITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -124,6 +125,8 @@ fn serve(socket: Arc<Socket>, writable: bool) {
                 | ordinal::FIREWALL_COUNTERS
                 | ordinal::NEIGHBOR_PAGE
                 | ordinal::ROUTE_PAGE
+                | ordinal::STATIC_STATUS
+                | ordinal::STATIC_PATHS
                 | ordinal::COMMIT_RESULT
                 | ordinal::OPEN_NETWORK_NAMESPACE
                 | ordinal::ROUTING_DOMAINS

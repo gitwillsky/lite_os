@@ -1,6 +1,6 @@
 //! 静态路由的持久意图；与声明正文分离，因为配置名不是运行时接口身份。
 use super::*;
-use core::net::IpAddr;
+use core::{net::IpAddr, num::NonZeroU32};
 fn preference() -> u32 {
     1
 }
@@ -254,7 +254,7 @@ pub(super) fn compile<'a>(
     mut resolve: impl FnMut(InterfaceReference<'_>) -> Result<Option<u32>, Invalid>,
 ) -> Result<Vec<u8>, crate::routing::EncodeError> {
     use crate::routing::{self, Action, Batch, Family, Member, NextHop, Target};
-    let declarations = declared.iter().filter(|route| {
+    let declarations = declared.iter().enumerate().filter(|(_, route)| {
         !route.disabled
             && matches!(
                 (family, route.destination),
@@ -265,6 +265,7 @@ pub(super) fn compile<'a>(
     let mut attributes = Vec::new();
     let mut paths = Vec::new();
     let mut routes = Vec::new();
+    let mut locations = Vec::new();
     u32::try_from(count).map_err(|_| routing::EncodeError::Invalid)?;
     attributes
         .try_reserve_exact(count)
@@ -275,7 +276,10 @@ pub(super) fn compile<'a>(
     routes
         .try_reserve_exact(count)
         .map_err(|_| routing::EncodeError::NoMemory)?;
-    for declaration in declarations {
+    locations
+        .try_reserve_exact(count)
+        .map_err(|_| routing::EncodeError::NoMemory)?;
+    for (index, declaration) in declarations {
         let mut members = Vec::new();
         let action = match &declaration.action {
             StaticAction::Discard => Action::Discard,
@@ -331,6 +335,8 @@ pub(super) fn compile<'a>(
             attributes: ordinal,
             next_hop: ordinal,
         });
+        let location = u32::try_from(index + 1).map_err(|_| routing::EncodeError::Invalid)?;
+        locations.push(NonZeroU32::new(location).ok_or(routing::EncodeError::Invalid)?);
     }
     let mut hops = Vec::new();
     hops.try_reserve_exact(paths.len())
@@ -340,5 +346,5 @@ pub(super) fn compile<'a>(
             .iter()
             .map(|(action, members)| NextHop::new(*action, members)),
     );
-    Batch::encode(family, &attributes, &hops, &routes)
+    Batch::encode_located(family, &attributes, &hops, &routes, &locations)
 }

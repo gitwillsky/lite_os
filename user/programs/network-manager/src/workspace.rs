@@ -16,6 +16,9 @@ pub(super) enum Page {
     Configuration,
     Backups,
     Addresses,
+    Ipv6Addresses,
+    Ipv6Nd,
+    DhcpServer,
     Ping,
     Trace,
     Bandwidth,
@@ -31,12 +34,13 @@ impl Page {
             Self::Arp | Self::Ipv6Neighbors => (790, 420),
             Self::Configuration | Self::Backups => (720, 460),
             Self::Bridges => (900, 420),
-            Self::Addresses => (720, 360),
+            Self::Addresses | Self::Ipv6Addresses => (720, 360),
+            Self::DhcpServer | Self::Ipv6Nd => (720, 390),
             Self::Ping | Self::Trace | Self::Bandwidth => (640, 420),
         }
     }
 
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 18] = [
         Self::Interfaces,
         Self::Bridges,
         Self::Routes,
@@ -49,6 +53,9 @@ impl Page {
         Self::Configuration,
         Self::Backups,
         Self::Addresses,
+        Self::Ipv6Addresses,
+        Self::Ipv6Nd,
+        Self::DhcpServer,
         Self::Ping,
         Self::Trace,
         Self::Bandwidth,

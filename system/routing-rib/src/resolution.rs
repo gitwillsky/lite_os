@@ -10,6 +10,7 @@ mod address;
 pub use address::RibAddress;
 mod installation;
 mod selection;
+mod static_routes;
 mod tracking;
 mod weights;
 use weights::{Part, Weight};
@@ -29,6 +30,13 @@ impl NextHop {
     /// 已解析的全部成员；终止动作没有成员。
     pub fn members(&self) -> &[Member] {
         &self.members
+    }
+
+    fn via(&self, address: IpAddr) -> impl ExactSizeIterator<Item = Member> + '_ {
+        self.members.iter().copied().map(move |mut member| {
+            member.target.gateway = member.target.gateway.or(Some(address));
+            member
+        })
     }
 }
 /// 解析中被剔除的分支；有其他可用成员时仍可以得到非空转发组。
@@ -59,6 +67,10 @@ enum State {
 struct Frame {
     node: usize,
     cursor: usize,
+    expansion: Expansion,
+}
+#[derive(Default)]
+struct Expansion {
     parts: Vec<Part>,
     issues: Issues,
 }
@@ -67,8 +79,7 @@ impl Frame {
         Self {
             node,
             cursor: 0,
-            parts: Vec::new(),
-            issues: Issues::default(),
+            expansion: Expansion::default(),
         }
     }
 }
@@ -93,18 +104,35 @@ pub struct Resolved<A, D, M = ()> {
     groups: Vec<Arc<NextHop>>,
 }
 impl<A: Address, D, M> Resolved<A, D, M> {
+    fn exact_index(&self, address: A, length: u8) -> Option<usize> {
+        self.catalogue
+            .index
+            .prefixes()
+            .binary_search_by_key(&(address, length), |prefix| (prefix.network, prefix.length))
+            .ok()
+    }
+
     fn view(&self, row: u32) -> Selected<'_, A, D, M> {
         let reference = self.catalogue.references[row as usize];
         let candidate = self.catalogue.project(reference);
-        let node = self.offsets[reference.source as usize] + candidate.route.next_hop as usize;
-        let result = self.results[node].expect("selected declaration was resolved");
+        let result = self
+            .result(reference, candidate.route.next_hop)
+            .expect("selected declaration was resolved");
         Selected {
             candidate,
-            next_hop: result
-                .hop
-                .map(|id| self.groups[id.get() as usize - 1].as_ref()),
+            next_hop: self.hop(result),
             issues: result.issues,
         }
+    }
+
+    fn result(&self, reference: Reference, next_hop: u32) -> Option<Resolution> {
+        self.results[self.offsets[reference.source as usize] + next_hop as usize]
+    }
+
+    fn hop(&self, result: Resolution) -> Option<&NextHop> {
+        result
+            .hop
+            .map(|id| self.groups[id.get() as usize - 1].as_ref())
     }
     /// 按前缀顺序借用选定候选，包括不可解析项，供重选/诊断使用；不分配或克隆 Arc。
     pub fn selected(&self) -> impl Iterator<Item = Selected<'_, A, D, M>> + Clone {
@@ -127,11 +155,18 @@ impl<A: Address, D, M> Resolved<A, D, M> {
                 (row != u32::MAX).then(|| self.view(row))
             })
     }
+    /// 借用指定规范前缀的选择，既不向父前缀回退，也不重新选路。
+    pub fn exact(&self, address: A, length: u8) -> Option<Selected<'_, A, D, M>> {
+        let index = self.exact_index(address, length)?;
+        let row = self.selected[index];
+        (row != u32::MAX).then(|| self.view(row))
+    }
     /// 不同解析组数量；包含有引用的终止动作，不表示 FIB 安装数量。
     pub fn group_count(&self) -> usize {
         self.groups.len()
     }
 }
+
 impl<A: RibAddress, D, M> Catalogue<A, D, super::NextHop, M> {
     /// 冻结每个前缀的首个 eligible 候选，并在同一集合中递归展开全部已选择下一跳。
     /// # Parameters
@@ -379,47 +414,65 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
         self.groups.push(hop);
         Ok(id)
     }
-    fn append_recursive(
-        frame: &mut Frame,
-        member: router_protocol::routing::Member,
+}
+
+impl Expansion {
+    fn direct(
+        &mut self,
+        target: Adjacency,
+        weight: u32,
+        usable: &mut impl FnMut(&Adjacency) -> bool,
+    ) -> Result<(), Error> {
+        if usable(&target) {
+            self.parts.try_reserve(1).map_err(|_| Error::NoMemory)?;
+            self.parts.push(Part {
+                target,
+                weight: Weight::direct(weight),
+            });
+        } else {
+            self.issues.unreachable = true;
+        }
+        Ok(())
+    }
+
+    fn recursive(
+        &mut self,
+        address: IpAddr,
+        weight: u32,
         child: Option<&NextHop>,
         usable: &mut impl FnMut(&Adjacency) -> bool,
     ) -> Result<(), Error> {
-        let Target::Recursive(address) = member.target else {
-            unreachable!("only recursive members await a child");
-        };
         if let Some(hop) = child.filter(|hop| hop.action == Action::Forward) {
-            let start = frame.parts.len();
+            let start = self.parts.len();
             let mut total = 0u64;
-            frame
-                .parts
+            self.parts
                 .try_reserve(hop.members.len())
                 .map_err(|_| Error::NoMemory)?;
-            for resolved in &hop.members {
-                let mut target = resolved.target;
-                // 直接相连前缀没有网关时，使用本层 NEXT_HOP；已有立即网关则保持它。
-                target.gateway = target.gateway.or(Some(address));
+            for resolved in hop.via(address) {
+                let target = resolved.target;
                 if usable(&target) {
                     total += u64::from(resolved.weight);
-                    frame.parts.push(Part {
+                    self.parts.push(Part {
                         target,
                         weight: Weight::direct(resolved.weight),
                     });
                 } else {
-                    frame.issues.unreachable = true;
+                    self.issues.unreachable = true;
                 }
             }
             // 新立即网关可能使部分出口失效；按本层仍可用成员重新分配父路径权重。
             // 空区间不执行除法，所有存入 Part 的成员均有正权重，所以非空区间 total > 0。
-            for part in &mut frame.parts[start..] {
-                part.weight = part.weight.scale(member.weight, total)?;
+            for part in &mut self.parts[start..] {
+                part.weight = part.weight.scale(weight, total)?;
             }
         } else {
-            frame.issues.unreachable = true;
+            self.issues.unreachable = true;
         }
-        frame.cursor += 1;
         Ok(())
     }
+}
+
+impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
     fn walk(
         &mut self,
         root: usize,
@@ -441,11 +494,17 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
                     return Ok(result);
                 };
                 let member = self.nodes[frame.node].members()[frame.cursor];
+                let Target::Recursive(address) = member.target else {
+                    unreachable!("only recursive members await a child");
+                };
                 let child = result
                     .hop
                     .map(|id| self.groups[id.get() as usize - 1].as_ref());
-                frame.issues.include(result.issues);
-                Self::append_recursive(frame, member, child, usable)?;
+                frame.expansion.issues.include(result.issues);
+                frame
+                    .expansion
+                    .recursive(address, member.weight, child, usable)?;
+                frame.cursor += 1;
                 continue;
             }
             let frame = stack.last_mut().expect("root frame exists until returned");
@@ -453,7 +512,7 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
             if declaration.action() != Action::Forward
                 || frame.cursor == declaration.members().len()
             {
-                let members = weights::normalize(core::mem::take(&mut frame.parts))?;
+                let members = weights::normalize(core::mem::take(&mut frame.expansion.parts))?;
                 let hop = if declaration.action() != Action::Forward || !members.is_empty() {
                     Some(self.intern(NextHop {
                         action: declaration.action(),
@@ -464,7 +523,7 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
                 };
                 let result = Resolution {
                     hop,
-                    issues: frame.issues,
+                    issues: frame.expansion.issues,
                 };
                 // 环路剪枝的结果依赖当前祖先，不能作为另一根的正/负 memo；无环子图可以安全共享。
                 self.states[frame.node] = if result.issues.cycle {
@@ -488,15 +547,7 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
                         gateway,
                         on_link,
                     };
-                    if usable(&target) {
-                        frame.parts.try_reserve(1).map_err(|_| Error::NoMemory)?;
-                        frame.parts.push(Part {
-                            target,
-                            weight: Weight::direct(member.weight),
-                        });
-                    } else {
-                        frame.issues.unreachable = true;
-                    }
+                    frame.expansion.direct(target, member.weight, usable)?;
                     frame.cursor += 1;
                 }
                 Target::Recursive(address) => {
@@ -505,23 +556,24 @@ impl<A: RibAddress, D, M> Compiler<'_, A, D, M> {
                         let child =
                             underlay.and_then(|underlay| lookup_underlay(underlay, address));
                         if let Some(child) = &child {
-                            frame.issues.include(child.issues);
+                            frame.expansion.issues.include(child.issues);
                         }
-                        Self::append_recursive(
-                            frame,
-                            member,
+                        frame.expansion.recursive(
+                            address,
+                            member.weight,
                             child.and_then(|child| child.next_hop),
                             usable,
                         )?;
+                        frame.cursor += 1;
                         continue;
                     };
                     match self.target(index).map(|node| (node, self.states[node])) {
                         None => {
-                            frame.issues.unreachable = true;
+                            frame.expansion.issues.unreachable = true;
                             frame.cursor += 1;
                         }
                         Some((_, State::Active)) => {
-                            frame.issues.cycle = true;
+                            frame.expansion.issues.cycle = true;
                             frame.cursor += 1;
                         }
                         Some((_, State::Cached(result))) => returned = Some(result),

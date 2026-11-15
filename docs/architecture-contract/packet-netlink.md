@@ -92,6 +92,7 @@ IPv6 多地址、双栈应用组播及路径 MTU 的支持范围见[链路网络
 ### NETLINK_ROUTE actual 域与 owner
 
 `RTM_GETLINK` 通过实际接口索引配对链路元数据与 `IFLA_STATS64`，只返回两份快照中都存在的接口。同名接口被移除后重建时，旧链路不会取得新接口的计数。
+桌面双栈地址页取得同一命名空间的 `RTM_GETLINK` 和 `RTM_GETADDR`，按接口索引关联链路和地址，用原生配置代际提交静态声明。具名域在独占读取线程进入命名空间，退出后释放描述符。
 原生网络域 `NETWORK_SNAPSHOT` 行以 u32 接口索引开头，后接原有带长度前缀的 16 字节接口名和收发计数。索引与逻辑计数在同一次 NET 读中取得。
 
 `RouteSocket` 与 `KobjectSocket` 是两个独立 backend，共享同一张 `(协议, NET, port)` 端口表（`kobject::with_ports`/`choose_port`），

@@ -9,7 +9,7 @@ use crate::{
 use liteos_ui::{Event, Layout, Widget, WidgetKind, state};
 use network_config::configuration::connections::{Connection, Identity, Phase, Protocol};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Field {
     Flags,
     Source,
@@ -98,13 +98,10 @@ impl Field {
             Self::ReplySourcePort => port(row.reply_source.port()),
             Self::ReplyDestination => row.reply_destination.ip().to_string(),
             Self::ReplyDestinationPort => port(row.reply_destination.port()),
-            Self::Protocol => match row.protocol {
-                Protocol::Tcp => "6 (tcp)",
-                Protocol::Udp => "17 (udp)",
-                Protocol::Echo if row.source.is_ipv4() => "1 (icmp)",
-                Protocol::Echo => "58 (ipv6-icmp)",
+            Self::Protocol => {
+                let (number, name) = protocol_number_and_name(row);
+                format!("{number} ({name})")
             }
-            .into(),
             Self::TcpState if row.protocol != Protocol::Tcp => String::new(),
             Self::TcpState => match row.phase {
                 Phase::Opening => "握手中",
@@ -114,6 +111,15 @@ impl Field {
             }
             .into(),
         }
+    }
+}
+
+pub(super) fn protocol_number_and_name(row: &Connection) -> (u8, &'static str) {
+    match row.protocol {
+        Protocol::Tcp => (6, "tcp"),
+        Protocol::Udp => (17, "udp"),
+        Protocol::Echo if row.source.is_ipv4() => (1, "icmp"),
+        Protocol::Echo => (58, "ipv6-icmp"),
     }
 }
 

@@ -12327,6 +12327,7 @@ system/router-config/src/routing.rs :: pub (super) fn sources_changed (previous 
 system/router-config/src/routing.rs :: pub (super) struct Compiled
 system/router-config/src/routing_domains.rs :: pub (super) Domains :: rescan : bool
 system/router-config/src/routing_domains.rs :: pub (super) Domains :: retry_at : Option < i64 >
+system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn applied_controller (& self , name : & str) -> Result < & RoutingConfigurator , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn bgp_closed (& mut self) -> bool
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn bgp_instance (& self , name : & str) -> Result < & BgpInstance , Status >
 system/router-config/src/routing_domains.rs :: pub (super) impl Domains :: fn controller (& self , name : & str) -> Result < & RoutingConfigurator , Status >

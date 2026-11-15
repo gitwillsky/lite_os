@@ -15,13 +15,13 @@ use network_config::routes::{
     Cursor, Family, Page as RoutePage, Position, RouteKind, RouteObservation, Row, TABLE_LOCAL,
     TABLE_MAIN, observation::Update,
 };
-use std::{cell::RefCell, io, os::fd::AsFd, rc::Rc, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, io, os::fd::AsFd, rc::Rc, sync::Arc};
 
 mod bgp;
 mod editor;
 mod ospf;
 mod static_routes;
-pub(crate) use editor::{RuleKind, edit_rule, interface_names, rule_address};
+pub(crate) use editor::{InputError, RuleFields, RuleKind, RuleSources, interface_names, rule_address, rule_tab};
 
 pub(super) use static_routes::Page as StaticRoutes;
 
@@ -424,7 +424,7 @@ fn protocol_label(protocol: u8) -> String {
     }
 }
 
-fn form(
+pub(super) fn form(
     dialogs: &Dialogs,
     parent: &Window,
     title: &str,
@@ -555,13 +555,8 @@ fn row_text(row: &Row) -> String {
     let (name, weight) = row.hop.map_or_else(
         || ("—".into(), "—".into()),
         |hop| {
-            let end = hop
-                .name
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(hop.name.len());
             (
-                String::from_utf8_lossy(&hop.name[..end]).into_owned(),
+                interface_name(&hop.name).into_owned(),
                 hop.weight.to_string(),
             )
         },
@@ -575,12 +570,20 @@ fn row_text(row: &Row) -> String {
     )
 }
 
-/// RouterOS 7 的路由标志：D 动态、A 生效，后缀为来源（c 直连、s 静态、d DHCP、b BGP、o OSPF）。
-/// 观察到的都是已安装的路由，因此都带 A；静态与启动配置是管理员配置，不带 D。
+fn interface_name(name: &[u8; 16]) -> Cow<'_, str> {
+    let end = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
+    String::from_utf8_lossy(&name[..end])
+}
+
+/// RouterOS 7 的路由标志。观察到的都是已安装的路由，静态与启动配置不带 D。
 fn flags(row: &Row) -> String {
     let source = match row.protocol {
         2 => "c",
         3 | 4 => "s",
+        9 => "g",
         16 => "d",
         network_config::configuration::bgp::ROUTE_PROTOCOL => "b",
         network_config::configuration::ospf::ROUTE_PROTOCOL => "o",

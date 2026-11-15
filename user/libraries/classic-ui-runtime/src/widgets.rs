@@ -279,8 +279,8 @@ pub fn validate_state(kind: u32, value: u32) -> io::Result<()> {
     if value & state::VSCROLL != 0 && kind != widget::COLUMN {
         return Err(invalid("vertical viewport requires a column"));
     }
-    if value & state::READ_ONLY != 0 && kind != widget::TEXT_EDITOR {
-        return Err(invalid("read-only state requires a multiline editor"));
+    if value & state::READ_ONLY != 0 && !matches!(kind, widget::EDIT | widget::TEXT_EDITOR) {
+        return Err(invalid("read-only state requires an edit control"));
     }
     Ok(())
 }

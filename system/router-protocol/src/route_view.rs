@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::net::IpAddr;
 
 pub mod observation;
+pub mod selection;
 
 pub use crate::routing::RouteKind;
 
@@ -15,6 +16,7 @@ const CURSOR_VERSION: u32 = 2;
 const VERSION: u32 = 1;
 const HEADER: usize = 14;
 const ROW_BYTES: usize = 96;
+const HOP_BYTES: usize = 42;
 
 /// 在单族生效路由与下一跳组内的位置，均从零开始。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,16 +186,7 @@ impl Row {
         self.prefix.valid()
             && same_family(self.prefix.network)
             && self.preferred_source.is_none_or(same_family)
-            && self.hop.is_none_or(|hop| {
-                let name_end = hop.name.iter().position(|&byte| byte == 0).unwrap_or(16);
-                hop.interface != 0
-                    && hop.weight != 0
-                    && name_end != 0
-                    && !hop.name[..name_end].iter().any(u8::is_ascii_control)
-                    && hop.name[name_end..].iter().all(|&byte| byte == 0)
-                    && (family == Family::Ipv4
-                        || hop.gateway.is_none_or(|address| address.is_ipv6()))
-            })
+            && self.hop.is_none_or(|hop| hop.valid(family))
     }
 
     fn write(self, output: &mut Vec<u8>) -> Result<(), Invalid> {
@@ -205,13 +198,9 @@ impl Row {
         output.extend_from_slice(&[self.scope, self.protocol, self.kind.code()]);
         write_address(output, self.preferred_source);
         if let Some(hop) = self.hop {
-            output.extend_from_slice(&hop.interface.to_le_bytes());
-            output.extend_from_slice(&hop.name);
-            write_address(output, hop.gateway);
-            output.extend_from_slice(&hop.weight.to_le_bytes());
-            output.push(u8::from(hop.on_link));
+            hop.write(output);
         } else {
-            output.extend_from_slice(&[0; 42]);
+            output.extend_from_slice(&[0; HOP_BYTES]);
         }
         Ok(())
     }
@@ -228,29 +217,7 @@ impl Row {
         let protocol = input.u8()?;
         let kind = RouteKind::from_code(input.u8()?).ok_or(Invalid)?;
         let preferred_source = read_address(input)?;
-        let interface = input.u32()?;
-        let name = input.take(16)?.try_into().expect("name width");
-        let gateway = read_address(input)?;
-        let weight = input.u32()?;
-        let on_link = match input.u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(Invalid),
-        };
-        let hop = if interface == 0 {
-            if name != [0; 16] || gateway.is_some() || weight != 0 || on_link {
-                return Err(Invalid);
-            }
-            None
-        } else {
-            Some(NextHop {
-                interface,
-                name,
-                gateway,
-                weight,
-                on_link,
-            })
-        };
+        let hop = NextHop::read(input)?;
         Ok(Self {
             position,
             prefix,
@@ -262,6 +229,51 @@ impl Row {
             preferred_source,
             hop,
         })
+    }
+}
+
+impl NextHop {
+    fn valid(self, family: Family) -> bool {
+        let name_end = self.name.iter().position(|&byte| byte == 0).unwrap_or(16);
+        self.interface != 0
+            && self.weight != 0
+            && name_end != 0
+            && !self.name[..name_end].iter().any(u8::is_ascii_control)
+            && self.name[name_end..].iter().all(|&byte| byte == 0)
+            && (family == Family::Ipv4 || self.gateway.is_none_or(|address| address.is_ipv6()))
+    }
+
+    fn write(self, output: &mut Vec<u8>) {
+        output.extend_from_slice(&self.interface.to_le_bytes());
+        output.extend_from_slice(&self.name);
+        write_address(output, self.gateway);
+        output.extend_from_slice(&self.weight.to_le_bytes());
+        output.push(u8::from(self.on_link));
+    }
+
+    fn read(input: &mut Decoder<'_>) -> Result<Option<Self>, Invalid> {
+        let interface = input.u32()?;
+        let name = input.take(16)?.try_into().expect("name width");
+        let gateway = read_address(input)?;
+        let weight = input.u32()?;
+        let on_link = match input.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Invalid),
+        };
+        if interface != 0 {
+            Ok(Some(Self {
+                interface,
+                name,
+                gateway,
+                weight,
+                on_link,
+            }))
+        } else if name == [0; 16] && gateway.is_none() && weight == 0 && !on_link {
+            Ok(None)
+        } else {
+            Err(Invalid)
+        }
     }
 }
 
@@ -301,14 +313,11 @@ impl Page {
         if !cursor.valid()
             || self.rows.len() > LIMIT
             || !self.rows.is_sorted_by(|a, b| a.position < b.position)
-            || self
-                .rows
-                .iter()
-                .any(|row| {
-                    !row.valid(cursor.family)
-                        || row.position < cursor.start
-                        || cursor.prefix.is_some_and(|prefix| prefix != row.prefix)
-                })
+            || self.rows.iter().any(|row| {
+                !row.valid(cursor.family)
+                    || row.position < cursor.start
+                    || cursor.prefix.is_some_and(|prefix| prefix != row.prefix)
+            })
             || self.next.is_some_and(|next| {
                 self.rows.len() != LIMIT || self.rows.last().is_none_or(|row| next <= row.position)
             })

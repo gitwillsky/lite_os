@@ -1,6 +1,8 @@
 //! IPv4 与 IPv6 防火墙工作区。每个窗口共用规则页和连接页的生命周期。
 
+mod address_lists;
 mod catalog;
+mod property;
 mod rules;
 
 use crate::{child, connections, routes::RuleKind, workspace::Workspace};
@@ -12,6 +14,7 @@ pub(super) struct FirewallWindow {
     tabs: Widget,
     rules: [(Widget, rules::Page); 2],
     connections: (Widget, connections::Page),
+    address_lists: (Widget, address_lists::Page),
 }
 
 impl FirewallWindow {
@@ -54,11 +57,14 @@ impl FirewallWindow {
             rule_pane("NAT", RuleKind::Nat)?,
         ];
         let parent = pane("连接")?;
-        let connections = connections::Page::new(app, &parent, background, family)?;
+        let connections = connections::Page::new(app, &parent, background.clone(), family)?;
+        let lists = pane("地址列表")?;
+        let address_lists = address_lists::Page::new(&lists, background, family)?;
         Ok(Self {
             tabs,
             rules,
             connections: (parent, connections),
+            address_lists: (lists, address_lists),
         })
     }
 
@@ -73,7 +79,9 @@ impl FirewallWindow {
             rules.show(app, window, open && selected == Some(pane.id()))?;
         }
         let (pane, connections) = &mut self.connections;
-        connections.selected_tab(app, window, open && selected == Some(pane.id()))
+        connections.selected_tab(app, window, open && selected == Some(pane.id()))?;
+        let (pane, lists) = &mut self.address_lists;
+        lists.show(app, window, open && selected == Some(pane.id()))
     }
 
     pub(super) fn select_domain(
@@ -85,7 +93,10 @@ impl FirewallWindow {
         for (_, rules) in &mut self.rules {
             rules.select_domain(app, window, domain.clone())?;
         }
-        self.connections.1.select_domain(app, window, domain)
+        self.connections
+            .1
+            .select_domain(app, window, domain.clone())?;
+        self.address_lists.1.select_domain(app, window, domain)
     }
 
     pub(super) fn handle(
@@ -103,8 +114,9 @@ impl FirewallWindow {
             self.show(app, window, true)?;
         }
         for (_, rules) in &mut self.rules {
-            rules.handle(app, window, event)?;
+            rules.handle(app, window, workspace, event)?;
         }
-        self.connections.1.handle(app, window, workspace, event)
+        self.connections.1.handle(app, window, workspace, event)?;
+        self.address_lists.1.handle(app, window, workspace, event)
     }
 }

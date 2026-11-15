@@ -26,8 +26,7 @@ impl StaticTables {
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         for (id, [four, six]) in declarations {
             // 来源 ID 仅在各表的独立目录内有意义；来源协议和优先级沿用主表的静态来源约定。
-            let capture =
-                |body| Routes::capture_source(2, CONFIGURATION_DOMAIN, STATIC_PROTOCOL, 1, body);
+            let capture = |body| Routes::capture_static(2, body);
             let Declaration::Ipv4(four) = capture(four)?.declaration else {
                 return Err(native_abi::ERR_INVALID_ARGS);
             };

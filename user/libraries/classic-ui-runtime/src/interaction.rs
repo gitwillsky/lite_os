@@ -274,22 +274,18 @@ impl Tree {
                         .is_some_and(|node| node.focusable() && self.active(*id))
                 }) {
                     if self.nodes[&id].text_editable() {
-                        let edit = self
-                            .nodes
-                            .get_mut(&id)
-                            .expect("focus node")
-                            .edit
-                            .as_mut()
-                            .expect("edit node");
+                        let node = self.nodes.get_mut(&id).expect("focus node");
+                        let read_only = node.state & state::READ_ONLY != 0;
+                        let edit = node.edit.as_mut().expect("edit node");
                         consumed = (!key.modifiers.control
                             && !key.modifiers.alt
                             && !key.modifiers.super_key
                             && (matches!(key.code, 105 | 106 | 102 | 107 | 14 | 111)
                                 || key.text.is_some_and(|text| !text.is_control())))
                             || (key.modifiers.control && key.code == 30);
-                        let before = edit.text().to_owned();
-                        edit.key(*key);
-                        if edit.text() != before {
+                        let before = (!read_only).then(|| edit.text().to_owned());
+                        edit.key_with_read_only(*key, read_only);
+                        if before.is_some_and(|before| edit.text() != before) {
                             out.push(abi::Event {
                                 window,
                                 node: id,

@@ -11,15 +11,14 @@ pub mod dynamic_library;
 pub mod filesystem;
 pub mod input;
 pub mod kobject;
-pub mod process;
-pub mod pty;
 /// Linux 链路报文接收。
 #[cfg(target_os = "linux")]
 pub mod packet;
-/// Linux 路由套接字的只读接口查询。
-#[cfg(target_os = "linux")]
-pub mod rtnetlink;
+pub mod process;
+pub mod pty;
 mod raw;
+/// Linux 路由套接字的只读接口查询。
+pub mod rtnetlink;
 pub mod shared_memory;
 pub mod time;
 pub mod unix;

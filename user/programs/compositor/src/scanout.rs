@@ -1,6 +1,7 @@
 //! 唯一的 DRM master：选中的 CPU/GPU 后端独占一对扫描目标与 page flip。
 
 use std::io;
+use std::time::{Duration, Instant};
 mod kms;
 
 use linux_uapi::drm::{Clip, DrmDevice, DumbBuffer, Topology, VirglResource};
@@ -33,6 +34,13 @@ impl Backend {
     }
 }
 
+/// 后缓冲由绘制、等待 KMS 接收、等待完成三个阶段串行拥有。
+enum Flip {
+    Idle,
+    Ready(Instant),
+    Pending(u64),
+}
+
 /// 单一 connector/CRTC 的显示输出。
 ///
 /// 画面总是先画进 `back`；`show_first` 把它交给 CRTC 并交换前后缓冲。
@@ -42,8 +50,8 @@ pub struct Scanout {
     kms: kms::Output,
     backend: Backend,
     back: usize,
-    /// 在途 flip 的序号；同一时刻至多一个 flip，缺少这条约束会让第二次 `PAGE_FLIP` 被内核以 `EBUSY` 拒绝。
-    pending: Option<u64>,
+    /// Ready 保留已绘制的后缓冲和损伤；Pending 以同一序号等待 DRM 事件。
+    flip: Flip,
     sequence: u64,
     // OWNER: 与同一对扫描目标同寿命，只存几何/损伤，不保留客户端像素。
     history: crate::compose::damage::History,
@@ -98,7 +106,7 @@ impl Scanout {
             kms,
             backend,
             back: 0,
-            pending: None,
+            flip: Flip::Idle,
             sequence: 0,
             history: crate::compose::damage::History::default(),
             boot_ready: [false; 2],
@@ -151,13 +159,13 @@ impl Scanout {
         }
     }
 
-    /// 在可写后缓冲绘制启动画面；flip 在途返回 WouldBlock，画面或设备错误直接传播。
+    /// 在可写后缓冲绘制启动画面；后缓冲已就绪或在途时返回 WouldBlock。
     pub fn paint_boot(
         &mut self,
         scene: &crate::boot::Scene,
         frame: crate::boot::Frame,
     ) -> io::Result<()> {
-        if self.pending.is_some() {
+        if !self.can_render() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         self.history.invalidate();
@@ -182,6 +190,7 @@ impl Scanout {
             })
             .collect();
         self.kms.damage(&damage);
+        self.flip = Flip::Ready(Instant::now());
         Ok(())
     }
 
@@ -197,31 +206,52 @@ impl Scanout {
             self.backend.framebuffer(self.back),
         )?;
         self.back ^= 1;
+        self.flip = Flip::Idle;
         Ok(())
+    }
+
+    /// 后缓冲是否可绘制。已绘制的帧必须先提交和完成。
+    pub(super) fn can_render(&self) -> bool {
+        matches!(self.flip, Flip::Idle)
     }
 
     /// 是否有 flip 尚未完成。
     pub fn flip_pending(&self) -> bool {
-        self.pending.is_some()
+        matches!(self.flip, Flip::Pending(_))
     }
 
-    /// 异步把后缓冲交给 CRTC；完成由 DRM fd 变为可读通知，随后调用 [`Scanout::complete_flip`]。
+    /// 非阻塞提交已绘制的帧。提交成功后由 DRM fd 报告完成。若 KMS 忙，
+    /// 保留这帧和它的 damage，在下个刷新周期重试；拒绝的提交不会产生完成事件。
+    /// 返回到重试还需等待的时间，供会话将其与其他唤醒合并。
     ///
     /// # Errors
     ///
-    /// 已有 flip 在途，或内核拒绝。
-    pub fn request_flip(&mut self) -> io::Result<()> {
-        if self.pending.is_some() {
-            return Err(io::Error::other("a page flip is already pending"));
+    /// 除瞬时 EBUSY 外的提交错误。
+    pub(super) fn submit_prepared(&mut self) -> io::Result<Option<Duration>> {
+        let Flip::Ready(retry_at) = self.flip else {
+            return Ok(None);
+        };
+        let now = Instant::now();
+        if retry_at > now {
+            return Ok(Some(retry_at.duration_since(now)));
         }
-        self.sequence += 1;
-        self.kms.present(
-            &self.device,
-            self.backend.framebuffer(self.back),
-            self.sequence,
-        )?;
-        self.pending = Some(self.sequence);
-        Ok(())
+        let sequence = self.sequence + 1;
+        match self
+            .kms
+            .present(&self.device, self.backend.framebuffer(self.back), sequence)
+        {
+            Ok(()) => {
+                self.sequence = sequence;
+                self.flip = Flip::Pending(sequence);
+                Ok(None)
+            }
+            Err(error) if error.kind() == io::ErrorKind::ResourceBusy => {
+                let period = Duration::from_nanos(self.frame_period_ns()?);
+                self.flip = Flip::Ready(now + period);
+                Ok(Some(period))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// 读出在途 flip 的完成事件并交换前后缓冲。
@@ -230,23 +260,23 @@ impl Scanout {
     ///
     /// 没有在途 flip、事件读取失败或序号不符。
     pub fn complete_flip(&mut self) -> io::Result<()> {
-        let expected = self
-            .pending
-            .ok_or_else(|| io::Error::other("no page flip is pending"))?;
+        let Flip::Pending(expected) = self.flip else {
+            return Err(io::Error::other("no page flip is pending"));
+        };
         let event = self.device.read_flip_event()?;
         if event.user_data != expected {
             return Err(io::Error::other(
                 "flip completion for an unexpected sequence",
             ));
         }
-        self.pending = None;
+        self.flip = Flip::Idle;
         self.back ^= 1;
         Ok(())
     }
 
     /// 按设备能力选择一次后端；CPU/GPU 消费同一标准 Wayland 内容、几何与叠加顺序。
     /// `overlay` 收到绘制面及其相对输出的物理原点。CPU 原点为零，GPU 使用叠加边界的左上角。
-    /// 已有 flip 时拒绝覆盖 back；渲染/提交失败直接返回错误。
+    /// 后缓冲已就绪或在途时拒绝覆盖；渲染或 GPU 提交失败直接返回错误。
     pub fn compose(
         &mut self,
         theme: &classic_theme::Theme,
@@ -254,7 +284,7 @@ impl Scanout {
         overlay_bounds: Option<canvas::Rect>,
         overlay: impl FnMut(canvas::Surface<'_>, (i32, i32)),
     ) -> io::Result<()> {
-        if self.pending.is_some() {
+        if !self.can_render() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let frame = self.history.prepare(
@@ -289,6 +319,7 @@ impl Scanout {
         }
         self.kms.damage(frame.output_rects());
         self.history.record(self.back, frame);
+        self.flip = Flip::Ready(Instant::now());
         Ok(())
     }
 

@@ -1,21 +1,31 @@
 //! 双栈静态路由公用的工作区属性表单。配置中没有对应语义的 WinBox 字段不显示。
 
-use super::catalog::{Key, table_name, target_text};
+use super::{
+    View,
+    catalog::{Key, Selections, table_name, target_text},
+    immediate::ImmediateGateway,
+    installed::Installed,
+};
 use crate::{
     child,
     item_list::{note, set_note, spacer},
     item_properties::{button, field},
     workspace::Workspace,
 };
-use liteos_ui::{Event, EventKind, Layout, TreeRow, Widget, WidgetKind, state};
+use liteos_ui::{
+    Background, Clock, Event, EventKind, Layout, TreeRow, Widget, WidgetKind, Window, state,
+};
 use network_config::{
-    Revision,
+    ManagementClient, Revision,
     configuration::{
         ConfigurationName, IpPrefix, StaticAction, StaticMember, StaticRoute, StaticTarget,
     },
-    routes::Family,
+    routes::{
+        Family, NextHop,
+        selection::{State, paths},
+    },
 };
-use std::net::IpAddr;
+use std::{cell::RefCell, net::IpAddr, rc::Rc, time::Duration};
 
 pub(super) struct Binding {
     pub revision: Revision,
@@ -29,6 +39,161 @@ pub(super) enum Request {
     Remove,
 }
 
+pub(super) struct ObservedProperty {
+    pub frame: Widget,
+    pub entry: Installed,
+    close: Widget,
+    immediate: ImmediateGateway,
+    _layout: Vec<Widget>,
+}
+
+impl ObservedProperty {
+    pub(super) fn new(workspace: &Workspace, entry: &Installed) -> liteos_ui::Result<Self> {
+        let prefix = entry.prefix();
+        let gateway = entry.gateway();
+        let frame = workspace.item_window(&format!("路由 > {prefix} → {gateway}"), (490, 314))?;
+        let grow = Layout {
+            grow: 1,
+            ..Layout::default()
+        };
+        let root = child(
+            &frame,
+            WidgetKind::Column,
+            "",
+            Layout {
+                padding: 4,
+                gap: 4,
+                ..grow
+            },
+        )?;
+        let tabs = child(&root, WidgetKind::Tabs, "", grow)?;
+        let general = child(
+            &tabs,
+            WidgetKind::Column,
+            "常规",
+            Layout {
+                padding: 10,
+                gap: 5,
+                ..Layout::default()
+            },
+        )?;
+        let mut layout = Vec::new();
+        for (label, value) in [("目的地址", prefix), ("网关", gateway)] {
+            let input = field(&general, &mut layout, label, WidgetKind::Edit, &value, true)?;
+            layout.push(input);
+        }
+        let immediate = ImmediateGateway::new(&general, &mut layout, entry.members())?;
+        for (label, value) in [
+            ("距离", entry.distance().into()),
+            ("路由表", table_name(entry.route.table)),
+        ] {
+            let input = field(&general, &mut layout, label, WidgetKind::Edit, &value, true)?;
+            layout.push(input);
+        }
+        let ipv4 = entry.route.prefix.network.is_ipv4();
+        let origin = entry.origin();
+        if ipv4 {
+            let status = StatusPage::new(&tabs, &mut layout, origin)?;
+            status.present("活动", Some(entry.route.metric))?;
+            layout.extend([status.contribution, status.cost]);
+        }
+        let footer = child(
+            &root,
+            WidgetKind::Row,
+            "",
+            Layout {
+                gap: 6,
+                ..Layout::default()
+            },
+        )?;
+        if ipv4 {
+            let flags = if matches!(entry.route.protocol, 3 | 4) {
+                format!("活动  {origin}")
+            } else {
+                format!("动态  活动  {origin}")
+            };
+            layout.push(child(
+                &footer,
+                WidgetKind::Label,
+                flags.trim_end(),
+                Layout::default(),
+            )?);
+        }
+        layout.push(spacer(&footer)?);
+        let close = child(
+            &footer,
+            WidgetKind::Button,
+            if ipv4 { "取消" } else { "确定" },
+            button(),
+        )?;
+        close.set_state(state::DEFAULT)?;
+        layout.extend([root, tabs, general, footer]);
+        Ok(Self {
+            frame,
+            entry: entry.clone(),
+            close,
+            immediate,
+            _layout: layout,
+        })
+    }
+
+    pub(super) fn closes(&self, event: &Event) -> bool {
+        matches!(event.kind, EventKind::Activate { .. })
+            && [self.frame.id(), self.close.id()].contains(&event.node)
+    }
+
+    pub(super) fn handle_gateway(
+        &mut self,
+        workspace: &Workspace,
+        window: &Window,
+        event: &Event,
+    ) -> liteos_ui::Result<bool> {
+        self.immediate
+            .handle(workspace, window, event, self.entry.members())
+    }
+}
+
+struct StatusPage {
+    contribution: Widget,
+    cost: Widget,
+}
+
+impl StatusPage {
+    fn new(tabs: &Widget, layout: &mut Vec<Widget>, origin: &str) -> liteos_ui::Result<Self> {
+        let page = child(
+            tabs,
+            WidgetKind::Column,
+            "状态",
+            Layout {
+                padding: 10,
+                gap: 5,
+                ..Layout::default()
+            },
+        )?;
+        for (label, value) in [("所属", origin), ("AFI", "ip")] {
+            let field = field(&page, layout, label, WidgetKind::Edit, value, true)?;
+            layout.push(field);
+        }
+        let contribution = field(&page, layout, "参选状态", WidgetKind::Edit, "", true)?;
+        let cost = field(&page, layout, "路由代价", WidgetKind::Edit, "", true)?;
+        layout.push(page);
+        Ok(Self { contribution, cost })
+    }
+
+    fn present(&self, contribution: &str, cost: Option<u32>) -> liteos_ui::Result<()> {
+        let cost = cost.map(|cost| cost.to_string()).unwrap_or_default();
+        for (field, value) in [
+            (&self.contribution, contribution),
+            (&self.cost, cost.as_str()),
+        ] {
+            if field.text()? != value {
+                field.set_text(value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct Editor {
     pub frame: Widget,
     // 标签、容器与空白只需存活。
@@ -36,6 +201,8 @@ pub(super) struct Editor {
     enabled: Widget,
     destination: Widget,
     gateway: Widget,
+    immediate: ImmediateGateway,
+    members: Vec<NextHop>,
     distance: Widget,
     table: Widget,
     blackhole: Widget,
@@ -45,6 +212,7 @@ pub(super) struct Editor {
     panel: Widget,
     remove: Widget,
     message: Widget,
+    status: Option<(StatusPage, Widget)>,
     pub binding: Binding,
 }
 
@@ -54,6 +222,7 @@ impl Editor {
         family: Family,
         tables: &[u32],
         binding: Binding,
+        selection: Option<State>,
     ) -> liteos_ui::Result<Self> {
         let current = binding.original.as_ref().map(|(_, route)| route);
         let prefix = current.map_or_else(
@@ -71,7 +240,7 @@ impl Editor {
         } else {
             "新建路由".into()
         };
-        let frame = workspace.item_window(&title, (490, 314))?;
+        let frame = workspace.item_window(&title, (490, 344))?;
         let grow = Layout {
             grow: 1,
             ..Layout::default()
@@ -131,6 +300,7 @@ impl Editor {
             &gateway_text,
             false,
         )?;
+        let immediate = ImmediateGateway::new(&general, &mut layout, &[])?;
         let distance = field(
             &general,
             &mut layout,
@@ -201,17 +371,27 @@ impl Editor {
                 ..Layout::default()
             },
         )?;
+        let status = if family == Family::Ipv4 {
+            Some((
+                StatusPage::new(&tabs, &mut layout, "静态")?,
+                child(&footer, WidgetKind::Label, "", Layout::default())?,
+            ))
+        } else {
+            None
+        };
         layout.push(spacer(&footer)?);
         let cancel = child(&footer, WidgetKind::Button, "取消", button())?;
         let apply = child(&footer, WidgetKind::Button, "应用", button())?;
         let ok = child(&footer, WidgetKind::Button, "确定", button())?;
         layout.extend([root, body, tabs, general, footer]);
-        let editor = Self {
+        let mut editor = Self {
             frame,
             _layout: layout,
             enabled,
             destination,
             gateway,
+            immediate,
+            members: Vec::new(),
             distance,
             table,
             blackhole,
@@ -221,14 +401,26 @@ impl Editor {
             panel,
             remove,
             message,
+            status,
             binding,
         };
         editor.ready(true)?;
+        editor.show_status(selection)?;
         editor.destination.focus()?;
         Ok(editor)
     }
 
-    pub(super) fn request(&self, event: &Event) -> liteos_ui::Result<Option<Request>> {
+    pub(super) fn handle_gateway(
+        &mut self,
+        workspace: &Workspace,
+        window: &Window,
+        event: &Event,
+    ) -> liteos_ui::Result<bool> {
+        self.immediate
+            .handle(workspace, window, event, &self.members)
+    }
+
+    pub(super) fn request(&mut self, event: &Event) -> liteos_ui::Result<Option<Request>> {
         if event.node == self.blackhole.id()
             && matches!(
                 event.kind,
@@ -255,7 +447,10 @@ impl Editor {
         )
     }
 
-    pub(super) fn ready(&self, ready: bool) -> liteos_ui::Result<()> {
+    pub(super) fn ready(&mut self, ready: bool) -> liteos_ui::Result<()> {
+        if !ready {
+            self.present_gateway(Vec::new())?;
+        }
         let enabled = if ready { 0 } else { state::DISABLED };
         let checked = self.blackhole.state()? & state::CHECKED;
         let terminal = self.binding.original.as_ref().is_some_and(|(_, route)| {
@@ -286,8 +481,9 @@ impl Editor {
     }
 
     /// 保存结果可确认但代际未知时，只允许关闭；不得用事后读出的索引重新绑定草稿。
-    pub(super) fn close_only(&self) -> liteos_ui::Result<()> {
+    pub(super) fn close_only(&mut self) -> liteos_ui::Result<()> {
         self.ready(false)?;
+        self.show_status(None)?;
         self.cancel.set_state(0)
     }
 
@@ -308,7 +504,71 @@ impl Editor {
             original: Some((key, route)),
             table: key.table,
         };
+        self.present_gateway(Vec::new())?;
+        self.show_status(None)?;
         self.panel.set_state(0)
+    }
+
+    pub(super) fn present_status(&self, selection: Option<&Selections>) -> liteos_ui::Result<()> {
+        let selected = (|| {
+            let (key, route) = self.binding.original.as_ref()?;
+            let candidate = key.candidate(route)?;
+            selection?.get(&(key.table, candidate.location)).copied()
+        })();
+        self.show_status(selected)
+    }
+
+    fn show_status(&self, selection: Option<State>) -> liteos_ui::Result<()> {
+        let Some((status, flags)) = &self.status else {
+            return Ok(());
+        };
+        let (contribution, cost, caption) = match selection {
+            Some(State::Active(metrics)) => ("活动", Some(metrics.cost), "活动  静态"),
+            Some(State::Standby(metrics)) => ("候选", Some(metrics.cost), "静态"),
+            Some(State::Unreachable(metrics)) => {
+                ("不可达", Some(metrics.cost), "不可达  静态  非活动")
+            }
+            Some(State::Absent) => ("", None, "静态  非活动"),
+            None => (
+                "",
+                None,
+                match &self.binding.original {
+                    Some((_, route)) if route.disabled => "停用  静态",
+                    Some(_) => "静态",
+                    None => "",
+                },
+            ),
+        };
+        status.present(contribution, cost)?;
+        if flags.text()? != caption {
+            flags.set_text(caption)?;
+        }
+        Ok(())
+    }
+
+    fn path(&self) -> Option<(Revision, paths::Request)> {
+        let (key, route) = self.binding.original.as_ref()?;
+        if route.disabled
+            || !matches!(route.action, StaticAction::Forward { .. })
+            || self.apply.state().ok()? & state::DISABLED != 0
+        {
+            return None;
+        }
+        Some((
+            self.binding.revision,
+            paths::Request {
+                table: key.table,
+                candidate: key.candidate(route)?,
+            },
+        ))
+    }
+
+    fn present_gateway(&mut self, members: Vec<NextHop>) -> liteos_ui::Result<()> {
+        if self.members != members {
+            self.immediate.present(&members)?;
+            self.members = members;
+        }
+        Ok(())
     }
 
     pub(super) fn note(&self, message: &str) -> liteos_ui::Result<()> {
@@ -380,6 +640,56 @@ impl Editor {
         self.note(reason)?;
         field.focus()?;
         Ok(None)
+    }
+}
+
+pub(super) async fn observe_gateway(
+    view: Rc<RefCell<View>>,
+    frame: u64,
+    background: Background,
+    clock: Clock,
+) {
+    loop {
+        let (path, scope) = {
+            let view = view.borrow();
+            let Some((_, editor)) = view
+                .editor
+                .as_ref()
+                .filter(|(_, editor)| editor.frame.id() == frame)
+            else {
+                return;
+            };
+            (editor.path(), view.scope.clone())
+        };
+        if let Some((revision, request)) = path {
+            let result = match background
+                .run(move || ManagementClient::local().static_paths(scope.as_deref(), request))
+            {
+                Ok(task) => task
+                    .await
+                    .ok()
+                    .filter(|(observed, _)| *observed == revision),
+                Err(_) => None,
+            };
+            let mut view = view.borrow_mut();
+            let Some((_, editor)) = view
+                .editor
+                .as_mut()
+                .filter(|(_, editor)| editor.frame.id() == frame)
+            else {
+                return;
+            };
+            if editor.path() == path {
+                let members = result.map(|(_, members)| members).unwrap_or_default();
+                if editor.present_gateway(members).is_err() {
+                    return;
+                }
+            }
+        }
+        let Ok(delay) = clock.sleep(Duration::from_secs(2)) else {
+            return;
+        };
+        delay.await;
     }
 }
 

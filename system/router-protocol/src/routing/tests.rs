@@ -110,32 +110,38 @@ fn malformed_sources_fail_before_exposing_unchecked_dictionary_views() {
     let hops = [NextHop::new(Action::Forward, &members)];
     let rows = [route("192.0.2.0".parse().unwrap(), 24, 0)];
     let bytes = Batch::encode(family, &attributes, hops, rows).unwrap();
+    let locations = [core::num::NonZeroU32::new(9).unwrap()];
+    let mut located = Batch::encode_located(family, &attributes, hops, rows, &locations).unwrap();
+    assert!(Batch::parse(&located).unwrap().locations().eq(locations));
+    let start = located.len() - 4;
+    located[start..].fill(0);
+    assert!(Batch::parse(&located).is_err());
     for end in 0..bytes.len() {
         assert!(Batch::parse(&bytes[..end]).is_err());
     }
     let mut tail = bytes.clone();
     tail.push(0);
     assert!(Batch::parse(&tail).is_err());
-    // 20-byte header, 8-byte attribute, 5-byte group header, 26-byte member.
+    // 24-byte header, 8-byte attribute, 5-byte group header, 26-byte member.
     for (offset, value) in [
         (0, 99),
         (4, 5),
-        (28, 9),
-        (33, 0),
-        (37, 9),
-        (38, 0),
-        (42, 4),
-        (43, 1),
-        (51, 1),
-        (63, 33),
-        (64, 1),
+        (32, 9),
+        (37, 0),
+        (41, 9),
+        (42, 0),
+        (46, 4),
+        (47, 1),
+        (55, 1),
+        (67, 33),
         (68, 1),
+        (72, 1),
     ] {
         let mut corrupt = bytes.clone();
         corrupt[offset] = value;
         assert!(Batch::parse(&corrupt).is_err(), "offset {offset}");
     }
-    for offset in [8, 12, 16] {
+    for offset in [8, 12, 16, 20] {
         let mut corrupt = bytes.clone();
         corrupt[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Batch::parse(&corrupt).is_err());

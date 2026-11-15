@@ -5,9 +5,8 @@ use crate::{
     routes::{Dialog, Section},
     workspace::Page,
 };
-use liteos_ui::{
-    ColorRole, Draw, Event, EventKind, FontRole, Layout, MenuItem, Rect, Widget, WidgetKind,
-};
+use liteos_ui::{ColorRole, Draw, Event, EventKind, Layout, MenuItem, Rect, Widget, WidgetKind};
+use network_config::configuration::RoutingFamily;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -25,17 +24,17 @@ enum Menu {
 #[derive(Clone, Copy)]
 pub(super) enum Action {
     Open(Page),
+    IpSettings(RoutingFamily),
     Dialog(Dialog),
     Terminal,
-    Exit,
 }
 
 const NAVIGATION: &[Menu] = {
     use Action::Open;
     use Dialog::Settings;
     use Page::{
-        Addresses, Arp, Backups, Bandwidth, Bridges, Configuration, Interfaces, Ipv4Firewall,
-        Ipv4Routes, Ipv6Firewall, Ipv6Neighbors, Ipv6Routes, Ping, Routes, Trace,
+        Addresses, Arp, Backups, Bandwidth, Bridges, Configuration, DhcpServer, Interfaces, Ipv4Firewall,
+        Ipv4Routes, Ipv6Addresses, Ipv6Firewall, Ipv6Nd, Ipv6Neighbors, Ipv6Routes, Ping, Routes, Trace,
     };
     &[
         Menu::Item(Entry {
@@ -58,16 +57,20 @@ const NAVIGATION: &[Menu] = {
                     action: Open(Addresses),
                 },
                 Entry {
+                    label: "DHCP 服务器",
+                    action: Open(DhcpServer),
+                },
+                Entry {
                     label: "防火墙",
                     action: Open(Ipv4Firewall),
                 },
                 Entry {
-                    label: "地址分发与 DNS",
-                    action: Action::Dialog(Settings(Some(Section::AddressServices))),
-                },
-                Entry {
                     label: "路由",
                     action: Open(Ipv4Routes),
+                },
+                Entry {
+                    label: "设置",
+                    action: Action::IpSettings(RoutingFamily::Ipv4),
                 },
             ],
         ),
@@ -75,8 +78,16 @@ const NAVIGATION: &[Menu] = {
             "IPv6",
             &[
                 Entry {
+                    label: "地址",
+                    action: Open(Ipv6Addresses),
+                },
+                Entry {
                     label: "防火墙",
                     action: Open(Ipv6Firewall),
+                },
+                Entry {
+                    label: "ND",
+                    action: Open(Ipv6Nd),
                 },
                 Entry {
                     label: "邻居",
@@ -85,6 +96,10 @@ const NAVIGATION: &[Menu] = {
                 Entry {
                     label: "路由",
                     action: Open(Ipv6Routes),
+                },
+                Entry {
+                    label: "设置",
+                    action: Action::IpSettings(RoutingFamily::Ipv6),
                 },
             ],
         ),
@@ -155,17 +170,19 @@ const NAVIGATION: &[Menu] = {
             label: "新终端",
             action: Action::Terminal,
         }),
-        Menu::Item(Entry {
-            label: "退出",
-            action: Action::Exit,
-        }),
     ]
 };
 
-/// 工作区窗口默认使用菜单项名称；IPv6 防火墙在标题上注明地址族。
+/// 工作区窗口默认使用菜单项名称；有双栈入口的 IPv6 窗口在标题上注明地址族。
 pub(super) fn title(page: Page) -> &'static str {
     if page == Page::Ipv6Firewall {
         return "IPv6 防火墙";
+    }
+    if page == Page::Ipv6Addresses {
+        return "IPv6 地址";
+    }
+    if page == Page::Ipv6Nd {
+        return "邻居发现";
     }
     NAVIGATION
         .iter()
@@ -178,13 +195,14 @@ pub(super) fn title(page: Page) -> &'static str {
         .label
 }
 
-/// 菜单行高、品牌条宽与菜单列宽（逻辑像素）。
-const ROW: i32 = 20;
-const BRAND: i32 = 26;
-const WIDTH: i32 = 136;
-const BRAND_TEXT: &str = "LiteOS 网络管理器";
-const BRAND_FILL: u32 = 0x2A3C8C;
-const BRAND_INK: u32 = 0xBCC8EE;
+/// 菜单行高、菜单上方的品牌区高度与菜单列宽（逻辑像素）。
+const ROW: i32 = 24;
+const BRAND_HEIGHT: i32 = 44;
+const WIDTH: i32 = 146;
+
+fn row_y(row: usize) -> i32 {
+    BRAND_HEIGHT + row as i32 * ROW
+}
 
 /// evdev 键码：方向键与回车。
 const KEY_UP: u32 = 103;
@@ -193,7 +211,6 @@ const KEY_RIGHT: u32 = 106;
 const KEY_ENTER: u32 = 28;
 
 pub(super) struct Navigation {
-    brand: Widget,
     menu: Widget,
     popup: Widget,
     pointer: (f64, f64),
@@ -204,21 +221,10 @@ pub(super) struct Navigation {
 }
 
 impl Navigation {
-    /// 在 `parent` 横向容器的左端建立品牌条与菜单列。
+    /// 在 `parent` 横向容器的左端建立带品牌标题的菜单列。
     ///
-    /// 错误：窗口已关闭或运行库拒绝字体设置。
+    /// 错误：窗口已关闭或无法创建控件。
     pub(super) fn new(parent: &Widget, popup: Widget) -> liteos_ui::Result<Self> {
-        let brand = child(
-            parent,
-            WidgetKind::Canvas,
-            "",
-            Layout {
-                width: BRAND,
-                min_width: BRAND,
-                ..Layout::default()
-            },
-        )?;
-        brand.set_font(FontRole::Caption, Some(14), Some(700))?;
         let menu = child(
             parent,
             WidgetKind::Canvas,
@@ -230,7 +236,6 @@ impl Navigation {
             },
         )?;
         Ok(Self {
-            brand,
             menu,
             popup,
             pointer: (0.0, 0.0),
@@ -333,7 +338,7 @@ impl Navigation {
         }])?;
         let bounds = self.menu.geometry()?;
         self.popup
-            .open_popup(Some((bounds.right(), bounds.y + row as i32 * ROW)))?;
+            .open_popup(Some((bounds.right(), bounds.y + row_y(row))))?;
         self.open = Some(row);
         self.paint()?;
         Ok(None)
@@ -343,7 +348,7 @@ impl Navigation {
         let bounds = self.menu.geometry()?;
         let (x, y) = (
             self.pointer.0 as i32 - bounds.x,
-            self.pointer.1 as i32 - bounds.y,
+            self.pointer.1 as i32 - bounds.y - BRAND_HEIGHT,
         );
         if !(0..bounds.width).contains(&x) || y < 0 {
             return Ok(None);
@@ -353,37 +358,27 @@ impl Navigation {
     }
 
     fn paint(&self) -> liteos_ui::Result<()> {
-        let height = self.brand.geometry()?.height;
-        // 品牌字自底边向上书写，底部留 10 像素；布局前高度可能不足，矩形高度不能为负。
-        self.brand.set_drawing(&[
-            fill(Rect::new(0, 0, BRAND, height), BRAND_FILL),
-            Draw {
-                kind: 9,
-                rect: Rect::new(0, 0, BRAND, (height - 10).max(0)),
-                color: BRAND_INK,
-                bold: true,
-                text: BRAND_TEXT,
-            },
-        ])?;
         let face = self.menu.color(ColorRole::Control)?;
         let text = self.menu.color(ColorRole::WindowText)?;
         let highlight = self.menu.color(ColorRole::Highlight)?;
         let highlight_text = self.menu.color(ColorRole::HighlightText)?;
-        // 经典蚀刻分隔线：按钮面的阴影色（约六成亮度）在上，白色高光在下。
-        let shadow = [16, 8, 0]
-            .iter()
-            .map(|shift| (((face >> shift) & 0xFF) * 3 / 5) << shift)
-            .sum::<u32>();
-        let mut commands = vec![fill(
-            Rect::new(0, 0, WIDTH, self.menu.geometry()?.height),
-            face,
-        )];
+        let height = self.menu.geometry()?.height;
+        let mut commands = vec![
+            fill(Rect::new(0, 0, WIDTH, height), face),
+            Draw {
+                kind: 3,
+                rect: Rect::new(12, 14, WIDTH - 24, BRAND_HEIGHT - 14),
+                color: text,
+                bold: true,
+                text: "LiteOS",
+            },
+        ];
         for (index, menu) in NAVIGATION.iter().enumerate() {
-            let y = index as i32 * ROW;
+            let y = row_y(index);
             let active =
                 self.open == Some(index) || (self.open.is_none() && self.hot == Some(index));
             let ink = if active {
-                commands.push(fill(Rect::new(1, y + 1, WIDTH - 2, ROW - 3), highlight));
+                commands.push(fill(Rect::new(0, y, WIDTH, ROW), highlight));
                 highlight_text
             } else {
                 text
@@ -391,10 +386,9 @@ impl Navigation {
             let label = match menu {
                 Menu::Item(entry) => entry.label,
                 Menu::Group(label, _) => {
-                    // 右指三角：自左向右四列，高度 7、5、3、1。
                     for column in 0..4 {
                         commands.push(fill(
-                            Rect::new(WIDTH - 14 + column, y + 6 + column, 1, 7 - 2 * column),
+                            Rect::new(WIDTH - 15 + column, y + 8 + column, 1, 7 - 2 * column),
                             ink,
                         ));
                     }
@@ -403,13 +397,11 @@ impl Navigation {
             };
             commands.push(Draw {
                 kind: 3,
-                rect: Rect::new(8, y + 3, WIDTH - 26, ROW - 4),
+                rect: Rect::new(20, y + 5, WIDTH - 42, ROW - 5),
                 color: ink,
                 bold: false,
                 text: label,
             });
-            commands.push(fill(Rect::new(2, y + ROW - 2, WIDTH - 4, 1), shadow));
-            commands.push(fill(Rect::new(2, y + ROW - 1, WIDTH - 4, 1), 0xFFFFFF));
         }
         self.menu.set_drawing(&commands)
     }

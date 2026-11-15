@@ -187,6 +187,7 @@ static API: Api = Api {
     read_column_width: list_view::read_column_width,
     slider_channel: widget_api::slider_channel,
     text_width: widget_api::text_width,
+    list_find: list_view::find,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

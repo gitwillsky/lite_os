@@ -49,6 +49,32 @@ fn namespace_control(
     Ok((inner.generation, network.duplicate()?))
 }
 
+fn confirmed_selection(
+    owner: &RouterConfig,
+    domain: Option<&str>,
+    read: impl FnOnce(&RoutingConfigurator) -> Result<Vec<u8>, Status>,
+) -> Result<(Revision, Vec<u8>), Status> {
+    // 固定配置代际与已应用的来源。精确查询遵守配置 → RIB 锁顺序，RIB 不回调配置 owner。
+    let inner = owner.inner.lock();
+    if inner.saved.is_none() || inner.rollback.is_some() {
+        return Err(native_abi::ERR_SHOULD_WAIT);
+    }
+    let control = if let Some(name) = domain {
+        require_domain(&inner, name)?;
+        inner.domains.applied_controller(name)?
+    } else {
+        if inner.source_retry_at.is_some() {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        &inner
+            .link
+            .as_ref()
+            .ok_or(native_abi::ERR_SHOULD_WAIT)?
+            .installer
+    };
+    Ok((inner.generation, read(control)?))
+}
+
 fn wait_connection_changes(owner: &RouterConfig, bytes: &[u8]) -> Result<(), Status> {
     let (domain, query) = router_protocol::administration::parse_scoped_query(bytes)
         .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
@@ -188,6 +214,16 @@ fn handle(
                 generation,
                 namespace.route_page(cursor).map_err(configuration_status)?,
             )
+        }
+        ordinal::STATIC_STATUS | ordinal::STATIC_PATHS => {
+            let query = content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?;
+            confirmed_selection(owner, metadata.domain, |control| {
+                if operation == ordinal::STATIC_STATUS {
+                    control.static_status(query)
+                } else {
+                    control.static_paths(query)
+                }
+            })?
         }
         ordinal::ROUTING_DOMAINS => {
             let (generation, saved) = {

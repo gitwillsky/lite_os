@@ -666,6 +666,25 @@ impl Widget {
         })?;
         Ok(width)
     }
+    /// 高亮整行选择模式的详细列表中的字面查找结果。匹配区分大小写，保留原行和操作选区。
+    ///
+    /// `query` 是查询。传入 `current` 时定位该行及其列；位置过期时仅标记可见匹配。
+    /// 空查询移除标记。列表类型、文本长度不符或窗口已关闭时返回错误。
+    pub fn set_list_find(&self, query: &str, current: Option<crate::ListMatch>) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 查询借用在调用期有效；坐标是纯值，运行库核对当前位置。
+            unsafe {
+                (c.api.list_find)(
+                    c.context.as_ptr(),
+                    w,
+                    id,
+                    text(query),
+                    current.unwrap_or_default(),
+                )
+            }
+        })
+    }
+
     /// 原子替换列表数据，标识非零且唯一；仅可见行参与绘制。
     pub fn set_rows(&self, values: &[(u64, &str)]) -> Result<()> {
         let rows: Vec<_> = values

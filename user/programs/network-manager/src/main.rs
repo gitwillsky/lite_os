@@ -5,13 +5,17 @@ mod backup;
 mod capture;
 mod configuration;
 mod connections;
+mod dhcp_server;
 mod diagnostics;
 mod firewall;
 mod interface_properties;
+mod ip_settings;
+mod ipv6_nd;
 mod item_list;
 mod item_properties;
 mod navigation;
 mod neighbors;
+mod network_scope;
 mod observation;
 mod probe;
 mod routes;
@@ -99,11 +103,16 @@ fn run() -> liteos_ui::Result<()> {
     };
     let content = window.widget(WidgetSpec {
         layout: Layout { gap: 0, ..grow },
-        ..WidgetSpec::new(WidgetKind::Column, "")
+        ..WidgetSpec::new(WidgetKind::Row, "")
     })?;
+    let mut navigation = Navigation::new(
+        &content,
+        window.widget(WidgetSpec::new(WidgetKind::PopupMenu, ""))?,
+    )?;
+    let body = child(&content, WidgetKind::Column, "", Layout { gap: 0, ..grow })?;
     // 1. 顶栏：路由域决定各观察窗口的查询范围。
     let top = child(
-        &content,
+        &body,
         WidgetKind::Row,
         "",
         Layout {
@@ -115,16 +124,11 @@ fn run() -> liteos_ui::Result<()> {
     let background = app.background()?;
     let mut routing_domains =
         observation::RoutingDomains::new(&mut app, &window, &top, background.clone())?;
-    // 2. 主体：左侧竖排品牌条和菜单，右侧多窗口工作区。
-    let body = child(&content, WidgetKind::Row, "", Layout { gap: 0, ..grow })?;
-    let mut navigation = Navigation::new(
-        &body,
-        window.widget(WidgetSpec::new(WidgetKind::PopupMenu, ""))?,
-    )?;
+    // 2. 多窗口工作区。
     let workspace = Workspace::new(&body, grow)?;
     // 3. 底部状态栏：主机与系统版本、CPU、内存、运行时间和本地时间。
     let _system_status =
-        system_status::SystemStatus::new(&mut app, &window, &content, background.clone())?;
+        system_status::SystemStatus::new(&mut app, &window, &body, background.clone())?;
     // 「工具」菜单的每种诊断是独立窗口，按页面与工具一一对应。
     let mut tools = [
         (Page::Ping, diagnostics::Tool::Ping),
@@ -137,8 +141,20 @@ fn run() -> liteos_ui::Result<()> {
     })
     .into_iter()
     .collect::<liteos_ui::Result<Vec<_>>>()?;
-    let addresses_root = workspace.content(Page::Addresses)?;
-    let mut addresses = addresses::Page::new(&app, &addresses_root, background.clone())?;
+    let mut addresses = [
+        (Page::Addresses, addresses::Family::Ipv4),
+        (Page::Ipv6Addresses, addresses::Family::Ipv6),
+    ]
+    .map(|(page, family)| {
+        addresses::Page::new(&workspace.content(page)?, background.clone(), family)
+            .map(|view| (page, view))
+    })
+    .into_iter()
+    .collect::<liteos_ui::Result<Vec<_>>>()?;
+    let mut forwarding = [addresses::Family::Ipv4, addresses::Family::Ipv6]
+        .map(|family| (family, ip_settings::Settings::new(background.clone(), family)));
+    let mut dhcp = dhcp_server::Page::new(&workspace.content(Page::DhcpServer)?, background.clone())?;
+    let mut nd = ipv6_nd::Page::new(&workspace.content(Page::Ipv6Nd)?, background.clone())?;
     let backup_root = workspace.content(Page::Backups)?;
     let mut backups = backup::Page::new(&backup_root, app.dialogs(), background.clone(), button)?;
     let config_root = workspace.content(Page::Configuration)?;
@@ -187,7 +203,6 @@ fn run() -> liteos_ui::Result<()> {
             return Ok(ControlFlow::Continue);
         }
         terminals.retain_mut(|terminal| matches!(terminal.try_wait(), Ok(None)));
-        let mut exit = matches!(event.kind, EventKind::Close);
         let mut opened = None;
         let mut changed = false;
         match navigation.handle(&event)? {
@@ -196,6 +211,12 @@ fn run() -> liteos_ui::Result<()> {
                     opened = Some(page);
                 }
                 changed = true;
+            }
+            Some(Action::IpSettings(family)) => {
+                if let Some((_, settings)) = forwarding.iter_mut().find(|(ip, _)| *ip == family) {
+                    settings.open(app, &window, &workspace, routing_domains.selected())?;
+                }
+                return Ok(ControlFlow::Continue);
             }
             Some(Action::Dialog(dialog)) => {
                 routes.open(app, &window, dialog)?;
@@ -219,10 +240,9 @@ fn run() -> liteos_ui::Result<()> {
                 }
                 return Ok(ControlFlow::Continue);
             }
-            Some(Action::Exit) => exit = true,
             None => {}
         }
-        if exit {
+        if matches!(event.kind, EventKind::Close) {
             if settings.confirm_close(app, &window)? {
                 return Ok(ControlFlow::PreventDefault);
             }
@@ -243,7 +263,11 @@ fn run() -> liteos_ui::Result<()> {
             changed = true;
         }
         if changed {
-            addresses.selected_tab(app, &window, workspace.is_open(Page::Addresses)?)?;
+            for (page, view) in &mut addresses {
+                view.show(app, &window, workspace.is_open(*page)?)?;
+            }
+            dhcp.show(app, &window, workspace.is_open(Page::DhcpServer)?)?;
+            nd.show(app, &window, workspace.is_open(Page::Ipv6Nd)?)?;
             bridges.selected_tab(app, &window, workspace.is_open(Page::Bridges)?)?;
             for (page, view) in &mut firewalls {
                 view.show(app, &window, workspace.is_open(*page)?)?;
@@ -266,7 +290,14 @@ fn run() -> liteos_ui::Result<()> {
         settings.handle(app, &window, &event, opened == Some(Page::Configuration))?;
         if routing_domains.handle(app, &window, &event)? {
             let domain = routing_domains.selected();
-            addresses.select_domain(app, &window, domain.clone())?;
+            for (_, settings) in &mut forwarding {
+                settings.close();
+            }
+            for (_, view) in &mut addresses {
+                view.select_domain(app, &window, domain.clone())?;
+            }
+            dhcp.select_domain(app, &window, domain.clone())?;
+            nd.select_domain(app, &window, domain.clone())?;
             bridges.select_domain(app, &window, domain.clone())?;
             for (_, view) in &mut firewalls {
                 view.select_domain(app, &window, domain.clone())?;
@@ -304,10 +335,14 @@ fn run() -> liteos_ui::Result<()> {
                 tool.handle(app, &window, &event, routing_domains.selected())?;
             }
         }
-        if let Some(dialog) = addresses.request(&event) {
-            routes.open(app, &window, dialog)?;
+        for (_, view) in &mut addresses {
+            view.handle(app, &window, &workspace, &event)?;
         }
-        addresses.handle(app, &window, &event)?;
+        for (_, settings) in &mut forwarding {
+            settings.handle(app, &window, &event)?;
+        }
+        dhcp.handle(app, &window, &workspace, &event)?;
+        nd.handle(app, &window, &workspace, &event)?;
         bridges.handle(app, &window, &event)?;
         Ok(ControlFlow::Continue)
     })

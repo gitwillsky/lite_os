@@ -2,7 +2,7 @@
 
 use canvas::Rect;
 
-use crate::{MenuItemState, Painter};
+use crate::{MenuItemState, MenuMetrics, Painter, Scroll};
 
 /// 下拉菜单的一个条目。
 #[derive(PartialEq, Eq)]
@@ -92,6 +92,9 @@ pub struct Popup {
     /// 打开时由菜单字体与主题度量算出的项高与分隔条高；行几何、命中与绘制共用。
     item_height: i32,
     separator_height: i32,
+    content_height: i32,
+    // 弹出层只绘制自己的视口；超出可见高度时保留偏移，否则后部条目无法命中。
+    scroll: Scroll,
 }
 
 /// 项高与分隔条高，规则见 [`crate::MenuMetrics`]。
@@ -147,10 +150,14 @@ impl Popup {
         trail.push(index);
         let items = submenu_items(&menus[parent.menu].items, &trail);
         let mut popup = Self::sized(p, items, parent.menu, trail);
-        let row = parent.rows(parent.items(menus))[index];
+        let row = parent
+            .rows(parent.items(menus))
+            .nth(index)
+            .expect("submenu parent");
         popup.rect.x = parent.rect.right() - 3;
         popup.rect.y = row.y - 2;
         if let Some(bounds) = bounds {
+            popup.limit_height(bounds.height);
             if popup.rect.right() > bounds.right() {
                 popup.rect.x = parent.rect.x - popup.rect.width + 3;
             }
@@ -176,7 +183,7 @@ impl Popup {
                 .map(|item| (item.label.as_ref(), item.shortcut.as_ref(), item.default)),
         );
         let (item_height, separator_height) = item_metrics(p);
-        let height = 2 * crate::MenuMetrics::MARGIN
+        let height = 2 * MenuMetrics::MARGIN
             + items
                 .iter()
                 .map(|item| {
@@ -195,28 +202,65 @@ impl Popup {
             hover: None,
             item_height,
             separator_height,
+            content_height: height,
+            scroll: Scroll::default(),
         }
     }
 
-    /// 各条目的行矩形（不含分隔线）。
-    pub fn rows<T, S: AsRef<str>>(&self, items: &[DropItem<T, S>]) -> Vec<Rect> {
-        let mut y = self.rect.y + crate::MenuMetrics::MARGIN;
-        items
-            .iter()
-            .map(|item| {
-                if item.separator_before {
-                    y += self.separator_height;
-                }
-                let row = Rect::new(
-                    self.rect.x + crate::MenuMetrics::MARGIN,
-                    y,
-                    self.rect.width - 2 * crate::MenuMetrics::MARGIN,
-                    self.item_height,
-                );
-                y += self.item_height;
-                row
-            })
-            .collect()
+    pub(crate) fn limit_height(&mut self, height: i32) {
+        self.rect.height = self.content_height.min(height.max(0));
+        self.scroll.clamp(self.content_height - self.rect.height);
+    }
+
+    pub(crate) fn offset(&self) -> i32 {
+        self.scroll.position
+    }
+
+    pub(crate) fn wheel(&mut self, notches: i32) -> bool {
+        let previous = self.scroll.position;
+        self.scroll.wheel(
+            notches,
+            self.item_height,
+            self.content_height - self.rect.height,
+        );
+        self.scroll.position != previous
+    }
+
+    pub(crate) fn highlight<T, S>(&mut self, items: &[DropItem<T, S>], index: usize) {
+        self.hover = Some(index);
+        if self.content_height == self.rect.height {
+            return;
+        }
+        let Some(row) = self.rows(items).nth(index) else {
+            return;
+        };
+        let viewport = self.viewport();
+        self.scroll.position +=
+            (row.bottom() - viewport.bottom()).max(0) + (row.y - viewport.y).min(0);
+        self.scroll.clamp(self.content_height - self.rect.height);
+    }
+
+    fn viewport(&self) -> Rect {
+        let margin = MenuMetrics::MARGIN;
+        Rect::new(
+            self.rect.x + margin,
+            self.rect.y + margin,
+            (self.rect.width - 2 * margin).max(0),
+            (self.rect.height - 2 * margin).max(0),
+        )
+    }
+
+    fn rows<'a, T, S>(&'a self, items: &'a [DropItem<T, S>]) -> impl Iterator<Item = Rect> + 'a {
+        let viewport = self.viewport();
+        let mut y = viewport.y - self.scroll.position;
+        items.iter().map(move |item| {
+            if item.separator_before {
+                y += self.separator_height;
+            }
+            let row = Rect::new(viewport.x, y, viewport.width, self.item_height);
+            y += self.item_height;
+            row
+        })
     }
 
     /// 点在哪个条目上。
@@ -225,9 +269,16 @@ impl Popup {
         items: &[DropItem<T, S>],
         point: (i32, i32),
     ) -> Option<usize> {
-        self.rows(items).iter().position(|row| {
-            point.0 >= row.x && point.0 < row.right() && point.1 >= row.y && point.1 < row.bottom()
-        })
+        let viewport = self.viewport();
+        let (x, y) = point;
+        if !(viewport.x..viewport.right()).contains(&x)
+            || !(viewport.y..viewport.bottom()).contains(&y)
+        {
+            return None;
+        }
+        self.rows(items)
+            .take_while(|row| row.y <= y)
+            .position(|row| y < row.bottom())
     }
 
     /// 方向键移动高亮；`step` 为 +1 或 -1，首尾相接。
@@ -243,7 +294,7 @@ impl Popup {
         for _ in 0..items.len() {
             position = (position + step).rem_euclid(count);
             if !items[position as usize].disabled {
-                self.hover = Some(position as usize);
+                self.highlight(items, position as usize);
                 return;
             }
         }
@@ -252,27 +303,72 @@ impl Popup {
 
     pub fn paint<T, S: AsRef<str>>(&self, p: &mut Painter<'_>, items: &[DropItem<T, S>]) {
         let inner = p.menu_popup(self.rect);
-        for (index, (item, row)) in items.iter().zip(self.rows(items)).enumerate() {
-            if item.separator_before {
-                p.menu_separator(Rect::new(
-                    inner.x,
-                    row.y - self.separator_height,
-                    inner.width,
-                    self.separator_height,
-                ));
+        let viewport = self.viewport();
+        let clip = Rect::new(inner.x, viewport.y, inner.width, viewport.height);
+        p.clipped(clip, |p| {
+            for (index, (item, row)) in items.iter().zip(self.rows(items)).enumerate() {
+                if row.y - self.separator_height >= viewport.bottom() {
+                    break;
+                }
+                if row.bottom() <= viewport.y {
+                    continue;
+                }
+                if item.separator_before {
+                    p.menu_separator(Rect::new(
+                        inner.x,
+                        row.y - self.separator_height,
+                        inner.width,
+                        self.separator_height,
+                    ));
+                }
+                p.menu_item(
+                    row,
+                    item.label.as_ref(),
+                    item.shortcut.as_ref(),
+                    MenuItemState {
+                        highlighted: self.hover == Some(index),
+                        checked: item.checked,
+                        disabled: item.disabled,
+                        has_submenu: item.has_submenu(),
+                        default: item.default,
+                    },
+                );
             }
-            p.menu_item(
-                row,
-                item.label.as_ref(),
-                item.shortcut.as_ref(),
-                MenuItemState {
-                    highlighted: self.hover == Some(index),
-                    checked: item.checked,
-                    disabled: item.disabled,
-                    has_submenu: item.has_submenu(),
-                    default: item.default,
-                },
-            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_menu_keyboard_and_wheel_reach_items_outside_initial_view() {
+        let items: Vec<_> = (0..10).map(|id| DropItem::new("entry", "", id)).collect();
+        let item_height = 16;
+        let margin = MenuMetrics::MARGIN;
+        let content_height = items.len() as i32 * item_height + 2 * margin;
+        let mut popup = Popup {
+            menu: 0,
+            trail: Vec::new(),
+            rect: Rect::new(20, 30, 144, content_height),
+            hover: None,
+            item_height,
+            separator_height: 8,
+            content_height,
+            scroll: Scroll::default(),
+        };
+        popup.limit_height(3 * item_height + 2 * margin);
+        let top = (26, 31 + margin);
+        let bottom = (26, 31 + margin + 2 * item_height);
+        assert_eq!(popup.item_at(&items, bottom), Some(2));
+        for _ in 0..10 {
+            popup.step(&items, 1);
         }
+        assert_eq!(popup.hover, Some(9));
+        assert_eq!(popup.item_at(&items, bottom), Some(9));
+        assert!(popup.wheel(-1));
+        assert_eq!(popup.item_at(&items, top), Some(4));
+        assert_eq!(popup.item_at(&items, (26, popup.rect.bottom())), None);
     }
 }

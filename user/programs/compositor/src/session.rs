@@ -327,14 +327,13 @@ impl Session {
             offset: boot_scene::band_offset(since),
             permille: boot.progress.permille(),
         };
-        let flip_busy = self.scanout.flip_pending();
-        if frame != boot.painted && !flip_busy {
+        let can_render = self.scanout.can_render();
+        if frame != boot.painted && can_render {
             self.scanout.paint_boot(&boot.scene, frame)?;
             boot.painted = frame;
-            self.scanout.request_flip()?;
         } else if boot.progress.complete()
             && boot.painted.permille == 1000
-            && !flip_busy
+            && can_render
             && shell_visible
         {
             // 外壳已经有内容、进度条也走满并已上屏：交给桌面合成。
@@ -477,17 +476,22 @@ impl Session {
                 // 每次 DRM flip 完成后合成下一帧，不再叠加 16 ms 定时等待。
                 self.dirty = true;
             }
-            if self.dirty && self.boot.is_none() && !self.scanout.flip_pending() {
-                self.present()?;
+            if self.dirty && self.boot.is_none() && self.scanout.can_render() {
+                self.prepare_frame()?;
                 self.dirty = false;
             }
+            let flip_retry = self.scanout.submit_prepared()?;
             let upload_wait = self
                 .scanout
                 .gpu_context()
                 .map(|gpu| gpu.expire_upload(UPLOAD_IDLE))
                 .transpose()?
                 .flatten();
-            let timeout = timeout.into_iter().chain(upload_wait).min();
+            let timeout = timeout
+                .into_iter()
+                .chain(flip_retry)
+                .chain(upload_wait)
+                .min();
             let input_count = self.input.devices().count();
             {
                 let mut descriptors = poll_buffer.prepare();

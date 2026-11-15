@@ -5,6 +5,7 @@
 //! 冻结目录裁决前缀/优先级，resolution 编译下一跳及执行正文；授权、策略和发布协调由选路服务装配。
 extern crate alloc;
 use alloc::{sync::Arc, vec::Vec};
+use core::num::NonZeroU32;
 use prefix_index::{Address, Poptrie};
 
 mod declaration;
@@ -64,6 +65,8 @@ pub struct Source<A, D, H, M = ()> {
     definition: Arc<SourceDefinition<H, M>>,
     routes: Vec<Route<A>>,
     attributes: Vec<Attributes<D>>,
+    // 仅静态配置来源持有位置。它与来源行同序，以便过滤后仍能指回持久声明。
+    locations: Vec<NonZeroU32>,
 }
 // OWNER: 一次捕获的身份/元数据与路径字典不可变共享；策略投影不克隆任意 M/H，也不增加逐行引用。
 struct SourceDefinition<H, M> {
@@ -136,6 +139,7 @@ impl<A: Address, D, H, M> Source<A, D, H, M> {
             definition,
             routes,
             attributes,
+            locations: Vec::new(),
         })
         .map_err(|_| Error::NoMemory)
     }
@@ -144,8 +148,12 @@ impl<A: Address, D, H, M> Source<A, D, H, M> {
         &self,
         attributes: Vec<Attributes<D>>,
         routes: Vec<Route<A>>,
+        locations: Vec<NonZeroU32>,
     ) -> Result<Arc<Self>, Error> {
         u32::try_from(attributes.len()).map_err(|_| Error::Capacity)?;
+        if !locations.is_empty() && locations.len() != routes.len() {
+            return Err(Error::InvalidSource);
+        }
         for route in &routes {
             if route.length > A::BITS
                 || route.network.masked(route.length) != route.network
@@ -159,6 +167,7 @@ impl<A: Address, D, H, M> Source<A, D, H, M> {
             definition: self.definition.clone(),
             routes,
             attributes,
+            locations,
         })
         .map_err(|_| Error::NoMemory)
     }
@@ -227,11 +236,16 @@ struct Reference {
 pub struct Candidate<'a, A, D, H, M = ()> {
     source: &'a Source<A, D, H, M>,
     route: &'a Route<A>,
+    location: Option<NonZeroU32>,
 }
 impl<A: Address, D, H, M> Candidate<'_, A, D, H, M> {
     /// 真实来源身份。
     pub fn source(&self) -> u64 {
         self.source.definition.id
+    }
+    /// 持久静态表内的一基位置。普通协议候选和设备事实没有配置位置。
+    pub fn location(&self) -> Option<NonZeroU32> {
+        self.location
     }
     /// 所属来源的可信元数据；没有逐行副本。
     pub fn metadata(&self) -> &M {
@@ -342,6 +356,7 @@ impl<A: Address, D, H, M> Catalogue<A, D, H, M> {
         Candidate {
             source,
             route: &source.routes[reference.route as usize],
+            location: source.locations.get(reference.route as usize).copied(),
         }
     }
     /// 按最长前缀、偏好、比较范围、代价、稳定来源身份及声明顺序借用候选；不跳过未解析对象。

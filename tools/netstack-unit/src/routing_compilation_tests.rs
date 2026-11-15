@@ -250,6 +250,16 @@ mod routing_compilation {
                 prefix_length: 16,
                 preference: 1,
                 metric: 2,
+                disabled: true,
+                action: router_protocol::configuration::StaticAction::Discard,
+            });
+        configuration
+            .routes
+            .push(router_protocol::configuration::StaticRoute {
+                destination: Ipv4Addr::new(172, 22, 0, 0).into(),
+                prefix_length: 16,
+                preference: 1,
+                metric: 2,
                 disabled: false,
                 action: router_protocol::configuration::StaticAction::Forward {
                     members: vec![router_protocol::configuration::StaticMember {
@@ -260,10 +270,47 @@ mod routing_compilation {
                     }],
                 },
             });
+        let mut standby = configuration.routes[1].clone();
+        standby.metric += 1;
+        standby.action = router_protocol::configuration::StaticAction::Forward {
+            members: vec![router_protocol::configuration::StaticMember {
+                weight: 1,
+                target: router_protocol::configuration::StaticTarget::Recursive {
+                    address: Ipv4Addr::new(10, 60, 0, 10).into(),
+                },
+            }],
+        };
+        configuration.routes.push(standby);
+        let mut unreachable = configuration.routes[2].clone();
+        unreachable.metric += 1;
+        unreachable.action = router_protocol::configuration::StaticAction::Forward {
+            members: vec![router_protocol::configuration::StaticMember {
+                weight: 1,
+                target: router_protocol::configuration::StaticTarget::Direct {
+                    interface: router_protocol::configuration::Name::try_from("uplink".to_owned())
+                        .unwrap(),
+                    gateway: Some("198.51.100.1".parse().unwrap()),
+                    on_link: false,
+                },
+            }],
+        };
+        configuration.routes.push(unreachable);
+        let mut rejected = configuration.routes[1].clone();
+        rejected.destination = "172.23.0.0".parse().unwrap();
+        configuration.routes.push(rejected);
         configuration.validate().unwrap();
-        let declaration = configuration.route_source(router_protocol::routing::Family::Ipv4, |_| Ok(Some(primary))).unwrap();
-        let encoded =
-            network_protocol::routing::Configuration::encode(&plans, [Some(&declaration), None], None, None).unwrap();
+        let declaration = configuration
+            .route_source(router_protocol::routing::Family::Ipv4, |_| {
+                Ok(Some(primary))
+            })
+            .unwrap();
+        let encoded = network_protocol::routing::Configuration::encode(
+            &plans,
+            [Some(&declaration), None],
+            None,
+            None,
+        )
+        .unwrap();
         let request = network_protocol::routing::Configuration::parse(&encoded).unwrap();
         assert!(request.interfaces().iter().eq(plans));
         assert!(
@@ -273,17 +320,103 @@ mod routing_compilation {
             .is_err(),
             "RIB intent must reject NET execution bytes"
         );
-        let source = routing_rib::sources::Routes::capture_source(
-            static_id,
-            routing_rib::sources::CONFIGURATION_DOMAIN,
-            4,
-            1,
-            request.routes(router_protocol::routing::Family::Ipv4).unwrap(),
-        )
-        .unwrap();
-        let static_candidate = routes
-            .prepare_configuration(&facts, &plans, &[source], None, None)
+        let static_batch = request
+            .routes(router_protocol::routing::Family::Ipv4)
             .unwrap();
+        assert_eq!(
+            routing_rib::sources::Routes::capture_source(static_id, static_id, 4, 1, static_batch)
+                .err(),
+            Some(native_abi::ERR_ACCESS_DENIED),
+            "a delegated source cannot claim a persistent route identity",
+        );
+        let source = routing_rib::sources::Routes::capture_static(static_id, static_batch).unwrap();
+        let selection_policy = router_protocol::policy::Policy {
+            default: router_protocol::policy::Disposition::Permit,
+            rules: vec![
+                router_protocol::policy::Rule {
+                    protocol: Some(4),
+                    prefix: Some(router_protocol::policy::Prefix {
+                        network: "172.23.0.0".parse().unwrap(),
+                        length: 16,
+                        minimum: None,
+                        maximum: None,
+                    }),
+                    action: router_protocol::policy::Action::Deny,
+                },
+                router_protocol::policy::Rule {
+                    protocol: Some(4),
+                    prefix: None,
+                    action: router_protocol::policy::Action::Permit {
+                        preference: Some(7),
+                        metric: None,
+                    },
+                },
+            ],
+        };
+        let static_candidate = routes
+            .prepare_configuration(&facts, &plans, &[source], Some(selection_policy), None)
+            .unwrap();
+        use router_protocol::route_view::selection::{self, Candidate, Metrics, State, paths};
+        let snapshot = static_candidate.next.snapshot().unwrap();
+        let table = router_protocol::policy_routing::TABLE_MAIN;
+        let candidates: Vec<_> = configuration
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(index, route)| Candidate {
+                prefix: router_protocol::tracking::IpPrefix {
+                    network: route.destination,
+                    length: route.prefix_length,
+                },
+                location: u32::try_from(index + 1).unwrap().try_into().unwrap(),
+            })
+            .collect();
+        let request = selection::Request::encode(table, &candidates).unwrap();
+        let selector = selection::Request::parse(&request).unwrap();
+        let status = snapshot.static_status(&selector).unwrap();
+        let result = selection::Reply::parse(&status, candidates.len()).unwrap();
+        let distance = 7.try_into().unwrap();
+        let metrics = |cost| Metrics { distance, cost };
+        assert_eq!(result.generation.get(), snapshot.generation());
+        assert_eq!(
+            result.rows,
+            [
+                State::Absent,
+                State::Active(metrics(2)),
+                State::Standby(metrics(3)),
+                State::Unreachable(metrics(4)),
+                State::Absent,
+            ],
+            "an enabled route can be unreachable even when another route for the same prefix is active"
+        );
+        let query = paths::Request {
+            table,
+            candidate: candidates[1],
+        };
+        let query = paths::Request::parse(&query.encode().unwrap()).unwrap();
+        let immediate = paths::decode(query, &snapshot.static_paths(query).unwrap()).unwrap();
+        assert_eq!(immediate.len(), 1);
+        assert_eq!(
+            immediate[0].gateway,
+            Some(Ipv4Addr::new(10, 60, 0, 9).into())
+        );
+        assert_eq!(immediate[0].interface, primary);
+        assert_eq!(&immediate[0].name[..5], b"eth0\0");
+        let withdrawn = paths::Request {
+            candidate: candidates[0],
+            ..query
+        };
+        assert!(
+            paths::decode(withdrawn, &snapshot.static_paths(withdrawn).unwrap())
+                .unwrap()
+                .is_empty(),
+            "disabled declarations have no reported exit"
+        );
+        let standby = paths::Request { candidate: candidates[2], ..query };
+        let standby_paths = paths::decode(standby, &snapshot.static_paths(standby).unwrap()).unwrap();
+        assert_eq!(standby_paths.len(), 1);
+        assert_eq!(standby_paths[0].gateway, Some(Ipv4Addr::new(10, 60, 0, 10).into()));
+        assert_eq!(standby_paths[0].interface, primary);
         let batch = network_protocol::ConfigurationBatch::parse(&static_candidate.encoded).unwrap();
         let fib = batch.forwarding().unwrap();
         assert_eq!(fib.iter().len(), 2);

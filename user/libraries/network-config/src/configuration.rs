@@ -232,6 +232,56 @@ impl ManagementClient {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "路由表回复无效"))
     }
 
+    /// 查询表内精确静态声明的状态、距离及配置代际。
+    /// # Errors
+    /// 前缀、表、域或回复无效，配置尚在应用，或权限不足。
+    pub fn static_status(
+        &mut self,
+        domain: Option<&str>,
+        table: u32,
+        candidates: &[router_protocol::route_view::selection::Candidate],
+    ) -> io::Result<(Revision, router_protocol::route_view::selection::Reply)> {
+        use router_protocol::route_view::selection;
+        let request = selection::Request::encode(table, candidates)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "静态路由选择请求无效"))?;
+        let (generation, bytes) = self.configuration_request(
+            ordinal::STATIC_STATUS,
+            Some(&request),
+            administration::Request {
+                domain,
+                ..Default::default()
+            },
+        )?;
+        let selection = selection::Reply::parse(&bytes, candidates.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "静态路由选择回复无效"))?;
+        Ok((generation, selection))
+    }
+
+    /// 读取一个静态声明的完整立即出口及声明所属的配置代际。
+    /// # Errors
+    /// 声明选择器、域或回复无效，配置尚在应用，或权限不足。
+    pub fn static_paths(
+        &mut self,
+        domain: Option<&str>,
+        request: router_protocol::route_view::selection::paths::Request,
+    ) -> io::Result<(Revision, Vec<router_protocol::route_view::NextHop>)> {
+        use router_protocol::route_view::selection::paths;
+        let query = request
+            .encode()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "静态路由出口请求无效"))?;
+        let (generation, bytes) = self.configuration_request(
+            ordinal::STATIC_PATHS,
+            Some(&query),
+            administration::Request {
+                domain,
+                ..Default::default()
+            },
+        )?;
+        let members = paths::decode(request, &bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "静态路由出口回复无效"))?;
+        Ok((generation, members))
+    }
+
     /// 经既有授权配置端点查询 BGP 邻居状态；不直接持有原生工厂或网络执行能力。
     /// # Errors
     /// 尚未应用、权限不足、实例退出或状态正文损坏。

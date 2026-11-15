@@ -181,6 +181,29 @@ impl Routes {
         minimum_preference: u32,
         batch: routing::Batch<'_>,
     ) -> Result<SourceUpdate, Status> {
+        if batch.locations().len() != 0 {
+            return Err(native_abi::ERR_ACCESS_DENIED);
+        }
+        Self::capture_granted(id, domain, protocol, minimum_preference, batch)
+    }
+
+    /// 捕获配置 owner 的静态来源。位置必须覆盖全部实际声明；只有此入口可授予持久位置。
+    /// # Errors
+    /// 缺少位置、来源不合法或资源不足。
+    pub fn capture_static(id: u64, batch: routing::Batch<'_>) -> Result<SourceUpdate, Status> {
+        if batch.locations().len() != batch.routes().len() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        Self::capture_granted(id, CONFIGURATION_DOMAIN, STATIC_PROTOCOL, 1, batch)
+    }
+
+    fn capture_granted(
+        id: u64,
+        domain: u64,
+        protocol: u8,
+        minimum_preference: u32,
+        batch: routing::Batch<'_>,
+    ) -> Result<SourceUpdate, Status> {
         if id <= 1
             || minimum_preference == 0
             || batch
@@ -496,6 +519,7 @@ impl Routes {
             resolved: selected,
             resolved6: selected6,
             interfaces,
+            alternate,
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let interfaces = &snapshot.interfaces;
@@ -546,11 +570,17 @@ impl Routes {
         );
         let four = tables::projection(
             &snapshot.resolved,
-            alternate.iter().map(|entry| (entry.id, &entry.four)),
+            snapshot
+                .alternate
+                .iter()
+                .map(|entry| (entry.id, &entry.four)),
         )?;
         let six = tables::projection(
             &snapshot.resolved6,
-            alternate.iter().map(|entry| (entry.id, &entry.six)),
+            snapshot
+                .alternate
+                .iter()
+                .map(|entry| (entry.id, &entry.six)),
         )?;
         let encoded = network_protocol::ConfigurationBatch::encode_forwarding(
             &execution,

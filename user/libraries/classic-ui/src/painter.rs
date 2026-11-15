@@ -224,6 +224,38 @@ impl<'a> Painter<'a> {
         self.typeface.measure(text, bold)
     }
 
+    /// 以普通单行文字布局绘制查找结果。匹配片段来自原文在可见前缀中的字节范围；
+    /// 当前匹配用选中色，其余用提示色。范围按升序排列且互不重叠。
+    pub fn text_marked(
+        &mut self,
+        x: i32,
+        y: i32,
+        text: &str,
+        ink: Ink,
+        matches: impl Iterator<Item = (std::ops::Range<usize>, bool)>,
+    ) {
+        let mut pen = self.px(x);
+        let y = self.px(y);
+        let height = self.px(self.line_height());
+        let mut end = 0;
+        for (range, active) in matches {
+            pen += self.ink_physical(pen, y, &text[end..range.start], ink, false);
+            let fragment = &text[range.clone()];
+            let width = self.text_width(fragment, false);
+            let (background, foreground) = if active {
+                (SystemColor::Hilight, SystemColor::HilightText)
+            } else {
+                (SystemColor::InfoWindow, SystemColor::InfoText)
+            };
+            let color = self.color(background);
+            self.surface
+                .fill_rect(Rect::new(pen, y, width, height), color);
+            pen += self.ink_physical(pen, y, fragment, Ink::Color(foreground), false);
+            end = range.end;
+        }
+        self.ink_physical(pen, y, &text[end..], ink, false);
+    }
+
     /// 把 `text` 截到不超过 `max_width` 逻辑像素，超出时以"..."结尾；不超出则原样返回。
     ///
     /// 界面上任何由数据或语言决定长度的文字（文件名、窗口标题、翻译后的标签）在画之前都应先经过它或

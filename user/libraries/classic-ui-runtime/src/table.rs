@@ -33,10 +33,18 @@ pub struct Table {
     pub anchor: Option<u64>,
     pub alignments: BTreeMap<u64, u32>,
     pub last_click: Option<classic_ui::ItemClick<u64>>,
+    /// 字面查找的绘制投影。当前匹配与业务选择、键盘焦点及拖动锚点独立。
+    pub find: Find,
     /// 图标/列表视图的条目格子：（大图标格子，小图标与列表的条目宽度）；布局时由主题图标间距与最宽标签算出。
     pub cells: ((i32, i32), i32),
     /// LVS_EX_FULLROWSELECT：详细资料视图整行高亮；默认只高亮首列标签。
     pub full_row: bool,
+}
+
+#[derive(Default)]
+pub struct Find {
+    pub needle: String,
+    pub current: Option<abi::ListMatch>,
 }
 impl Table {
     pub fn check(&self, row: u64) -> Option<u32> {
@@ -76,6 +84,7 @@ impl Table {
             anchor: None,
             alignments: BTreeMap::new(),
             last_click: None,
+            find: Find::default(),
             cells: ((75, 75), 200),
             full_row: false,
         }

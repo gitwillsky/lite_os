@@ -62,6 +62,8 @@ impl Role {
             | ordinal::FIREWALL_COUNTERS
             | ordinal::NEIGHBOR_PAGE
             | ordinal::ROUTE_PAGE
+            | ordinal::STATIC_STATUS
+            | ordinal::STATIC_PATHS
             | ordinal::ROUTING_DOMAINS
             | management::WATCH_FIREWALL_COUNTERS
             | management::WATCH_NEIGHBORS

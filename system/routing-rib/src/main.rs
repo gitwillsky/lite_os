@@ -17,7 +17,7 @@ use native_runtime::{
 };
 use network_protocol::{NetworkClient, NetworkInstaller, RemoteNamespace};
 use router_protocol::configuration::Name;
-use routing_rib::sources::{PreparedRoutes, Routes};
+use routing_rib::sources::{PreparedRoutes, Routes, Snapshot};
 use service_directory::ServiceDirectory;
 
 mod source;
@@ -65,6 +65,18 @@ impl Rib {
         .map_err(|_| native_abi::ERR_NO_MEMORY)
     }
 
+    fn confirmed_snapshot(&self) -> Result<Arc<Snapshot>, Status> {
+        let state = self.state.lock();
+        if state.pending.is_some() {
+            return Err(native_abi::ERR_SHOULD_WAIT);
+        }
+        state
+            .routes
+            .snapshot()
+            .cloned()
+            .ok_or(native_abi::ERR_SHOULD_WAIT)
+    }
+
     fn facts(&self) -> Result<routing_rib::sources::Facts, Status> {
         // 调用者持有唯一 RIB 写租约/状态锁，逻辑配置不会在两次查询间改变；物理变化仍由 NET 预备核对。
         let error = |error| match error {
@@ -103,13 +115,7 @@ impl Rib {
         .into_iter()
         .filter_map(|family| configuration.routes(family))
         {
-            replacement.push(Routes::capture_source(
-                state.configuration_source,
-                routing_rib::sources::CONFIGURATION_DOMAIN,
-                routing_rib::sources::STATIC_PROTOCOL,
-                1,
-                batch,
-            )?);
+            replacement.push(Routes::capture_static(state.configuration_source, batch)?);
         }
         let tables = configuration.tables();
         let admission = configuration.into_policy();
@@ -293,6 +299,20 @@ impl network_protocol::routing::RoutingConfigurationService for Controller {
         queries: Vec<router_protocol::tracking::Query>,
     ) -> Result<(Channel, Event), Status> {
         self.0.track(queries, None)
+    }
+
+    fn static_status(
+        &self,
+        request: &router_protocol::route_view::selection::Request,
+    ) -> Result<Vec<u8>, Status> {
+        self.0.confirmed_snapshot()?.static_status(request)
+    }
+
+    fn static_paths(
+        &self,
+        request: router_protocol::route_view::selection::paths::Request,
+    ) -> Result<Vec<u8>, Status> {
+        self.0.confirmed_snapshot()?.static_paths(request)
     }
     fn open_source(
         &self,

@@ -185,7 +185,7 @@ pub mod state {
     pub const TRACK_BOTH: u32 = 32768;
     /// Column 的纵向滚动视口；内容超过可见高度才显示滚动条，避免展开项被永久裁掉。
     pub const VSCROLL: u32 = 65536;
-    /// 多行编辑控件保留导航、选择和复制，禁止用户修改。程序仍可替换全文。
+    /// 单行和多行编辑控件保留导航、选择和复制，禁止用户修改。程序仍可替换全文。
     pub const READ_ONLY: u32 = 131072;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
@@ -587,6 +587,20 @@ pub struct Api {
     /// 文本以系统字体用途（编号同 [`Api::set_font`]）在窗口当前 scale 下的逻辑像素宽度（GetTextExtentPoint32）；
     /// 用于按实际字体决定状态栏分格等固定宽度。未知用途或空输出返回 INVALID，未知窗口返回 NOT_FOUND。
     pub text_width: unsafe extern "C" fn(*mut c_void, u64, u32, Text, *mut i32) -> i32,
+    /// 为详细列表设置字面查找文本与当前匹配项。行号 0 仅保留匹配文字，不定位。
+    pub list_find: unsafe extern "C" fn(*mut c_void, u64, u64, Text, ListMatch) -> i32,
+}
+
+/// 详细列表中的一个字面匹配，按行标识、列位置、UTF-8 字节位置排序。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ListMatch {
+    /// 列表行标识，零表示没有当前匹配。
+    pub row: u64,
+    /// 从零开始的已发布列索引。
+    pub column: u32,
+    /// 匹配在完整单元格文字中的起始字节，必须位于 UTF-8 字符边界。
+    pub offset: u32,
 }
 
 /// [`Api::message_box`] 的 style 位（Win32 MessageBox 的 uType 布局）。

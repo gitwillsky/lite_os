@@ -72,6 +72,13 @@ impl Tree {
             EventKind::Key(key) if key.pressed => {
                 menu.state.key(probe, node.rect, &menu.entries, key)
             }
+            EventKind::Wheel { vertical, .. } if was_active => {
+                if menu.state.wheel(self.pointer, *vertical) {
+                    MenuEvent::Handled
+                } else {
+                    MenuEvent::Ignored
+                }
+            }
             EventKind::Key(key) => {
                 if menu.state.key_released(key) {
                     MenuEvent::Handled

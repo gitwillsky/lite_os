@@ -1,17 +1,22 @@
 //! 过滤和 NAT 共用列表、只读计数采样与按代际提交。
 
-use super::catalog::{self, Catalog, Change, Counts, Entry, Scope};
+use super::{
+    catalog::{self, Catalog, Change, Counts, Entry, Key, Scope},
+    property::Property,
+};
 use crate::{
     child,
     configuration::apply,
     item_list::{Glyph, Item, Summary, Tool, toolbar},
-    routes::{edit_rule, rule_address},
+    item_properties::Request,
+    routes::rule_address,
+    workspace::Workspace,
 };
 use liteos_ui::{
     Application, Background, Clock, Column, Dialogs, Event, EventKind, Layout, ListOptions,
     ListStyle, MessageButtons, MessageIcon, MessageResult, Task, Widget, WidgetKind, Window, state,
 };
-use network_config::{configuration::PreroutingRule, firewall::configured_action};
+use network_config::{Revision, configuration::PreroutingRule, firewall::configured_action};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -36,6 +41,19 @@ struct Sample {
     counts: Counts,
 }
 
+impl Sample {
+    fn counts_for(&self, property: &Property) -> Option<(u64, u64)> {
+        let (key, _) = property.original.as_ref()?;
+        if property.revision != self.catalog.revision {
+            return None;
+        }
+        self.catalog.rows[self.start..]
+            .iter()
+            .zip(&self.counts)
+            .find_map(|(entry, count)| (&entry.key == key).then_some(*count).flatten())
+    }
+}
+
 struct View {
     scope: Scope,
     list: Widget,
@@ -49,6 +67,7 @@ struct View {
     refresh: Tool,
     summary: Summary,
     sample: RefCell<Option<Sample>>,
+    property: RefCell<Option<Property>>,
     // 对话框与提交共用操作期，防止异步采样重开按钮。
     editing: Cell<bool>,
     background: Background,
@@ -56,10 +75,22 @@ struct View {
     dialogs: Dialogs,
 }
 
-enum Request {
-    Edit(Option<usize>),
-    Enable(usize, bool),
-    Remove(usize),
+struct Mutation {
+    revision: Revision,
+    change: Change,
+    shared: bool,
+    finish: Finish,
+}
+
+struct Saved {
+    revision: Option<Revision>,
+    key: Option<Key>,
+}
+
+enum Finish {
+    List,
+    Close(u64),
+    Keep { frame: u64, rule: PreroutingRule },
 }
 
 impl Page {
@@ -140,6 +171,7 @@ impl Page {
             refresh,
             summary: Summary::new(parent)?,
             sample: RefCell::default(),
+            property: RefCell::default(),
             editing: Cell::new(false),
             background,
             clock: app.clock(),
@@ -169,6 +201,7 @@ impl Page {
             self.subscribe(app, window, 0)?;
         } else {
             self.observation = None;
+            self.view.property.borrow_mut().take();
         }
         Ok(())
     }
@@ -180,6 +213,7 @@ impl Page {
         domain: Option<Arc<str>>,
     ) -> liteos_ui::Result<()> {
         self.domain = domain;
+        self.view.property.borrow_mut().take();
         self.view.clear()?;
         if self.visible {
             self.subscribe(app, window, 0)?;
@@ -191,12 +225,18 @@ impl Page {
         &mut self,
         app: &mut Application,
         window: &Window,
+        workspace: &Workspace,
         event: &Event,
     ) -> liteos_ui::Result<()> {
         if !self.visible {
             return Ok(());
         }
-        let view = &self.view;
+        let view = self.view.clone();
+        if !view.editing.get()
+            && let Some(mutation) = view.property_command(event)?
+        {
+            return self.submit(app, window, mutation);
+        }
         if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
             view.summary()?;
             return view.buttons();
@@ -221,21 +261,6 @@ impl Page {
         if view.editing.get() {
             return Ok(());
         }
-        let request = if view.new.activated(event) {
-            Request::Edit(None)
-        } else if let Some(index) = view.selected()? {
-            if event.node == view.list.id() {
-                Request::Edit(Some(index))
-            } else if view.enable.activated(event) || view.disable.activated(event) {
-                Request::Enable(index, view.enable.activated(event))
-            } else if view.remove.activated(event) {
-                Request::Remove(index)
-            } else {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
-        };
         let catalog = view
             .sample
             .borrow()
@@ -243,17 +268,68 @@ impl Page {
             .expect("ready sample")
             .catalog
             .clone();
+        let selected = view.selected()?.map(|index| &catalog.rows[index]);
+        if view.new.activated(event) || event.node == view.list.id() && selected.is_some() {
+            let entry = if view.new.activated(event) {
+                None
+            } else {
+                selected
+            };
+            return view.open_property(workspace, &catalog, entry);
+        }
+        let Some(entry) = selected else {
+            return Ok(());
+        };
+        let change = if view.enable.activated(event) {
+            Change::Enable(entry.key.clone(), true)
+        } else if view.disable.activated(event) {
+            Change::Enable(entry.key.clone(), false)
+        } else if view.remove.activated(event) {
+            Change::Remove(entry.key.clone())
+        } else {
+            return Ok(());
+        };
+        self.submit(
+            app,
+            window,
+            Mutation {
+                revision: catalog.revision,
+                change,
+                shared: rule_address(&entry.rule).is_none(),
+                finish: Finish::List,
+            },
+        )
+    }
+
+    fn submit(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        mutation: Mutation,
+    ) -> liteos_ui::Result<()> {
+        let view = self.view.clone();
         view.editing.set(true);
         view.buttons()?;
         let scope = self.domain.clone();
         let parent = window.clone();
-        let view = view.clone();
         self.mutation = Some(app.spawn_local(window, async move {
-            let result = view.mutate(&parent, scope, catalog, request).await;
-            if let Err(error) = result {
+            let finish = mutation.finish;
+            let result = view
+                .mutate(
+                    &parent,
+                    scope,
+                    mutation.revision,
+                    mutation.change,
+                    mutation.shared,
+                )
+                .await;
+            if let Err(error) = &result
+                && matches!(finish, Finish::List)
+            {
                 let _ = view.report(&parent, &error.to_string()).await;
             }
             view.editing.set(false);
+            let _ = view.finish(finish, result);
             let _ = view.buttons();
         })?);
         Ok(())
@@ -394,23 +470,99 @@ impl View {
             .map(|(index, text)| ((sample.start + index) as u64 + 1, text.as_str()))
             .collect();
         self.list.set_rows(&rows)?;
+        if let Some(property) = self.property.borrow().as_ref() {
+            property.counts(sample.counts_for(property))?;
+        }
         self.summary()?;
         self.buttons()
+    }
+
+    fn open_property(
+        &self,
+        workspace: &Workspace,
+        catalog: &Catalog,
+        entry: Option<&Entry>,
+    ) -> liteos_ui::Result<()> {
+        let mut property = self.property.borrow_mut();
+        if let Some(current) = property.as_ref()
+            && current.revision == catalog.revision
+            && current.original.as_ref().map(|(key, _)| key) == entry.map(|entry| &entry.key)
+        {
+            return workspace.raise(&current.frame);
+        }
+        let form = Property::new(workspace, catalog, self.scope, entry)?;
+        if let Some(sample) = self.sample.borrow().as_ref() {
+            form.counts(sample.counts_for(&form))?;
+        }
+        *property = Some(form);
+        Ok(())
+    }
+
+    fn property_command(&self, event: &Event) -> liteos_ui::Result<Option<Mutation>> {
+        let mut property = self.property.borrow_mut();
+        let Some(form) = property.as_ref() else {
+            return Ok(None);
+        };
+        let Some(request) = form.request(event)? else {
+            return Ok(None);
+        };
+        let frame = form.frame.id();
+        let original = form.original.as_ref();
+        let (change, finish) = match request {
+            Request::Close => {
+                property.take();
+                return Ok(None);
+            }
+            Request::Remove => {
+                let Some((key, _)) = original else {
+                    return Ok(None);
+                };
+                (Change::Remove(key.clone()), Finish::Close(frame))
+            }
+            Request::Save { close } => {
+                let Some(rule) = form.value()? else {
+                    return Ok(None);
+                };
+                if original.is_some_and(|(_, old)| old == &rule) {
+                    if close {
+                        property.take();
+                    } else {
+                        form.note("")?;
+                    }
+                    return Ok(None);
+                }
+                let change = if let Some((key, _)) = original {
+                    Change::Put(key.clone(), rule.clone())
+                } else {
+                    Change::Add(rule.clone())
+                };
+                let finish = if close {
+                    Finish::Close(frame)
+                } else {
+                    Finish::Keep { frame, rule }
+                };
+                (change, finish)
+            }
+        };
+        form.ready(false)?;
+        form.note("")?;
+        Ok(Some(Mutation {
+            revision: form.revision,
+            shared: original.is_some_and(|(_, rule)| rule_address(rule).is_none()),
+            change,
+            finish,
+        }))
     }
 
     async fn mutate(
         &self,
         window: &Window,
         domain: Option<Arc<str>>,
-        catalog: Arc<Catalog>,
-        request: Request,
-    ) -> Result<(), Error> {
-        let selected = match request {
-            Request::Edit(index) => index,
-            Request::Enable(index, _) | Request::Remove(index) => Some(index),
-        }
-        .map(|index| &catalog.rows[index]);
-        if selected.is_some_and(|entry| rule_address(&entry.rule).is_none())
+        revision: Revision,
+        change: Change,
+        shared: bool,
+    ) -> Result<Option<Saved>, Error> {
+        if shared
             && self
                 .dialogs
                 .message(
@@ -423,56 +575,58 @@ impl View {
                 .await?
                 != MessageResult::Yes
         {
-            return Ok(());
+            return Ok(None);
         }
-        let change = match request {
-            Request::Edit(_) => {
-                let current = selected.map(|entry| &entry.rule);
-                let targets = catalog
-                    .chains
-                    .iter()
-                    .filter(|name| {
-                        selected.is_none_or(|entry| entry.key.chain.as_ref() != Some(*name))
-                    })
-                    .collect::<Vec<_>>();
-                let sets = catalog.sets.iter().collect::<Vec<_>>();
-                let Some(rule) = edit_rule(
-                    &self.dialogs,
-                    window,
-                    &catalog.interfaces,
-                    &targets,
-                    &sets,
-                    current,
-                    Some((self.scope.family, self.scope.kind)),
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if current == Some(&rule) {
-                    return Ok(());
-                }
-                if let Some(selected) = selected {
-                    Change::Put(selected.key.clone(), rule)
-                } else {
-                    Change::Add(rule)
-                }
-            }
-            Request::Enable(index, enabled) => {
-                Change::Enable(catalog.rows[index].key.clone(), enabled)
-            }
-            Request::Remove(index) => Change::Remove(catalog.rows[index].key.clone()),
-        };
-        let revision = catalog.revision;
-        let document = self
+        let (document, key) = self
             .background
             .run(move || catalog::candidate(domain.as_deref(), revision, change))?
             .await?;
         let outcome = apply(&self.background, document, revision).await?;
         if !outcome.saved {
-            self.report(window, &outcome.message).await?;
+            return Err(std::io::Error::other(outcome.message).into());
         }
-        Ok(())
+        Ok(Some(Saved {
+            revision: outcome.saved_revision,
+            key,
+        }))
+    }
+
+    fn finish(
+        &self,
+        finish: Finish,
+        result: Result<Option<Saved>, Error>,
+    ) -> liteos_ui::Result<()> {
+        let frame = match finish {
+            Finish::List => return Ok(()),
+            Finish::Close(frame) | Finish::Keep { frame, .. } => frame,
+        };
+        let mut property = self.property.borrow_mut();
+        let Some(form) = property.as_mut().filter(|form| form.frame.id() == frame) else {
+            return Ok(());
+        };
+        match result {
+            Ok(None) => form.ready(true),
+            Err(error) => {
+                form.ready(true)?;
+                form.note(&error.to_string())
+            }
+            Ok(Some(saved)) => match finish {
+                Finish::Close(_) => {
+                    property.take();
+                    Ok(())
+                }
+                Finish::Keep { rule, .. } => {
+                    if let (Some(revision), Some(key)) = (saved.revision, saved.key) {
+                        form.bind(revision, key, rule)?;
+                        form.counts(None)
+                    } else {
+                        form.close_only()?;
+                        form.note("已保存。请从最新列表重新打开。")
+                    }
+                }
+                Finish::List => unreachable!("list has no property"),
+            },
+        }
     }
 
     async fn report(&self, window: &Window, message: &str) -> liteos_ui::Result<()> {

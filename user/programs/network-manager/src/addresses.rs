@@ -1,227 +1,105 @@
-//! 「IP → 地址」列表窗口：所选路由域各网卡的 IPv4 地址、网段、网关与所属接口。
-//!
-//! 默认域读取运行快照，标志 D 表示经 DHCP 取得；具名域读取已保存配置中的静态地址。每两秒重新读取。
-//! 按 WinBox 语义，双击打开该网卡的 IPv4 设置、「删除」清除其地址设置，两者都直接提交；
-//! 「新建」打开路由接口设置（每块网卡一份 IPv4 配置，新地址在对应网卡上设置）。
+//! IPv4 与 IPv6 地址窗口共用列表、查找、筛选和属性生命周期。
+
+mod catalog;
+mod configured;
+mod property;
+
+pub(super) use network_config::configuration::RoutingFamily as Family;
+
+use self::{
+    catalog::{Catalog, Change, Entry, Member},
+    property::{Property, lifetime},
+};
 use crate::{
-    interface_properties::submit,
-    item_list::{Body, Glyph, Item, Summary, Tool, toolbar},
-    routes::{Dialog, LiveInterface, Section, edit_ipv4_of},
+    child,
+    configuration::{DraftBaseline, apply},
+    item_list::{Find, FindAction, Glyph, Item, Summary, Tool, filter, spacer, toolbar},
+    item_properties::Request,
+    workspace::Workspace,
 };
 use liteos_ui::{
-    Application, Background, Clock, Column, Dialogs, Event, EventKind, ListOptions, ListStyle,
-    Task, Widget, Window,
+    Application, Background, Column, Event, EventKind, Layout, ListOptions, ListStyle,
+    MessageButtons, MessageIcon, Task, Widget, WidgetKind, Window,
 };
 use network_config::{
-    ManagementClient,
-    configuration::{Assignment, DeviceMatch, RouterConfiguration},
-    traffic::Row,
+    Revision,
+    configuration::{IpPrefix, RoutePolicyPrefix},
 };
-use std::{cell::RefCell, io, net::Ipv4Addr, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, io, net::IpAddr, rc::Rc, sync::Arc, time::Duration};
 
-/// 一条地址；`mac` 缺席时（按设备名绑定的具名域配置）只显示、不可编辑。
-#[derive(Clone)]
-struct Entry {
-    dynamic: bool,
-    address: Ipv4Addr,
-    prefix: u8,
-    gateway: Ipv4Addr,
-    interface: String,
-    device: Vec<u8>,
-    mac: Option<[u8; 6]>,
-}
-
-impl Entry {
-    /// 交给接口配置读取的最小列表行：只用到设备名与 MAC。
-    fn row(&self) -> Option<Row> {
-        let mut name = [0; 16];
-        let length = self.device.len().min(16);
-        name[..length].copy_from_slice(&self.device[..length]);
-        Some(Row {
-            index: 0,
-            name,
-            ethernet_address: Some(self.mac?),
-            up: true,
-            counters: [0; 8],
-            bytes_per_second: None,
-        })
-    }
-}
-
-/// 在后台线程读取所选域的地址。
-fn load(domain: Option<&str>) -> io::Result<Vec<Entry>> {
-    let mut client = ManagementClient::local();
-    let Some(domain) = domain else {
-        let snapshot = client.snapshot()?;
-        return Ok(snapshot
-            .interfaces
-            .into_iter()
-            .filter(|state| !state.address.is_unspecified())
-            .map(|state| Entry {
-                dynamic: state.lease.is_some(),
-                address: state.address,
-                prefix: state.prefix_length,
-                gateway: state.gateway,
-                interface: String::from_utf8_lossy(&state.name).into_owned(),
-                device: state.name,
-                mac: Some(state.mac),
-            })
-            .collect());
-    };
-    let (_, bytes) = client.export()?;
-    let config = RouterConfiguration::decode(&bytes).map_err(io::Error::other)?;
-    let scope = config
-        .routing_domains
-        .iter()
-        .find(|(name, _)| name.as_str() == domain)
-        .map(|(_, scope)| scope)
-        .ok_or_else(|| io::Error::other("所选路由域已删除。"))?;
-    Ok(scope
-        .interfaces
-        .iter()
-        .filter_map(|(name, interface)| {
-            let ipv4 = interface.ipv4.as_ref()?;
-            (ipv4.assignment == Assignment::Static && !ipv4.address.is_unspecified()).then(|| {
-                let (device, mac) = match &interface.device {
-                    DeviceMatch::Mac(mac) => (name.as_str().as_bytes().to_vec(), Some(*mac)),
-                    DeviceMatch::Name(device) => (device.as_str().as_bytes().to_vec(), None),
-                };
-                Entry {
-                    dynamic: false,
-                    address: ipv4.address,
-                    prefix: ipv4.prefix_length,
-                    gateway: ipv4.gateway,
-                    interface: name.as_str().to_owned(),
-                    device,
-                    mac,
-                }
-            })
-        })
-        .collect())
-}
-
-fn network(address: Ipv4Addr, prefix: u8) -> Ipv4Addr {
-    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-    Ipv4Addr::from(u32::from(address) & mask)
-}
-
-fn row_text(entry: &Entry) -> String {
-    let gateway = if entry.gateway.is_unspecified() {
-        String::new()
-    } else {
-        entry.gateway.to_string()
-    };
-    format!(
-        "{}\t{}/{}\t{}\t{}\t{gateway}",
-        if entry.dynamic { "D" } else { "" },
-        entry.address,
-        entry.prefix,
-        network(entry.address, entry.prefix),
-        entry.interface,
-    )
-}
-
-pub(super) struct Page {
-    view: Rc<View>,
-    task: Option<Task<()>>,
-    // 地址对话框与提交任务；进行中时忽略新的编辑请求。
-    edit: Option<Task<()>>,
-    visible: bool,
-    domain: Option<Arc<str>>,
-    dialogs: Dialogs,
+pub(crate) struct Page {
+    view: Rc<RefCell<View>>,
+    background: Background,
+    filter: filter::Panel<Field>,
+    observer: Option<Task<()>>,
+    writer: Option<Task<()>>,
 }
 
 struct View {
-    _body: Body,
+    family: Family,
+    visible: bool,
+    busy: bool,
+    scope: Option<Arc<str>>,
+    catalog: Option<Catalog>,
+    property: Option<Property>,
+    conditions: Vec<Condition>,
     list: Widget,
+    find: Find,
     add: Tool,
     remove: Tool,
-    refresh: Tool,
     summary: Summary,
-    background: Background,
-    clock: Clock,
-    entries: RefCell<Vec<Entry>>,
+    _decor: [Widget; 2],
 }
 
-impl View {
-    fn selected(&self) -> liteos_ui::Result<Option<Entry>> {
-        let selected = self.list.selection()?;
-        Ok(selected.and_then(|id| self.entries.borrow().get(id as usize - 1).cloned()))
-    }
+struct Mutation {
+    baseline: DraftBaseline,
+    change: Change,
+    target: AfterSave,
+}
 
-    fn show(&self, note: &str) -> liteos_ui::Result<()> {
-        let selected = self.selected()?;
-        self.remove
-            .set_enabled(selected.as_ref().is_some_and(|entry| entry.mac.is_some()))?;
-        self.summary.show(
-            self.entries.borrow().len(),
-            usize::from(selected.is_some()),
-            note,
-        )
-    }
-
-    fn present(&self, entries: Vec<Entry>) -> liteos_ui::Result<()> {
-        let previous = self.selected()?.map(|entry| entry.device);
-        let text: Vec<_> = entries.iter().map(row_text).collect();
-        let rows: Vec<_> = text
-            .iter()
-            .enumerate()
-            .map(|(index, text)| (index as u64 + 1, text.as_str()))
-            .collect();
-        self.list.set_rows(&rows)?;
-        let selection = previous.and_then(|device| {
-            entries
-                .iter()
-                .position(|entry| entry.device == device)
-                .map(|index| index as u64 + 1)
-        });
-        self.list.select(selection)?;
-        *self.entries.borrow_mut() = entries;
-        self.show("实时")
-    }
-
-    async fn observe(&self, domain: Option<Arc<str>>) {
-        loop {
-            let scope = domain.clone();
-            let loaded = match self.background.run(move || load(scope.as_deref())) {
-                Ok(task) => task.await,
-                Err(error) => Err(io::Error::other(error.to_string())),
-            };
-            let shown = match loaded {
-                Ok(entries) => self.present(entries),
-                Err(error) => self
-                    .summary
-                    .notice(&format!("地址读取失败，请刷新。{error}")),
-            };
-            if shown.is_err() {
-                return;
-            }
-            let Ok(sleep) = self.clock.sleep(Duration::from_secs(2)) else {
-                return;
-            };
-            sleep.await;
-        }
-    }
+enum AfterSave {
+    List,
+    Close(u64),
+    Keep(u64, Member),
 }
 
 impl Page {
-    pub(super) fn new(
-        app: &Application,
+    pub(crate) fn new(
         parent: &Widget,
         background: Background,
+        family: Family,
     ) -> liteos_ui::Result<Self> {
-        let [add, remove, _, refresh] = toolbar(
-            parent,
+        let bar = child(parent, WidgetKind::Row, "", Layout::default())?;
+        let [add, remove] = toolbar(
+            &bar,
             [
                 Item::Command(Glyph::Add, "新建"),
                 Item::Command(Glyph::Remove, "删除"),
-                Item::Separator,
-                Item::Icon(Glyph::Refresh, "刷新"),
             ],
         )?;
-        remove.set_enabled(false)?;
-        let body = Body::new(parent)?;
-        let list = body.list.clone();
+        let space = spacer(&bar)?;
+        let find = Find::new(&bar)?;
+        let filter = filter::Panel::new(
+            parent,
+            &bar,
+            match family {
+                Family::Ipv4 => &[
+                    Field::Address(Family::Ipv4),
+                    Field::Network,
+                    Field::Interface,
+                ],
+                Family::Ipv6 => &[Field::Address(Family::Ipv6), Field::Interface],
+            },
+        )?;
+        let list = child(
+            parent,
+            WidgetKind::List,
+            "",
+            Layout {
+                grow: 1,
+                ..Layout::default()
+            },
+        )?;
         list.set_list_style(
             ListStyle::Details,
             ListOptions {
@@ -229,151 +107,606 @@ impl Page {
                 full_row_select: true,
             },
         )?;
-        let columns = [
-            ("", 26),
-            ("地址", 150),
-            ("网段", 120),
-            ("接口", 110),
-            ("网关", 120),
-        ];
-        list.set_columns(&std::array::from_fn::<_, 5, _>(|index| Column {
-            id: index as u64 + 1,
-            title: columns[index].0,
-            width: columns[index].1,
-        }))?;
-        let summary = Summary::new(parent)?;
-        Ok(Self {
-            view: Rc::new(View {
-                _body: body,
-                list,
-                add,
-                remove,
-                refresh,
-                summary,
-                background,
-                clock: app.clock(),
-                entries: RefCell::default(),
-            }),
-            task: None,
-            edit: None,
+        let fields: &[(&str, i32)] = match family {
+            Family::Ipv4 => &[("", 40), ("地址", 182), ("网络", 150), ("接口", 134)],
+            Family::Ipv6 => &[
+                ("", 40),
+                ("地址", 255),
+                ("接口", 134),
+                ("有效寿命", 112),
+                ("首选寿命", 112),
+            ],
+        };
+        let columns: Vec<_> = fields
+            .iter()
+            .enumerate()
+            .map(|(index, &(title, width))| Column {
+                id: index as u64 + 1,
+                title,
+                width,
+            })
+            .collect();
+        list.set_columns(&columns)?;
+        let view = View {
+            family,
             visible: false,
-            domain: None,
-            dialogs: app.dialogs(),
+            busy: false,
+            scope: None,
+            catalog: None,
+            property: None,
+            conditions: Vec::new(),
+            list,
+            find,
+            add,
+            remove,
+            summary: Summary::new(parent)?,
+            _decor: [bar, space],
+        };
+        view.state()?;
+        Ok(Self {
+            view: Rc::new(RefCell::new(view)),
+            background,
+            filter,
+            observer: None,
+            writer: None,
         })
     }
 
-    pub(super) fn select_domain(
-        &mut self,
-        app: &mut Application,
-        window: &Window,
-        domain: Option<Arc<str>>,
-    ) -> liteos_ui::Result<()> {
-        self.domain = domain;
-        if self.visible {
-            self.subscribe(app, window)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn selected_tab(
+    pub(crate) fn show(
         &mut self,
         app: &mut Application,
         window: &Window,
         visible: bool,
     ) -> liteos_ui::Result<()> {
-        if self.visible == visible {
+        let mut view = self.view.borrow_mut();
+        if view.visible == visible {
             return Ok(());
         }
-        self.visible = visible;
-        if visible {
-            self.subscribe(app, window)
-        } else {
-            self.task = None;
-            Ok(())
-        }
+        view.visible = visible;
+        view.property = None;
+        drop(view);
+        self.observe(app, window)
     }
 
-    fn subscribe(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
-        self.view.summary.notice("正在读取地址…")?;
-        let view = self.view.clone();
-        let domain = self.domain.clone();
-        self.task = Some(app.spawn_local(window, async move {
-            view.observe(domain).await;
-        })?);
-        Ok(())
-    }
-
-    /// 「新建」请求打开的配置对话框。
-    pub(super) fn request(&self, event: &Event) -> Option<Dialog> {
-        (self.visible && self.view.add.activated(event))
-            .then_some(Dialog::Settings(Some(Section::Interfaces)))
-    }
-
-    pub(super) fn handle(
+    pub(crate) fn select_domain(
         &mut self,
         app: &mut Application,
         window: &Window,
-        event: &Event,
+        scope: Option<Arc<str>>,
     ) -> liteos_ui::Result<()> {
-        if !self.visible {
+        let mut view = self.view.borrow_mut();
+        if view.scope == scope {
             return Ok(());
         }
-        let view = &self.view;
-        if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
-            return view.show("实时");
-        }
-        if view.refresh.activated(event) {
-            return self.subscribe(app, window);
-        }
-        let remove = view.remove.activated(event);
-        if !(remove
-            || event.node == view.list.id() && matches!(event.kind, EventKind::Activate { .. }))
-            || self.edit.as_ref().is_some_and(|task| !task.is_finished())
-        {
+        view.scope = scope;
+        view.property = None;
+        drop(view);
+        self.observe(app, window)
+    }
+
+    fn observe(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
+        self.observer = None;
+        let mut view = self.view.borrow_mut();
+        view.catalog = None;
+        view.render(None, true)?;
+        if !view.visible {
             return Ok(());
         }
-        let Some(row) = view.selected()?.and_then(|entry| entry.row()) else {
-            return Ok(());
-        };
-        let view = view.clone();
-        let domain = self.domain.clone();
-        let dialogs = self.dialogs.clone();
-        let parent = window.clone();
-        self.edit = Some(app.spawn_local(window, async move {
-            let background = view.background.clone();
-            let loaded = match background.run(move || LiveInterface::load(domain.as_deref(), &row))
-            {
-                Ok(task) => task.await,
-                Err(error) => Err(io::Error::other(error.to_string())),
-            };
-            let live = match loaded {
-                Ok(live) => live,
-                Err(error) => {
-                    let _ = view.summary.notice(&error.to_string());
-                    return;
+        view.summary.notice("正在读取地址…")?;
+        let scope = view.scope.clone();
+        let family = view.family;
+        drop(view);
+        let view = self.view.clone();
+        let background = self.background.clone();
+        let clock = app.clock();
+        self.observer = Some(app.spawn_local(window, async move {
+            loop {
+                let domain = scope.clone();
+                let result = match background.run(move || catalog::load(domain.as_deref(), family))
+                {
+                    Ok(task) => task.await,
+                    Err(error) => Err(io::Error::other(error.to_string())),
+                };
+                let shown = match result {
+                    Ok(catalog) => view.borrow_mut().present(catalog),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(()),
+                    Err(error) => {
+                        let mut view = view.borrow_mut();
+                        view.catalog = None;
+                        view.render(None, true).and_then(|()| {
+                            view.summary
+                                .notice(&format!("无法读取{}。{error}", title(family)))
+                        })
+                    }
+                };
+                if shown.is_err() {
+                    break;
                 }
-            };
-            let mut next = live.initial.clone();
-            if remove {
-                next.ipv4 = None;
-            } else if edit_ipv4_of(
-                &dialogs,
-                &parent,
-                &mut next,
-                live.device.as_ref(),
-                live.named(),
-            )
-            .await
-            .is_err()
-            {
-                return;
+                let Ok(wait) = clock.sleep(Duration::from_secs(2)) else {
+                    break;
+                };
+                wait.await;
             }
-            if next == live.initial {
-                return;
-            }
-            let (_, message) = submit(&background, live, next).await;
-            let _ = view.summary.notice(&message);
         })?);
         Ok(())
+    }
+
+    pub(crate) fn handle(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        workspace: &Workspace,
+        event: &Event,
+    ) -> liteos_ui::Result<()> {
+        let mut view = self.view.borrow_mut();
+        if !view.visible {
+            return Ok(());
+        }
+        match self.filter.handle(event, &view.conditions)? {
+            filter::Action::Apply(conditions) => {
+                let previous = view.selected()?.cloned();
+                view.conditions = conditions;
+                return view.render(previous.as_ref(), true);
+            }
+            filter::Action::Invalid(message) => return view.summary.notice(&message),
+            filter::Action::None => {}
+        }
+        match view.find.handle(event)? {
+            Some(FindAction::Find(scan)) => {
+                let text = view.rows();
+                return view.find.scan_rows(
+                    &view.list,
+                    text.iter().map(|(id, text)| (*id, text.as_str())),
+                    scan,
+                );
+            }
+            Some(FindAction::Close) => return view.find.present(&view.list),
+            None => {}
+        }
+        if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
+            return view.state();
+        }
+        if view.busy {
+            return Ok(());
+        }
+        if let Some(property) = &view.property {
+            property.address_changed(event)?;
+        }
+        let mutation =
+            if let Some(request) = view.property.as_ref().and_then(|form| form.request(event)) {
+                view.property_action(request)?
+            } else if matches!(event.kind, EventKind::Activate { .. }) {
+                view.list_action(workspace, event)?
+            } else {
+                None
+            };
+        drop(view);
+        if let Some(mutation) = mutation {
+            self.submit(app, window, mutation)?;
+        }
+        Ok(())
+    }
+
+    fn submit(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        mutation: Mutation,
+    ) -> liteos_ui::Result<()> {
+        let view = self.view.clone();
+        let scope = view.borrow().scope.clone();
+        let family = view.borrow().family;
+        let background = self.background.clone();
+        let dialogs = app.dialogs();
+        let parent = window.clone();
+        let job = app.spawn_local(window, async move {
+            let Mutation {
+                baseline,
+                change,
+                target,
+            } = mutation;
+            let domain = scope.clone();
+            let result = async {
+                let (revision, candidate) = background
+                    .run(move || configured::candidate(domain.as_deref(), baseline, change))?
+                    .await?;
+                let result = apply(&background, candidate.clone(), revision).await?;
+                Ok::<_, Box<dyn std::error::Error>>((revision, result, candidate))
+            }
+            .await;
+            let (previous, saved, committed, message) = match result {
+                Ok((revision, result, candidate)) => (
+                    Some(revision),
+                    result.saved,
+                    result
+                        .saved_revision
+                        .map(|saved| DraftBaseline::new(saved, candidate)),
+                    result.message,
+                ),
+                Err(error) => (None, false, None, error.to_string()),
+            };
+            let alert = {
+                let mut view = view.borrow_mut();
+                view.busy = false;
+                let _ = view.state();
+                if !view.visible || view.scope != scope {
+                    return;
+                }
+                if saved
+                    && view
+                        .catalog
+                        .as_ref()
+                        .is_some_and(|catalog| revision_of(catalog) == previous)
+                {
+                    // 已保存的代际由观察任务重新发布；此间禁用旧记录的编辑。
+                    view.catalog = None;
+                    let _ = view.render(None, true);
+                }
+                view.finish(target, saved, committed, &message)
+                    .unwrap_or(false)
+            };
+            if alert
+                && let Ok(dialog) = dialogs.message(
+                    &parent,
+                    title(family),
+                    &message,
+                    MessageButtons::Ok,
+                    MessageIcon::Error,
+                )
+            {
+                let _ = dialog.await;
+            }
+        })?;
+        self.writer = Some(job);
+        let mut view = self.view.borrow_mut();
+        view.busy = true;
+        view.state()
+    }
+}
+
+impl View {
+    fn entries(&self) -> impl Iterator<Item = (u64, &Entry)> {
+        self.catalog
+            .iter()
+            .flat_map(|catalog| &catalog.entries)
+            .enumerate()
+            .filter(|(_, entry)| self.visible_entry(entry))
+            .map(|(index, entry)| (index as u64 + 1, entry))
+    }
+
+    fn visible_entry(&self, entry: &Entry) -> bool {
+        self.conditions
+            .iter()
+            .all(|condition| condition.matches(entry))
+    }
+
+    fn rows(&self) -> Vec<(u64, String)> {
+        self.entries()
+            .map(|(id, entry)| {
+                let text = match self.family {
+                    Family::Ipv4 => format!(
+                        "{}\t{}\t{}\t{}",
+                        entry.flags(),
+                        entry.address_text(),
+                        entry.network().expect("IPv4 window has only IPv4 entries"),
+                        entry.interface
+                    ),
+                    Family::Ipv6 => {
+                        let (preferred, valid) = entry
+                            .runtime
+                            .and_then(|runtime| runtime.lifetimes)
+                            .map_or_else(
+                                || (String::new(), String::new()),
+                                |(preferred, valid)| (lifetime(preferred), lifetime(valid)),
+                            );
+                        format!(
+                            "{}\t{}\t{}\t{valid}\t{preferred}",
+                            entry.flags(),
+                            entry.address_text(),
+                            entry.interface
+                        )
+                    }
+                };
+                (id, text)
+            })
+            .collect()
+    }
+
+    fn selected(&self) -> liteos_ui::Result<Option<&Entry>> {
+        let id = self.list.selection()?.and_then(|id| id.checked_sub(1));
+        Ok(self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.entries.get(id? as usize))
+            .filter(|entry| self.visible_entry(entry)))
+    }
+
+    fn state(&self) -> liteos_ui::Result<()> {
+        let selected = self.selected()?;
+        self.add.set_enabled(
+            !self.busy
+                && self
+                    .catalog
+                    .as_ref()
+                    .is_some_and(|catalog| catalog.targets.iter().any(|target| target.available)),
+        )?;
+        self.remove
+            .set_enabled(!self.busy && selected.is_some_and(|entry| entry.member.is_some()))?;
+        self.find.set_enabled(self.catalog.is_some())?;
+        self.summary
+            .show(self.entries().count(), usize::from(selected.is_some()), "")
+    }
+
+    fn render(&self, selection: Option<&Entry>, restart: bool) -> liteos_ui::Result<()> {
+        let text = self.rows();
+        let selection = selection.and_then(|previous| {
+            self.entries()
+                .find_map(|(id, entry)| previous.same_address(entry).then_some(id))
+        });
+        let rows: Vec<_> = text.iter().map(|(id, text)| (*id, text.as_str())).collect();
+        self.list.set_rows(&rows)?;
+        self.list.select(selection)?;
+        if restart {
+            self.find
+                .scan_rows(&self.list, rows.into_iter(), self.find.restart()?)?;
+        } else {
+            self.find.present(&self.list)?;
+        }
+        self.state()
+    }
+
+    fn present(&mut self, catalog: Catalog) -> liteos_ui::Result<()> {
+        let previous = self.selected()?.cloned();
+        let old = self.catalog.replace(catalog);
+        let Some(current) = &self.catalog else {
+            unreachable!("catalog was replaced")
+        };
+        let restart = old.as_ref().is_none_or(|old| {
+            old.entries.len() != current.entries.len()
+                || old
+                    .entries
+                    .iter()
+                    .zip(&current.entries)
+                    .any(|(old, current)| !old.same_address(current))
+        });
+        if restart
+            || old.as_ref().is_some_and(|old| {
+                revision_of(old) != revision_of(current)
+                    || old.entries != current.entries
+                    || old.targets != current.targets
+            })
+        {
+            self.render(previous.as_ref(), restart)?;
+        }
+        Ok(())
+    }
+
+    fn list_action(
+        &mut self,
+        workspace: &Workspace,
+        event: &Event,
+    ) -> liteos_ui::Result<Option<Mutation>> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(None);
+        };
+        let add = self.add.activated(event);
+        let remove = self.remove.activated(event);
+        if !add && !remove && event.node != self.list.id() {
+            return Ok(None);
+        }
+        if let Some(property) = &self.property {
+            workspace.raise(&property.frame)?;
+            return Ok(None);
+        }
+        let entry = self.selected()?;
+        if remove {
+            return Ok(catalog
+                .baseline
+                .clone()
+                .zip(entry.and_then(|entry| entry.member.clone()))
+                .map(|(baseline, member)| Mutation {
+                    baseline,
+                    change: Change::Remove(member),
+                    target: AfterSave::List,
+                }));
+        }
+        if add || entry.is_some() {
+            self.property = Some(Property::new(
+                workspace,
+                catalog,
+                self.family,
+                if add { None } else { entry },
+            )?);
+        }
+        Ok(None)
+    }
+
+    fn property_action(&mut self, request: Request) -> liteos_ui::Result<Option<Mutation>> {
+        let Some(property) = &self.property else {
+            return Ok(None);
+        };
+        let frame = property.frame.id();
+        let (change, target) = match request {
+            Request::Close => {
+                self.property = None;
+                return Ok(None);
+            }
+            Request::Remove => {
+                let Some(original) = &property.original else {
+                    return Ok(None);
+                };
+                (Change::Remove(original.clone()), AfterSave::Close(frame))
+            }
+            Request::Save { close } => {
+                let Some(next) = property.value()? else {
+                    return Ok(None);
+                };
+                if property.original.as_ref() == Some(&next) {
+                    if close {
+                        self.property = None;
+                    } else {
+                        property.note("")?;
+                    }
+                    return Ok(None);
+                }
+                let target = if close {
+                    AfterSave::Close(frame)
+                } else {
+                    AfterSave::Keep(frame, next.clone())
+                };
+                (
+                    Change::Put {
+                        previous: property.original.clone(),
+                        next,
+                    },
+                    target,
+                )
+            }
+        };
+        let Some(baseline) = property.baseline.clone() else {
+            return Ok(None);
+        };
+        property.ready(false, false)?;
+        property.note("正在保存…")?;
+        Ok(Some(Mutation {
+            baseline,
+            change,
+            target,
+        }))
+    }
+
+    fn finish(
+        &mut self,
+        target: AfterSave,
+        saved: bool,
+        baseline: Option<DraftBaseline>,
+        message: &str,
+    ) -> liteos_ui::Result<bool> {
+        let frame = match target {
+            AfterSave::List => return Ok(!saved),
+            AfterSave::Close(frame) | AfterSave::Keep(frame, _) => frame,
+        };
+        let Some(property) = self
+            .property
+            .as_mut()
+            .filter(|property| property.frame.id() == frame)
+        else {
+            return Ok(false);
+        };
+        match (saved, baseline, target) {
+            (true, _, AfterSave::Close(_)) => self.property = None,
+            (true, Some(baseline), AfterSave::Keep(_, member)) => {
+                property.bind(baseline, member)?;
+                property.note("")?;
+            }
+            (true, None, _) => {
+                property.ready(true, false)?;
+                property.note("已保存。请关闭后从最新地址列表重新打开。")?;
+            }
+            _ => {
+                property.ready(true, true)?;
+                property.note(message)?;
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn revision_of(catalog: &Catalog) -> Option<Revision> {
+    catalog.baseline.as_ref().map(|baseline| baseline.revision)
+}
+
+fn title(family: Family) -> &'static str {
+    match family {
+        Family::Ipv4 => "地址",
+        Family::Ipv6 => "IPv6 地址",
+    }
+}
+
+fn is_family(family: Family, address: IpAddr) -> bool {
+    address.is_ipv4() == (family == Family::Ipv4)
+}
+
+#[derive(Clone, Copy)]
+enum Field {
+    Address(Family),
+    Network,
+    Interface,
+}
+
+#[derive(PartialEq)]
+struct Condition {
+    operand: Operand,
+    exclude: bool,
+}
+
+#[derive(PartialEq)]
+enum Operand {
+    Address(IpPrefix),
+    Network(IpPrefix),
+    Interface(String),
+}
+
+impl filter::Field for Field {
+    type Condition = Condition;
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Address(_) => "地址",
+            Self::Network => "网络",
+            Self::Interface => "接口",
+        }
+    }
+
+    fn modes(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Address(_) | Self::Network => ("属于", "不属于"),
+            Self::Interface => ("=", "≠"),
+        }
+    }
+
+    fn parse(self, exclude: bool, text: &str) -> Result<Condition, &'static str> {
+        let operand = match self {
+            Self::Address(family) => Operand::Address(parse_filter(text, family)?),
+            Self::Network => Operand::Network(parse_filter(text, Family::Ipv4)?),
+            Self::Interface => Operand::Interface(text.to_owned()),
+        };
+        Ok(Condition { operand, exclude })
+    }
+}
+
+fn parse_filter(text: &str, family: Family) -> Result<IpPrefix, &'static str> {
+    let text = text.trim();
+    text.parse::<IpAddr>()
+        .map(|network| IpPrefix {
+            network,
+            length: if network.is_ipv4() { 32 } else { 128 },
+        })
+        .ok()
+        .or_else(|| text.parse::<IpPrefix>().ok())
+        .filter(|prefix| is_family(family, prefix.network))
+        .ok_or("请输入当前地址族的 IP 地址或规范 CIDR 网段")
+}
+
+fn contains(prefix: IpPrefix, address: IpAddr) -> bool {
+    RoutePolicyPrefix {
+        network: prefix.network,
+        length: prefix.length,
+        minimum: Some(prefix.length),
+        maximum: None,
+    }
+    .matches(address, if address.is_ipv4() { 32 } else { 128 })
+}
+
+impl Condition {
+    fn matches(&self, entry: &Entry) -> bool {
+        let matched = match &self.operand {
+            Operand::Address(prefix) => contains(*prefix, entry.address),
+            Operand::Network(prefix) => entry
+                .network()
+                .is_some_and(|address| contains(*prefix, address.into())),
+            Operand::Interface(interface) => &entry.interface == interface,
+        };
+        matched != self.exclude
     }
 }

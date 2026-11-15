@@ -24,15 +24,7 @@ where
             return result;
         };
         let selected = if let Some(length) = query.prefix_length {
-            self.catalogue
-                .index
-                .prefixes()
-                .binary_search_by_key(&(address, length), |prefix| (prefix.network, prefix.length))
-                .ok()
-                .and_then(|index| {
-                    let row = self.selected[index];
-                    (row != u32::MAX).then(|| self.view(row))
-                })
+            self.exact(address, length)
         } else {
             self.lookup(address)
         };

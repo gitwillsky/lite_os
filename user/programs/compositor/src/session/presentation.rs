@@ -16,8 +16,8 @@ impl Session {
     /// 将已提交的 surface、窗口位置与外壳叠加层投影到下一块输出缓冲。
     ///
     /// # Errors
-    /// 输出绘制或 DRM page flip 请求失败。
-    pub(super) fn present(&mut self) -> io::Result<()> {
+    /// 输出绘制或 GPU 提交失败。
+    pub(super) fn prepare_frame(&mut self) -> io::Result<()> {
         let boxes = self.layer_boxes();
         let popup_views = self.server.popups();
         let server = &self.server;
@@ -177,7 +177,8 @@ impl Session {
         {
             visible.push((client, surface));
         }
+        // 将回调与刚绘制的内容一起冻结；背压期间新提交的回调留给下一帧。
         self.server.stage_frame(&visible);
-        self.scanout.request_flip()
+        Ok(())
     }
 }

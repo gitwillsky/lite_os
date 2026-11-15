@@ -203,8 +203,9 @@ impl Compiled {
         }
         let mut routes = Vec::new();
         let mut attributes = Vec::new();
+        let mut locations = Vec::new();
         let mut by_value = FallibleMap::new();
-        for route in source.routes() {
+        for (index, route) in source.routes().enumerate() {
             let Action::Permit { preference, metric } =
                 self.decision(buckets, route.network.address().into(), route.length)
             else {
@@ -233,11 +234,17 @@ impl Compiled {
                 attributes: attribute,
                 ..*route
             });
+            if let Some(location) = source.locations.get(index) {
+                locations.try_reserve(1).map_err(|_| Error::NoMemory)?;
+                locations.push(*location);
+            }
         }
         if routes.is_empty() {
             return Ok(None);
         }
-        source.project_attributes(attributes, routes).map(Some)
+        source
+            .project_attributes(attributes, routes, locations)
+            .map(Some)
     }
 }
 

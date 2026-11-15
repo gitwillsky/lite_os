@@ -106,11 +106,15 @@ impl Domains {
             .ok_or(native_abi::ERR_SHOULD_WAIT)
     }
 
-    pub(super) fn namespace(&self, name: &str) -> Result<(NonZeroU128, &RemoteNamespace), Status> {
+    fn applied(&self, name: &str) -> Result<&Scope, Status> {
         let scope = self.find(name)?;
-        if scope.pending {
-            return Err(native_abi::ERR_SHOULD_WAIT);
-        }
+        (!scope.pending)
+            .then_some(scope)
+            .ok_or(native_abi::ERR_SHOULD_WAIT)
+    }
+
+    pub(super) fn namespace(&self, name: &str) -> Result<(NonZeroU128, &RemoteNamespace), Status> {
+        let scope = self.applied(name)?;
         Ok((scope.instance, &scope.network))
     }
 
@@ -123,10 +127,7 @@ impl Domains {
         domain: &str,
         name: &[u8],
     ) -> Result<Channel, Status> {
-        let scope = self.find(domain)?;
-        if scope.pending {
-            return Err(native_abi::ERR_SHOULD_WAIT);
-        }
+        let scope = self.applied(domain)?;
         let index = scope
             .network
             .interface_index(name)
@@ -138,10 +139,7 @@ impl Domains {
     /// # Errors
     /// The domain or interface is unavailable, or the interface has no current session.
     pub(super) fn dhcp_channel(&self, domain: &str, name: &[u8]) -> Result<&Channel, Status> {
-        let scope = self.find(domain)?;
-        if scope.pending {
-            return Err(native_abi::ERR_SHOULD_WAIT);
-        }
+        let scope = self.applied(domain)?;
         let index = scope
             .network
             .interface_index(name)
@@ -197,6 +195,11 @@ impl Domains {
 
     pub(super) fn controller(&self, name: &str) -> Result<&RoutingConfigurator, Status> {
         Ok(&self.find(name)?.controller)
+    }
+
+    /// 为配置管理查询借用已应用的 RIB 能力，域未就绪时返回 ShouldWait。
+    pub(super) fn applied_controller(&self, name: &str) -> Result<&RoutingConfigurator, Status> {
+        Ok(&self.applied(name)?.controller)
     }
 
     fn open(&mut self, root: &RoutingConfigurator, name: &Name) -> Result<&mut Scope, Status> {

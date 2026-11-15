@@ -336,9 +336,15 @@ fn success_control(operation: u32, response: &[u8]) -> io::Result<(&[u8], usize)
         ));
     }
     if status != 0 {
-        return Err(io::Error::other(format!(
-            "网络设置服务拒绝请求（状态 {status}）"
-        )));
+        let kind = if status == bridge::NOT_FOUND {
+            io::ErrorKind::NotFound
+        } else {
+            io::ErrorKind::Other
+        };
+        return Err(io::Error::new(
+            kind,
+            format!("网络设置服务拒绝请求（状态 {status}）"),
+        ));
     }
     Ok((control, length))
 }
@@ -403,4 +409,28 @@ fn client_upgrade(
         tungstenite::client::client_with_config(request, stream, Some(wire_config()))
             .map_err(handshake_error)?;
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_query_distinguishes_an_absent_server_from_malformed_reply() {
+        let code = bridge::NOT_FOUND.to_le_bytes();
+        assert_eq!(
+            success_control(ordinal::DHCP_SERVER_BINDINGS, &code)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut malformed = code.to_vec();
+        malformed.push(0);
+        assert_eq!(
+            success_control(ordinal::DHCP_SERVER_BINDINGS, &malformed)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 }

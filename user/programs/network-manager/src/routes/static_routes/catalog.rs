@@ -1,11 +1,17 @@
 //! 静态声明按配置代际与表内位置识别。运行时路径拆分、递归解析或 ECMP 合并后不能反查声明。
 
+use liteos_ui::Background;
 use network_config::{
     ManagementClient, Revision,
-    configuration::{RouterConfiguration, StaticAction, StaticRoute, StaticTable, StaticTarget},
-    routes::{Family, TABLE_MAIN},
+    configuration::{
+        IpPrefix, RouterConfiguration, StaticAction, StaticRoute, StaticTable, StaticTarget,
+    },
+    routes::{
+        Family, TABLE_MAIN,
+        selection::{self, Candidate, State},
+    },
 };
-use std::io;
+use std::{collections::BTreeMap, io, num::NonZeroU32, sync::Arc};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Key {
@@ -13,10 +19,94 @@ pub(super) struct Key {
     index: usize,
 }
 
+impl Key {
+    fn location(self) -> Option<NonZeroU32> {
+        u32::try_from(self.index)
+            .ok()?
+            .checked_add(1)
+            .and_then(NonZeroU32::new)
+    }
+    pub(super) fn candidate(self, route: &StaticRoute) -> Option<Candidate> {
+        Some(Candidate {
+            prefix: IpPrefix {
+                network: route.destination,
+                length: route.prefix_length,
+            },
+            location: self.location()?,
+        })
+    }
+}
+
 pub(super) struct Entry {
     pub key: Key,
     pub route: StaticRoute,
     pub text: String,
+    pub status: Option<State>,
+}
+
+impl Entry {
+    fn show_status(&mut self, status: Option<State>) {
+        self.status = status;
+        let (flag, distance) = match status {
+            Some(State::Active(metrics)) => ("As", metrics.distance.get()),
+            Some(State::Standby(metrics)) => ("s", metrics.distance.get()),
+            Some(State::Unreachable(metrics)) => ("Is", metrics.distance.get()),
+            Some(State::Absent) => ("Is", self.route.preference),
+            None => (
+                if self.route.disabled { "Xs" } else { "s" },
+                self.route.preference,
+            ),
+        };
+        self.text = format!(
+            "{flag}\t{}/{}\t{}\t{distance}\t{}",
+            self.route.destination,
+            self.route.prefix_length,
+            gateway_text(&self.route.action),
+            table_name(self.key.table),
+        );
+    }
+}
+
+pub(super) type Selections = BTreeMap<(u32, NonZeroU32), State>;
+
+pub(super) struct SelectionRead {
+    pub revision: Revision,
+    tables: BTreeMap<u32, Vec<Candidate>>,
+}
+
+impl SelectionRead {
+    /// 每页核对声明与确认图代际，整轮一致才显示候选状态。
+    pub(super) async fn read(
+        self,
+        background: &Background,
+        scope: Option<Arc<str>>,
+    ) -> Option<Selections> {
+        let mut answers = Selections::new();
+        let mut graph = None;
+        for (table, candidates) in self.tables {
+            for chunk in candidates.chunks(selection::LIMIT) {
+                let request = chunk.to_vec();
+                let domain = scope.clone();
+                let (revision, result) = background
+                    .run(move || {
+                        ManagementClient::local().static_status(domain.as_deref(), table, &request)
+                    })
+                    .ok()?
+                    .await
+                    .ok()?;
+                if revision != self.revision
+                    || graph.is_some_and(|generation| generation != result.generation)
+                {
+                    return None;
+                }
+                graph = Some(result.generation);
+                for (candidate, state) in chunk.iter().zip(result.rows) {
+                    answers.insert((table, candidate.location), state);
+                }
+            }
+        }
+        Some(answers)
+    }
 }
 
 pub(super) struct Catalog {
@@ -82,21 +172,16 @@ impl Catalog {
         };
         for (table, routes) in tables {
             catalog.tables.push(table);
-            let name = table_name(table);
             for (index, route) in routes.iter().enumerate() {
                 let rows = &mut catalog.rows[usize::from(route.destination.is_ipv6())];
-                rows.push(Entry {
+                let mut entry = Entry {
                     key: Key { table, index },
                     route: route.clone(),
-                    text: format!(
-                        "{}\t{}/{}\t{}\t{}\t{name}",
-                        if route.disabled { "XS" } else { "S" },
-                        route.destination,
-                        route.prefix_length,
-                        gateway_text(&route.action),
-                        route.preference,
-                    ),
-                });
+                    text: String::new(),
+                    status: None,
+                };
+                entry.show_status(None);
+                rows.push(entry);
             }
         }
         for rows in &mut catalog.rows {
@@ -107,6 +192,44 @@ impl Catalog {
 
     pub(super) fn entries(&self, family: Family) -> &[Entry] {
         &self.rows[usize::from(family == Family::Ipv6)]
+    }
+
+    pub(super) fn selection_read(&self, visible: [bool; 2]) -> SelectionRead {
+        let mut tables: BTreeMap<u32, Vec<Candidate>> = BTreeMap::new();
+        for (entries, visible) in self.rows.iter().zip(visible) {
+            if !visible {
+                continue;
+            }
+            for entry in entries.iter().filter(|entry| !entry.route.disabled) {
+                if let Some(candidate) = entry.key.candidate(&entry.route) {
+                    tables.entry(entry.key.table).or_default().push(candidate);
+                }
+            }
+        }
+        SelectionRead {
+            revision: self.revision,
+            tables,
+        }
+    }
+
+    pub(super) fn show_selection(&mut self, selection: Option<&Selections>) -> bool {
+        let mut changed = false;
+        for entry in self
+            .rows
+            .iter_mut()
+            .flatten()
+            .filter(|entry| !entry.route.disabled)
+        {
+            let status = entry
+                .key
+                .location()
+                .and_then(|location| selection?.get(&(entry.key.table, location)).copied());
+            if entry.status != status {
+                entry.show_status(status);
+                changed = true;
+            }
+        }
+        changed
     }
 }
 

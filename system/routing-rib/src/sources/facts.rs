@@ -124,6 +124,7 @@ impl Facts {
 }
 
 pub(super) struct Interface {
+    name: [u8; 16],
     pub(super) address: Option<Ipv4Addr>,
     pub(super) length: u8,
     pub(super) broadcast: Ipv4Addr,
@@ -147,6 +148,7 @@ pub(super) fn capture(fact: &InterfaceSnapshot, plans: &[InterfaceConfiguration]
         .checked_shl(32 - u32::from(length.min(32)))
         .unwrap_or(0);
     Interface {
+        name: fact.name,
         ipv6: Vec::new(),
         carrier: fact.carrier() != Some(false),
         loopback: fact.loopback,
@@ -318,6 +320,10 @@ impl Interfaces {
             .binary_search_by_key(&index, |(index, _)| *index)
             .ok()
             .map(|position| &self.entries[position].1)
+    }
+    /// 借用参与本轮解析的实际接口名称；不查询随后可能变化的设备目录。
+    pub(super) fn name(&self, index: u32) -> Option<[u8; 16]> {
+        self.interface(index).map(|interface| interface.name)
     }
     /// 判断精确前缀是否来自实际接口网络；不把地址/广播宿主记录自动当成连接网络。
     pub(super) fn connected(&self, network: IpAddr, length: u8) -> bool {

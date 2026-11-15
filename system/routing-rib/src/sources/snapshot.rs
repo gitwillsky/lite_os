@@ -1,7 +1,16 @@
 //! 冻结 RIB 快照；预备能力可观察候选，当前状态仅在确认后发表，不重建第二份 FIB/前缀索引。
 use super::*;
-use crate::Action;
+use crate::{Action, resolution::Adjacency};
+use core::num::NonZeroU64;
 use router_protocol::tracking::{self, Query, Record};
+use router_protocol::{
+    policy_routing::TABLE_MAIN,
+    route_view::{
+        NextHop,
+        selection::{self, paths},
+    },
+    routing::Family,
+};
 
 /// 同一编译代际的解析图；预备期间只供事务调用者观察，必须执行确认后与来源/策略一并发表为当前状态。
 pub struct Snapshot {
@@ -9,8 +18,107 @@ pub struct Snapshot {
     pub(super) interfaces: facts::Interfaces,
     pub(super) resolved: crate::resolution::Resolved<u32, (), Origin>,
     pub(super) resolved6: crate::resolution::Resolved<u128, (), Origin>,
+    // 备选表复用已求解的同一冻结图，查询不保留另一份候选结果或重新执行选路。
+    pub(super) alternate: Vec<tables::SolvedTable>,
 }
+
+struct Table<'a> {
+    four: &'a crate::resolution::Resolved<u32, (), Origin>,
+    six: &'a crate::resolution::Resolved<u128, (), Origin>,
+}
+
 impl Snapshot {
+    fn table(&self, id: u32) -> Result<Table<'_>, Status> {
+        if id == TABLE_MAIN {
+            return Ok(Table {
+                four: &self.resolved,
+                six: &self.resolved6,
+            });
+        }
+        let index = self
+            .alternate
+            .binary_search_by_key(&id, |table| table.id)
+            .map_err(|_| native_abi::ERR_NOT_FOUND)?;
+        let table = &self.alternate[index];
+        Ok(Table {
+            four: &table.four,
+            six: &table.six,
+        })
+    }
+
+    fn route_usable(&self, family: Family) -> impl Fn(&Adjacency) -> bool + '_ {
+        move |target| {
+            let admitted = match family {
+                Family::Ipv4 => self.interfaces.admits_ipv4(target),
+                Family::Ipv6 => self.interfaces.admits_ipv6(target),
+            };
+            admitted && self.interfaces.failed_gateway(target).is_none()
+        }
+    }
+
+    /// 查询同一次已确认图中各静态声明的状态及策略生效距离和路由代价。
+    /// # Errors
+    /// 目标表或请求无效，或者无法分配回复。
+    pub fn static_status(&self, request: &selection::Request) -> Result<Vec<u8>, Status> {
+        let table = self.table(request.table)?;
+        let generation = NonZeroU64::new(self.generation).ok_or(native_abi::ERR_BAD_STATE)?;
+        let four = table.four.static_routes(Some(table.six));
+        let six = table.six.static_routes(None);
+        let usable4 = self.route_usable(Family::Ipv4);
+        let usable6 = self.route_usable(Family::Ipv6);
+        selection::Reply::encode(
+            generation,
+            request.candidates.iter().map(|candidate| {
+                let length = candidate.prefix.length;
+                let location = candidate.location;
+                match candidate.prefix.network {
+                    IpAddr::V4(address) => four.state(address.into(), length, location, &usable4),
+                    IpAddr::V6(address) => six.state(address.into(), length, location, &usable6),
+                }
+            }),
+        )
+        .map_err(encoding_status)
+    }
+
+    /// 编码目标声明在当前确认图中的立即出口，包括可解析的备用声明。
+    /// # Errors
+    /// 表不存在、冻结出口或权重无效、内存不足。
+    pub fn static_paths(&self, request: paths::Request) -> Result<Vec<u8>, Status> {
+        let table = self.table(request.table)?;
+        let candidate = request.candidate;
+        let members = match candidate.prefix.network {
+            IpAddr::V4(address) => table.four.static_routes(Some(table.six)).members(
+                address.into(),
+                candidate.prefix.length,
+                candidate.location,
+                self.route_usable(Family::Ipv4),
+            ),
+            IpAddr::V6(address) => table.six.static_routes(None).members(
+                address.into(),
+                candidate.prefix.length,
+                candidate.location,
+                self.route_usable(Family::Ipv6),
+            ),
+        }
+        .map_err(status)?;
+        paths::encode(
+            request,
+            members.iter().map(|member| {
+                let target = member.target;
+                Ok(NextHop {
+                    interface: target.interface_index,
+                    name: self
+                        .interfaces
+                        .name(target.interface_index)
+                        .ok_or(router_protocol::Invalid)?,
+                    gateway: target.gateway,
+                    weight: member.weight,
+                    on_link: target.on_link,
+                })
+            }),
+        )
+        .map_err(encoding_status)
+    }
     fn publication<'a, A: crate::resolution::RibAddress>(
         &'a self,
         resolved: &'a crate::resolution::Resolved<A, (), Origin>,
@@ -179,5 +287,12 @@ impl Snapshot {
             tracking::Error::Invalid => native_abi::ERR_INVALID_ARGS,
             tracking::Error::NoMemory => native_abi::ERR_NO_MEMORY,
         })
+    }
+}
+
+fn encoding_status(error: tracking::Error) -> Status {
+    match error {
+        tracking::Error::Invalid => native_abi::ERR_INVALID_ARGS,
+        tracking::Error::NoMemory => native_abi::ERR_NO_MEMORY,
     }
 }

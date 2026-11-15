@@ -12,8 +12,8 @@ pub use nexthop::{Action, Member, Members, NextHop, Target};
 use nexthop::{get_hop, put_hop};
 
 /// 唯一支持的来源布局；不接受旧版本或未知扩展字段。
-pub const VERSION: u32 = 2;
-const HEADER: usize = 20;
+pub const VERSION: u32 = 3;
+const HEADER: usize = 24;
 const ATTRIBUTE_BYTES: usize = 8;
 
 /// 一个来源批次的目的前缀地址族，与立即网关的地址族独立。
@@ -146,6 +146,7 @@ pub struct Batch<'a> {
     hops: &'a [u8],
     hop_count: usize,
     routes: &'a [u8],
+    locations: &'a [u8],
 }
 impl<'a> Batch<'a> {
     /// 编码一个来源的完整替换；空路由集合撤销该来源的所有候选。
@@ -162,15 +163,24 @@ impl<'a> Batch<'a> {
         hops: impl IntoIterator<Item: Borrow<NextHop<'h>>, IntoIter: Clone>,
         routes: impl IntoIterator<Item: Borrow<Route>, IntoIter: Clone>,
     ) -> Result<Vec<u8>, EncodeError> {
+        Self::encode_located(family, attributes, hops, routes, &[])
+    }
+
+    // 只有持久静态来源使用位置侧表；普通协议来源没有逐前缀位置开销。
+    pub(crate) fn encode_located<'h>(
+        family: Family,
+        attributes: &[Attributes],
+        hops: impl IntoIterator<Item: Borrow<NextHop<'h>>, IntoIter: Clone>,
+        routes: impl IntoIterator<Item: Borrow<Route>, IntoIter: Clone>,
+        locations: &[core::num::NonZeroU32],
+    ) -> Result<Vec<u8>, EncodeError> {
         let hops = hops.into_iter();
         let routes = routes.into_iter();
         let (mut hop_count, mut hop_size) = (0usize, 0usize);
         for hop in hops.clone() {
             let hop = *hop.borrow();
             hop.validate(family)?;
-            hop_size = hop_size
-                .checked_add(hop.encoded_size()?)
-                .ok_or(Invalid)?;
+            hop_size = hop_size.checked_add(hop.encoded_size()?).ok_or(Invalid)?;
             hop_count = hop_count.checked_add(1).ok_or(Invalid)?;
         }
         let route_count = routes.clone().try_fold(0usize, |count, route| {
@@ -182,6 +192,12 @@ impl<'a> Batch<'a> {
         for count in [attributes.len(), hop_count, route_count] {
             u32::try_from(count).map_err(|_| Invalid)?;
         }
+        if !locations.is_empty()
+            && (locations.len() != route_count
+                || !locations.is_sorted_by(|left, right| left < right))
+        {
+            return Err(EncodeError::Invalid);
+        }
         let size = attributes
             .len()
             .checked_mul(ATTRIBUTE_BYTES)
@@ -192,6 +208,7 @@ impl<'a> Batch<'a> {
             })
             .and_then(|size| size.checked_add(HEADER))
             .and_then(|size| size.checked_add(hop_size))
+            .and_then(|size| size.checked_add(locations.len().checked_mul(4)?))
             .ok_or(Invalid)?;
         let mut writer = Encoder::default();
         writer
@@ -206,7 +223,8 @@ impl<'a> Batch<'a> {
             })
             .u32(attributes.len() as u32)
             .u32(hop_count as u32)
-            .u32(route_count as u32);
+            .u32(route_count as u32)
+            .u32(locations.len() as u32);
         for entry in attributes {
             writer.u32(entry.preference).u32(entry.metric);
         }
@@ -245,6 +263,9 @@ impl<'a> Batch<'a> {
         if emitted != route_count {
             return Err(EncodeError::Invalid);
         }
+        for location in locations {
+            writer.u32(location.get());
+        }
         Ok(writer.0)
     }
     /// 完整验证 framing、前缀、成员、引用与包尾，不分配解析数组。
@@ -263,6 +284,10 @@ impl<'a> Batch<'a> {
         let attributes = reader.u32()? as usize;
         let hop_count = reader.u32()? as usize;
         let route_count = reader.u32()? as usize;
+        let location_count = reader.u32()? as usize;
+        if location_count != 0 && location_count != route_count {
+            return Err(Invalid);
+        }
         let attribute_bytes =
             reader.take(attributes.checked_mul(ATTRIBUTE_BYTES).ok_or(Invalid)?)?;
         if hop_count > reader.0.len() / 5 {
@@ -274,13 +299,23 @@ impl<'a> Batch<'a> {
         }
         let hops = &start[..start.len() - reader.0.len()];
         let routes = reader.take(route_count.checked_mul(family.width() + 9).ok_or(Invalid)?)?;
+        let locations = reader.take(location_count.checked_mul(4).ok_or(Invalid)?)?;
         reader.finish()?;
+        let mut previous = 0;
+        for bytes in locations.as_chunks::<4>().0 {
+            let location = u32::from_le_bytes(*bytes);
+            if location <= previous {
+                return Err(Invalid);
+            }
+            previous = location;
+        }
         let batch = Self {
             family,
             attributes: attribute_bytes,
             hops,
             hop_count,
             routes,
+            locations,
         };
         for row in batch.routes() {
             row.validate(family, attributes, hop_count)?;
@@ -290,6 +325,12 @@ impl<'a> Batch<'a> {
     /// 当前正文的地址族。
     pub fn family(self) -> Family {
         self.family
+    }
+    /// 一基的持久表内位置，按来源记录顺序读取；普通来源没有位置。
+    pub fn locations(self) -> impl ExactSizeIterator<Item = core::num::NonZeroU32> + 'a {
+        self.locations.as_chunks::<4>().0.iter().map(|bytes| {
+            core::num::NonZeroU32::new(u32::from_le_bytes(*bytes)).expect("validated location")
+        })
     }
     /// 共享属性字典，定长借用迭代，不分配。
     pub fn attributes(self) -> impl ExactSizeIterator<Item = Attributes> + 'a {

@@ -94,6 +94,8 @@ pub mod ordinal {
                 | FIREWALL_COUNTERS
                 | NEIGHBOR_PAGE
                 | ROUTE_PAGE
+                | STATIC_STATUS
+                | STATIC_PATHS
                 | COMMIT_RESULT
         )
     }
@@ -155,6 +157,10 @@ pub mod ordinal {
     pub const OPEN_NETWORK_NAMESPACE: u32 = 28;
     /// 查询已保存的具名路由域名称，供获授权的观察者选择。
     pub const ROUTING_DOMAINS: u32 = 29;
+    /// 查询表内精确静态声明的实际状态及生效距离，回复附配置代际。
+    pub const STATIC_STATUS: u32 = 30;
+    /// 查询持久静态声明在同一确认图中的立即出口组，回复附配置代际。
+    pub const STATIC_PATHS: u32 = 31;
 }
 
 /// 有权限的用户请求 DHCP 会话立即续租或释放。
@@ -846,6 +852,8 @@ pub mod bridge {
     pub const WATCH_SECONDS: u64 = 15;
     /// 连接观察等待名额暂满时的桥接状态，稍后可用相同游标重试。
     pub const CONNECTION_WATCH_BUSY: i32 = -3;
+    /// 请求的对象不存在。租约查询使用它区分没有运行服务器和查询失败。
+    pub const NOT_FOUND: i32 = -25;
     /// 网关向原生服务转发修改及订阅的私有端点。
     pub const PATH: &[u8] = b"/dev/network-settings";
     /// 网关向原生服务读取状态的私有端点。

@@ -19,7 +19,7 @@ mod admission;
 mod bgp;
 mod entries;
 mod firewall;
-pub(crate) use firewall::{RuleKind, edit_rule, rule_address};
+pub(crate) use firewall::{InputError, RuleFields, RuleKind, RuleSources, rule_address, rule_tab};
 mod interfaces;
 pub(crate) use interfaces::{
     ADMIN_STATES, Field, Fields, LiveInterface, admin_index, apply_fields, edit_ipv4_of,
@@ -38,9 +38,7 @@ const ROWS: usize = 64;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Section {
-    Interfaces,
     Bridges,
-    AddressServices,
     Ospf,
     Bgp,
     Admission,
@@ -102,7 +100,7 @@ pub(super) async fn run(
     let address_services = child(
         &network,
         WidgetKind::Button,
-        "地址分发与 DNS…",
+        "前缀委派与 DNS…",
         Layout {
             width: 130,
             ..button()
@@ -135,9 +133,7 @@ pub(super) async fn run(
     let admission = child(&network, WidgetKind::Button, "路由准入…", button())?;
     let mut initial_action = section.map(|section| {
         match section {
-            Section::Interfaces => &edit_interfaces,
             Section::Bridges => &bridges,
-            Section::AddressServices => &address_services,
             Section::Ospf => &ospf,
             Section::Bgp => &bgp,
             Section::Admission => &admission,

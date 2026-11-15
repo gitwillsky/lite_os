@@ -19,7 +19,12 @@ use std::{
     sync::Arc,
 };
 
+mod baseline;
+pub(crate) mod devices;
 mod review;
+
+pub(super) use baseline::DraftBaseline;
+pub(crate) use baseline::EditTransaction;
 
 type Error = Box<dyn std::error::Error>;
 

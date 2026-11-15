@@ -171,7 +171,16 @@ fn capture<A: Address, M>(
             next_hop: route.next_hop,
         });
     }
-    Source::capture(id, domain, metadata, attributes, hops, routes)
+    let mut locations = Vec::new();
+    locations
+        .try_reserve_exact(batch.locations().len())
+        .map_err(|_| Error::NoMemory)?;
+    locations.extend(batch.locations());
+    let mut source = Source::capture(id, domain, metadata, attributes, hops, routes)?;
+    Arc::get_mut(&mut source)
+        .expect("new source has one owner")
+        .locations = locations;
+    Ok(source)
 }
 
 #[cfg(test)]

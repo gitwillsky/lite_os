@@ -35,6 +35,11 @@ impl Revision {
         })
     }
 
+    /// 判断两个观察是否来自配置服务的同一次启动。
+    pub const fn same_instance(self, other: Self) -> bool {
+        self.instance.get() == other.instance.get()
+    }
+
     /// 编码小端实例身份和实例内序号。
     pub fn to_bytes(self) -> [u8; Self::BYTES] {
         let mut bytes = [0; Self::BYTES];

@@ -268,7 +268,7 @@ pub(super) fn dispatch_connections(
     write_bounded_reply(reply, &query(cursor)?, MAX_PAGE_BYTES as usize)
 }
 
-fn write_bounded_reply(
+pub(super) fn write_bounded_reply(
     reply: &mut Writer,
     bytes: &[u8],
     maximum: usize,
@@ -408,7 +408,7 @@ impl NetworkInstaller {
         self.read_bounded_bytes(CONNECTION_CHANGES, &cursor.encode(), changes::MAX_BYTES)
     }
 
-    fn read_bounded_bytes(
+    pub(super) fn read_bounded_bytes(
         &self,
         ordinal: u32,
         selector: &[u8],

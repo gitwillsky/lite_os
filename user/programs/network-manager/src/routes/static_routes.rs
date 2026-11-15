@@ -1,16 +1,19 @@
-//! 「IP / IPv6 → 路由」的静态配置工作区。双栈窗口共用一份配置投影；原生服务仍负责校验、持久化和生效。
+//! 「IP / IPv6 → 路由」的双栈列表；只有配置声明拥有可修改的身份。
 
 mod catalog;
+mod immediate;
+mod installed;
 mod property;
 
 use self::{
     catalog::{Catalog, Change, Entry, table_name},
-    property::{Binding, Editor, Request},
+    installed::Installed,
+    property::{Binding, Editor, ObservedProperty, Request},
 };
 use crate::{
     child,
     configuration::apply,
-    item_list::{Glyph, Item, Summary, Tool, spacer, toolbar},
+    item_list::{Find, FindAction, Glyph, Item, Summary, Tool, spacer, toolbar},
     workspace::Workspace,
 };
 use liteos_ui::{
@@ -23,10 +26,11 @@ use network_config::{
     routes::{Family, TABLE_MAIN},
 };
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const FAMILIES: [Family; 2] = [Family::Ipv4, Family::Ipv6];
@@ -39,12 +43,25 @@ struct List {
     enable: Tool,
     disable: Tool,
     remove: Tool,
-    find: Tool,
-    query: Widget,
+    find: Find,
     table: Widget,
     summary: Summary,
     // SDK 不暴露行数；保留筛选后的可见计数，选中变化时无需重建列表。
     displayed: Cell<usize>,
+}
+
+enum Selection<'a> {
+    Declaration(&'a Entry),
+    Observed(&'a Installed),
+}
+
+impl<'a> Selection<'a> {
+    fn declaration(self) -> Option<&'a Entry> {
+        match self {
+            Self::Declaration(entry) => Some(entry),
+            Self::Observed(_) => None,
+        }
+    }
 }
 
 impl List {
@@ -61,17 +78,7 @@ impl List {
             ],
         )?;
         let spacer = spacer(&bar)?;
-        let [find] = toolbar(&bar, [Item::Text("查找")])?;
-        let query = child(
-            &bar,
-            WidgetKind::Edit,
-            "",
-            Layout {
-                width: 140,
-                ..Layout::default()
-            },
-        )?;
-        query.set_state(state::HIDDEN)?;
+        let find = Find::new(&bar)?;
         let table = child(
             &bar,
             WidgetKind::Combo,
@@ -118,7 +125,6 @@ impl List {
             disable,
             remove,
             find,
-            query,
             table,
             summary: Summary::new(parent)?,
             displayed: Cell::new(0),
@@ -133,8 +139,9 @@ impl List {
             .set_state(state::DROPDOWN_LIST | state::DISABLED)?;
         self.widget.set_rows(&[])?;
         self.widget.select(None)?;
+        self.find.locate(&self.widget, None)?;
         self.displayed.set(0);
-        self.selection_changed(None)?;
+        self.selection_changed(None, "")?;
         self.summary.notice(notice)
     }
 
@@ -169,75 +176,156 @@ impl List {
 
     fn render(
         &self,
-        catalog: &Catalog,
+        catalog: Option<&Catalog>,
+        live: &[Installed],
         family: Family,
-        new_revision: bool,
+        selection: Option<u64>,
+        notice: &str,
     ) -> liteos_ui::Result<()> {
-        if new_revision {
-            self.set_tables(&catalog.tables)?;
+        let mut tables = catalog.map_or_else(|| vec![TABLE_MAIN], |catalog| catalog.tables.clone());
+        tables.extend(live.iter().map(|entry| entry.route.table));
+        tables.sort_unstable();
+        tables.dedup();
+        self.set_tables(&tables)?;
+        let rows = self.rows(catalog, live, family)?;
+        let values: Vec<_> = rows.iter().map(|(id, text)| (*id, text.as_ref())).collect();
+        self.widget.set_rows(&values)?;
+        let selection = selection.filter(|id| rows.iter().any(|row| row.0 == *id));
+        if self.widget.selection()? != selection {
+            self.widget.select(selection)?;
         }
+        self.add.set_enabled(catalog.is_some())?;
+        self.displayed.set(rows.len());
+        self.find
+            .scan_rows(&self.widget, values.into_iter(), self.find.restart()?)?;
+        self.selection_changed(self.selected(catalog, live, family)?, notice)
+    }
+
+    fn rows<'a>(
+        &self,
+        catalog: Option<&'a Catalog>,
+        live: &[Installed],
+        family: Family,
+    ) -> liteos_ui::Result<Vec<(u64, Cow<'a, str>)>> {
         let table = self.table.selection()?.unwrap_or(ALL_TABLES);
-        let query = self.query.text()?;
-        let search = query.trim();
-        let rows: Vec<_> = catalog
-            .entries(family)
+        let accepts = |id| table == ALL_TABLES || table == u64::from(id);
+        let entries = catalog.map_or(&[][..], |catalog| catalog.entries(family));
+        let declared = entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| table == ALL_TABLES || table == u64::from(entry.key.table))
-            .filter(|(_, entry)| entry.text.contains(search))
-            .map(|(i, entry)| (i as u64 + 1, entry.text.as_str()))
-            .collect();
-        let selection = if new_revision {
-            None
-        } else {
-            self.widget.selection()?
-        };
-        self.widget.set_rows(&rows)?;
-        self.widget
-            .select(selection.filter(|id| rows.iter().any(|row| row.0 == *id)))?;
-        self.add.set_enabled(true)?;
-        self.displayed.set(rows.len());
-        self.selection_changed(self.selected(catalog, family)?)
+            .filter(|(_, entry)| accepts(entry.key.table))
+            .map(|(index, entry)| {
+                (
+                    (
+                        entry.route.destination,
+                        entry.route.prefix_length,
+                        entry.key.table,
+                    ),
+                    (declaration_id(index), Cow::Borrowed(entry.text.as_str())),
+                )
+            });
+        let observed = live
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                if !accepts(entry.route.table) {
+                    return false;
+                }
+                // STATIC 的生效行没有配置身份。同表同前缀的启用声明保留可写行，
+                // 无法归属的实际路径仍可在「路由 → 路由表」查看。
+                if entry.route.protocol != 4 {
+                    return true;
+                }
+                let prefix = (entry.route.prefix.network, entry.route.prefix.length);
+                let start = entries.partition_point(|entry| {
+                    (entry.route.destination, entry.route.prefix_length) < prefix
+                });
+                !entries[start..]
+                    .iter()
+                    .take_while(|entry| {
+                        (entry.route.destination, entry.route.prefix_length) == prefix
+                    })
+                    .any(|candidate| {
+                        candidate.key.table == entry.route.table && !candidate.route.disabled
+                    })
+            })
+            .map(|(index, entry)| {
+                (
+                    (
+                        entry.route.prefix.network,
+                        entry.route.prefix.length,
+                        entry.route.table,
+                    ),
+                    (observed_id(index), Cow::Owned(entry.text())),
+                )
+            });
+        let mut rows: Vec<_> = declared.chain(observed).collect();
+        rows.sort_by_key(|(key, _)| *key);
+        Ok(rows.into_iter().map(|(_, row)| row).collect())
     }
 
     fn selected<'a>(
         &self,
-        catalog: &'a Catalog,
+        catalog: Option<&'a Catalog>,
+        live: &'a [Installed],
         family: Family,
-    ) -> liteos_ui::Result<Option<&'a Entry>> {
-        Ok(self
-            .widget
-            .selection()?
-            .and_then(|id| id.checked_sub(1))
-            .and_then(|index| catalog.entries(family).get(index as usize)))
+    ) -> liteos_ui::Result<Option<Selection<'a>>> {
+        let Some(id) = self.widget.selection()? else {
+            return Ok(None);
+        };
+        let index = (id / 2) as usize;
+        Ok(if id % 2 == 0 {
+            catalog
+                .and_then(|catalog| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|index| catalog.entries(family).get(index))
+                })
+                .map(Selection::Declaration)
+        } else {
+            live.get(index).map(Selection::Observed)
+        })
     }
 
-    fn selection_changed(&self, entry: Option<&Entry>) -> liteos_ui::Result<()> {
+    fn selection_changed(
+        &self,
+        entry: Option<Selection<'_>>,
+        notice: &str,
+    ) -> liteos_ui::Result<()> {
         let selected = entry.is_some();
+        let entry = entry.and_then(Selection::declaration);
         self.enable
             .set_enabled(entry.is_some_and(|entry| entry.route.disabled))?;
         self.disable
             .set_enabled(entry.is_some_and(|entry| !entry.route.disabled))?;
-        self.remove.set_enabled(selected)?;
+        self.remove.set_enabled(entry.is_some())?;
         self.summary
-            .show(self.displayed.get(), usize::from(selected), "实时")
+            .show(self.displayed.get(), usize::from(selected), notice)
     }
+}
 
-    fn toggle_find(&self) -> liteos_ui::Result<()> {
-        if self.query.state()? & state::HIDDEN != 0 {
-            self.query.set_state(0)?;
-            self.query.focus()
-        } else {
-            self.query.set_text("")?;
-            self.query.set_state(state::HIDDEN)
-        }
-    }
+// 两套身份空间只用于列表行号。声明只能以同一配置代际下的 Key 写回。
+fn declaration_id(index: usize) -> u64 {
+    (index as u64 + 1) * 2
+}
+
+fn observed_id(index: usize) -> u64 {
+    index as u64 * 2 + 1
+}
+
+#[derive(Default)]
+struct Live {
+    rows: Vec<Installed>,
+    error: Option<String>,
 }
 
 struct View {
     lists: [List; 2],
     catalog: Option<Catalog>,
+    configuration_error: Option<String>,
+    live: [Live; 2],
     editor: Option<(Family, Editor)>,
+    observed_property: Option<(Family, ObservedProperty)>,
     scope: Option<Arc<str>>,
     visible: [bool; 2],
 }
@@ -245,6 +333,9 @@ struct View {
 impl View {
     fn clear(&mut self, notice: &str) -> liteos_ui::Result<()> {
         self.catalog = None;
+        self.configuration_error = None;
+        self.live = Default::default();
+        self.observed_property = None;
         for (list, visible) in self.lists.iter().zip(self.visible) {
             if visible {
                 list.clear(notice)?;
@@ -253,20 +344,133 @@ impl View {
         Ok(())
     }
 
-    fn present(&mut self, catalog: Catalog) -> liteos_ui::Result<()> {
-        for (i, family) in FAMILIES.into_iter().enumerate() {
+    fn notice(&self, index: usize) -> &str {
+        self.live[index]
+            .error
+            .as_deref()
+            .or(self.configuration_error.as_deref())
+            .unwrap_or("实时")
+    }
+
+    fn render(&self, index: usize, selection: Option<u64>) -> liteos_ui::Result<()> {
+        self.lists[index].render(
+            self.catalog.as_ref(),
+            &self.live[index].rows,
+            FAMILIES[index],
+            selection,
+            self.notice(index),
+        )
+    }
+
+    fn render_declarations_changed(&self) -> liteos_ui::Result<()> {
+        for (i, list) in self.lists.iter().enumerate() {
             if self.visible[i] {
-                self.lists[i].render(&catalog, family, true)?;
+                let selection = list.widget.selection()?.filter(|id| id % 2 == 1);
+                self.render(i, selection)?;
             }
         }
-        self.catalog = Some(catalog);
         Ok(())
+    }
+
+    fn present_configuration(
+        &mut self,
+        result: Result<Option<Catalog>, String>,
+    ) -> liteos_ui::Result<()> {
+        let changed = match result {
+            Ok(Some(catalog)) => {
+                self.catalog = Some(catalog);
+                self.configuration_error = None;
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                let error = format!("无法读取声明：{error}");
+                self.catalog = None;
+                self.configuration_error.replace(error.clone()).as_ref() != Some(&error)
+            }
+        };
+        if changed {
+            self.render_declarations_changed()?;
+            if let Some((_, editor)) = &self.editor {
+                editor.present_status(None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn present_selection(
+        &mut self,
+        revision: Revision,
+        selection: Option<&catalog::Selections>,
+    ) -> liteos_ui::Result<()> {
+        let Some(catalog) = self
+            .catalog
+            .as_mut()
+            .filter(|catalog| catalog.revision == revision)
+        else {
+            return Ok(());
+        };
+        if let Some((_, editor)) = &self.editor {
+            editor.present_status(
+                (editor.binding.revision == revision)
+                    .then_some(selection)
+                    .flatten(),
+            )?;
+        }
+        if catalog.show_selection(selection) {
+            for (i, list) in self.lists.iter().enumerate() {
+                if self.visible[i] {
+                    self.render(i, list.widget.selection()?)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn present_live(
+        &mut self,
+        index: usize,
+        result: Result<Vec<Installed>, String>,
+    ) -> liteos_ui::Result<()> {
+        let next = match result {
+            Ok(rows) => Live { rows, error: None },
+            Err(error) => Live {
+                rows: Vec::new(),
+                error: Some(format!("无法读取生效路由：{error}")),
+            },
+        };
+        let previous = &self.live[index];
+        if !self.visible[index] || (previous.rows == next.rows && previous.error == next.error) {
+            return Ok(());
+        }
+        let list = &self.lists[index];
+        let selection = match list.widget.selection()? {
+            Some(id) if id % 2 == 1 => previous
+                .rows
+                .get((id / 2) as usize)
+                .and_then(|old| next.rows.iter().position(|new| old == new))
+                .map(observed_id),
+            selection => selection,
+        };
+        if self
+            .observed_property
+            .as_ref()
+            .is_some_and(|(family, property)| {
+                family_index(*family) == index && !next.rows.contains(&property.entry)
+            })
+        {
+            self.observed_property = None;
+        }
+        self.live[index] = next;
+        self.render(index, selection)
     }
 }
 
 pub(crate) struct Page {
     view: Rc<RefCell<View>>,
-    observation: Option<Task<()>>,
+    declarations: Option<Task<()>>,
+    installed: [Option<Task<()>>; 2],
+    gateway: Option<Task<()>>,
     // 写请求进入配置服务后不能由界面关闭撤销；后台任务保留到提交结果返回。
     mutation: Option<Task<()>>,
     background: Background,
@@ -289,11 +493,16 @@ impl Page {
             view: Rc::new(RefCell::new(View {
                 lists: [List::new(parents[0])?, List::new(parents[1])?],
                 catalog: None,
+                configuration_error: None,
+                live: Default::default(),
                 editor: None,
+                observed_property: None,
                 scope: None,
                 visible: [false; 2],
             })),
-            observation: None,
+            declarations: None,
+            installed: [None, None],
+            gateway: None,
             mutation: None,
             background,
             clock: app.clock(),
@@ -310,15 +519,19 @@ impl Page {
         if view.visible == visible {
             return Ok(());
         }
-        let was_open = view.visible.contains(&true);
+        let previous = view.visible;
+        let was_open = previous.contains(&true);
         let is_open = visible.contains(&true);
-        for (i, family) in FAMILIES.into_iter().enumerate() {
-            if visible[i] && !view.visible[i] {
-                if let Some(catalog) = &view.catalog {
-                    view.lists[i].render(catalog, family, true)?;
+        for (i, open) in visible.into_iter().enumerate() {
+            if open && !previous[i] {
+                if view.catalog.is_some() || view.configuration_error.is_some() {
+                    view.render(i, None)?;
                 } else {
                     view.lists[i].clear("正在读取路由…")?;
                 }
+            }
+            if !open {
+                view.live[i] = Live::default();
             }
         }
         view.visible = visible;
@@ -328,10 +541,26 @@ impl Page {
             .is_some_and(|(family, _)| !visible[family_index(*family)])
         {
             view.editor = None;
+            self.gateway = None;
+        }
+        if view
+            .observed_property
+            .as_ref()
+            .is_some_and(|(family, _)| !visible[family_index(*family)])
+        {
+            view.observed_property = None;
+        }
+        if !is_open {
+            view.clear("正在读取路由…")?;
         }
         drop(view);
         if was_open != is_open {
-            self.observe(app, window)?;
+            self.observe_declarations(app, window)?;
+        }
+        for (i, open) in visible.into_iter().enumerate() {
+            if open != previous[i] {
+                self.observe_installed(app, window, i)?;
+            }
         }
         Ok(())
     }
@@ -342,17 +571,28 @@ impl Page {
         window: &Window,
         scope: Option<Arc<str>>,
     ) -> liteos_ui::Result<()> {
+        self.declarations = None;
+        self.installed = [None, None];
+        self.gateway = None;
         let mut view = self.view.borrow_mut();
         view.scope = scope;
         view.editor = None;
+        view.clear("正在读取路由…")?;
         drop(view);
-        self.observe(app, window)
+        self.observe_declarations(app, window)?;
+        for i in 0..FAMILIES.len() {
+            self.observe_installed(app, window, i)?;
+        }
+        Ok(())
     }
 
-    fn observe(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
-        self.observation = None;
-        let mut view = self.view.borrow_mut();
-        view.clear("正在读取路由…")?;
+    fn observe_declarations(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+    ) -> liteos_ui::Result<()> {
+        self.declarations = None;
+        let view = self.view.borrow();
         if !view.visible.contains(&true) {
             return Ok(());
         }
@@ -361,8 +601,9 @@ impl Page {
         let view = self.view.clone();
         let clock = self.clock.clone();
         let background = self.background.clone();
-        self.observation = Some(app.spawn_local(window, async move {
+        self.declarations = Some(app.spawn_local(window, async move {
             loop {
+                let started = Instant::now();
                 let domain = scope.clone();
                 let revision = view
                     .borrow()
@@ -374,17 +615,66 @@ impl Page {
                         Ok(task) => task.await.map_err(|error| error.to_string()),
                         Err(error) => Err(error.to_string()),
                     };
-                let shown = match result {
-                    Ok(Some(catalog)) => view.borrow_mut().present(catalog),
-                    Ok(None) => Ok(()),
-                    Err(error) => view
-                        .borrow_mut()
-                        .clear(&format!("无法读取路由配置：{error}")),
+                {
+                    let mut view = view.borrow_mut();
+                    // 本轮读请求期间可能提交新配置；旧代际不能恢复可写列表。
+                    if view.catalog.as_ref().map(|current| current.revision) == revision
+                        && view.present_configuration(result).is_err()
+                    {
+                        break;
+                    }
+                }
+                let request = {
+                    let view = view.borrow();
+                    view.catalog
+                        .as_ref()
+                        .map(|catalog| catalog.selection_read(view.visible))
                 };
-                if shown.is_err() {
+                if let Some(request) = request {
+                    let revision = request.revision;
+                    let result = request.read(&background, scope.clone()).await;
+                    if view
+                        .borrow_mut()
+                        .present_selection(revision, result.as_ref())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                let Ok(sleep) = clock.sleep(Duration::from_secs(2).max(started.elapsed())) else {
+                    break;
+                };
+                sleep.await;
+            }
+        })?);
+        Ok(())
+    }
+
+    fn observe_installed(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        index: usize,
+    ) -> liteos_ui::Result<()> {
+        self.installed[index] = None;
+        let view = self.view.borrow();
+        if !view.visible[index] {
+            return Ok(());
+        }
+        let scope = view.scope.clone();
+        drop(view);
+        let view = self.view.clone();
+        let clock = self.clock.clone();
+        let background = self.background.clone();
+        self.installed[index] = Some(app.spawn_local(window, async move {
+            loop {
+                let started = Instant::now();
+                let installed = Installed::read(&background, scope.clone(), FAMILIES[index]).await;
+                if view.borrow_mut().present_live(index, installed).is_err() {
                     break;
                 }
-                let Ok(sleep) = clock.sleep(Duration::from_secs(2)) else {
+                // 大表读取持续越久，留给转发/其他观察工作的间隔越长。
+                let Ok(sleep) = clock.sleep(Duration::from_secs(2).max(started.elapsed())) else {
                     break;
                 };
                 sleep.await;
@@ -405,7 +695,21 @@ impl Page {
             .mutation
             .as_ref()
             .is_some_and(|task| !task.is_finished());
-        if let Some((family, editor)) = &view.editor
+        if let Some((_, property)) = &mut view.observed_property {
+            if property.handle_gateway(workspace, window, event)? {
+                return Ok(());
+            }
+            if property.closes(event) {
+                view.observed_property = None;
+                return Ok(());
+            }
+        }
+        if let Some((_, editor)) = &mut view.editor
+            && editor.handle_gateway(workspace, window, event)?
+        {
+            return Ok(());
+        }
+        if let Some((family, editor)) = &mut view.editor
             && !busy
             && let Some(request) = editor.request(event)?
         {
@@ -414,6 +718,7 @@ impl Page {
             let (change, destination) = match request {
                 Request::Close => {
                     view.editor = None;
+                    self.gateway = None;
                     return Ok(());
                 }
                 Request::Remove => {
@@ -432,6 +737,7 @@ impl Page {
                     {
                         if close {
                             view.editor = None;
+                            self.gateway = None;
                         } else {
                             editor.note("")?;
                         }
@@ -463,28 +769,45 @@ impl Page {
             if !view.visible[i] {
                 continue;
             }
-            let find = list.find.activated(event);
-            if find {
-                list.toggle_find()?;
+            let find = list.find.handle(event)?;
+            if matches!(find, Some(FindAction::Close)) {
+                return list.find.present(&list.widget);
             }
-            let Some(catalog) = &view.catalog else {
-                continue;
-            };
+            let catalog = view.catalog.as_ref();
+            let live = &view.live[i].rows;
             let family = FAMILIES[i];
-            let input = (event.node == list.query.id()
-                && matches!(event.kind, EventKind::Changed { .. }))
-                || (event.node == list.table.id()
-                    && matches!(event.kind, EventKind::Select { .. }));
-            if find || input {
-                return list.render(catalog, family, false);
+            if let Some(FindAction::Find(scan)) = find {
+                let rows = list.rows(catalog, live, family)?;
+                return list.find.scan_rows(
+                    &list.widget,
+                    rows.iter().map(|(id, text)| (*id, text.as_ref())),
+                    scan,
+                );
+            }
+            if event.node == list.table.id() && matches!(event.kind, EventKind::Select { .. }) {
+                return view.render(i, list.widget.selection()?);
             }
             if event.node == list.widget.id() && matches!(event.kind, EventKind::Select { .. }) {
-                return list.selection_changed(list.selected(catalog, family)?);
+                return list
+                    .selection_changed(list.selected(catalog, live, family)?, view.notice(i));
             }
             if !matches!(event.kind, EventKind::Activate { .. }) || busy {
                 continue;
             }
-            let entry = list.selected(catalog, family)?;
+            let selected = list.selected(catalog, live, family)?;
+            if event.node == list.widget.id()
+                && let Some(Selection::Observed(entry)) = selected
+            {
+                if let Some((_, property)) = &view.observed_property
+                    && property.entry == *entry
+                {
+                    return workspace.raise(&property.frame);
+                }
+                view.observed_property = Some((family, ObservedProperty::new(workspace, entry)?));
+                return Ok(());
+            }
+            let Some(catalog) = catalog else { continue };
+            let entry = selected.and_then(Selection::declaration);
             let revision = catalog.revision;
             if list.remove.activated(event) {
                 let Some(key) = entry.map(|entry| entry.key) else {
@@ -508,11 +831,11 @@ impl Page {
                 drop(view);
                 return self.submit(app, window, revision, change, OnSaved::List);
             }
-            let original = if list.add.activated(event) {
-                None
+            let (original, selection) = if list.add.activated(event) {
+                (None, None)
             } else if event.node == list.widget.id() {
                 let Some(entry) = entry else { return Ok(()) };
-                Some((entry.key, entry.route.clone()))
+                (Some((entry.key, entry.route.clone())), entry.status)
             } else {
                 continue;
             };
@@ -523,7 +846,8 @@ impl Page {
             let default_table = list
                 .table
                 .selection()?
-                .and_then(|id| u32::try_from(id).ok());
+                .and_then(|id| u32::try_from(id).ok())
+                .filter(|id| catalog.tables.contains(id));
             let table = original
                 .as_ref()
                 .map_or_else(|| default_table.unwrap_or(TABLE_MAIN), |(key, _)| key.table);
@@ -532,10 +856,19 @@ impl Page {
                 original,
                 table,
             };
-            view.editor = Some((
-                family,
-                Editor::new(workspace, family, &catalog.tables, binding)?,
-            ));
+            let editor = Editor::new(workspace, family, &catalog.tables, binding, selection)?;
+            let frame = editor.frame.id();
+            view.editor = Some((family, editor));
+            drop(view);
+            self.gateway = Some(app.spawn_local(
+                window,
+                property::observe_gateway(
+                    self.view.clone(),
+                    frame,
+                    self.background.clone(),
+                    self.clock.clone(),
+                ),
+            )?);
             return Ok(());
         }
         Ok(())
@@ -584,7 +917,9 @@ impl Page {
                         .is_some_and(|catalog| catalog.revision == revision)
                 {
                     // 旧索引不能继续操作；观察任务随后读取新代际。
-                    let _ = view.clear("正在读取路由…");
+                    view.catalog = None;
+                    view.configuration_error = Some("正在读取声明…".into());
+                    let _ = view.render_declarations_changed();
                 }
                 if let Some((frame, next)) = match destination {
                     OnSaved::List => None,
@@ -604,7 +939,7 @@ impl Page {
                             Some((revision, key)) => {
                                 let _ = editor.bind_saved(revision, key, route);
                                 let _ = editor.ready(true);
-                                let _ = editor.note(&notice);
+                                let _ = editor.note("");
                             }
                             None => {
                                 let _ = editor.close_only();

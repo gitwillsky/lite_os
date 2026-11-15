@@ -10,6 +10,7 @@ use router_protocol::{
     configuration::Name,
     connections::{Cursor, Identity, changes},
     interface::InterfaceConfiguration,
+    route_view::selection::{self, paths},
 };
 use service_rpc::{Reader, Writer};
 mod configuration;
@@ -22,6 +23,8 @@ pub use source::{
 pub use tracking::{Tracking, TrackingService, dispatch_tracking};
 const OPEN_SOURCE: u32 = 6;
 const TRACK: u32 = 7;
+const STATIC_STATUS: u32 = 16;
+const STATIC_PATHS: u32 = 17;
 
 /// 授权配置 owner 可委托独立来源能力；被委托者不能另开来源或改变授权。
 pub trait RoutingConfigurationService: Send + Sync {
@@ -79,6 +82,16 @@ pub trait RoutingConfigurationService: Send + Sync {
         &self,
         queries: Vec<router_protocol::tracking::Query>,
     ) -> Result<(Channel, native_runtime::Event), Status>;
+
+    /// 查询本域一张表中各静态声明的确认选路状态。
+    /// # Errors
+    /// 域未就绪、表不存在或资源不足。
+    fn static_status(&self, request: &selection::Request) -> Result<Vec<u8>, Status>;
+
+    /// 查询指定静态声明在同一确认图中的出口，包含可解析的备用声明。
+    /// # Errors
+    /// 表或查询无效、当前结果未确认，或资源不足。
+    fn static_paths(&self, request: paths::Request) -> Result<Vec<u8>, Status>;
 
     /// 预备接口、静态来源与可选转发策略；configuration=None 只改变执行策略，不接受执行 FIB。
     /// # Errors
@@ -138,6 +151,25 @@ pub fn dispatch_routing_configuration(
         })
     } else if ordinal == TRACK {
         tracking::returned(|| service.track(tracking::queries(request, handles)?))
+    } else if ordinal == STATIC_STATUS {
+        let query = selection::Request::parse(request.bytes()?).map_err(tracking::status)?;
+        request.finish()?;
+        if !handles.is_empty() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        crate::installer::write_bounded_reply(
+            reply,
+            &service.static_status(&query)?,
+            selection::MAX_REPLY_BYTES,
+        )
+    } else if ordinal == STATIC_PATHS {
+        let query =
+            paths::Request::parse(request.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        request.finish()?;
+        if !handles.is_empty() {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        tracking::write_document(reply, &service.static_paths(query)?)
     } else if ordinal == OPEN_SOURCE {
         let grant = Grant::decode(request)?;
         request.finish()?;
@@ -245,6 +277,27 @@ impl RoutingConfigurator {
     pub fn track(&self, queries: &[router_protocol::tracking::Query]) -> Result<Tracking, Status> {
         let (request, handles) = tracking::request(TRACK, queries)?;
         Tracking::from_reply(service_rpc::call(self.channel(), &request, handles)?)
+    }
+
+    /// 将精确静态声明查询转发到同域的配置能力。
+    /// # Errors
+    /// 表/查询无效、域未就绪、结果超界或传输失败。
+    pub fn static_status(&self, query: &[u8]) -> Result<Vec<u8>, Status> {
+        self.0
+            .read_bounded_bytes(STATIC_STATUS, query, selection::MAX_REPLY_BYTES)
+    }
+
+    /// 读取精确静态声明在确认选路中的整个出口组正文。
+    /// # Errors
+    /// 请求或回复非法、域未就绪、资源不足或传输失败。
+    pub fn static_paths(&self, query: &[u8]) -> Result<Vec<u8>, Status> {
+        if query.len() != paths::REQUEST_BYTES {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let mut request = Writer::request(STATIC_PATHS);
+        request.try_reserve(4 + paths::REQUEST_BYTES)?;
+        request.bytes(query);
+        tracking::read_document(service_rpc::call(self.channel(), &request, Vec::new())?)
     }
 
     /// 按可信授权创建独立来源，可移交协议进程；正文不能改变协议标记/最低偏好或来源身份。

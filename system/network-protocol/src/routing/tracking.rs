@@ -13,6 +13,27 @@ pub(super) fn status(error: tracking::Error) -> Status {
         tracking::Error::NoMemory => native_abi::ERR_NO_MEMORY,
     }
 }
+
+pub(super) fn write_document(reply: &mut Writer, bytes: &[u8]) -> Result<Vec<Handle>, Status> {
+    reply.try_reserve(8)?;
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(1)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    handles.push(Vmo::from_bytes(bytes)?.into_handle());
+    reply.u64(bytes.len() as u64);
+    Ok(handles)
+}
+
+pub(super) fn read_document(mut reply: service_rpc::Reply) -> Result<Vec<u8>, Status> {
+    let mut reader = reply.reader();
+    let length = reader.u64()?;
+    reader.finish()?;
+    if reply.handles.len() != 1 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Vmo::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?).read_bytes(length)
+}
 pub(super) fn queries(
     request: &mut Reader<'_>,
     mut handles: Vec<Handle>,
@@ -77,16 +98,7 @@ pub fn dispatch_tracking(
             if !handles.is_empty() {
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
-            reply.try_reserve(8)?;
-            let mut returned = Vec::new();
-            returned
-                .try_reserve_exact(1)
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            let bytes = service.snapshot()?;
-            let content = Vmo::from_bytes(&bytes)?;
-            reply.u64(bytes.len() as u64);
-            returned.push(content.into_handle());
-            Ok(returned)
+            write_document(reply, &service.snapshot()?)
         }
         ROUTES => {
             if request.u32()? != VERSION || !handles.is_empty() {
@@ -95,16 +107,7 @@ pub fn dispatch_tracking(
             let generation = request.u64()?;
             let selector = tracking::routes::Selector::parse(request.bytes()?).map_err(status)?;
             request.finish()?;
-            reply.try_reserve(8)?;
-            let mut returned = Vec::new();
-            returned
-                .try_reserve_exact(1)
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            let bytes = service.route_changes(selector, generation)?;
-            let content = Vmo::from_bytes(&bytes)?;
-            reply.u64(bytes.len() as u64);
-            returned.push(content.into_handle());
-            Ok(returned)
+            write_document(reply, &service.route_changes(selector, generation)?)
         }
         UPDATE => {
             service.update(queries(request, handles)?)?;
@@ -172,15 +175,7 @@ impl Tracking {
         let mut request = Writer::request(ROUTES);
         request.try_reserve(16 + bytes.len())?;
         request.u32(VERSION).u64(generation).bytes(&bytes);
-        let mut reply = service_rpc::call(&self.channel, &request, Vec::new())?;
-        let mut reader = reply.reader();
-        let length = reader.u64()?;
-        reader.finish()?;
-        if reply.handles.len() != 1 {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        let bytes = Vmo::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?)
-            .read_bytes(length)?;
+        let bytes = read_document(service_rpc::call(&self.channel, &request, Vec::new())?)?;
         let changes = tracking::routes::Changes::capture(bytes).map_err(status)?;
         if changes.base() != generation {
             return Err(native_abi::ERR_INVALID_ARGS);
@@ -191,15 +186,8 @@ impl Tracking {
     /// # Errors
     /// 初始化未确认、会话关闭、格式错误或资源不足；不交出部分结果。
     pub fn snapshot(&self) -> Result<tracking::OwnedSnapshot, Status> {
-        let mut reply = service_rpc::call(&self.channel, &Writer::request(SNAPSHOT), Vec::new())?;
-        let mut reader = reply.reader();
-        let length = reader.u64()?;
-        reader.finish()?;
-        if reply.handles.len() != 1 {
-            return Err(native_abi::ERR_INVALID_ARGS);
-        }
-        let bytes = Vmo::from_handle(service_rpc::take_handle(&mut reply.handles, 0)?)
-            .read_bytes(length)?;
+        let reply = service_rpc::call(&self.channel, &Writer::request(SNAPSHOT), Vec::new())?;
+        let bytes = read_document(reply)?;
         tracking::OwnedSnapshot::capture(bytes).map_err(status)
     }
 }

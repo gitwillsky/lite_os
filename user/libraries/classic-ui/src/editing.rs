@@ -83,6 +83,12 @@ impl Edit {
     /// 消费一个按键，返回内容/光标/选择是否改变。支持左右、Home/End、Shift 选择、Ctrl+A、删除和文本插入。
     /// 释放、Alt/Super 组合以及未支持的控制快捷键不编辑文本；不包含剪贴板或 IME。
     pub fn key(&mut self, key: Key) -> bool {
+        self.key_with_read_only(key, false)
+    }
+
+    /// 处理单行编辑按键；只读时允许导航和选择，保持原文不变。
+    /// 返回内容或选区是否改变。
+    pub fn key_with_read_only(&mut self, key: Key, read_only: bool) -> bool {
         if !key.pressed || key.modifiers.alt || key.modifiers.super_key {
             return false;
         }
@@ -120,6 +126,7 @@ impl Edit {
             }
             102 => self.move_to(0, key.modifiers.shift),
             107 => self.move_to(self.text.len(), key.modifiers.shift),
+            _ if read_only => {}
             14 => {
                 if self.selection().is_empty() {
                     self.anchor = self.text[..self.cursor]
@@ -213,6 +220,23 @@ impl FocusChain {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditAppearance {
+    Editable,
+    ReadOnly,
+    Disabled,
+}
+
+impl EditAppearance {
+    const fn enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Editable
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 impl crate::Painter<'_> {
     /// 绘制带选择区、水平滚动和光标的单行编辑框；密码用等字符数的 `*` 替代原文。
     /// `focused=false` 时隐藏选择与光标；返回值为编辑框内部的逻辑矩形。
@@ -236,7 +260,14 @@ impl crate::Painter<'_> {
         password: bool,
         margins: (i32, i32),
     ) -> canvas::Rect {
-        self.paint_edit(rect, edit, focused, password, Some(margins), true)
+        self.paint_edit(
+            rect,
+            edit,
+            focused,
+            password,
+            Some(margins),
+            EditAppearance::Editable,
+        )
     }
     /// 无边框的单行编辑框（没有 WS_BORDER，如时间框里的时、分、秒字段）：文字贴着控件矩形；
     /// 命中用 [`Painter::edit_hit_borderless`]。
@@ -247,7 +278,14 @@ impl crate::Painter<'_> {
         focused: bool,
         enabled: bool,
     ) {
-        self.paint_edit(rect, edit, focused && enabled, false, None, enabled);
+        self.paint_edit(
+            rect,
+            edit,
+            focused,
+            false,
+            None,
+            EditAppearance::enabled(enabled),
+        );
     }
 
     /// 无边框编辑框的命中，与 [`Painter::edit_borderless`] 共用文字区几何。
@@ -267,11 +305,31 @@ impl crate::Painter<'_> {
         self.paint_edit(
             rect,
             edit,
-            focused && enabled,
+            focused,
             password,
             Some((0, 0)),
-            enabled,
+            EditAppearance::enabled(enabled),
         )
+    }
+
+    /// 绘制可选择的只读编辑框；采用控件背景和正常文字色，边框与编辑框一致。
+    /// `focused` 控制选区和光标是否可见，`framed` 控制是否绘制凹陷边框。
+    pub fn edit_read_only(
+        &mut self,
+        rect: canvas::Rect,
+        edit: &Edit,
+        focused: bool,
+        password: bool,
+        framed: bool,
+    ) {
+        self.paint_edit(
+            rect,
+            edit,
+            focused,
+            password,
+            framed.then_some((0, 0)),
+            EditAppearance::ReadOnly,
+        );
     }
     /// 以相同滚动与字符度量命中单行文字，返回原文的合法 UTF-8 字节边界，无错误返回。
     pub fn edit_hit(&self, rect: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
@@ -322,20 +380,23 @@ impl crate::Painter<'_> {
         password: bool,
         // 有边框时为文字区左右边距；None 为无边框编辑框。
         frame: Option<(i32, i32)>,
-        enabled: bool,
+        appearance: EditAppearance,
     ) -> canvas::Rect {
         let framed = frame.is_some();
         use crate::Ink;
         use classic_theme::SystemColor;
+        let editable_background = appearance == EditAppearance::Editable;
+        let enabled = appearance != EditAppearance::Disabled;
+        let focused = focused && enabled;
         if framed {
-            self.edit_frame(rect, enabled);
+            self.edit_frame(rect, editable_background);
         } else {
             self.fill(
                 rect,
-                if enabled {
-                    classic_theme::SystemColor::Window
+                if editable_background {
+                    SystemColor::Window
                 } else {
-                    classic_theme::SystemColor::ButtonFace
+                    SystemColor::ButtonFace
                 },
             );
         }
@@ -470,6 +531,22 @@ mod tests {
         edit.key(key(14, false, false, None));
         assert!(edit.text().is_empty());
         assert!(!edit.key(key(14, false, false, None)));
+    }
+
+    #[test]
+    fn read_only_keys_select_without_replacing_the_text() {
+        let mut edit = Edit::new("网关%eth0");
+        assert!(edit.key_with_read_only(key(105, true, false, None), true));
+        assert_eq!(&edit.text()[edit.selection()], "0");
+        assert!(edit.key_with_read_only(key(30, false, true, None), true));
+        for key in [
+            key(30, false, false, Some('x')),
+            key(14, false, false, None),
+            key(111, false, false, None),
+        ] {
+            assert!(!edit.key_with_read_only(key, true));
+        }
+        assert_eq!(&edit.text()[edit.selection()], "网关%eth0");
     }
     #[test]
     fn tab_skips_disabled_controls_and_handles_empty_chains() {

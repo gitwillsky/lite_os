@@ -278,6 +278,10 @@ pub(super) unsafe extern "C" fn rows(
                 table.selection.retain(|id| identities.contains(id));
                 table.checks.retain(|id, _| identities.contains(id));
                 table.anchor = table.anchor.filter(|id| identities.contains(id));
+                table.find.current = table
+                    .find
+                    .current
+                    .filter(|mark| identities.contains(&mark.row));
             }
             if node
                 .label_edit

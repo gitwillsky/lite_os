@@ -281,6 +281,13 @@ QEMU 11.1.2 的 `info virtio-status` 和 `x-query-virtio-status` 会使本测试
 
 共享框架的生命周期、GPU 缓冲与性能证明范围见[Wayland 验证](wayland-ui-verification.md)。
 
+### 翻页背压
+
+在现有 AArch64/HVF 开发桌面、VirGL2 输出 3008×1692 下，四个独立 render-node 客户端各通过标准 UAPI 提交
+3,000 次纹理上传，同时反复打开和关闭网络管理器并读屏。旧实现从非阻塞 atomic 翻页取得 `EBUSY` 后退出，
+init 重启显示服务，重新显示启动画面。修复后，记录到同一帧在 `EBUSY` 后被接收，
+18 次应用开关期间合成器 PID 一致，读屏继续成功。[非阻塞 KMS 行为](../architecture-contract/drm.md#原子配置与输出损伤)
+
 ## 门禁
 
 `make verify-runtime-desktop` 使用真实产品 logon/desktop/file-explorer，不用 UI 探针代替产品。

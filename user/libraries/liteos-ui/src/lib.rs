@@ -20,6 +20,7 @@ mod tasks;
 mod toplevel;
 mod window;
 pub use background::{Background, Blocking};
+pub use classic_ui_abi::ListMatch;
 use classic_ui_abi::{self as abi, event};
 pub use classic_ui_abi::{Date, Layout, MAX_TEXT_BYTES, Range, Rect, state};
 pub use clipboard::{Clipboard, ClipboardRead};

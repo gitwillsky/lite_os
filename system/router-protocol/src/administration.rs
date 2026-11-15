@@ -24,6 +24,8 @@ fn accepts_domain(operation: u32) -> bool {
             | ordinal::BGP_REFRESH
             | ordinal::OSPF_STATUS
             | ordinal::ROUTE_PAGE
+            | ordinal::STATIC_STATUS
+            | ordinal::STATIC_PATHS
             | ordinal::OPEN_NETWORK_NAMESPACE
     )
 }
@@ -59,6 +61,8 @@ impl<'a> Request<'a> {
                 | ordinal::FIREWALL_COUNTERS
                 | ordinal::NEIGHBOR_PAGE
                 | ordinal::ROUTE_PAGE
+                | ordinal::STATIC_STATUS
+                | ordinal::STATIC_PATHS
         );
         if !ordinal::is_configuration(operation)
             || self.backup.is_some()
@@ -83,6 +87,10 @@ impl<'a> Request<'a> {
                 && self.length != crate::neighbors::CURSOR_BYTES as u64)
             || (operation == ordinal::ROUTE_PAGE
                 && self.length != crate::route_view::CURSOR_BYTES as u64)
+            || (operation == ordinal::STATIC_STATUS
+                && !crate::route_view::selection::valid_request_length(self.length))
+            || (operation == ordinal::STATIC_PATHS
+                && self.length != crate::route_view::selection::paths::REQUEST_BYTES as u64)
             || self.domain.is_some_and(|domain| {
                 !accepts_domain(operation)
                     || !crate::configuration::valid_routing_domain_name(domain)
@@ -218,6 +226,10 @@ impl Reply {
                 && !crate::neighbors::valid_page_length(reply.length))
             || (operation == ordinal::ROUTE_PAGE
                 && !crate::route_view::valid_page_length(reply.length))
+            || (operation == ordinal::STATIC_STATUS
+                && !crate::route_view::selection::valid_reply_length(reply.length))
+            || (operation == ordinal::STATIC_PATHS
+                && !crate::route_view::selection::paths::valid_length(reply.length))
             || (operation == ordinal::COMMIT_RESULT && reply.length != 1)
         {
             return Err(Invalid);
@@ -316,7 +328,7 @@ mod tests {
             .is_err()
         );
         let connection = Request {
-            length: crate::connections::CURSOR_BYTES as u64,
+            length: crate::connections::IDENTITY_BYTES as u64,
             ..counters
         };
         let encoded = connection.encode(ordinal::CLEAR_CONNECTION).unwrap();
