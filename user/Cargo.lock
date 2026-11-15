@@ -1522,6 +1522,7 @@ dependencies = [
 name = "network-manager"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "linux-uapi",
  "liteos-ui",
  "network-config",

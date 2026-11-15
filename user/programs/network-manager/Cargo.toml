@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+calendar = { path = "../../libraries/calendar" }
 linux-uapi.workspace = true
 liteos-ui = { path = "../../libraries/liteos-ui" }
 network-config = { path = "../../libraries/network-config" }

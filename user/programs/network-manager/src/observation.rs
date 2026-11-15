@@ -1,6 +1,9 @@
-//! 网关观察等待复用窗口的 FD 就绪和单调时钟。
+//! 网关观察等待复用窗口的 FD 就绪和单调时钟；顶栏的路由域选择决定各观察窗口的查询范围。
 
-use crate::child;
+use crate::{
+    child,
+    item_list::{Glyph, Item, Tool, toolbar},
+};
 use liteos_ui::{
     Application, AsyncFd, Background, Clock, Event, EventKind, Layout, Task, TreeRow, Widget,
     WidgetKind, Window, state,
@@ -18,49 +21,44 @@ use std::{
 };
 
 pub(super) struct RoutingDomains {
-    bar: Widget,
+    // 静态标签只需存活；控件句柄释放即删除节点。
+    _caption: Widget,
     list: Widget,
-    refresh: Widget,
+    refresh: Tool,
     status: Widget,
     names: Rc<RefCell<Vec<Arc<str>>>>,
     selected: Option<Arc<str>>,
     task: Option<Task<()>>,
     background: Background,
-    visible: bool,
 }
 
 impl RoutingDomains {
+    /// 在顶栏 `bar` 中建立路由域下拉框、刷新按钮与提示。
+    /// 创建后立即读取域列表。
+    ///
+    /// 错误：窗口已关闭或无法提交后台读取。
     pub(super) fn new(
-        parent: &Widget,
+        app: &mut Application,
+        window: &Window,
+        bar: &Widget,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
-        let bar = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Layout::default()
-            },
-        )?;
-        child(&bar, WidgetKind::Label, "路由域", Layout::default())?;
+        let caption = child(bar, WidgetKind::Label, "路由域", Layout::default())?;
         let list = child(
-            &bar,
+            bar,
             WidgetKind::Combo,
             "",
             Layout {
-                width: 218,
-                ..button
+                width: 180,
+                ..Layout::default()
             },
         )?;
         list.set_state(state::DROPDOWN_LIST)?;
-        let refresh = child(&bar, WidgetKind::Button, "刷新域", button)?;
-        let status = child(&bar, WidgetKind::Label, "", Layout::default())?;
+        let [refresh] = toolbar(bar, [Item::Icon(Glyph::Refresh, "刷新路由域")])?;
+        let status = child(bar, WidgetKind::Label, "", Layout::default())?;
         present_domains(&list, &[], None)?;
-        bar.set_state(state::HIDDEN)?;
-        Ok(Self {
-            bar,
+        let mut domains = Self {
+            _caption: caption,
             list,
             refresh,
             status,
@@ -68,28 +66,9 @@ impl RoutingDomains {
             selected: None,
             task: None,
             background,
-            visible: false,
-        })
-    }
-
-    pub(super) fn selected_tab(
-        &mut self,
-        app: &mut Application,
-        window: &Window,
-        visible: bool,
-    ) -> liteos_ui::Result<()> {
-        if self.visible == visible {
-            return Ok(());
-        }
-        self.visible = visible;
-        self.bar
-            .set_state(if visible { 0 } else { state::HIDDEN })?;
-        if visible {
-            self.reload(app, window)?;
-        } else {
-            self.task = None;
-        }
-        Ok(())
+        };
+        domains.reload(app, window)?;
+        Ok(domains)
     }
 
     pub(super) fn handle(
@@ -98,10 +77,7 @@ impl RoutingDomains {
         window: &Window,
         event: &Event,
     ) -> liteos_ui::Result<bool> {
-        if !self.visible {
-            return Ok(false);
-        }
-        if event.node == self.refresh.id() && matches!(event.kind, EventKind::Activate { .. }) {
+        if self.refresh.activated(event) {
             self.reload(app, window)?;
             return Ok(false);
         }
@@ -154,7 +130,7 @@ impl RoutingDomains {
             .run(|| ManagementClient::local().routing_domains())?;
         self.list
             .set_state(state::DROPDOWN_LIST | state::DISABLED)?;
-        self.refresh.set_state(state::DISABLED)?;
+        self.refresh.set_enabled(false)?;
         self.status.set_text("正在读取路由域…")?;
         let list = self.list.clone();
         let refresh = self.refresh.clone();
@@ -181,7 +157,7 @@ impl RoutingDomains {
             };
             let _ = status.set_text(notice);
             let _ = list.set_state(state::DROPDOWN_LIST);
-            let _ = refresh.set_state(0);
+            let _ = refresh.set_enabled(true);
         })?);
         Ok(())
     }

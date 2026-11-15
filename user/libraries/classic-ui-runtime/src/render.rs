@@ -350,69 +350,81 @@ impl Tree {
                     if let Some(frame) = &node.frame {
                         p.clipped(rect, |p| frame.paint_fitted(p, rect));
                     }
-                    for command in &node.drawing {
-                        let r = Rect::new(
-                            rect.x.saturating_add(command.rect.x),
-                            rect.y.saturating_add(command.rect.y),
-                            command.rect.width,
-                            command.rect.height,
-                        );
-                        if r.is_empty() {
-                            continue;
+                    // 文字命令改用 set_font 指定的派生字体；位图与填充不受字体影响。
+                    let custom = node
+                        .logical_font(&p.theme().fonts)
+                        .map(|logical| p.fonts().custom(&logical));
+                    let draw = |p: &mut Painter<'_>| {
+                        for command in &node.drawing {
+                            let r = Rect::new(
+                                rect.x.saturating_add(command.rect.x),
+                                rect.y.saturating_add(command.rect.y),
+                                command.rect.width,
+                                command.rect.height,
+                            );
+                            if r.is_empty() {
+                                continue;
+                            }
+                            let rgb = Rgb {
+                                red: (command.color >> 16) as u8,
+                                green: (command.color >> 8) as u8,
+                                blue: command.color as u8,
+                            };
+                            match command.kind {
+                                1 => p.fill_rgb(r, rgb),
+                                2 => {
+                                    p.fill_rgb(Rect::new(r.x, r.y, r.width, 1), rgb);
+                                    p.fill_rgb(Rect::new(r.x, r.bottom() - 1, r.width, 1), rgb);
+                                    p.fill_rgb(Rect::new(r.x, r.y, 1, r.height), rgb);
+                                    p.fill_rgb(Rect::new(r.right() - 1, r.y, 1, r.height), rgb);
+                                }
+                                3 => p.clipped(r, |p| {
+                                    p.text(r.x, r.y, &command.text, Ink::Rgb(rgb), command.bold);
+                                }),
+                                5 => {
+                                    if let Some(font) = canvas.mono {
+                                        p.monospace(r, &command.text, font, rgb, command.bold);
+                                    }
+                                }
+                                4 => {
+                                    p.text_wrapped(r, &command.text, Ink::Rgb(rgb), command.bold);
+                                }
+                                6 => p.text_centered(r, &command.text, Ink::Rgb(rgb), command.bold),
+                                9 => p.text_rotated(r, &command.text, Ink::Rgb(rgb), command.bold),
+                                // 墙纸预览：r 代表整个屏幕，text 为图片路径，color 为显示方式（0 居中、1 平铺、2 拉伸）。
+                                7 => {
+                                    if let Some(image) =
+                                        canvas.pictures.get(std::path::Path::new(&command.text))
+                                    {
+                                        let style = match command.color {
+                                            1 => WallpaperStyle::Tile,
+                                            2 => WallpaperStyle::Stretch,
+                                            _ => WallpaperStyle::Center,
+                                        };
+                                        let screen =
+                                            canvas.screen.map_or(r.width, |(width, _)| width);
+                                        image.paint_wallpaper(p, r, style, (r.width, screen));
+                                    }
+                                }
+                                // 系统界面位图：原尺寸居中，超出命令矩形的部分裁掉。
+                                8 => {
+                                    if let Some(bitmap) = &command.bitmap {
+                                        p.clipped(r, |p| {
+                                            bitmap.paint(
+                                                p,
+                                                r.x + (r.width - bitmap.width()) / 2,
+                                                r.y + (r.height - bitmap.height()) / 2,
+                                            );
+                                        });
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
-                        let rgb = Rgb {
-                            red: (command.color >> 16) as u8,
-                            green: (command.color >> 8) as u8,
-                            blue: command.color as u8,
-                        };
-                        match command.kind {
-                            1 => p.fill_rgb(r, rgb),
-                            2 => {
-                                p.fill_rgb(Rect::new(r.x, r.y, r.width, 1), rgb);
-                                p.fill_rgb(Rect::new(r.x, r.bottom() - 1, r.width, 1), rgb);
-                                p.fill_rgb(Rect::new(r.x, r.y, 1, r.height), rgb);
-                                p.fill_rgb(Rect::new(r.right() - 1, r.y, 1, r.height), rgb);
-                            }
-                            3 => p.clipped(r, |p| {
-                                p.text(r.x, r.y, &command.text, Ink::Rgb(rgb), command.bold);
-                            }),
-                            5 => {
-                                if let Some(font) = canvas.mono {
-                                    p.monospace(r, &command.text, font, rgb, command.bold);
-                                }
-                            }
-                            4 => {
-                                p.text_wrapped(r, &command.text, Ink::Rgb(rgb), command.bold);
-                            }
-                            6 => p.text_centered(r, &command.text, Ink::Rgb(rgb), command.bold),
-                            // 墙纸预览：r 代表整个屏幕，text 为图片路径，color 为显示方式（0 居中、1 平铺、2 拉伸）。
-                            7 => {
-                                if let Some(image) =
-                                    canvas.pictures.get(std::path::Path::new(&command.text))
-                                {
-                                    let style = match command.color {
-                                        1 => WallpaperStyle::Tile,
-                                        2 => WallpaperStyle::Stretch,
-                                        _ => WallpaperStyle::Center,
-                                    };
-                                    let screen = canvas.screen.map_or(r.width, |(width, _)| width);
-                                    image.paint_wallpaper(p, r, style, (r.width, screen));
-                                }
-                            }
-                            // 系统界面位图：原尺寸居中，超出命令矩形的部分裁掉。
-                            8 => {
-                                if let Some(bitmap) = &command.bitmap {
-                                    p.clipped(r, |p| {
-                                        bitmap.paint(
-                                            p,
-                                            r.x + (r.width - bitmap.width()) / 2,
-                                            r.y + (r.height - bitmap.height()) / 2,
-                                        );
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
+                    };
+                    match &custom {
+                        Some(face) => p.with_font(face, draw),
+                        None => draw(p),
                     }
                 }
                 _ => {}

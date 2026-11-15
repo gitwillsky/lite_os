@@ -184,7 +184,12 @@ impl Toolbar {
             .unwrap_or(16)
     }
 
+    /// 按钮图像位的宽度。没有位图的选择性文字按钮不保留图像位（comctl32 `I_IMAGENONE`），
+    /// 否则纯文字命令按钮左侧会空出一格图标宽度。
     fn image_width(&self, button: &Button) -> i32 {
+        if button.style & style::SHOW_TEXT != 0 && button.strips.iter().all(Option::is_none) {
+            return 0;
+        }
         button.strips[0]
             .as_deref()
             .map_or_else(|| self.image(), frame_width)

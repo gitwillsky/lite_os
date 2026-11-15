@@ -1,9 +1,13 @@
 //! 管理网关当前邻居页的显示和翻页。
 
-use crate::{child, observation::receive};
+use crate::{
+    child,
+    item_list::{Glyph, Item, Summary, Tool, toolbar},
+    observation::receive,
+};
 use liteos_ui::{
-    Application, Background, Clock, Column, Event, EventKind, Layout, ListOptions, ListStyle, Task,
-    Widget, WidgetKind, Window, state,
+    Application, Background, Clock, Column, Event, Layout, ListOptions, ListStyle, Task, Widget,
+    WidgetKind, Window,
 };
 use network_config::{
     format_mac,
@@ -24,10 +28,10 @@ pub(super) struct Page {
 
 struct View {
     list: Widget,
-    previous: Widget,
-    next: Widget,
-    refresh: Widget,
-    status: Widget,
+    previous: Tool,
+    next: Tool,
+    refresh: Tool,
+    summary: Summary,
     background: Background,
     clock: Clock,
     snapshot: RefCell<Option<NeighborPage>>,
@@ -38,8 +42,15 @@ impl Page {
         app: &Application,
         parent: &Widget,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
+        let [previous, next, refresh] = toolbar(
+            parent,
+            [
+                Item::Icon(Glyph::Previous, "上一页"),
+                Item::Icon(Glyph::Next, "下一页"),
+                Item::Icon(Glyph::Refresh, "刷新"),
+            ],
+        )?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -83,27 +94,18 @@ impl Page {
                 width: 58,
             },
         ])?;
-        let bar = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Default::default()
-            },
-        )?;
         let view = View {
             list,
-            previous: child(&bar, WidgetKind::Button, "上一页", button)?,
-            next: child(&bar, WidgetKind::Button, "下一页", button)?,
-            refresh: child(&bar, WidgetKind::Button, "刷新", button)?,
-            status: child(parent, WidgetKind::Status, "", Layout::default())?,
+            previous,
+            next,
+            refresh,
+            summary: Summary::new(parent)?,
             background,
             clock: app.clock(),
             snapshot: RefCell::default(),
         };
-        view.previous.set_state(state::DISABLED)?;
-        view.next.set_state(state::DISABLED)?;
+        view.previous.set_enabled(false)?;
+        view.next.set_enabled(false)?;
         Ok(Self {
             view: Rc::new(view),
             task: None,
@@ -151,12 +153,12 @@ impl Page {
         window: &Window,
         event: &Event,
     ) -> liteos_ui::Result<()> {
-        if !self.visible || !matches!(event.kind, EventKind::Activate { .. }) {
+        if !self.visible {
             return Ok(());
         }
-        if event.node == self.view.previous.id() && self.anchors.len() > 1 {
+        if self.view.previous.activated(event) && self.anchors.len() > 1 {
             self.anchors.pop();
-        } else if event.node == self.view.next.id() {
+        } else if self.view.next.activated(event) {
             let snapshot = self.view.snapshot.borrow();
             let next = snapshot
                 .as_ref()
@@ -164,7 +166,7 @@ impl Page {
                 .and_then(|page| page.rows.last());
             let Some(row) = next else { return Ok(()) };
             self.anchors.push(Some(row.neighbor.key()));
-        } else if event.node != self.view.refresh.id() {
+        } else if !self.view.refresh.activated(event) {
             return Ok(());
         }
         self.subscribe(app, window)
@@ -175,23 +177,21 @@ impl Page {
         let view = self.view.clone();
         view.snapshot.borrow_mut().take();
         view.list.set_rows(&[])?;
-        for button in [&view.previous, &view.next, &view.refresh] {
-            button.set_state(state::DISABLED)?;
+        for tool in [&view.previous, &view.next, &view.refresh] {
+            tool.set_enabled(false)?;
         }
-        view.status.set_text("正在读取邻居…")?;
+        view.summary.notice("正在读取邻居…")?;
         let parent = window.clone();
         let page = self.anchors.len();
         let after = *self.anchors.last().expect("first page anchor");
         let domain = self.domain.clone();
         self.task = Some(app.spawn_local(window, async move {
             if let Err(error) = view.observe(&parent, page, domain, after).await {
+                let _ = view.previous.set_enabled(page > 1);
+                let _ = view.refresh.set_enabled(true);
                 let _ = view
-                    .previous
-                    .set_state(if page > 1 { 0 } else { state::DISABLED });
-                let _ = view.refresh.set_state(0);
-                let _ = view
-                    .status
-                    .set_text(&format!("邻居观察已停止，请刷新。{error}"));
+                    .summary
+                    .notice(&format!("邻居观察已停止，请刷新。{error}"));
             }
         })?);
         Ok(())
@@ -253,13 +253,12 @@ impl View {
             .collect();
         self.list.set_rows(&rows)?;
         self.list.select(selected.map(|index| index as u64 + 1))?;
-        self.previous
-            .set_state(if page > 1 { 0 } else { state::DISABLED })?;
-        self.next
-            .set_state(if next.more { 0 } else { state::DISABLED })?;
-        self.refresh.set_state(0)?;
-        self.status
-            .set_text(&format!("第 {page} 页 · {} 条邻居 · 正在观察", rows.len()))?;
+        self.previous.set_enabled(page > 1)?;
+        self.next.set_enabled(next.more)?;
+        self.refresh.set_enabled(true)?;
+        let selected = usize::from(self.list.selection()?.is_some());
+        self.summary
+            .show(rows.len(), selected, &format!("实时（第 {page} 页）"))?;
         *self.snapshot.borrow_mut() = Some(next);
         Ok(())
     }

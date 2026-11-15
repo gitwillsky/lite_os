@@ -1,9 +1,13 @@
 //! 防火墙规则和计数的只读观察。选中页的规则身份由收到的快照确定。
 
-use crate::{child, observation::receive};
+use crate::{
+    child,
+    item_list::{Glyph, Item, Summary, Tool, note, set_note, toolbar},
+    observation::receive,
+};
 use liteos_ui::{
     Application, Background, Clock, Column, Event, EventKind, Layout, ListOptions, ListStyle, Task,
-    Widget, WidgetKind, Window, state,
+    Widget, WidgetKind, Window,
 };
 use network_config::firewall::{
     self, FirewallObservation, RuleConditions,
@@ -29,11 +33,11 @@ pub(super) struct Page {
 struct View {
     list: Widget,
     details: Widget,
-    previous: Widget,
-    next: Widget,
-    refresh: Widget,
-    configure: Widget,
-    status: Widget,
+    previous: Tool,
+    next: Tool,
+    refresh: Tool,
+    configure: Tool,
+    summary: Summary,
     background: Background,
     clock: Clock,
     // 游标在未收到快照或会话断开时仍保留，使刷新能重新读取当前页。
@@ -46,8 +50,17 @@ impl Page {
         app: &Application,
         parent: &Widget,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
+        let [configure, _, previous, next, refresh] = toolbar(
+            parent,
+            [
+                Item::Command(Glyph::Add, "新建"),
+                Item::Separator,
+                Item::Icon(Glyph::Previous, "上一页"),
+                Item::Icon(Glyph::Next, "下一页"),
+                Item::Icon(Glyph::Refresh, "刷新"),
+            ],
+        )?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -91,25 +104,15 @@ impl Page {
                 width: 135,
             },
         ])?;
-        let details = child(parent, WidgetKind::Label, "", Layout::default())?;
-        details.set_state(state::WRAP)?;
-        let bar = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Default::default()
-            },
-        )?;
+        let details = note(parent)?;
         let view = View {
             list,
             details,
-            previous: child(&bar, WidgetKind::Button, "上一页", button)?,
-            next: child(&bar, WidgetKind::Button, "下一页", button)?,
-            refresh: child(&bar, WidgetKind::Button, "刷新", button)?,
-            configure: child(&bar, WidgetKind::Button, "规则与 NAT…", Layout { width: 110, ..button })?,
-            status: child(parent, WidgetKind::Status, "", Layout::default())?,
+            previous,
+            next,
+            refresh,
+            configure,
+            summary: Summary::new(parent)?,
             background,
             clock: app.clock(),
             cursor: Cell::default(),
@@ -157,7 +160,7 @@ impl Page {
     }
 
     pub(super) fn configure_requested(&self, event: &Event) -> bool {
-        self.visible && event.node == self.view.configure.id() && matches!(event.kind, EventKind::Activate { .. })
+        self.visible && self.view.configure.activated(event)
     }
 
     pub(super) fn handle(
@@ -176,16 +179,16 @@ impl Page {
         if !matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(());
         }
-        let cursor = if event.node == view.refresh.id() {
+        let cursor = if view.refresh.activated(event) {
             view.cursor.get()
         } else {
             let snapshot = view.snapshot.borrow();
             let Some(page) = snapshot.as_ref() else {
                 return Ok(());
             };
-            let offset = if event.node == view.previous.id() && view.cursor.get().offset != 0 {
+            let offset = if view.previous.activated(event) && view.cursor.get().offset != 0 {
                 view.cursor.get().offset.saturating_sub(LIMIT as u32)
-            } else if event.node == view.next.id()
+            } else if view.next.activated(event)
                 && let Some(next) = page.next
             {
                 next
@@ -213,16 +216,16 @@ impl Page {
         view.list.set_rows(&[])?;
         view.show_details()?;
         view.buttons()?;
-        view.refresh.set_state(state::DISABLED)?;
-        view.status.set_text("正在读取防火墙计数…")?;
+        view.refresh.set_enabled(false)?;
+        view.summary.notice("正在读取防火墙计数…")?;
         let parent = window.clone();
         let domain = self.domain.clone();
         self.task = Some(app.spawn_local(window, async move {
             if let Err(error) = view.observe(&parent, domain, cursor).await {
-                let _ = view.refresh.set_state(0);
+                let _ = view.refresh.set_enabled(true);
                 let _ = view
-                    .status
-                    .set_text(&format!("防火墙计数已停止更新，请刷新。{error}"));
+                    .summary
+                    .notice(&format!("防火墙计数已停止更新，请刷新。{error}"));
             }
         })?);
         Ok(())
@@ -232,12 +235,10 @@ impl Page {
 impl View {
     fn buttons(&self) -> liteos_ui::Result<()> {
         let snapshot = self.snapshot.borrow();
-        let enabled = |value| if value { 0 } else { state::DISABLED };
         self.previous
-            .set_state(enabled(snapshot.is_some() && self.cursor.get().offset != 0))?;
-        self.next.set_state(enabled(
-            snapshot.as_ref().is_some_and(|page| page.next.is_some()),
-        ))
+            .set_enabled(snapshot.is_some() && self.cursor.get().offset != 0)?;
+        self.next
+            .set_enabled(snapshot.as_ref().is_some_and(|page| page.next.is_some()))
     }
 
     async fn observe(
@@ -265,17 +266,15 @@ impl View {
                     self.show_details()?;
                     self.present()?;
                     self.buttons()?;
-                    self.refresh.set_state(0)?;
+                    self.refresh.set_enabled(true)?;
                     let page = self.snapshot.borrow();
                     let count = page.as_ref().map_or(0, |page| page.rows.len());
-                    if count == 0 {
-                        self.status.set_text("没有预路由规则 · 正在观察")?;
+                    let note = if count == 0 {
+                        "没有预路由规则 · 实时".to_owned()
                     } else {
-                        self.status.set_text(&format!(
-                            "第 {} 页 · {count} 条规则 · 正在观察",
-                            cursor.offset / LIMIT as u32 + 1
-                        ))?;
-                    }
+                        format!("实时（第 {} 页）", cursor.offset / LIMIT as u32 + 1)
+                    };
+                    self.summary.show(count, 0, &note)?;
                 }
                 Update::Counts { revision, values } => {
                     {
@@ -330,7 +329,7 @@ impl View {
         let snapshot = self.snapshot.borrow();
         let row = selected.and_then(|id| snapshot.as_ref()?.rows.get((id - 1) as usize));
         let Some(row) = row else {
-            return self.details.set_text("");
+            return set_note(&self.details, "");
         };
         let RuleConditions {
             ingress,
@@ -340,8 +339,11 @@ impl View {
             state,
         } = firewall::conditions(row);
         let action = firewall::action(row);
-        self.details.set_text(&format!(
-            "入接口 {ingress}　源地址 {source}　目的地址 {destination}　目标服务 {service}　连接状态 {state}\n{action}"
-        ))
+        set_note(
+            &self.details,
+            &format!(
+                "入接口 {ingress}　源地址 {source}　目的地址 {destination}　目标服务 {service}　连接状态 {state}\n{action}"
+            ),
+        )
     }
 }

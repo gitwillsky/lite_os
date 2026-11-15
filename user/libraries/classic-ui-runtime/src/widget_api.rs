@@ -375,7 +375,7 @@ pub(super) unsafe extern "C" fn draw(
             };
             let mut drawing = Vec::with_capacity(count);
             for command in values {
-                if !(1..=8).contains(&command.kind)
+                if !(1..=9).contains(&command.kind)
                     || command.rect.width < 0
                     || command.rect.height < 0
                     || [
@@ -944,7 +944,7 @@ pub(super) unsafe extern "C" fn set_font(
     if points > 72 || weight > 1000 {
         return abi::INVALID;
     }
-    // SAFETY: 只修改本 context 中指定标签/链接的字体描述，字体在绘制时由资源上下文解析。
+    // SAFETY: 只修改本 context 中指定标签/链接/画布的字体描述，字体在绘制时由资源上下文解析。
     unsafe {
         invoke(pointer, |context| {
             let host = context.host_mut(window)?;
@@ -952,8 +952,13 @@ pub(super) unsafe extern "C" fn set_font(
                 .controls_mut()?
                 .nodes
                 .get_mut(&id)
-                .filter(|node| matches!(node.kind, abi::widget::LABEL | abi::widget::LINK))
-                .ok_or_else(|| invalid("not a label or link"))?;
+                .filter(|node| {
+                    matches!(
+                        node.kind,
+                        abi::widget::LABEL | abi::widget::LINK | abi::widget::CANVAS
+                    )
+                })
+                .ok_or_else(|| invalid("not a label, link or canvas"))?;
             let value = Some((role, points as u16, weight as u16));
             if node.font == value {
                 return Ok(());

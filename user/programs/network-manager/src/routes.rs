@@ -1,10 +1,14 @@
 //! 当前生效路由页。成员跨页继续显示，选择详情可读完整双栈地址。
 
-use crate::{APP_ID, child, observation::receive};
+use crate::{
+    APP_ID, child,
+    item_list::{Glyph, Item, Summary, Tool, note, set_note, spacer, toolbar},
+    observation::receive,
+};
 use liteos_ui::{
     Application, Background, Clock, Column, Dialogs, Event, EventKind, EventStream, Layout,
-    ListOptions, ListStyle, MessageButtons, MessageIcon, Task, Widget, WidgetKind, WidgetSpec,
-    Window, WindowOptions, state,
+    ListOptions, ListStyle, MessageButtons, MessageIcon, Task, TreeRow, Widget, WidgetKind,
+    WidgetSpec, Window, WindowOptions, state,
 };
 use network_config::configuration::IpPrefix;
 use network_config::routes::{
@@ -17,17 +21,16 @@ mod bgp;
 mod editor;
 mod ospf;
 
-pub(super) use editor::{InterfaceAction, Section};
+pub(super) use editor::{
+    ADMIN_STATES, Field, Fields, LiveInterface, Section, admin_index, apply_fields, edit_ipv4_of,
+    edit_ipv6_of,
+};
 
 #[derive(Clone, Copy)]
 pub(super) enum Dialog {
     Settings(Option<Section>),
     Ospf,
     Bgp,
-    Interface {
-        row: network_config::traffic::Row,
-        action: InterfaceAction,
-    },
 }
 
 type Error = Box<dyn std::error::Error>;
@@ -45,62 +48,94 @@ pub(super) struct Page {
 }
 
 struct View {
+    // 弹性空白与「查找」标签只需存活；控件句柄释放即删除节点。
+    _decor: [Widget; 2],
     list: Widget,
     details: Widget,
-    previous: Widget,
-    next: Widget,
-    refresh: Widget,
-    configure: Widget,
-    ospf: Widget,
-    bgp: Widget,
-    ipv4: Widget,
-    ipv6: Widget,
+    previous: Tool,
+    next: Tool,
+    refresh: Tool,
+    configure: Tool,
+    filter: Tool,
+    family: Widget,
     destination: Widget,
-    filter: Widget,
-    status: Widget,
+    summary: Summary,
     background: Background,
     clock: Clock,
     snapshot: RefCell<Option<RoutePage>>,
 }
+
+/// 地址族下拉框的行标识。
+const IPV4_ROW: u64 = 1;
+const IPV6_ROW: u64 = 2;
 
 impl Page {
     pub(super) fn new(
         app: &Application,
         parent: &Widget,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
         let bar = child(
             parent,
             WidgetKind::Row,
             "",
             Layout {
-                gap: 6,
+                gap: 4,
                 ..Default::default()
             },
         )?;
-        let family = Layout {
-            width: 58,
-            ..Default::default()
-        };
-        let mut ipv4 = WidgetSpec::new(WidgetKind::Radio, "IPv4");
-        ipv4.layout = family;
-        ipv4.state = state::CHECKED;
-        let ipv4 = bar.child(ipv4)?;
-        let ipv6 = child(&bar, WidgetKind::Radio, "IPv6", family)?;
-        child(&bar, WidgetKind::Label, "目的网段", Layout::default())?;
+        let [configure, _, filter, _, previous, next, refresh] = toolbar(
+            &bar,
+            [
+                Item::Command(Glyph::Add, "新建"),
+                Item::Separator,
+                Item::Icon(Glyph::Filter, "按目的网段筛选"),
+                Item::Separator,
+                Item::Icon(Glyph::Previous, "上一页"),
+                Item::Icon(Glyph::Next, "下一页"),
+                Item::Icon(Glyph::Refresh, "刷新"),
+            ],
+        )?;
+        // WinBox 把查找框和视图下拉框放在工具栏右端：在查找框回车或点漏斗按目的网段筛选，清空后恢复。
+        let spacer = spacer(&bar)?;
+        let find = child(&bar, WidgetKind::Label, "查找", Layout::default())?;
         let destination = child(
             &bar,
             WidgetKind::Edit,
             "",
             Layout {
-                width: 230,
-                grow: 1,
+                width: 190,
                 min_width: 52,
-                ..button
+                ..Default::default()
             },
         )?;
-        let filter = child(&bar, WidgetKind::Button, "筛选", button)?;
+        let family = child(
+            &bar,
+            WidgetKind::Combo,
+            "",
+            Layout {
+                width: 70,
+                ..Default::default()
+            },
+        )?;
+        family.set_state(state::DROPDOWN_LIST)?;
+        family.set_tree_rows(&[
+            TreeRow {
+                id: IPV4_ROW,
+                parent: 0,
+                text: "IPv4",
+                expanded: false,
+                has_children: false,
+            },
+            TreeRow {
+                id: IPV6_ROW,
+                parent: 0,
+                text: "IPv6",
+                expanded: false,
+                has_children: false,
+            },
+        ])?;
+        family.select(Some(IPV4_ROW))?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -117,72 +152,58 @@ impl Page {
                 full_row_select: true,
             },
         )?;
+        // 首列是 RouterOS 的路由标志，见 [`flags`]。
         list.set_columns(&[
             Column {
                 id: 1,
+                title: "",
+                width: 40,
+            },
+            Column {
+                id: 2,
                 title: "目的网段",
                 width: 220,
             },
             Column {
-                id: 2,
+                id: 3,
                 title: "路由表",
                 width: 74,
             },
             Column {
-                id: 3,
+                id: 4,
                 title: "出口",
                 width: 80,
             },
             Column {
-                id: 4,
+                id: 5,
                 title: "下一跳",
                 width: 195,
             },
             Column {
-                id: 5,
+                id: 6,
                 title: "权重",
                 width: 65,
             },
         ])?;
-        let details = child(parent, WidgetKind::Label, "", Layout::default())?;
-        details.set_state(state::WRAP)?;
-        let controls = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Default::default()
-            },
-        )?;
+        let details = note(parent)?;
         let view = View {
-            ipv4,
-            ipv6,
+            _decor: [spacer, find],
+            family,
             destination,
             filter,
             list,
             details,
             background,
             clock: app.clock(),
-            previous: child(&controls, WidgetKind::Button, "上一页", button)?,
-            next: child(&controls, WidgetKind::Button, "下一页", button)?,
-            refresh: child(&controls, WidgetKind::Button, "刷新", button)?,
-            configure: child(&controls, WidgetKind::Button, "路由设置…", button)?,
-            ospf: child(
-                &controls,
-                WidgetKind::Button,
-                "OSPF 邻居…",
-                Layout {
-                    width: 108,
-                    ..button
-                },
-            )?,
-            bgp: child(&controls, WidgetKind::Button, "BGP…", button)?,
-            status: child(parent, WidgetKind::Status, "", Layout::default())?,
+            previous,
+            next,
+            refresh,
+            configure,
+            summary: Summary::new(parent)?,
             snapshot: RefCell::default(),
         };
-        view.previous.set_state(state::DISABLED)?;
-        view.next.set_state(state::DISABLED)?;
+        view.previous.set_enabled(false)?;
+        view.next.set_enabled(false)?;
         Ok(Self {
             view: Rc::new(view),
             task: None,
@@ -239,26 +260,24 @@ impl Page {
         if event.node == self.view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
             return self.view.show_details();
         }
-        if !matches!(event.kind, EventKind::Activate { .. }) {
-            return Ok(());
-        }
-        if event.node == self.view.configure.id() {
-            return self.open(app, window, Dialog::Settings(None));
-        }
-        if event.node == self.view.ospf.id() {
-            return self.open(app, window, Dialog::Ospf);
-        }
-        if event.node == self.view.bgp.id() {
-            return self.open(app, window, Dialog::Bgp);
-        }
-        let family = if event.node == self.view.ipv4.id() {
-            Some(Family::Ipv4)
-        } else if event.node == self.view.ipv6.id() {
-            Some(Family::Ipv6)
+        let family = if event.node == self.view.family.id()
+            && matches!(event.kind, EventKind::Select { .. })
+        {
+            match self.view.family.selection()? {
+                Some(IPV6_ROW) => Some(Family::Ipv6),
+                Some(_) => Some(Family::Ipv4),
+                None => None,
+            }
         } else {
             None
         };
-        if event.node == self.view.filter.id() {
+        if family.is_none() && !matches!(event.kind, EventKind::Activate { .. }) {
+            return Ok(());
+        }
+        if self.view.configure.activated(event) {
+            return self.open(app, window, Dialog::Settings(None));
+        }
+        if self.view.filter.activated(event) || event.node == self.view.destination.id() {
             let text = self.view.destination.text()?;
             let filter = if text.trim().is_empty() {
                 None
@@ -283,16 +302,10 @@ impl Page {
                 } else {
                     Family::Ipv6
                 };
-                for (family, button) in [
-                    (Family::Ipv4, &self.view.ipv4),
-                    (Family::Ipv6, &self.view.ipv6),
-                ] {
-                    button.set_state(if family == self.family {
-                        state::CHECKED
-                    } else {
-                        0
-                    })?;
-                }
+                self.view.family.select(Some(match self.family {
+                    Family::Ipv4 => IPV4_ROW,
+                    Family::Ipv6 => IPV6_ROW,
+                }))?;
             }
             self.filter = filter;
             self.anchors.truncate(1);
@@ -304,9 +317,9 @@ impl Page {
             self.filter = None;
             self.view.destination.set_text("")?;
             self.anchors.truncate(1);
-        } else if event.node == self.view.previous.id() && self.anchors.len() > 1 {
+        } else if self.view.previous.activated(event) && self.anchors.len() > 1 {
             self.anchors.pop();
-        } else if event.node == self.view.next.id() {
+        } else if self.view.next.activated(event) {
             let next = self
                 .view
                 .snapshot
@@ -315,7 +328,7 @@ impl Page {
                 .and_then(|page| page.next);
             let Some(next) = next else { return Ok(()) };
             self.anchors.push(next);
-        } else if event.node != self.view.refresh.id() {
+        } else if !self.view.refresh.activated(event) {
             return Ok(());
         }
         self.subscribe(app, window)
@@ -339,18 +352,6 @@ impl Page {
                 Dialog::Settings(section) => (
                     "路由设置",
                     editor::run(&dialogs, &parent, &background, domain.as_deref(), section).await,
-                ),
-                Dialog::Interface { row, action } => (
-                    "接口配置",
-                    editor::edit_live_interface(
-                        &dialogs,
-                        &parent,
-                        &background,
-                        domain,
-                        row,
-                        action,
-                    )
-                    .await,
                 ),
                 Dialog::Ospf => (
                     "OSPF 邻居",
@@ -384,10 +385,10 @@ impl Page {
         view.snapshot.borrow_mut().take();
         view.list.set_rows(&[])?;
         view.show_details()?;
-        for button in [&view.previous, &view.next, &view.refresh] {
-            button.set_state(state::DISABLED)?;
+        for tool in [&view.previous, &view.next, &view.refresh] {
+            tool.set_enabled(false)?;
         }
-        view.status.set_text("正在读取生效路由…")?;
+        view.summary.notice("正在读取生效路由…")?;
         let parent = window.clone();
         let page = self.anchors.len();
         let cursor = Cursor {
@@ -398,13 +399,11 @@ impl Page {
         let domain = self.domain.clone();
         self.task = Some(app.spawn_local(window, async move {
             if let Err(error) = view.observe(&parent, page, domain, cursor).await {
+                let _ = view.previous.set_enabled(page > 1);
+                let _ = view.refresh.set_enabled(true);
                 let _ = view
-                    .previous
-                    .set_state(if page > 1 { 0 } else { state::DISABLED });
-                let _ = view.refresh.set_state(0);
-                let _ = view
-                    .status
-                    .set_text(&format!("路由观察已停止，请刷新。{error}"));
+                    .summary
+                    .notice(&format!("路由观察已停止，请刷新。{error}"));
             }
         })?);
         Ok(())
@@ -509,23 +508,19 @@ impl View {
             .collect();
         self.list.set_rows(&rows)?;
         self.list.select(selected.map(|index| index as u64 + 1))?;
-        self.previous
-            .set_state(if page > 1 { 0 } else { state::DISABLED })?;
-        self.next.set_state(if next.next.is_some() {
-            0
-        } else {
-            state::DISABLED
-        })?;
-        self.refresh.set_state(0)?;
-        self.status
-            .set_text(&format!("第 {page} 页 · {} 条路径 · 正在观察", rows.len()))?;
+        self.previous.set_enabled(page > 1)?;
+        self.next.set_enabled(next.next.is_some())?;
+        self.refresh.set_enabled(true)?;
+        let selected = usize::from(self.list.selection()?.is_some());
+        self.summary
+            .show(rows.len(), selected, &format!("实时（第 {page} 页）"))?;
         *self.snapshot.borrow_mut() = Some(next);
         self.show_details()
     }
 
     fn show_details(&self) -> liteos_ui::Result<()> {
         let Some(row) = self.selected()? else {
-            return self.details.set_text("");
+            return set_note(&self.details, "");
         };
         let kind = kind_label(row.kind);
         let preferred = row
@@ -544,10 +539,13 @@ impl View {
         } else {
             ""
         };
-        self.details.set_text(&format!(
-            "{}/{}　{kind}　下一跳 {gateway}{on_link}\n来源 {protocol}　度量值 {}　范围 {scope}　首选源 {preferred}",
-            row.prefix.network, row.prefix.length, row.metric
-        ))
+        set_note(
+            &self.details,
+            &format!(
+                "{}/{}　{kind}　下一跳 {gateway}{on_link}\n来源 {protocol}　度量值 {}　范围 {scope}　首选源 {preferred}",
+                row.prefix.network, row.prefix.length, row.metric
+            ),
+        )
     }
 }
 
@@ -573,9 +571,30 @@ fn row_text(row: &Row) -> String {
     );
     let gateway = next_hop(*row);
     format!(
-        "{}/{}\t{table}\t{name}\t{gateway}\t{weight}",
-        row.prefix.network, row.prefix.length
+        "{}\t{}/{}\t{table}\t{name}\t{gateway}\t{weight}",
+        flags(row),
+        row.prefix.network,
+        row.prefix.length
     )
+}
+
+/// RouterOS 7 的路由标志：D 动态、A 生效，后缀为来源（c 直连、s 静态、d DHCP、b BGP、o OSPF）。
+/// 观察到的都是已安装的路由，因此都带 A；静态与启动配置是管理员配置，不带 D。
+fn flags(row: &Row) -> String {
+    let source = match row.protocol {
+        2 => "c",
+        3 | 4 => "s",
+        16 => "d",
+        network_config::configuration::bgp::ROUTE_PROTOCOL => "b",
+        network_config::configuration::ospf::ROUTE_PROTOCOL => "o",
+        _ => "",
+    };
+    let dynamic = if matches!(row.protocol, 3 | 4) {
+        ""
+    } else {
+        "D"
+    };
+    format!("{dynamic}A{source}")
 }
 
 fn next_hop(row: Row) -> String {

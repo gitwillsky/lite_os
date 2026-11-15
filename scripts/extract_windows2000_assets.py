@@ -430,6 +430,7 @@ def publish(directory: Path) -> dict:
     from pack_cursors import CURSOR_FILES, pack_sources
     from pack_shell_assets import pack as pack_shell
     import classic_assets
+    import list_action_icons
 
     icons = source["logical"]["icons"]
     if set(icons) != set(ICONS) or any(
@@ -487,8 +488,8 @@ def publish(directory: Path) -> dict:
         # 3. 清除旧源图与旧产品文件，只留下 manifest 声明的运行时文件和主题配置。
         destination = classic_assets.DIRECTORY
         for path in destination.iterdir():
-            # 主题配置与原创壁纸由 Git 直接持有，不来自 ISO，导入器只登记不改写。
-            if path.name in {"theme", "wallpapers"}:
+            # 主题配置、原创壁纸与原创界面位图由 Git 直接持有，不来自 ISO，导入器只登记不改写。
+            if path.name in {"theme", "wallpapers", "ui-original"}:
                 continue
             if path.is_dir():
                 shutil.rmtree(path)
@@ -501,7 +502,7 @@ def publish(directory: Path) -> dict:
                     "group": "wallpapers", "bytes": path.stat().st_size, "sha256": digest(path),
                     "origin": {"source": "LiteOS original artwork generated with Codex", "conversion": "JPEG, 1920x1080"},
                 }
-        manifest["files"] = dict(sorted(manifest["files"].items()))
+        list_action_icons.register(manifest)
         (destination / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     classic_assets.check()
     return manifest

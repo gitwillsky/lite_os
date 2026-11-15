@@ -303,7 +303,7 @@ pub struct ToolbarButton<'a> {
     pub strip: &'a str,
     pub frame: u32,
     pub text: &'a str,
-    /// 选择性文字：在图像右侧显示文字。
+    /// 选择性文字：在图像右侧显示文字；`strip` 为空时是不留图像位的纯文字按钮。
     pub show_text: bool,
     pub enabled: bool,
     pub checked: bool,
@@ -414,7 +414,9 @@ pub enum EditCommand<'a> {
 /// kind=1 填充、2 边框、3 普通文字、4 换行文字、5 系统等宽文字（8×16 逻辑像素，宽字符两格）、
 /// 6 在矩形内水平垂直居中的单行文字（超宽截断）、7 墙纸预览（矩形代表整个屏幕，text 为图片路径，
 /// color 为显示方式 0 居中、1 平铺、2 拉伸；居中与平铺按屏幕比例缩小原图，图片无法解码时不绘制）、
-/// 8 系统界面位图（text 为位图名，原尺寸在矩形内居中并裁剪，缺图时不绘制）。
+/// 8 系统界面位图（text 为位图名，原尺寸在矩形内居中并裁剪，缺图时不绘制）、
+/// 9 逆时针旋转 90° 的单行文字（自矩形底边向上书写、字行在矩形宽度内居中，用于侧边栏竖排标题）。
+/// 文字命令使用 [`Widget::set_font`] 为该画布指定的字体。
 pub struct Draw<'a> {
     pub kind: u32,
     pub rect: Rect,
@@ -698,7 +700,7 @@ impl Widget {
             unsafe { (c.api.row_checks)(c.context.as_ptr(), w, id, checks.as_ptr(), checks.len()) }
         })
     }
-    /// 标签/链接改用某个系统字体用途派生的字体；`points`、`weight` 为 None 时沿用该用途的值。
+    /// 标签/链接/画布文字改用某个系统字体用途派生的字体；`points`、`weight` 为 None 时沿用该用途的值。
     pub fn set_font(&self, role: FontRole, points: Option<u16>, weight: Option<u16>) -> Result<()> {
         self.call(|c, w, id| {
             // SAFETY: 句柄有效，参数为整数，运行库验证范围后保存描述。

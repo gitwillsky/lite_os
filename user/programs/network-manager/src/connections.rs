@@ -1,10 +1,13 @@
 //! 转发连接观察。服务按身份分页，窗口只持有当前页和一条前瞻记录。
 
-use crate::child;
+use crate::{
+    child,
+    item_list::{Glyph, Item, Summary, Tool, toolbar},
+};
 use liteos_ui::{
     Application, AsyncFd, Background, Clock, Column, Dialogs, Event, EventKind, Layout,
     ListOptions, ListStyle, MessageButtons, MessageIcon, MessageResult, Sleep, Task, Widget,
-    WidgetKind, Window, state,
+    WidgetKind, Window,
 };
 use network_config::{
     ManagementClient,
@@ -44,12 +47,11 @@ struct Snapshot {
 
 struct View {
     list: Widget,
-    previous: Widget,
-    next: Widget,
-    refresh: Widget,
-    clear: Widget,
-    status: Widget,
-    count: Widget,
+    previous: Tool,
+    next: Tool,
+    refresh: Tool,
+    clear: Tool,
+    summary: Summary,
     background: Background,
     dialogs: Dialogs,
     clock: Clock,
@@ -72,8 +74,26 @@ impl Page {
         app: &mut Application,
         parent: &Widget,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
+        let bar = child(
+            parent,
+            WidgetKind::Row,
+            "",
+            Layout {
+                gap: 6,
+                ..Default::default()
+            },
+        )?;
+        let [clear, _, previous, next, refresh] = toolbar(
+            &bar,
+            [
+                Item::Command(Glyph::Remove, "删除"),
+                Item::Separator,
+                Item::Icon(Glyph::Previous, "上一页"),
+                Item::Icon(Glyph::Next, "下一页"),
+                Item::Icon(Glyph::Refresh, "刷新"),
+            ],
+        )?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -112,31 +132,13 @@ impl Page {
                 width: 105,
             },
         ])?;
-        let bar = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Default::default()
-            },
-        )?;
         let view = View {
             list,
-            previous: child(&bar, WidgetKind::Button, "上一页", button)?,
-            next: child(&bar, WidgetKind::Button, "下一页", button)?,
-            refresh: child(&bar, WidgetKind::Button, "刷新", button)?,
-            clear: child(&bar, WidgetKind::Button, "清除连接…", button)?,
-            count: child(
-                &bar,
-                WidgetKind::Label,
-                "",
-                Layout {
-                    grow: 1,
-                    ..Default::default()
-                },
-            )?,
-            status: child(parent, WidgetKind::Status, "", Layout::default())?,
+            previous,
+            next,
+            refresh,
+            clear,
+            summary: Summary::new(parent)?,
             background,
             dialogs: app.dialogs(),
             clock: app.clock(),
@@ -193,7 +195,7 @@ impl Page {
         view.request.set(view.request.get().wrapping_add(1));
         view.available.set(false);
         view.controls()?;
-        view.status.set_text("正在读取转发连接…")?;
+        view.summary.notice("正在读取转发连接…")?;
         if let Some(waker) = view.changed.take() {
             waker.wake();
         }
@@ -210,8 +212,8 @@ impl Page {
                     view.available.set(false);
                     let _ = view.controls();
                     let _ = view
-                        .status
-                        .set_text(&format!("连接观察已停止，请刷新。{error}"));
+                        .summary
+                        .notice(&format!("连接观察已停止，请刷新。{error}"));
                 }
             })?);
         }
@@ -234,14 +236,14 @@ impl Page {
         if !matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(());
         }
-        if event.node == view.refresh.id() {
+        if view.refresh.activated(event) {
             self.reload(app, window)?;
-        } else if view.available.get() && event.node == view.previous.id() {
+        } else if view.available.get() && view.previous.activated(event) {
             if view.anchors.borrow().len() > 1 {
                 view.anchors.borrow_mut().pop();
                 self.reload(app, window)?;
             }
-        } else if view.available.get() && event.node == view.next.id() {
+        } else if view.available.get() && view.next.activated(event) {
             let next = {
                 let snapshot = view.snapshot.borrow();
                 (snapshot.rows.len() > DISPLAY_ROWS).then(|| snapshot.rows[DISPLAY_ROWS - 1].id)
@@ -250,7 +252,7 @@ impl Page {
                 view.anchors.borrow_mut().push(after);
                 self.reload(app, window)?;
             }
-        } else if event.node == view.clear.id()
+        } else if view.clear.activated(event)
             && !view.clearing.get()
             && let Some((identity, row)) = view.selected()?
         {
@@ -270,7 +272,7 @@ impl Page {
                 view.clearing.set(false);
                 let _ = view.controls();
                 if request == view.request.get() {
-                    let _ = view.status.set_text(&text);
+                    let _ = view.summary.notice(&text);
                 }
             })?);
         }
@@ -305,15 +307,12 @@ impl View {
 
     fn controls(&self) -> liteos_ui::Result<()> {
         let available = self.available.get();
-        let button_state = |enabled| if enabled { 0 } else { state::DISABLED };
         self.previous
-            .set_state(button_state(available && self.anchors.borrow().len() > 1))?;
-        self.next.set_state(button_state(
-            available && self.snapshot.borrow().rows.len() > DISPLAY_ROWS,
-        ))?;
-        self.clear.set_state(button_state(
-            !self.clearing.get() && self.selected()?.is_some(),
-        ))
+            .set_enabled(available && self.anchors.borrow().len() > 1)?;
+        self.next
+            .set_enabled(available && self.snapshot.borrow().rows.len() > DISPLAY_ROWS)?;
+        self.clear
+            .set_enabled(!self.clearing.get() && self.selected()?.is_some())
     }
 
     fn present(&self, new_page: bool) -> liteos_ui::Result<()> {
@@ -334,11 +333,12 @@ impl View {
             .map(|(row, text)| (row.id, text.as_str()))
             .collect();
         self.list.set_rows(&rows)?;
-        self.count.set_text(&format!(
-            "第 {} 页 · {} 条",
-            self.anchors.borrow().len(),
-            rows.len()
-        ))?;
+        let selected = usize::from(self.list.selection()?.is_some());
+        self.summary.show(
+            rows.len(),
+            selected,
+            &format!("实时（第 {} 页）", self.anchors.borrow().len()),
+        )?;
         drop(snapshot);
         self.controls()
     }
@@ -378,7 +378,6 @@ impl View {
                 *self.snapshot.borrow_mut() = page;
                 self.available.set(true);
                 self.present(true)?;
-                self.status.set_text("正在实时观察转发连接")?;
                 displayed = Some(request);
             }
 
@@ -398,7 +397,7 @@ impl View {
                 restart = Some(batch.cursor);
                 self.available.set(false);
                 self.controls()?;
-                self.status.set_text("正在重新同步转发连接…")?;
+                self.summary.notice("正在重新同步转发连接…")?;
             } else if !batch.changes.is_empty() {
                 self.apply(domain, batch, request).await?;
             } else {

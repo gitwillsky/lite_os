@@ -134,6 +134,33 @@
         "conversion": "original bytes"
       }
     },
+    "ui-original/list-actions-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 8314,
+      "sha256": "96196218556ae4ccf497ab4000fe87b9f5e78f61575be2ca08cb7c87f67e9f93",
+      "origin": {
+        "source": "LiteOS original pixel art",
+        "conversion": "scripts/list_action_icons.py; BMP V4 32-bit"
+      }
+    },
+    "ui-original/list-actions-disabled-1x.bmp": {
+      "group": "ui",
+      "bytes": 8314,
+      "sha256": "84663bd98c3a9a8c4764e451acd40b159f4c8c0ee0a6511603374071fecd035e",
+      "origin": {
+        "source": "LiteOS original pixel art",
+        "conversion": "scripts/list_action_icons.py; BMP V4 32-bit"
+      }
+    },
+    "ui-original/list-actions-hot-1x.bmp": {
+      "group": "ui",
+      "bytes": 8314,
+      "sha256": "96196218556ae4ccf497ab4000fe87b9f5e78f61575be2ca08cb7c87f67e9f93",
+      "origin": {
+        "source": "LiteOS original pixel art",
+        "conversion": "scripts/list_action_icons.py; BMP V4 32-bit"
+      }
+    },
     "ui/brand-22-1x.bmp": {
       "group": "ui",
       "bytes": 79498,

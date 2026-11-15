@@ -1,9 +1,8 @@
 //! 接口流量页的 PCAP 保存操作。
 
-use crate::child;
+use crate::item_list::{Action, note, set_note};
 use liteos_ui::{
-    Application, Background, Dialogs, FileDialogMode, FileFilter, Layout, Task, Widget, WidgetKind,
-    Window, state,
+    Application, Background, Dialogs, Event, FileDialogMode, FileFilter, Task, Widget, Window,
 };
 use network_config::{Capture, CaptureEnd, CaptureStop};
 use std::{
@@ -19,8 +18,8 @@ pub(super) struct Controls {
 }
 
 struct View {
-    start: Widget,
-    stop: Widget,
+    start: Action,
+    stop: Action,
     status: Widget,
     dialogs: Dialogs,
     background: Background,
@@ -29,18 +28,16 @@ struct View {
 }
 
 impl Controls {
+    /// 以接口窗口「动作」面板的「抓包…」「停止抓包」两项驱动抓包，进度显示在 `parent` 末尾的说明行。
     pub(super) fn new(
-        bar: &Widget,
+        start: Action,
+        stop: Action,
         parent: &Widget,
         dialogs: Dialogs,
         background: Background,
-        button: Layout,
     ) -> liteos_ui::Result<Self> {
-        let start = child(bar, WidgetKind::Button, "抓包…", button)?;
-        let stop = child(bar, WidgetKind::Button, "停止抓包", button)?;
-        stop.set_state(state::DISABLED)?;
-        let status = child(parent, WidgetKind::Label, "", Layout::default())?;
-        status.set_state(state::WRAP)?;
+        stop.set_enabled(false)?;
+        let status = note(parent)?;
         Ok(Self {
             view: Rc::new(View {
                 start,
@@ -70,38 +67,38 @@ impl Controls {
         &mut self,
         app: &mut Application,
         window: &Window,
-        node: u64,
+        event: &Event,
         domain: Option<Arc<str>>,
         selected: Option<u64>,
     ) -> liteos_ui::Result<bool> {
-        if node == self.view.stop.id() {
+        if self.view.stop.activated(event) {
             if let Some(stop) = self.view.cancellation.borrow().as_ref() {
                 let _ = stop.stop();
             }
-            self.view.stop.set_state(state::DISABLED)?;
-            self.view.status.set_text("正在结束抓包…")?;
+            self.view.stop.set_enabled(false)?;
+            set_note(&self.view.status, "正在结束抓包…")?;
             return Ok(true);
         }
-        if node != self.view.start.id() {
+        if !self.view.start.activated(event) {
             return Ok(false);
         }
         if self.task.as_ref().is_some_and(|task| !task.is_finished()) {
             return Ok(true);
         }
         let Some(index) = selected.and_then(|id| u32::try_from(id).ok()) else {
-            self.view.status.set_text("请先选择要抓包的接口。")?;
+            set_note(&self.view.status, "请先选择要抓包的接口。")?;
             return Ok(true);
         };
         let parent = window.clone();
         let view = self.view.clone();
-        view.start.set_state(state::DISABLED)?;
+        view.start.set_enabled(false)?;
         self.task = Some(app.spawn_local(window, async move {
             let result = view.save(&parent, domain, index).await;
             view.cancellation.borrow_mut().take();
-            let _ = view.stop.set_state(state::DISABLED);
-            let _ = view.start.set_state(0);
+            let _ = view.stop.set_enabled(false);
+            let _ = view.start.set_enabled(true);
             let status = result.unwrap_or_else(|error| format!("抓包失败。{error}"));
-            let _ = view.status.set_text(&status);
+            let _ = set_note(&view.status, &status);
             if view.close_when_saved.get() {
                 let _ = parent.close();
             }
@@ -134,14 +131,14 @@ impl View {
         else {
             return Ok("已取消抓包".into());
         };
-        self.status.set_text("正在启动抓包…")?;
+        set_note(&self.status, "正在启动抓包…")?;
         let (capture, stop) = self
             .background
             .run(move || Capture::start(domain.as_deref(), index))?
             .await?;
         *self.cancellation.borrow_mut() = Some(stop);
-        self.stop.set_state(0)?;
-        self.status.set_text("正在抓包，最多 60 秒。")?;
+        self.stop.set_enabled(true)?;
+        set_note(&self.status, "正在抓包，最多 60 秒。")?;
         let name = path
             .file_name()
             .unwrap_or(path.as_os_str())

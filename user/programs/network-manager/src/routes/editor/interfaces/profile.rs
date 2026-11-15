@@ -10,7 +10,7 @@ use network_config::configuration::{
 use std::net::Ipv4Addr;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Default,
     Named,
     BridgePort,
@@ -33,12 +33,8 @@ pub(super) async fn edit(
         draft.display_name.as_deref().unwrap_or(""),
     )?;
     let (_, mtu) = field(&root, "MTU（字节）", &draft.mtu.to_string())?;
-    let enabled = choice_field(&root, "接口管理", ["继承系统默认", "启用", "停用"])?;
-    enabled.select(Some(match draft.enabled {
-        None => 1,
-        Some(true) => 2,
-        Some(false) => 3,
-    }))?;
+    let enabled = choice_field(&root, "接口管理", ADMIN_STATES)?;
+    enabled.select(Some(admin_index(draft.enabled) as u64 + 1))?;
     let attributes = draft.default_route;
     let (preference_label, preference) = field(
         &root,
@@ -88,86 +84,152 @@ pub(super) async fn edit(
             } => break,
             EventKind::Activate { .. } if event.node == cancel.id() => break,
             EventKind::Activate { .. } if event.node == save.id() => {
-                let label = display.text()?;
-                if !label.is_empty() && connection_name(label.as_bytes()).is_err() {
-                    status.set_text("显示名称不符合连接命名规则。")?;
-                    display.focus()?;
-                    continue;
-                }
-                let Ok(size) = mtu.text()?.trim().parse::<u32>() else {
-                    status.set_text("请输入有效的 MTU 字节数。")?;
-                    mtu.focus()?;
-                    continue;
+                let fields = Fields {
+                    display: &display.text()?,
+                    mtu: &mtu.text()?,
+                    admin: selection(&enabled)?,
+                    preference: &preference.text()?,
+                    metric: &metric.text()?,
                 };
-                if !(68..=65535).contains(&size) {
-                    status.set_text("MTU 必须在 68–65535 字节之间。")?;
-                    mtu.focus()?;
-                    continue;
-                }
-                if !bridge_port {
-                    let preference_text = preference.text()?;
-                    let metric_text = metric.text()?;
-                    let attributes = match (preference_text.trim(), metric_text.trim()) {
-                        ("", "") => None,
-                        (distance, cost) => {
-                            let parsed = distance
-                                .parse::<u32>()
-                                .ok()
-                                .filter(|value| *value != 0)
-                                .zip(cost.parse::<u32>().ok());
-                            let Some((preference, metric)) = parsed else {
-                                status.set_text("优先级须为正整数，度量须为非负整数。")?;
-                                continue;
-                            };
-                            Some(RouteAttributes { preference, metric })
+                match apply_fields(&mut draft, &fields, bridge_port) {
+                    Ok(()) => return Ok(Some(draft)),
+                    Err((field, message)) => {
+                        status.set_text(message)?;
+                        match field {
+                            Field::Display => display.focus()?,
+                            Field::Mtu => mtu.focus()?,
+                            Field::Route => {}
                         }
-                    };
-                    draft.enabled = match selection(&enabled)? {
-                        Some(1) => Some(true),
-                        Some(2) => Some(false),
-                        _ => None,
-                    };
-                    draft.default_route = attributes;
-                }
-                draft.display_name = (!label.is_empty()).then_some(label);
-                draft.mtu = size;
-                return Ok(Some(draft));
-            }
-            EventKind::Activate { .. } if !bridge_port && event.node == ipv4.id() => {
-                if let Some(value) = edit_ipv4(
-                    dialogs,
-                    &window,
-                    draft.ipv4.as_ref(),
-                    device,
-                    kind == Kind::Named,
-                )
-                .await?
-                {
-                    draft.ipv4 = value;
-                }
-            }
-            EventKind::Activate { .. } if !bridge_port && event.node == ipv6.id() => {
-                let current = draft.ipv6.as_ref();
-                let addresses = current.map_or(&[][..], |value| value.addresses.as_slice());
-                let policy = current.map(|value| value.accept_ra).unwrap_or_default();
-                if let Some((addresses, accept_ra)) =
-                    ipv6::edit(dialogs, &window, addresses, Some(policy)).await?
-                {
-                    let accept_ra = accept_ra.unwrap_or_default();
-                    if current.is_some() || !addresses.is_empty() || accept_ra != Default::default()
-                    {
-                        draft.ipv6 = Some(Ipv6Configuration {
-                            addresses,
-                            accept_ra,
-                            advertise: current.map(|value| value.advertise).unwrap_or_default(),
-                        });
                     }
                 }
+            }
+            EventKind::Activate { .. } if !bridge_port && event.node == ipv4.id() => {
+                edit_ipv4_of(dialogs, &window, &mut draft, device, kind == Kind::Named).await?;
+            }
+            EventKind::Activate { .. } if !bridge_port && event.node == ipv6.id() => {
+                edit_ipv6_of(dialogs, &window, &mut draft).await?;
             }
             _ => {}
         }
     }
     Ok(None)
+}
+
+/// 接口属性的文字输入。属性窗口与路由设置中的接口对话框共用同一套校验。
+pub(crate) struct Fields<'a> {
+    pub(crate) display: &'a str,
+    pub(crate) mtu: &'a str,
+    /// 管理状态下拉框的选中序号：0 继承系统默认、1 启用、2 停用。
+    pub(crate) admin: Option<usize>,
+    pub(crate) preference: &'a str,
+    pub(crate) metric: &'a str,
+}
+
+/// 校验失败时应获得焦点的输入。
+#[derive(Clone, Copy)]
+pub(crate) enum Field {
+    Display,
+    Mtu,
+    Route,
+}
+
+/// 管理状态下拉框的选项，顺序与 [`Fields::admin`] 一致。
+pub(crate) const ADMIN_STATES: [&str; 3] = ["继承系统默认", "启用", "停用"];
+
+/// 管理状态在下拉框中的序号。
+pub(crate) fn admin_index(enabled: Option<bool>) -> usize {
+    match enabled {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
+/// 校验输入并写入 `draft`。网桥端口只接受显示名称与 MTU，管理状态和默认路由由网桥维护。
+///
+/// 错误：返回应聚焦的输入与提示，`draft` 保持不变。
+pub(crate) fn apply_fields(
+    draft: &mut RouterInterface,
+    fields: &Fields<'_>,
+    bridge_port: bool,
+) -> Result<(), (Field, &'static str)> {
+    let label = fields.display;
+    if !label.is_empty() && connection_name(label.as_bytes()).is_err() {
+        return Err((Field::Display, "显示名称不符合连接命名规则。"));
+    }
+    let Ok(size) = fields.mtu.trim().parse::<u32>() else {
+        return Err((Field::Mtu, "请输入有效的 MTU 字节数。"));
+    };
+    if !(68..=65535).contains(&size) {
+        return Err((Field::Mtu, "MTU 必须在 68–65535 字节之间。"));
+    }
+    if !bridge_port {
+        let attributes = match (fields.preference.trim(), fields.metric.trim()) {
+            ("", "") => None,
+            (distance, cost) => {
+                let parsed = distance
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value != 0)
+                    .zip(cost.parse::<u32>().ok());
+                let Some((preference, metric)) = parsed else {
+                    return Err((Field::Route, "优先级须为正整数，度量须为非负整数。"));
+                };
+                Some(RouteAttributes { preference, metric })
+            }
+        };
+        draft.enabled = match fields.admin {
+            Some(1) => Some(true),
+            Some(2) => Some(false),
+            _ => None,
+        };
+        draft.default_route = attributes;
+    }
+    draft.display_name = (!label.is_empty()).then(|| label.to_owned());
+    draft.mtu = size;
+    Ok(())
+}
+
+/// 打开 IPv4 地址设置对话框，确认后写入 `draft`；取消时不改动。
+///
+/// 错误：对话框无法打开或窗口已关闭。
+pub(crate) async fn edit_ipv4_of(
+    dialogs: &Dialogs,
+    parent: &Window,
+    draft: &mut RouterInterface,
+    device: Option<&InterfaceState>,
+    named: bool,
+) -> liteos_ui::Result<()> {
+    if let Some(value) = edit_ipv4(dialogs, parent, draft.ipv4.as_ref(), device, named).await? {
+        draft.ipv4 = value;
+    }
+    Ok(())
+}
+
+/// 打开 IPv6 地址与路由通告接收设置，确认后写入 `draft`；取消时不改动。
+///
+/// 错误：对话框无法打开或窗口已关闭。
+pub(crate) async fn edit_ipv6_of(
+    dialogs: &Dialogs,
+    parent: &Window,
+    draft: &mut RouterInterface,
+) -> liteos_ui::Result<()> {
+    let current = draft.ipv6.as_ref();
+    let addresses = current.map_or(&[][..], |value| value.addresses.as_slice());
+    let policy = current.map(|value| value.accept_ra).unwrap_or_default();
+    if let Some((addresses, accept_ra)) =
+        ipv6::edit(dialogs, parent, addresses, Some(policy)).await?
+    {
+        let accept_ra = accept_ra.unwrap_or_default();
+        if current.is_some() || !addresses.is_empty() || accept_ra != Default::default() {
+            draft.ipv6 = Some(Ipv6Configuration {
+                addresses,
+                accept_ra,
+                advertise: current.map(|value| value.advertise).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn edit_ipv4(

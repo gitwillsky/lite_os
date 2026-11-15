@@ -20,7 +20,10 @@ mod bgp;
 mod entries;
 mod firewall;
 mod interfaces;
-pub(crate) use interfaces::{InterfaceAction, edit_live_interface};
+pub(crate) use interfaces::{
+    ADMIN_STATES, Field, Fields, LiveInterface, admin_index, apply_fields, edit_ipv4_of,
+    edit_ipv6_of,
+};
 mod ipv6;
 mod ospf;
 mod policy;

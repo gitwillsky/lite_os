@@ -258,6 +258,8 @@ pub struct Widget {
 /// 自绘批次：kind=1 填充，2 矩形框，3 文本，4 换行文本、5 等宽文字（8×16 逻辑单元格），
 /// 6 居中单行文字；颜色为 0x00RRGGBB。kind=7 墙纸预览，text 为路径，color 为 0 居中/1 平铺/2 拉伸。
 /// kind=8 系统界面位图：text 为位图名，按原尺寸在 rect 内水平垂直居中并裁剪到 rect，缺图时不绘制。
+/// kind=9 逆时针旋转 90° 的单行文字：自 rect 底边向上书写，字行在 rect 宽度内居中，超出部分裁掉。
+/// 文字命令使用 [`Api::set_font`] 为该画布指定的字体，未指定时用消息字体。
 /// 文本与绘图命令在调用期间复制，不包含裸像素或 Rust 对象。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -338,7 +340,7 @@ pub mod toolbar {
     pub const WHOLE_DROPDOWN: u32 = 4;
     /// 复选按钮：选中时显示按下与抖动底。
     pub const CHECK: u32 = 8;
-    /// 选择性文字：文字显示在图像右侧（TBSTYLE_LIST + BTNS_SHOWTEXT）。
+    /// 选择性文字：文字显示在图像右侧（TBSTYLE_LIST + BTNS_SHOWTEXT）；没有位图条时不保留图像位。
     pub const SHOW_TEXT: u32 = 16;
     /// 状态位。
     pub const DISABLED: u32 = 1;
@@ -543,7 +545,7 @@ pub struct Api {
         unsafe extern "C" fn(*mut c_void, u64, u64, *const ToolbarItem, usize) -> i32,
     /// ReBar 品牌 logo 的忙碌动画：1 播放，0 回到静止首帧。
     pub rebar_busy: unsafe extern "C" fn(*mut c_void, u64, u64, u32) -> i32,
-    /// 标签/链接字体：role 为系统字体用途 0 标题、1 小标题、2 菜单、3 状态栏、4 消息、5 图标；
+    /// 标签/链接/画布文字字体：role 为系统字体用途 0 标题、1 小标题、2 菜单、3 状态栏、4 消息、5 图标；
     /// points、weight 为 0 时沿用该用途字体的值（Web 视图标题为 菜单, 14, 700）。
     pub set_font: unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, u32) -> i32,
     /// 状态栏分格（SB_SETPARTS）：每格宽度为正数固定宽，至多一格为 -1 占满剩余；空数组恢复按文字分格。

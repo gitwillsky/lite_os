@@ -455,6 +455,52 @@ pub(super) async fn review_and_save(
     if let Some(status) = status {
         status.set_text("正在校验并比较配置…")?;
     }
+    let Some((candidate, revision, comparison, recovery)) =
+        compare(background, candidate, expected).await?
+    else {
+        return Ok(unchanged());
+    };
+    if !review::confirm(dialogs, parent, background, comparison, recovery).await? {
+        return Ok(ReviewResult {
+            saved: false,
+            message: "已取消提交".into(),
+        });
+    }
+    commit(background, status, candidate, revision).await
+}
+
+/// WinBox 属性窗口的「应用 / 确定」：校验候选并确认基准代际未变后直接提交，不显示差异。
+/// 候选与当前配置相同时不提交。
+/// # Errors
+/// 当前配置已变化、候选无效或管理服务无法读取。提交本身的失败写入返回消息。
+pub(super) async fn apply(
+    background: &Background,
+    candidate: impl AsRef<[u8]> + Send + 'static,
+    expected: Revision,
+) -> Result<ReviewResult, Error> {
+    let Some((candidate, revision, _, _)) = compare(background, candidate, Some(expected)).await?
+    else {
+        return Ok(unchanged());
+    };
+    commit(background, None, candidate, revision).await
+}
+
+fn unchanged() -> ReviewResult {
+    ReviewResult {
+        saved: false,
+        message: "配置没有改动".into(),
+    }
+}
+
+/// 候选与当前配置的差异及其基准代际；没有差异时返回 None。
+type Comparison<T> = (T, Revision, Arc<review::Review>, bool);
+
+/// 校验候选并与当前配置比较；`expected` 给出时要求当前代际与之相同。
+async fn compare<T: AsRef<[u8]> + Send + 'static>(
+    background: &Background,
+    candidate: T,
+    expected: Option<Revision>,
+) -> Result<Option<Comparison<T>>, Error> {
     let (candidate, revision, comparison, recovery) = background
         .run(move || {
             let mut client = ManagementClient::local();
@@ -472,18 +518,16 @@ pub(super) async fn review_and_save(
             ))
         })?
         .await?;
-    if comparison.is_empty() {
-        return Ok(ReviewResult {
-            saved: false,
-            message: "配置没有改动".into(),
-        });
-    }
-    if !review::confirm(dialogs, parent, background, comparison, recovery).await? {
-        return Ok(ReviewResult {
-            saved: false,
-            message: "已取消提交".into(),
-        });
-    }
+    Ok((!comparison.is_empty()).then_some((candidate, revision, comparison, recovery)))
+}
+
+/// 以新的提交编号写入候选；连接中断时按编号查询结果，未确认时在消息中说明。
+async fn commit(
+    background: &Background,
+    status: Option<&Widget>,
+    candidate: impl AsRef<[u8]> + Send + 'static,
+    revision: Revision,
+) -> Result<ReviewResult, Error> {
     let commit = background.run(new_commit_id)?.await?;
     if let Some(status) = status {
         status.set_text(&format!("正在保存，提交编号 {commit}"))?;

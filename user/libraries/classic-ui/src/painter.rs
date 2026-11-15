@@ -468,6 +468,65 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// 逆时针旋转 90° 的单行文字：从 `rect` 底边起自下而上书写，字行在矩形宽度内居中，超出部分裁掉。
+    /// 用于侧边栏竖排标题；字形、粗体与墨色规则与 [`Self::text`] 相同，禁用墨色只画阴影层。
+    pub fn text_rotated(&mut self, rect: Rect, text: &str, ink: Ink, bold: bool) {
+        let color = match ink {
+            Ink::Rgb(rgb) => to_color(rgb),
+            Ink::Color(color) => self.color(color),
+            Ink::Disabled => self.color(SystemColor::ButtonShadow),
+        };
+        let area = self.physical(rect);
+        let (ascent, descent) = self.typeface.metrics();
+        // 未旋转坐标 (u 沿书写方向, v 自行顶向下) 映射到屏幕 (left + v, bottom - 1 - u)。
+        let left = area.x + (area.width - ascent - descent) / 2;
+        let bottom = area.bottom();
+        self.clipped(rect, |p| {
+            let mut pen = 0;
+            let mut rotated = Vec::new();
+            for character in text.chars() {
+                let glyph = p.typeface.glyph(character, bold);
+                let (width, height) = (glyph.width, glyph.height);
+                if width > 0 && height > 0 {
+                    // 旋转后的蒙版宽为原高、高为原宽：新 (x, y) 取原 (width - 1 - y, x)。
+                    rotated.clear();
+                    rotated.extend(
+                        (0..width)
+                            .flat_map(|y| {
+                                let column = width - 1 - y;
+                                (0..height).map(move |row| (column, row))
+                            })
+                            .map(|(column, row)| match &glyph.coverage {
+                                typeface::Coverage::Gray(gray) => {
+                                    gray[(row * width + column) as usize]
+                                }
+                                typeface::Coverage::Mono { bits, stride } => {
+                                    let byte = bits[row as usize * stride + column as usize / 8];
+                                    if byte & (0x80 >> (column % 8)) != 0 {
+                                        255
+                                    } else {
+                                        0
+                                    }
+                                }
+                            }),
+                    );
+                    p.surface.draw_mask(
+                        Mask {
+                            coverage: &rotated,
+                            width: height,
+                            height: width,
+                            stride: height as usize,
+                        },
+                        left + ascent - glyph.top,
+                        bottom - pen - glyph.left - width,
+                        color,
+                    );
+                }
+                pen += glyph.advance;
+            }
+        });
+    }
+
     /// 将 ASCII 点阵按逻辑像素绘制：`#` 为前景像素，其余透明；每个逻辑像素画成 `scale` × `scale`。
     pub(crate) fn pixels(&mut self, x: i32, y: i32, rows: &[&str], color: SystemColor) {
         let color = self.color(color);
