@@ -167,11 +167,11 @@ pub struct Session {
     pub server: Channel,
 }
 
-/// 设备类的开会话函数：建立会话 channel 并服务它，会话状态持有 `SessionEnd`。
-pub type Opener = Box<dyn Fn(SessionEnd) -> Result<Session, Status> + Send + Sync>;
+/// 设备类的开会话函数：解释本类 options、建立 channel；会话状态持有 `SessionEnd`。
+pub type Opener = Box<dyn Fn(SessionEnd, &[u8]) -> Result<Session, Status> + Send + Sync>;
 
 /// 转发条目的开会话函数：向设备所在宿主的目录发出 `OPEN`，原样返回会话句柄。
-pub type ForwardOpener = Box<dyn Fn() -> Result<Vec<Handle>, Status> + Send + Sync>;
+pub type ForwardOpener = Box<dyn Fn(&[u8]) -> Result<Vec<Handle>, Status> + Send + Sync>;
 
 /// 服务会话请求 channel，并返回其服务端副本供目录判断会话存活。
 ///
@@ -216,14 +216,14 @@ struct Device {
 }
 
 impl Device {
-    fn open(&self) -> Result<Vec<Handle>, Status> {
+    fn open(&self, options: &[u8]) -> Result<Vec<Handle>, Status> {
         let (exclusive, opener, live) = match &self.source {
             Source::Local {
                 exclusive,
                 opener,
                 live,
             } => (*exclusive, opener, live),
-            Source::Forwarded(open) => return open(),
+            Source::Forwarded(open) => return open(options),
         };
         let mut live = live.lock();
         if exclusive && let Some(current) = live.as_ref() {
@@ -258,7 +258,7 @@ impl Device {
             ended: ended.duplicate(rights::SAME)?,
             watch: watch.clone(),
         };
-        let session = opener(end)?;
+        let session = opener(end, options)?;
         if let Some(watch) = watch {
             {
                 let mut state = watch.lock();
@@ -376,7 +376,7 @@ impl Directory {
                             &mut handles,
                             0,
                         )?));
-                        let open = Box::new(move || source.open_handles(id));
+                        let open = Box::new(move |options: &[u8]| source.open_handles(id, options));
                         reply.u64(directory.insert(class, description, Source::Forwarded(open))?);
                     }
                     2 => directory.remove(request.u64()?),
@@ -489,7 +489,10 @@ impl Directory {
                 state.watchers.push(event);
                 Ok(alloc::vec![peer.into_handle()])
             }
-            OPEN => self.device(request.u64()?, scope)?.open(),
+            OPEN => {
+                let device = self.device(request.u64()?, scope)?;
+                device.open(request.bytes()?)
+            }
             SCOPE => {
                 let narrowed = request.u32()?;
                 if narrowed & !scope != 0 {
@@ -551,13 +554,13 @@ impl DirectoryClient {
         Ok(Event::from_handle(take_handle(&mut reply.handles, 0)?))
     }
 
-    /// 建立设备会话。
+    /// 按设备类的版本化 options 建立会话；目录原样转发选项，不解释设备配置。
     ///
     /// # Errors
     ///
     /// `ERR_NOT_FOUND`（不在本目录范围）、`ERR_ALREADY_BOUND`（独占类已有使用者）或设备类建立失败。
-    pub fn open(&self, entry: &Entry) -> Result<OpenedDevice, Status> {
-        let handles = self.open_handles(entry.id)?;
+    pub fn open(&self, entry: &Entry, options: &[u8]) -> Result<OpenedDevice, Status> {
+        let handles = self.open_handles(entry.id, options)?;
         let mut description = Vec::new();
         description
             .try_reserve_exact(entry.description.len())
@@ -570,9 +573,9 @@ impl DirectoryClient {
         })
     }
 
-    fn open_handles(&self, id: u64) -> Result<Vec<Handle>, Status> {
+    fn open_handles(&self, id: u64, options: &[u8]) -> Result<Vec<Handle>, Status> {
         let mut request = Writer::request(OPEN);
-        request.u64(id);
+        request.u64(id).bytes(options);
         Ok(call(&self.0, &request, Vec::new())?.handles)
     }
 

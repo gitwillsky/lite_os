@@ -108,6 +108,7 @@ mod net {
         pub(crate) full_length: usize,
         pub(crate) source: Option<SocketAddress>,
         pub(crate) internet_packet_info: Option<InternetPacketInfo>,
+        pub(crate) packet_information: Option<crate::network_wire::PacketInformation>,
         pub(crate) rights: Option<()>,
         pub(crate) credentials: Option<()>,
     }

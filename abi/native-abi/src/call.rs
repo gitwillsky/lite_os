@@ -371,5 +371,17 @@ pub const THREAD_SET_FAULT_RECOVERY: usize = 82;
 /// 错误：`ERR_INVALID_ARGS`、`ERR_BAD_STATE`（未启动/已退出）、`ERR_NO_RESOURCES`（带宽不足）。
 pub const THREAD_SET_DEADLINE: usize = 83;
 
+/// 将设备中断路由到一个已在线的逻辑 CPU；不是 Linux 应用 ABI。
+/// 参数：`interrupt`（需 WRITE）、`cpu`（逻辑 CPU 编号）。保留当前屏蔽/待确认状态。
+/// 错误：`ERR_INVALID_ARGS`（CPU 不存在/未在线）、`ERR_BAD_STATE`（源未绑定）、`ERR_NO_MEMORY`。
+pub const INTERRUPT_SET_AFFINITY: usize = 84;
+
+/// 一次替换一组已启动系统线程的独占 CPU 配置。
+/// 参数：`resource`（system::SCHEDULE）、`entries`（连续的 `[u32; 2]`，每项为 MANAGE 线程句柄和逻辑 CPU 编号）、`count`（项数，至多系统 CPU 数）。
+/// CPU 编号 `u32::MAX` 归还该线程的独占 CPU 并恢复共享 affinity。准入失败保留原配置。
+/// 返回前等待新目标 CPU 上的旧执行体撤离。线程退出自动归还，设备中断继续按 IRQ 路由投递。
+/// 错误：`ERR_INVALID_ARGS`（重复线程或目标、编号越界）、`ERR_INVALID_POINTER`（数组不可读）、`ERR_NO_RESOURCES`（分区/预算冲突）、`ERR_BAD_STATE`（执行体退出或配置被替换）、`ERR_NO_MEMORY`（事务内存不足）。
+pub const THREAD_SET_ISOLATION: usize = 85;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 84;
+pub const COUNT: usize = 86;

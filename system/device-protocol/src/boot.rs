@@ -52,7 +52,10 @@ pub fn publish(
             Class::Boot,
             &directory::description(),
             false,
-            Box::new(move |end| {
+            Box::new(move |end, options| {
+                if !options.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
                 let session = SessionState::new(advance.clone(), end);
                 let (client, server) = Channel::create()?;
                 let server = directory::serve_session(

@@ -121,7 +121,7 @@ fn discover(
                 continue;
             }
             let attached = directory
-                .open(&entry)
+                .open(&entry, &[])
                 .and_then(|opened| device_protocol::pcm::connect(opened, hub))
                 .and_then(|device| Output::attach(entry.id, device, scheduler.clone()));
             match attached {

@@ -127,6 +127,23 @@ pub(crate) struct Interrupt {
 }
 
 impl Interrupt {
+    /// 改变当前中断对象的目标逻辑 CPU；不重建 binding 或转移已投递的事件。
+    ///
+    /// # Errors
+    /// CPU 未在线返回 INVALID_ARGS，绑定不存在返回 BAD_STATE，控制器准备失败返回 NO_MEMORY。
+    pub(crate) fn set_affinity(&self, cpu: crate::execution::cpu::CpuId) -> Result<(), Status> {
+        if !crate::execution::cpu::online().contains(cpu) {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        crate::platform::set_interrupt_affinity(self.shared.vector, cpu).map_err(
+            |error| match error {
+                InterruptError::InvalidVector => native_abi::ERR_INVALID_ARGS,
+                InterruptError::HandlerNotSet => native_abi::ERR_BAD_STATE,
+                InterruptError::NoMemory => native_abi::ERR_NO_MEMORY,
+            },
+        )
+    }
+
     /// 绑定中断向量。
     ///
     /// # Errors

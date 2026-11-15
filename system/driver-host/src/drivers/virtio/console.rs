@@ -125,7 +125,7 @@ impl VirtIOConsoleDevice {
         Self::from_device(VirtIODevice::from_pci(3, transport, bti))
     }
 
-    fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
+    fn from_device(device: VirtIODevice) -> Option<Arc<Self>> {
         if device.device_id() != 3 {
             return None;
         }
@@ -546,7 +546,9 @@ impl PortDevice for VirtIOConsoleDevice {
             state.failed = true;
             state.reset_issued = true;
             drop(state);
-            let _ = self.device.reset();
+            self.device
+                .reset()
+                .expect("VirtIO console must stop DMA before retiring ownership");
             return Err(PortError::Disconnected);
         }
         slot.busy = true;
@@ -558,7 +560,9 @@ impl PortDevice for VirtIOConsoleDevice {
             if !state.reset_issued {
                 state.reset_issued = true;
                 drop(state);
-                let _ = self.device.reset();
+                self.device
+                    .reset()
+                    .expect("VirtIO console must stop DMA before retiring ownership");
             }
             return Err(PortError::Disconnected);
         }
@@ -599,7 +603,9 @@ impl PortDevice for VirtIOConsoleDevice {
             state.reset_issued = true;
             drop(state);
             if reset {
-                let _ = self.device.reset();
+                self.device
+                    .reset()
+                    .expect("VirtIO console must stop DMA before retiring ownership");
             }
             return PortActivity::default();
         }
@@ -648,7 +654,9 @@ impl PortDevice for VirtIOConsoleDevice {
             let _ = self.device.notify_queue(index);
         }
         if reset {
-            let _ = self.device.reset();
+            self.device
+                .reset()
+                .expect("VirtIO console must stop DMA before retiring ownership");
         }
         PortActivity {
             readable_changed: before_readable != after_readable,
@@ -666,7 +674,9 @@ impl PortDevice for VirtIOConsoleDevice {
 
 impl Drop for VirtIOConsoleDevice {
     fn drop(&mut self) {
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("VirtIO console must stop DMA before retiring ownership");
     }
 }
 

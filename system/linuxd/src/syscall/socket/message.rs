@@ -673,6 +673,10 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                     source: received.source,
                     internet_packet_info: received.internet_packet_info,
                     packet_info: socket.ipv4_packet_info(),
+                    packet_auxiliary: received
+                        .packet_information
+                        .filter(|_| socket.packet_auxiliary())
+                        .map(|info| (info, received.full_length)),
                     rights: received.rights,
                     credentials: received.credentials,
                     pass_credentials: socket.pass_credentials(),

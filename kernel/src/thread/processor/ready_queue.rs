@@ -117,6 +117,21 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
             RunState::Ready { cpu, generation }
                 if cpu == processor.cpu_id && generation == entry.generation =>
             {
+                if !scheduling.cpu_affinity.allows(cpu) {
+                    // 隔离可在 Ready 发表后生效；保持唯一 membership，转投共享核而不执行旧条目。
+                    let target = select_cpu(&entry.thread, scheduling.cpu_affinity);
+                    placement::rebase_for_migration(&entry.thread, cpu, target);
+                    let generation =
+                        commit_ready_transition(scheduling.transition_to_ready(target));
+                    drop(scheduling);
+                    let entry = ready_entry(entry.thread, generation);
+                    if target == processor.cpu_id {
+                        processor.add_ready_entry(entry);
+                    } else {
+                        deliver_ready_entry(target, entry, ReadyCause::SwitchOut);
+                    }
+                    continue;
+                }
                 // 旧 current 的请求已由本次选择兑现；state guard 阻止新 Running owner 的请求被清掉。
                 slot.reschedule_requested.store(false, Ordering::Relaxed);
                 commit_ready_retirement(

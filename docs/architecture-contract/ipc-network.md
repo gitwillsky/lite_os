@@ -40,7 +40,9 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
 ## Socket 服务传输
 
 - `network-protocol` 控制 channel 只承载低频配置、创建、关闭和一次 QUEUE 协商；send/receive/poll 的旧 RPC codec 已删除。
-  数据面版本 `LSOCK001`：固定 8 槽 SQ/CQ、128 字节记录与每槽最多 256 KiB 载荷，两个 Event 合并请求和完成通知。
+  数据面版本 `LSOCK002`：固定 8 槽 SQ/CQ、128 字节记录与每槽最多 256 KiB 载荷，两个 Event 合并请求和完成通知。
+  AF_PACKET CQ 的 word 8 保存 checksum-state(bits 0..1，0 未验证/1 待补全/2 已验证，3 非法) 与 network-offset(bits 16..31)，其余位及 words 9..15 为零；
+  帧入队即冻结，PEEK/短读取保持原信息。Linuxd 仅在 OFD 启用标准 PACKET_AUXDATA 时输出 cmsg，不改变捕获队列。
   VMO 非 RESIZABLE，metadata/载荷偏移固定且校验长度；双方只作同宽对齐原子访问。记录小端、字节载荷保留原序；
   索引 Release/Acquire 交接，载荷字 Relaxed，不将可变对端存储形成 Rust 非原子引用。
 - 客户端一个本地锁独占 SQ producer/CQ consumer、ticket 与 credit；持锁只操作有界记录/复制，不跨等待。
@@ -60,6 +62,11 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
   共享服务传输不新增应用 ABI、syscall 或内核 Linux 概念；适用于 linuxd 和现有原生 DHCP 客户端。
 
 ## Interface
+
+- 安装协议只授权给接口配置 owner：请求携带设备目录能力、ID 和静态能力描述，netcfg 不预先打开硬件会话。
+  netstack 的 worker owner 选择非零 pair 数，经目录 OPEN 的设备类 options 交给 driver controller；硬件超限请求失败，不静默截断。
+  当前主机协议引擎单 worker 明确请求一对，最终每核/RSS 数据面仍属路由计划。目录转发不复制队列策略或配置状态。
+
 
 - DHCP 租约事件带服务器标识、发出请求的单调时刻及租期。netcfg 只在地址配置成功后发布租约，失效或切换配置时一并清除。
   只读快照用当前 UTC 与单调时钟的偏移投影取得和过期时刻；配置文件不包含租约，系统时钟校正不改变续租或失效期限。

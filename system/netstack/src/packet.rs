@@ -9,9 +9,11 @@ use native_runtime::native_abi::signals;
 use native_runtime::sync::Once;
 
 use crate::{namespace::Namespace, receive::ReceiveBuffer};
-use device_model::network::{NetworkError, NetworkTransmit};
+use device_model::network::NetworkError;
 use fallible_tree::FallibleMap;
-use network_protocol::{PacketAddress, PacketKind, SocketError, SocketPollState};
+use network_protocol::{
+    PacketAddress, PacketChecksum, PacketInformation, PacketKind, SocketError, SocketPollState,
+};
 
 const ETH_HEADER_LENGTH: usize = 14;
 const ARPHRD_ETHER: u16 = 1;
@@ -27,6 +29,7 @@ struct SharedPacket {
     link_header: [u8; ETH_HEADER_LENGTH],
     payload: Vec<u8>,
     source: PacketAddress,
+    checksum: PacketChecksum,
 }
 
 struct EndpointState {
@@ -317,23 +320,24 @@ impl PacketSocket {
             return Err(SocketError::Invalid);
         }
         let device = device.expect("Ethernet interface owns its NIC");
-        let transmit = NetworkTransmit::reserve(device).map_err(network_error)?;
-        let mut frame = Vec::new();
-        frame
-            .try_reserve_exact(ETH_HEADER_LENGTH + payload.len())
-            .map_err(|_| SocketError::NoMemory)?;
-        frame.extend_from_slice(&link_header);
-        frame.extend_from_slice(payload);
+        let mut transmit = device.reserve_transmit(0).map_err(network_error)?;
+        let length = ETH_HEADER_LENGTH + payload.len();
+        if length > transmit.capacity() {
+            return Err(SocketError::MessageTooLarge);
+        }
+        let frame = &mut transmit.buffer_mut()[..length];
+        frame[..ETH_HEADER_LENGTH].copy_from_slice(&link_header);
+        frame[ETH_HEADER_LENGTH..].copy_from_slice(payload);
         deliver_outgoing(
             self.namespace.id(),
             interface.index,
             ARPHRD_ETHER,
             link_header,
             payload,
-            u16::from_be(target.protocol),
+            false,
             Some(self.id),
         );
-        transmit.submit(&frame).map_err(network_error)?;
+        transmit.submit(length, None, None).map_err(network_error)?;
         Ok(input.len())
     }
 
@@ -355,7 +359,7 @@ impl PacketSocket {
         &self,
         output: &mut ReceiveBuffer,
         peek: bool,
-    ) -> Result<(usize, usize, PacketAddress), SocketError> {
+    ) -> Result<(usize, usize, PacketAddress, PacketInformation), SocketError> {
         let mut registry = registry()?.lock();
         let state = registry
             .endpoints
@@ -376,7 +380,19 @@ impl PacketSocket {
             0
         };
         count += output.append(&packet.payload);
-        Ok((count, full_length, packet.source))
+        Ok((
+            count,
+            full_length,
+            packet.source,
+            PacketInformation {
+                checksum: packet.checksum,
+                network_offset: if include_header {
+                    ETH_HEADER_LENGTH as u16
+                } else {
+                    0
+                },
+            },
+        ))
     }
 
     /// 从唯一 receive queue 投影 packet endpoint readiness。
@@ -454,7 +470,7 @@ impl PacketSocket {
 /// # Errors
 ///
 /// 无匹配NET/interface/protocol或队列已满时跳过，不改变L3 ingress。
-pub(crate) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8]) {
+pub(crate) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8], checksum_valid: bool) {
     if frame.len() < ETH_HEADER_LENGTH {
         return;
     }
@@ -473,6 +489,11 @@ pub(crate) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8]) {
         frame[..ETH_HEADER_LENGTH].try_into().unwrap(),
         &frame[ETH_HEADER_LENGTH..],
         None,
+        if checksum_valid {
+            PacketChecksum::Verified
+        } else {
+            PacketChecksum::Unverified
+        },
     );
 }
 /// 实际IP-medium lo tap沿原生sockaddr_ll发布，不伪造Ethernet/ARP协议设备。
@@ -490,6 +511,7 @@ pub(crate) fn deliver_loopback(net_id: u64, header: [u8; ETH_HEADER_LENGTH], pac
         header,
         packet,
         None,
+        PacketChecksum::Unverified,
     );
 }
 /// 实际NIC提交的L2报文；排除发起该packet socket，其他同域binding按原生OUTGOING收取。
@@ -499,18 +521,29 @@ pub(crate) fn deliver_outgoing(
     hardware_type: u16,
     header: [u8; ETH_HEADER_LENGTH],
     payload: &[u8],
-    protocol: u16,
+    checksum_partial: bool,
     sender: Option<usize>,
 ) {
     let source = PacketAddress {
-        protocol: protocol.to_be(),
+        protocol: u16::from_be_bytes([header[12], header[13]]).to_be(),
         interface_index: index as i32,
         hardware_type,
         packet_type: PACKET_OUTGOING,
         address_length: 6,
         address: padded_address(header[6..12].try_into().unwrap()),
     };
-    deliver_packet(net_id, source, header, payload, sender);
+    deliver_packet(
+        net_id,
+        source,
+        header,
+        payload,
+        sender,
+        if checksum_partial {
+            PacketChecksum::Partial
+        } else {
+            PacketChecksum::Unverified
+        },
+    );
 }
 
 fn matches(state: &EndpointState, net_id: u64, source: PacketAddress) -> bool {
@@ -526,6 +559,7 @@ fn deliver_packet(
     header: [u8; ETH_HEADER_LENGTH],
     packet: &[u8],
     sender: Option<usize>,
+    checksum: PacketChecksum,
 ) {
     let Some(registry) = PACKET_REGISTRY.get() else {
         return;
@@ -547,6 +581,7 @@ fn deliver_packet(
         link_header: header,
         payload: bytes,
         source,
+        checksum,
     }) else {
         return;
     };
@@ -650,7 +685,9 @@ fn packet_type(destination: &[u8], own_mac: [u8; 6]) -> u8 {
 
 fn network_error(error: NetworkError) -> SocketError {
     match error {
+        NetworkError::InvalidConfiguration => SocketError::Invalid,
         NetworkError::WouldBlock => SocketError::Again,
+        NetworkError::NoMemory => SocketError::NoMemory,
         NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
         NetworkError::Device => SocketError::Device,
         NetworkError::Disconnected => SocketError::NetworkDown,

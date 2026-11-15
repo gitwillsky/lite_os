@@ -119,15 +119,7 @@ impl LoopbackDevice {
         assert!(length <= self.mtu, "IP packet exceeds actual loopback MTU");
         let encode = |packet: &mut [u8]| {
             let result = operation(packet);
-            crate::packet::deliver_outgoing(
-                self.net_id,
-                1,
-                772,
-                header,
-                packet,
-                u16::from_be_bytes([header[12], header[13]]),
-                sender,
-            );
+            crate::packet::deliver_outgoing(self.net_id, 1, 772, header, packet, false, sender);
             result
         };
         let mut queue = self.queue.borrow_mut();

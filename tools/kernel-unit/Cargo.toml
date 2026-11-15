@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+packet-wire = { path = "../../libraries/packet-wire" }
 native-abi = { path = "../../abi/native-abi" }
 mmio = { path = "../../libraries/mmio" }
 native-runtime = { path = "../../system/native-runtime" }

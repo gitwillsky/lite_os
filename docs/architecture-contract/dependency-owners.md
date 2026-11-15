@@ -26,7 +26,7 @@
 | `system/audio-core` | PCM 输出会话、混音引擎、主音量、独占格式切换、USB 声卡热插拔 | device-protocol、audio-protocol；不拥有 ALSA 状态、子流编号或 Linux ioctl |
 | `system/pager-pool` | 进程内 native pager、port、key 注册与可增长补页线程池 | native-runtime；补页政策由各内容 owner 的 `PageSource` 决定 |
 | `system/netstack` | smoltcp、默认网络、IPv4 FIB/地址、端口、TCP/UDP/RAW、AF_PACKET 队列 | device-protocol 与 network-protocol；不发现网卡、不决定接口配置，不拥有 Linux syscall、信号或阻塞超时 |
-| `system/netcfg` | 网卡发现与安装、接口配置策略、用户网络设置及其持久化 | network-protocol、device-protocol、filesystem-protocol、netcfg-protocol；不拥有协议栈状态 |
+| `system/netcfg` | 网卡发现与安装授权、接口配置策略、用户网络设置及其持久化 | network-protocol、device-protocol、filesystem-protocol、netcfg-protocol；不拥有协议栈状态 |
 | `system/dhcp-client` | DHCPv4 会话与租约时序 | network-protocol 的 packet socket；租约交给 netcfg 配置，不直接改接口 |
 | `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS、tmpfs 与 Linux FUSE 守护进程的页缓存、设备 UAPI（含 ALSA 状态机）、Linux IPC、授权端点适配 | restricted mode 执行应用；只消费路由给它的设备类与协议 |
 
@@ -78,6 +78,9 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
 
 FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。ext4 实例拥有普通文件的内容
 （每文件一个 pager VMO），linuxd 经挂载控制取得它做 mmap；PCM 设备与混音属于 audio-core，linuxd 只翻译 ALSA。
+
+`libraries/packet-wire` 只拥有无状态报文字节算法，当前为 RFC 1071 校验和；不依赖服务或原生对象。
+Netstack 的设备 adapter 消费它构造伪头 seed，driver-host 在独占 RX claim 内使用它补全部分校验和；硬件能力与缓冲寿命仍归设备 owner，路由/传输状态仍归 netstack。
 
 ## 验证职责
 

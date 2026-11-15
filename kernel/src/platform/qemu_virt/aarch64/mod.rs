@@ -48,7 +48,8 @@ pub(crate) fn initialize(boot: BootInfo) {
 ///
 /// controller 或 rendezvous 初始化失败时 fail-stop。
 pub(crate) use gicv3::{
-    bind_interrupt, device_interrupt_range, unbind_interrupt, unmask_interrupt,
+    bind_interrupt, device_interrupt_range, set_interrupt_affinity, unbind_interrupt,
+    unmask_interrupt,
 };
 
 pub(crate) fn initialize_devices() {

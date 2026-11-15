@@ -44,28 +44,63 @@ const PRIORITY_WEIGHT_RECIPROCAL: [u32; PRIORITY_LEVELS as usize] = [
 
 /// 线程可运行的逻辑 CPU 集合。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct CpuAffinity(CpuSet);
+pub(crate) struct CpuAffinity {
+    requested: CpuSet,
+    exclusive: bool,
+}
 
 impl CpuAffinity {
     /// 全部 possible CPU。
     pub(crate) fn all() -> Self {
-        Self(cpu::possible())
+        Self {
+            requested: cpu::possible(),
+            exclusive: false,
+        }
     }
 
     /// 与 possible CPU 相交后的集合；交集为空返回 `None`（线程将无处运行）。
     pub(crate) fn restricted_to(cpus: CpuSet) -> Option<Self> {
         let cpus = cpus & cpu::possible();
-        (!cpus.is_empty()).then_some(Self(cpus))
+        (!cpus.is_empty()).then_some(Self {
+            requested: cpus,
+            exclusive: false,
+        })
+    }
+
+    /// 仅由具有系统调度授权的隔离事务创建；普通 affinity 不能进入独占分区。
+    pub(crate) fn exclusive(cpu: CpuId) -> Self {
+        Self {
+            requested: CpuSet::singleton(cpu),
+            exclusive: true,
+        }
+    }
+
+    pub(crate) fn is_exclusive(self) -> bool {
+        self.exclusive
+    }
+
+    /// 分区过滤只约束普通线程；独占凭据由隔离事务与线程退出路径唯一管理。
+    pub(crate) fn eligible_in(self, shared: CpuSet) -> CpuSet {
+        if self.exclusive {
+            self.requested
+        } else {
+            self.requested & shared
+        }
+    }
+
+    /// Ready 发表允许与分区变更交错；真正分派前必须再次检查 `allows`。
+    fn requests(self, cpu: CpuId) -> bool {
+        self.requested.contains(cpu)
     }
 
     /// 是否允许在 `cpu` 上运行。
     pub(crate) fn allows(self, cpu: CpuId) -> bool {
-        self.0.contains(cpu)
+        self.requests(cpu) && (self.exclusive || super::processor::cpu_is_shared(cpu))
     }
 
     /// 与 active CPU 相交后的集合位图（诊断）。
     pub(crate) fn effective_bits(self) -> usize {
-        (self.0 & cpu::active()).native_word()
+        (self.eligible_in(super::processor::shared_cpus()) & cpu::active()).native_word()
     }
 }
 
@@ -207,7 +242,7 @@ impl SchedulingState {
     /// 发布新的 Ready generation，使此前所有队列 entry 失效。
     pub(crate) fn transition_to_ready(&mut self, cpu: CpuId) -> ReadyTransition<'_> {
         assert!(
-            self.cpu_affinity.allows(cpu),
+            self.cpu_affinity.requests(cpu),
             "Ready transition selected a disallowed CPU"
         );
         let previous_cpu = match self.run_state {

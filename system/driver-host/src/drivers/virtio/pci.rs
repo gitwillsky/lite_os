@@ -1,6 +1,8 @@
 //! VirtIO 1.4 modern PCI transport register codec.
 
 use super::transport::VirtQueueAddresses;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use mmio::BusError;
 use mmio::MmioBus;
 
@@ -9,6 +11,7 @@ const DEVICE_FEATURE: usize = 0x04;
 const DRIVER_FEATURE_SELECT: usize = 0x08;
 const DRIVER_FEATURE: usize = 0x0c;
 const CONFIG_MSIX_VECTOR: usize = 0x10;
+const NUM_QUEUES: usize = 0x12;
 const DEVICE_STATUS: usize = 0x14;
 const CONFIG_GENERATION: usize = 0x15;
 const QUEUE_SELECT: usize = 0x16;
@@ -28,6 +31,10 @@ pub(crate) struct PciTransport {
     isr: MmioBus,
     device: Option<MmioBus>,
     notify_multiplier: u32,
+    // OWNER: configure_queue 在独占初始化事务内读取 queue_notify_off 并校验通知窗口后发表。
+    // 运行时每队列只有原子读取与 doorbell write，不访问共享 queue_select；否则并发通知会串到别的队列。
+    // usize::MAX 表示尚未配置，偏移 0 是合法通知位置（multiplier 可以是 0）。
+    queue_notifications: Vec<AtomicUsize>,
 }
 
 impl PciTransport {
@@ -43,24 +50,36 @@ impl PciTransport {
     ///
     /// # Returns
     ///
-    /// A transport whose accesses stay inside capability windows.
+    /// A transport whose accesses stay inside capability windows; None if the queue count
+    /// cannot be read, is zero, or notification storage cannot be allocated.
     pub(crate) fn new(
         common: MmioBus,
         notify: MmioBus,
         isr: MmioBus,
         device: Option<MmioBus>,
         notify_multiplier: u32,
-    ) -> Self {
-        Self {
+    ) -> Option<Self> {
+        let queues = usize::from(common.read_u16(NUM_QUEUES).ok()?);
+        if queues == 0 {
+            return None;
+        }
+        let mut queue_notifications = Vec::new();
+        queue_notifications.try_reserve_exact(queues).ok()?;
+        queue_notifications.resize_with(queues, || AtomicUsize::new(usize::MAX));
+        Some(Self {
             common,
             notify,
             isr,
             device,
             notify_multiplier,
-        }
+            queue_notifications,
+        })
     }
 
     pub(crate) fn initialize(&self) -> Result<(), BusError> {
+        for notification in &self.queue_notifications {
+            notification.store(usize::MAX, Ordering::Release);
+        }
         self.common.write_u16(CONFIG_MSIX_VECTOR, NO_VECTOR)
     }
 
@@ -90,6 +109,9 @@ impl PciTransport {
 
     pub(crate) fn queue_max_size(&self, index: u32) -> Result<u16, BusError> {
         let index = u16::try_from(index).map_err(|_| BusError::InvalidAddress)?;
+        self.queue_notifications
+            .get(usize::from(index))
+            .ok_or(BusError::InvalidAddress)?;
         self.common.write_u16(QUEUE_SELECT, index)?;
         let size = self.common.read_u16(QUEUE_SIZE)?;
         if size == 0 || self.common.read_u16(QUEUE_ENABLE)? != 0 {
@@ -105,6 +127,10 @@ impl PciTransport {
         addresses: VirtQueueAddresses,
     ) -> Result<(), BusError> {
         let index = u16::try_from(index).map_err(|_| BusError::InvalidAddress)?;
+        let notification = self
+            .queue_notifications
+            .get(usize::from(index))
+            .ok_or(BusError::InvalidAddress)?;
         self.common.write_u16(QUEUE_SELECT, index)?;
         let maximum = self.common.read_u16(QUEUE_SIZE)?;
         if maximum == 0
@@ -119,17 +145,26 @@ impl PciTransport {
         self.write_u64(QUEUE_DESC, addresses.descriptor)?;
         self.write_u64(QUEUE_DRIVER, addresses.driver)?;
         self.write_u64(QUEUE_DEVICE, addresses.device)?;
-        self.common.write_u16(QUEUE_ENABLE, 1)
+        let offset = usize::from(self.common.read_u16(QUEUE_NOTIFY_OFF)?)
+            .checked_mul(self.notify_multiplier as usize)
+            .ok_or(BusError::InvalidAddress)?;
+        // VirtIO 1.4 §4.1.4.4：偏移必须能容纳未协商 NOTIFICATION_DATA 的 16-bit queue index。
+        self.notify.subwindow(offset, size_of::<u16>())?;
+        self.common.write_u16(QUEUE_ENABLE, 1)?;
+        notification.store(offset, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) fn notify_queue(&self, index: u32) -> Result<(), BusError> {
         let index = u16::try_from(index).map_err(|_| BusError::InvalidAddress)?;
-        self.common.write_u16(QUEUE_SELECT, index)?;
-        let queue_offset = u32::from(self.common.read_u16(QUEUE_NOTIFY_OFF)?);
-        let offset = queue_offset
-            .checked_mul(self.notify_multiplier)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or(BusError::InvalidAddress)?;
+        let offset = self
+            .queue_notifications
+            .get(usize::from(index))
+            .ok_or(BusError::InvalidAddress)?
+            .load(Ordering::Acquire);
+        if offset == usize::MAX {
+            return Err(BusError::InvalidAddress);
+        }
         mmio::before_write();
         self.notify.write_u16(offset, index)
     }
@@ -180,5 +215,57 @@ impl PciTransport {
     fn write_u64(&self, offset: usize, value: u64) -> Result<(), BusError> {
         self.common.write_u32(offset, value as u32)?;
         self.common.write_u32(offset + 4, (value >> 32) as u32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notifications_keep_their_configured_queue_address_without_selecting_a_queue() {
+        let mut common_bytes = [0u64; 8];
+        let mut notify_bytes = [u16::MAX; 2];
+        let mut isr_byte = 0u8;
+        let common = MmioBus::new(
+            common_bytes.as_mut_ptr() as usize,
+            size_of_val(&common_bytes),
+        )
+        .unwrap();
+        let notify = MmioBus::new(
+            notify_bytes.as_mut_ptr() as usize,
+            size_of_val(&notify_bytes),
+        )
+        .unwrap();
+        let isr = MmioBus::new(&raw mut isr_byte as usize, 1).unwrap();
+        common.write_u16(NUM_QUEUES, 2).unwrap();
+        let device = PciTransport::new(common, notify, isr, None, 2).unwrap();
+        device.initialize().unwrap();
+        assert_eq!(device.notify_queue(0), Err(BusError::InvalidAddress));
+        for queue in 0..2 {
+            // 用 RAM 寄存器窗口提供设备事实：每次切换到尚未启用的 queue bank。
+            common.write_u16(QUEUE_ENABLE, 0).unwrap();
+            common.write_u16(QUEUE_SIZE, 16).unwrap();
+            common.write_u16(QUEUE_NOTIFY_OFF, queue).unwrap();
+            device
+                .configure_queue(
+                    u32::from(queue),
+                    16,
+                    VirtQueueAddresses {
+                        descriptor: 0x1000,
+                        driver: 0x2000,
+                        device: 0x3000,
+                    },
+                )
+                .unwrap();
+        }
+        // 配置停在 queue 1；通知 queue 0 不得改写 selector 或再读 queue 1 的偏移。
+        device.notify_queue(0).unwrap();
+        assert_eq!(common.read_u16(QUEUE_SELECT).unwrap(), 1);
+        assert_eq!(notify.read_u16(0).unwrap(), 0);
+        assert_eq!(notify.read_u16(2).unwrap(), u16::MAX);
+        device.notify_queue(1).unwrap();
+        assert_eq!(notify.read_u16(2).unwrap(), 1);
+        assert_eq!(device.notify_queue(2), Err(BusError::InvalidAddress));
     }
 }

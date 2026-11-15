@@ -137,6 +137,7 @@ fn virtio_pci_driver(function: &Function) -> Option<Driver> {
         return None;
     };
     match device {
+        NETWORK => Some(Driver::VirtioNetwork),
         CONSOLE => Some(Driver::VirtioConsole),
         BLOCK => Some(Driver::VirtioBlock),
         _ => None,

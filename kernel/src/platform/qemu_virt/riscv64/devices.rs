@@ -118,6 +118,18 @@ pub(crate) fn unmask_interrupt(vector: u32) -> Result<(), InterruptError> {
     interrupt_controller().lock().enable_interrupt(vector)
 }
 
+/// 在同一控制器事务中改变目标 context，保留源 priority 所表示的屏蔽状态。
+pub(crate) fn set_interrupt_affinity(
+    vector: u32,
+    cpu: crate::execution::cpu::CpuId,
+) -> Result<(), InterruptError> {
+    let mut controller = interrupt_controller().lock();
+    if !controller.has_handler(vector) {
+        return Err(InterruptError::HandlerNotSet);
+    }
+    controller.set_affinity(vector, crate::execution::cpu::CpuSet::singleton(cpu))
+}
+
 /// PLIC 中断源区间（源 0 保留）。
 pub(crate) fn device_interrupt_range() -> core::ops::Range<u32> {
     1..1024

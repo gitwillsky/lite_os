@@ -83,7 +83,7 @@ impl VirtIOInputDevice {
     ///
     /// transport、metadata、queue 或 allocation 不满足时返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        let device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 18 {
             return None;
         }
@@ -151,7 +151,9 @@ impl VirtIOInputDevice {
             !core::mem::replace(&mut events.failed, true)
         };
         if first_failure {
-            let _ = self.device.reset();
+            self.device
+                .reset()
+                .expect("VirtIO input must stop DMA before retiring ownership");
         }
         InputDeviceError::Device
     }
@@ -424,7 +426,9 @@ impl VirtIOInputDevice {
 impl Drop for VirtIOInputDevice {
     fn drop(&mut self) {
         // Reset revokes device-writable event descriptors before cached mappings are released.
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("VirtIO input must stop DMA before retiring ownership");
     }
 }
 

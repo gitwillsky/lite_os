@@ -36,7 +36,10 @@ pub fn publish(directory: &Directory, device: Arc<dyn UsbDevice>) -> Result<(), 
             Class::Usb,
             &description,
             false,
-            Box::new(move |end| {
+            Box::new(move |end, options| {
+                if !options.is_empty() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
                 let session = SessionState::new(device.clone(), end);
                 let (client, server) = Channel::create()?;
                 let server = directory::serve_session(

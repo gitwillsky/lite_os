@@ -26,7 +26,7 @@
             )
             .unwrap();
             endpoint.bind(packet_fixture_address()).unwrap();
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame());
+            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert!(endpoint.poll_state().readable);
             let pending = crate::packet::take_pending_notification(0).unwrap().1;
             endpoint.close_description();
@@ -41,7 +41,7 @@
                 receive(&endpoint, &mut output, false),
                 Err(SocketError::NotConnected)
             );
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame());
+            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert!(crate::packet::take_pending_notification(0).is_none());
             let replacement = crate::packet::PacketSocket::new(
                 network_protocol::PacketKind::Datagram,
@@ -53,7 +53,7 @@
             pending.close_description();
             drop(endpoint);
             drop(pending);
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame());
+            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert_eq!(
                 receive(&replacement, &mut output, false)
                     .unwrap()
@@ -85,7 +85,7 @@
                 .collect();
             for fault in 0..2 {
                 crate::allocation_failure::fail_after(fault);
-                crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame());
+                crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
                 assert!(crate::allocation_failure::was_consumed());
                 assert!(
                     endpoints
@@ -95,7 +95,7 @@
             }
             // 同一 frame 只分配 payload Vec/Arc 两次，八个实际 endpoint queue publication 不分配。
             crate::allocation_failure::fail_after(2);
-            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame());
+            crate::packet::deliver(namespace().id(), 2, [2, 0, 0, 0, 0, 1], &frame(), false);
             assert!(!crate::allocation_failure::was_consumed());
             for endpoint in endpoints {
                 let mut peek = crate::receive::ReceiveBuffer::try_new(16).unwrap();

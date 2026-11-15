@@ -1,4 +1,4 @@
-// virtqueue 与 DMA buffer 的纯叶子；transport 只提供 queue 需要的地址类型。
+// virtqueue、DMA buffer 与 PCI 寄存器 codec；transport 提供 queue 地址类型。
 
 pub(crate) mod transport {
     #[derive(Clone, Copy)]
@@ -8,6 +8,9 @@ pub(crate) mod transport {
         pub(in crate::drivers::virtio) device: u64,
     }
 }
+
+#[path = "../../../../system/driver-host/src/drivers/virtio/pci.rs"]
+pub(crate) mod pci;
 
 #[path = "../../../../tools/source-view/driver-host/drivers/virtio/queue/queue/queue.rs"]
 pub(crate) mod queue;

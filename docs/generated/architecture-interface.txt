@@ -1060,6 +1060,7 @@ kernel/src/object/resource.rs :: pub (crate) impl Bti :: fn release_quarantine (
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn ack (& self) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn bind_port (& self , port : Arc < Port > , key : u64) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn create (vector : u32 , level : bool) -> Result < Self , Status >
+kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn set_affinity (& self , cpu : crate :: execution :: cpu :: CpuId) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn wait (& self , deadline_ns : Option < u64 >) -> Result < i64 , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Iommu :: fn create (kind : u32 , descriptor : & [u8]) -> Result < Self , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Pmt :: fn addresses (& self) -> & [u64]
@@ -1160,7 +1161,7 @@ kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -1208,6 +1209,7 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize (inf
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn initialize_local ()
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device (vector : u32 , handler : Arc < dyn InterruptHandler > , affinity : CpuSet ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
+kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : cpu :: CpuId) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
@@ -1233,7 +1235,7 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct InstructionFe
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { bind_interrupt , device_interrupt_range , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { bind_interrupt , device_interrupt_range , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , send_ipi }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { reset_system , start_cpu }
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
@@ -1252,7 +1254,7 @@ kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , TlbShootdownError , arm_timer , bind_interrupt , boot_entropy , claim_interrupt , complete_interrupt , complete_pending_ipi , console , device_interrupt_range , dtb_range , hardware_cpu_ids , initialize , initialize_devices , initrd_range , kernel_command_line , kernel_mmio_regions , physical_memory_end , physical_memory_range , read_realtime_ns , reset_system , send_ipi , set_interrupt_affinity , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , unbind_interrupt , unmask_interrupt , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -1274,6 +1276,7 @@ kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn bind_interrup
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn device_interrupt_range () -> core :: ops :: Range < u32 >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn initialize ()
+kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn set_interrupt_affinity (vector : u32 , cpu : crate :: execution :: cpu :: CpuId ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unbind_interrupt (vector : u32) -> Option < Arc < dyn InterruptHandler > >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn unmask_interrupt (vector : u32) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (super) fn register_device_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
@@ -1312,7 +1315,7 @@ kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_r
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn timebase_frequency () -> u64
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) mod console
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { bind_interrupt , device_interrupt_range , handle_external_interrupt , initialize as initialize_devices , unbind_interrupt , unmask_interrupt , }
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { bind_interrupt , device_interrupt_range , handle_external_interrupt , initialize as initialize_devices , set_interrupt_affinity , unbind_interrupt , unmask_interrupt , }
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize , validate_boot_info }
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use firmware :: { InstructionFenceError , TlbShootdownError , arm_timer , debug_console_write , debug_console_write_bytes , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn disable_interrupt (& self , vector : InterruptVector)
@@ -1363,6 +1366,7 @@ kernel/src/syscall/hardware.rs :: pub (super) fn bti_release_quarantine (call : 
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_ack (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_bind (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_create (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_set_affinity (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_wait (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn iommu_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn pmt_unpin (call : & Call < '_ >) -> Result < () , Status >
@@ -1452,6 +1456,7 @@ kernel/src/syscall/task.rs :: pub (super) fn task_kill (call : & Call < '_ >) ->
 kernel/src/syscall/task.rs :: pub (super) fn thread_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_affinity (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_deadline (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/task.rs :: pub (super) fn thread_set_isolation (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_set_priority (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/task.rs :: pub (super) fn thread_start (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/thread/context_switch.rs :: pub (crate) fn yield_current ()
@@ -1517,7 +1522,7 @@ kernel/src/thread/mod.rs :: pub (crate) struct UserEntryPoints
 kernel/src/thread/mod.rs :: pub (crate) struct UserStart
 kernel/src/thread/mod.rs :: pub (crate) trait ThreadOwner
 kernel/src/thread/mod.rs :: pub (crate) use context_switch :: { yield_current , yield_current_period }
-kernel/src/thread/mod.rs :: pub (crate) use processor :: DeadlineError
+kernel/src/thread/mod.rs :: pub (crate) use processor :: { DeadlineError , IsolationError , replace_isolation }
 kernel/src/thread/mod.rs :: pub (crate) use processor :: { cpu_busy_snapshot , take_reschedule }
 kernel/src/thread/mod.rs :: pub (crate) use scheduler :: deadline :: Parameters as DeadlineParameters
 kernel/src/thread/mod.rs :: pub (crate) use scheduling :: { DEFAULT_PRIORITY , PRIORITY_LEVELS }
@@ -1529,6 +1534,7 @@ kernel/src/thread/processor.rs :: pub (crate) fn cpu_busy_snapshot () -> Result 
 kernel/src/thread/processor.rs :: pub (crate) fn request_reschedule ()
 kernel/src/thread/processor.rs :: pub (crate) fn take_reschedule () -> bool
 kernel/src/thread/processor.rs :: pub (crate) use admission :: DeadlineError
+kernel/src/thread/processor.rs :: pub (crate) use isolation :: { IsolationError , replace_isolation }
 kernel/src/thread/processor.rs :: pub (in crate :: thread) fn replace_deadline (thread : & Arc < Thread > , parameters : Option < Parameters > ,) -> Result < () , DeadlineError >
 kernel/src/thread/processor.rs :: pub (super) Processor :: current : Option < Arc < Thread > >
 kernel/src/thread/processor.rs :: pub (super) fn begin_preempt_current (thread : & Arc < Thread >)
@@ -1555,12 +1561,14 @@ kernel/src/thread/processor.rs :: pub (super) struct Processor
 kernel/src/thread/processor.rs :: pub (super) use admission :: DeadlineReservation
 kernel/src/thread/processor.rs :: pub (super) use admission :: ThreadSlot
 kernel/src/thread/processor.rs :: pub (super) use handoff :: { publish_pending_handoff , resume_without_switch , take_pending_handoff }
+kernel/src/thread/processor.rs :: pub (super) use isolation :: { cpu_is_shared , exit_partition , observe_partition , register_thread , shared_cpus , }
 kernel/src/thread/processor.rs :: pub (super) use placement :: enqueue_new
 kernel/src/thread/processor/admission.rs :: enum DeadlineError :: Capacity
 kernel/src/thread/processor/admission.rs :: enum DeadlineError :: Terminated
 kernel/src/thread/processor/admission.rs :: pub (crate) enum DeadlineError
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl DeadlineReservation :: fn cpu (& self) -> CpuId
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl DeadlineReservation :: fn replace (previous : Option < & mut Self > , parameters : Parameters , affinity : CpuAffinity ,) -> Result < Self , () >
+kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl ThreadSlot :: fn id (& self) -> u64
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) impl ThreadSlot :: fn try_new () -> Result < Self , () >
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) struct DeadlineReservation
 kernel/src/thread/processor/admission.rs :: pub (in crate :: thread) struct ThreadSlot
@@ -1568,6 +1576,17 @@ kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn publish_pe
 kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn resume_without_switch (task : & Arc < Thread >) -> bool
 kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn take_pending_handoff () -> Option < (Arc < Thread > , LocalIrqTransfer) >
 kernel/src/thread/processor/handoff.rs :: pub (super) struct PendingHandoff
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: Conflict
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: InvalidAssignment
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: NoMemory
+kernel/src/thread/processor/isolation.rs :: enum IsolationError :: Terminated
+kernel/src/thread/processor/isolation.rs :: pub (crate) enum IsolationError
+kernel/src/thread/processor/isolation.rs :: pub (crate) fn replace_isolation (changes : & [(Arc < Thread > , Option < CpuId >)] ,) -> Result < () , IsolationError >
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn cpu_is_shared (cpu : CpuId) -> bool
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn exit_partition (thread : & Thread)
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn observe_partition ()
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn register_thread (thread : & Arc < Thread >)
+kernel/src/thread/processor/isolation.rs :: pub (in crate :: thread) fn shared_cpus () -> CpuSet
 kernel/src/thread/processor/placement.rs :: pub (in crate :: thread) fn enqueue_new (task : Arc < Thread >) -> CpuId
 kernel/src/thread/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < Thread > , generation : u64) -> RunQueueEntry
 kernel/src/thread/processor/placement.rs :: pub (super) fn rebase_for_migration (task : & Thread , source : CpuId , target : CpuId)
@@ -1664,6 +1683,9 @@ kernel/src/thread/scheduling.rs :: pub (crate) enum WaitMembership
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn all () -> Self
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn allows (self , cpu : CpuId) -> bool
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn effective_bits (self) -> usize
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn eligible_in (self , shared : CpuSet) -> CpuSet
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn exclusive (cpu : CpuId) -> Self
+kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn is_exclusive (self) -> bool
 kernel/src/thread/scheduling.rs :: pub (crate) impl CpuAffinity :: fn restricted_to (cpus : CpuSet) -> Option < Self >
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn begin (& mut self , sample : impl FnOnce () -> u64)
 kernel/src/thread/scheduling.rs :: pub (crate) impl Policy :: fn checkpoint (& mut self , sample : impl FnOnce () -> u64) -> u64
@@ -2205,7 +2227,7 @@ system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) fn bind (driver 
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
-system/driver-host/src/drivers/virtio/blk.rs :: pub (super) impl VirtIOBlockDevice :: fn from_device (mut device : VirtIODevice) -> Option < Arc < Self > >
+system/driver-host/src/drivers/virtio/blk.rs :: pub (super) impl VirtIOBlockDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn notify (& self)
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) impl Completions :: fn post (& self , identity : RequestIdentity)
 system/driver-host/src/drivers/virtio/blk/async_io.rs :: pub (super) struct Completions
@@ -2221,7 +2243,8 @@ system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) enum RequestO
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn decode_status (status : u8) -> CompletionStatus
 system/driver-host/src/drivers/virtio/blk/policy.rs :: pub (super) fn valid_transfer (capacity_sectors : u64 , block : u64 , length : usize) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
-system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
+system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge (& self , device : & VirtIODevice) -> Option < u32 >
+system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn has_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
 system/driver-host/src/drivers/virtio/completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
 system/driver-host/src/drivers/virtio/console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport , bti : & 'static native_runtime :: Bti ,) -> Option < Arc < Self > >
@@ -2497,18 +2520,26 @@ system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use sound :: VirtIOS
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/net.rs :: pub (crate) struct VirtIONetworkDevice
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: DeviceError
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: FrameTooLarge { length : usize }
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: enum ReceiveOutcome :: Packet { length : usize }
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: outcome : ReceiveOutcome
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: reposted : bool
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) enum ReceiveOutcome
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn claim (& mut self , head : u16 , used_length : usize , header_size : usize ,) -> Option < ReceiveClaim >
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn complete < Q : ReceiveQueue < B > > (& mut self , queue : & mut Q , claim : ReceiveClaim , used_length : usize , header_size : usize , frame : & mut [u8] ,) -> ReceiveCompletion
+system/driver-host/src/drivers/virtio/net.rs :: pub (super) impl VirtIONetworkDevice :: fn from_device (device : VirtIODevice) -> Option < Arc < Self > >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_pairs (& mut self , device : & VirtIODevice , pairs : u16) -> Result < () , () >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn set_rss (& mut self , device : & VirtIODevice , pairs : u16 , config : & NetworkRssConfiguration ,) -> Result < () , NetworkError >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) impl ControlQueue :: fn try_new (device : & VirtIODevice , index : u32 , rss : Option < NetworkRssCapabilities > ,) -> Option < Self >
+system/driver-host/src/drivers/virtio/net/control.rs :: pub (super) struct ControlQueue
+system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn receive (buffer : & mut [u8] , negotiated : bool) -> Result < bool , NetworkError >
+system/driver-host/src/drivers/virtio/net/offload.rs :: pub (super) fn transmit (header : & mut [u8] , checksum : Option < NetworkChecksum > , segmentation : Option < NetworkTcpSegmentation > ,)
+system/driver-host/src/drivers/virtio/net/queue_pair.rs :: pub (super) impl QueueState :: fn try_new (device : & VirtIODevice , index : u16 , transmit_limit : usize ,) -> Option < Self >
+system/driver-host/src/drivers/virtio/net/queue_pair.rs :: pub (super) struct QueueState
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: length : usize
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) ReceiveCompletion :: slot : u16
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveClaim < '_ , B , BUFFER_SIZE > :: fn buffer_mut (& mut self) -> & mut B
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveClaim < '_ , B , BUFFER_SIZE > :: fn complete (self) -> ReceiveCompletion
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn buffer (& self , slot : usize) -> Option < & B >
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn claim (& mut self , head : u16 , used_length : usize , header_size : usize ,) -> Option < ReceiveClaim < '_ , B , BUFFER_SIZE > >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn insert_posted (& mut self , head : u16 , buffer : B) -> Result < () , B >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn len (& self) -> usize
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn release < Q : ReceiveQueue < B > > (& mut self , queue : & mut Q , slot_index : u16) -> bool
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) impl ReceiveSlots < B , BUFFER_SIZE > :: fn try_new (slot_capacity : usize , queue_size : usize) -> Option < Self >
-system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveClaim
+system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveClaim < 'a , B , const BUFFER_SIZE : usize >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveCompletion
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) struct ReceiveSlots < B , const BUFFER_SIZE : usize >
 system/driver-host/src/drivers/virtio/net/rx_slots.rs :: pub (super) trait ReceiveQueue < B >
@@ -2520,7 +2551,7 @@ system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport ::
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn get_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn interrupt_status (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Self
+system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Option < Self >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn notify_queue (& self , index : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
 system/driver-host/src/drivers/virtio/pci.rs :: pub (crate) impl PciTransport :: fn read_config_u16 (& self , offset : usize) -> Result < u16 , BusError >
@@ -2581,7 +2612,7 @@ system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqAvail
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqDesc
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsed
 system/driver-host/src/drivers/virtio/queue.rs :: pub (super) struct VirtqUsedElem
-system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaSlice }
+system/driver-host/src/drivers/virtio/queue.rs :: pub (super) use dma :: { DeviceWriteBuffer , DmaBuffer , DmaPool , DmaRegion , DmaSlice }
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " caller 未提供任何有效 segment。"] Empty
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " chain 非空且可由给定数量的 descriptor 表示。"] Required (usize)
 system/driver-host/src/drivers/virtio/queue/dma.rs :: enum DmaChainRequirement :: # [doc = " segment 总数溢出或超过当前 capacity。"] ExceedsCapacity
@@ -2599,12 +2630,22 @@ system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn try_zeroed (bti : & Bti) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: fn writable_all (& self) -> DmaSlice < '_ >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaBuffer < SIZE > :: unsafe fn share_vmo (& self ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn take (& mut self) -> Option < DmaRegion >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn take_fixed < const SIZE : usize > (& mut self ,) -> Option < DmaBuffer < SIZE > >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaPool :: fn try_new (count : usize , stride : usize , bti : & Bti ,) -> Result < Self , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn as_mut_slice (& mut self) -> & mut [u8]
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn len (& self) -> usize
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: fn readable (& self , range : Range < usize > ,) -> Result < DmaSlice < '_ > , DmaMappingError >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaRegion :: unsafe fn share_vmo (& self ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn length (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn limit_segment_size (mut self , maximum : usize ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) impl DmaSlice < 'mapping > :: fn backing (backing : & 'mapping DeviceBacking , range : Range < usize > , device_writable : bool ,) -> Result < Self , DmaMappingError >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DeviceWriteBuffer < const SIZE : usize >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaBuffer < const SIZE : usize >
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaPool
+system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaRegion
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (in crate :: drivers :: virtio) struct DmaSlice < 'mapping >
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) enum DmaChainRequirement
 system/driver-host/src/drivers/virtio/queue/dma.rs :: pub (super) fn descriptor_requirement (buffers : & [DmaSlice < '_ >] , capacity : usize ,) -> DmaChainRequirement
@@ -2675,7 +2716,7 @@ system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_features (& self) -> Result < u64 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn device_id (& self) -> u32
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn get_status (& self) -> Result < u32 , BusError >
-system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn initialize (& mut self) -> Result < () , BusError >
+system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn initialize (& self) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_ack (& self , interrupt : u32) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn interrupt_status (& self) -> Result < u32 , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn mmio_vendor_id (& self) -> Option < u32 >
@@ -7698,6 +7739,7 @@ system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: count : usize
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: credentials : Option < UnixCredentials >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: full_length : usize
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: internet_packet_info : Option < InternetPacketInfo >
+system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: packet_information : Option < PacketInformation >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: rights : Option < UnixReceivedRights >
 system/linuxd/src/net/mod.rs :: pub (crate) ReceivedMessage :: source : Option < SocketAddress >
 system/linuxd/src/net/mod.rs :: pub (crate) UnixConnectResources :: data : UnixConnectionData
@@ -7742,7 +7784,7 @@ system/linuxd/src/net/mod.rs :: pub (crate) use inet :: { configure_address , co
 system/linuxd/src/net/mod.rs :: pub (crate) use kobject :: { publish_drm_hotplug , publish_input }
 system/linuxd/src/net/mod.rs :: pub (crate) use net_namespace :: { NetNamespace , initial_net , initialize_net }
 system/linuxd/src/net/mod.rs :: pub (crate) use netstack :: init
-system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , RouteChange , RouteSnapshot , SocketError , SocketPollState , }
+system/linuxd/src/net/mod.rs :: pub (crate) use network_protocol :: { InetAddress , InterfaceSnapshot , InternetOption , InternetPacketInfo , InternetSendPacketInfo , Ipv4RouteError , Ipv4RouteKind , Ipv4RouteMetrics , Ipv4RouteRequest , PacketAddress , PacketChecksum , PacketInformation , RouteChange , RouteSnapshot , SocketError , SocketPollState , }
 system/linuxd/src/net/mod.rs :: pub (crate) use preparation :: { PreparedSocket , SocketRequest }
 system/linuxd/src/net/mod.rs :: pub (crate) use timeouts :: { SocketIoDirection , SocketTimeout }
 system/linuxd/src/net/mod.rs :: pub (crate) use unix :: { SCM_MAX_FD , UnixAddress , UnixFileLimit , UnixNode , UnixPassedFile , UnixPathIdentity , UnixReceivedRights , UnixRights , }
@@ -7778,6 +7820,7 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn buffer_limit (
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn internet_option (& self , option : super :: InternetOption ,) -> Result < i32 , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn ipv4_packet_info (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn net_namespace (& self) -> alloc :: sync :: Arc < super :: NetNamespace >
+system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn packet_auxiliary (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn pass_credentials (& self) -> bool
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn peer_credentials (& self) -> Option < UnixCredentials >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn reserve_control_memory (& self , bytes : usize ,) -> Option < super :: ControlMemoryCharge >
@@ -7787,6 +7830,7 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_internet_t
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_header_included (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_hop_limit (& self , value : Option < u8 >) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_ipv4_packet_info (& self , enabled : bool) -> Result < () , SocketError >
+system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_packet_auxiliary (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_pass_credentials (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_tcp_max_segment (& self , value : i32) -> Result < () , SocketError >
@@ -7794,14 +7838,16 @@ system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_tcp_no_del
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn set_timeout (& self , direction : SocketIoDirection , value : SocketTimeout ,) -> Result < () , SocketError >
 system/linuxd/src/net/options.rs :: pub (crate) impl Socket :: fn timeout (& self , direction : SocketIoDirection) -> SocketTimeout
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn auxiliary (& self) -> bool
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn bind (& self , address : PacketAddress) -> Result < () , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn close_description (& self)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn consume_wait_notifications (& self)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn new (socket_type : SocketType , protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) , namespace : Arc < NetNamespace > ,) -> Result < Arc < Self > , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn readiness_generation (& self) -> u64
-system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , PacketAddress , PacketInformation) , SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
+system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn set_auxiliary (& self , enabled : bool)
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn take_error (& self) -> Option < SocketError >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn try_poll_state (& self) -> Option < SocketPollState >
 system/linuxd/src/net/packet.rs :: pub (super) impl PacketSocket :: fn wait_sources (& self) -> super :: SocketWaitSources
@@ -8586,6 +8632,7 @@ system/linuxd/src/syscall/socket.rs :: pub (super) use interface :: socket_ioctl
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: cloexec : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: credentials : Option < crate :: net :: UnixCredentials >
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: internet_packet_info : Option < crate :: net :: InternetPacketInfo >
+system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: packet_auxiliary : Option < (crate :: net :: PacketInformation , usize) >
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: packet_info : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: pass_credentials : bool
 system/linuxd/src/syscall/socket/control.rs :: pub (super) ReceiveContent :: rights : Option < crate :: net :: UnixReceivedRights >
@@ -10397,7 +10444,7 @@ system/netstack/src/inet/device.rs :: enum ProtocolTxToken :: Loopback (Loopback
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolDevice
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) enum ProtocolTxToken < 'a >
-system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & 'static str
+system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & str
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn network_device (& self) -> Arc < dyn NetworkDevice >
@@ -10407,7 +10454,7 @@ system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn stat
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_error (& self) -> Option < NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn configure_mtu (& mut self , mtu : i32) -> Result < () , network_protocol :: SocketError >
-system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & 'static str >
+system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & str >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn ip_mtu (& self) -> usize
 system/netstack/src/inet/device.rs :: pub (super) impl ProtocolDevice :: fn link (& self) -> Option < NetworkLink >
@@ -10423,6 +10470,7 @@ system/netstack/src/inet/device.rs :: pub (super) struct EthernetDevice
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetRxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct EthernetTxToken < 'a >
 system/netstack/src/inet/device.rs :: pub (super) struct TcpReset
+system/netstack/src/inet/device/checksum.rs :: pub (super) fn prepare (frame : & mut [u8]) -> Result < Option < NetworkChecksum > , NetworkError >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn can_transmit (& self) -> bool
 system/netstack/src/inet/device/loopback.rs :: pub (crate) impl LoopbackDevice :: fn inject (& self , header : [u8 ; 14] , packet : & [u8] , sender : usize ,) -> Result < () , SocketError >
 system/netstack/src/inet/device/loopback.rs :: pub (crate) struct LoopbackDevice
@@ -10654,9 +10702,9 @@ system/netstack/src/namespace.rs :: pub (crate) impl Namespace :: fn install_pro
 system/netstack/src/namespace.rs :: pub (crate) impl Namespace :: fn protocol (& self) -> Option < & NetworkStackOwner >
 system/netstack/src/namespace.rs :: pub (crate) struct Namespace
 system/netstack/src/namespace.rs :: pub (crate) struct NetworkNamespaceBatch
-system/netstack/src/packet.rs :: pub (crate) fn deliver (net_id : u64 , index : u32 , mac : [u8 ; 6] , frame : & [u8])
+system/netstack/src/packet.rs :: pub (crate) fn deliver (net_id : u64 , index : u32 , mac : [u8 ; 6] , frame : & [u8] , checksum_valid : bool)
 system/netstack/src/packet.rs :: pub (crate) fn deliver_loopback (net_id : u64 , header : [u8 ; ETH_HEADER_LENGTH] , packet : & [u8])
-system/netstack/src/packet.rs :: pub (crate) fn deliver_outgoing (net_id : u64 , index : u32 , hardware_type : u16 , header : [u8 ; ETH_HEADER_LENGTH] , payload : & [u8] , protocol : u16 , sender : Option < usize > ,)
+system/netstack/src/packet.rs :: pub (crate) fn deliver_outgoing (net_id : u64 , index : u32 , hardware_type : u16 , header : [u8 ; ETH_HEADER_LENGTH] , payload : & [u8] , checksum_partial : bool , sender : Option < usize > ,)
 system/netstack/src/packet.rs :: pub (crate) fn init ()
 system/netstack/src/packet.rs :: pub (crate) fn publish_interface_removed (net_id : u64 , index : u32)
 system/netstack/src/packet.rs :: pub (crate) fn publish_transmit_ready (net_id : u64 , index : u32)
@@ -10667,7 +10715,7 @@ system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn close_descr
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn new (kind : PacketKind , protocol : u16 , readiness : Arc < Event > , namespace : Arc < Namespace > ,) -> Result < Arc < Self > , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn notify (& self)
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
-system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
+system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn receive (& self , output : & mut ReceiveBuffer , peek : bool ,) -> Result < (usize , usize , PacketAddress , PacketInformation) , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
 system/netstack/src/packet.rs :: pub (crate) impl PacketSocket :: fn take_error (& self) -> Option < SocketError >
 system/netstack/src/packet.rs :: pub (crate) struct PacketSocket

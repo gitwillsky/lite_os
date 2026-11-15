@@ -47,6 +47,12 @@ pub(super) fn interrupt_bind(call: &Call<'_>) -> Result<(), Status> {
     interrupt.bind_port(port, call.arg(2) as u64)
 }
 
+pub(super) fn interrupt_set_affinity(call: &Call<'_>) -> Result<(), Status> {
+    let interrupt = call.interrupt(call.arg_handle(0), rights::WRITE)?;
+    let cpu = crate::execution::cpu::id_at(call.arg(1)).ok_or(native_abi::ERR_INVALID_ARGS)?;
+    interrupt.set_affinity(cpu)
+}
+
 pub(super) fn iommu_create(call: &Call<'_>) -> Result<(), Status> {
     let resource = call.resource(call.arg_handle(0), 0)?;
     if !resource.is_root() {

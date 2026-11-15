@@ -193,7 +193,7 @@ fn actual_packet_raw_preserves_link_header_and_excludes_origin_from_outgoing_tap
     assert_eq!(received.2.packet_type, 4);
     assert_eq!(&received.2.address[..6], &[2, 0, 0, 0, 9, 9]);
     // 同一实际tap的RAW projection保留header；DGRAM只剥一次，二者共享同一packet owner。
-    packet::deliver(net.id(), 2, [2, 0, 0, 0, 0, 1], &frame);
+    packet::deliver(net.id(), 2, [2, 0, 0, 0, 0, 1], &frame, false);
     let received = receive(&sender, &mut output, false)
         .unwrap();
     assert_eq!(received.1, frame.len());

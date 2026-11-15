@@ -51,7 +51,7 @@ fn open_devices(directory: &DirectoryClient) -> Result<Devices, Status> {
                 continue;
             }
             match directory
-                .open(&entry)
+                .open(&entry, &[])
                 .and_then(device_protocol::block::connect)
             {
                 Ok(device) if data.is_none() && storage::is_data_volume(&*device) => {

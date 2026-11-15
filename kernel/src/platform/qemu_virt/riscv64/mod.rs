@@ -13,7 +13,7 @@ mod uart;
 
 pub(crate) use devices::{
     bind_interrupt, device_interrupt_range, handle_external_interrupt,
-    initialize as initialize_devices, unbind_interrupt, unmask_interrupt,
+    initialize as initialize_devices, set_interrupt_affinity, unbind_interrupt, unmask_interrupt,
 };
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};
 pub(crate) use firmware::{

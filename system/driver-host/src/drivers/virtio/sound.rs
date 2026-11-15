@@ -109,7 +109,7 @@ impl VirtIOSoundDevice {
     ///
     /// feature、queue、DMA、stream 数或固定 PCM 能力不满足时返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        let device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 25 {
             return None;
         }
@@ -322,7 +322,9 @@ impl VirtIOSoundDevice {
             owner.state.fail()
         };
         if first {
-            let _ = self.device.reset();
+            self.device
+                .reset()
+                .expect("VirtIO sound must stop DMA before retiring ownership");
             if let Some(observer) = observer {
                 observer.disconnected();
             }
@@ -596,7 +598,9 @@ impl CompletionSource for VirtIOSoundDevice {
 impl Drop for VirtIOSoundDevice {
     fn drop(&mut self) {
         // Reset 是释放 control/event/tx/rx DMA owner 前的唯一 device revocation barrier。
-        let _ = self.device.reset();
+        self.device
+            .reset()
+            .expect("VirtIO sound must stop DMA before retiring ownership");
     }
 }
 
@@ -606,9 +610,8 @@ struct VirtIOSoundIrqHandler {
 
 impl InterruptHandler for VirtIOSoundIrqHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
-        self.device
-            .completion_irq
-            .acknowledge_and_defer(&self.device.device);
+        let _ = self.device.completion_irq.acknowledge(&self.device.device);
+        crate::completion::raise();
         Ok(())
     }
 }

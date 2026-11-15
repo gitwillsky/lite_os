@@ -780,6 +780,15 @@ impl Interface {
         mut reply: impl FnMut(&Ipv4Reply<'_>) -> bool,
     ) -> PollIngressSingleResult {
         let rx_meta = rx_token.meta();
+        // 单一 ingress owner 的作用域策略；仅本帧省略 L4 RX 校验，保留 TX 和 IP/ICMP 语义。
+        let checksum = self.inner.caps.checksum.clone();
+        if rx_meta.rx_checksum_valid {
+            let without_rx = |mode: crate::phy::Checksum| {
+                if mode.tx() { crate::phy::Checksum::Tx } else { crate::phy::Checksum::None }
+            };
+            self.inner.caps.checksum.tcp = without_rx(checksum.tcp);
+            self.inner.caps.checksum.udp = without_rx(checksum.udp);
+        }
         let result = rx_token.consume(|frame| {
             if frame.is_empty() {
                 return PollIngressSingleResult::PacketProcessed;
@@ -855,6 +864,7 @@ impl Interface {
             }
             PollIngressSingleResult::SocketStateChanged
         });
+        self.inner.caps.checksum = checksum;
         self.inner.ingress_facts = None;
         self.inner.reply_bound_interface = None;
         result
@@ -1532,7 +1542,6 @@ impl InterfaceInner {
         if let Some((_, logical, _, _)) = self.egress_route {
             meta.interface_index = Some(logical);
         }
-        tx_token.set_meta(meta);
         let mut ip_repr = packet.ip_repr();
         assert!(!ip_repr.dst_addr().is_unspecified());
 
@@ -1550,7 +1559,22 @@ impl InterfaceInner {
 
         // Dispatch IP/Ethernet:
 
-        let caps = self.caps.clone();
+        let mut caps = self.caps.clone();
+        // 分片前的完整 transport 必须先软件计算，单个 fragment 无法完成整段 checksum。
+        if ip_repr.buffer_len() > caps.ip_mtu() {
+            caps.checksum.tcp = crate::phy::Checksum::Both;
+            caps.checksum.udp = crate::phy::Checksum::Both;
+        }
+        meta.tx_checksum = match packet.payload() {
+            #[cfg(feature = "socket-tcp")]
+            IpPayload::Tcp(_) => !caps.checksum.tcp.tx(),
+            #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+            IpPayload::Udp(..) => !caps.checksum.udp.tx(),
+            #[cfg(feature = "socket-dhcpv4")]
+            IpPayload::Dhcpv4(..) => !caps.checksum.udp.tx(),
+            _ => false,
+        };
+        tx_token.set_meta(meta);
 
         #[cfg(feature = "proto-ipv4-fragmentation")]
         let ipv4_id = self.next_ipv4_frag_ident();

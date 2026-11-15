@@ -422,6 +422,34 @@ pub(crate) fn unmask_interrupt(vector: u32) -> Result<(), InterruptError> {
     GIC.wait().lock().enable_interrupt(vector)
 }
 
+/// 改变 SPI 的单目标路由，保留 masks_until_ack 产生的屏蔽状态。
+pub(crate) fn set_interrupt_affinity(vector: u32, cpu: cpu::CpuId) -> Result<(), InterruptError> {
+    let controller = GIC.wait().lock();
+    if !controller.valid_device_vector(vector) || !controller.possible_cpus.contains(cpu) {
+        return Err(InterruptError::InvalidVector);
+    }
+    if !controller.handlers.contains_key(&vector) {
+        return Err(InterruptError::HandlerNotSet);
+    }
+    // 1. 与固定 Linux gic_set_affinity 一致，先停止已启用源，再更改 IROUTER。
+    let enabled = controller
+        .distributor
+        .read32(GICD_ISENABLER + vector as usize / 32 * 4)
+        & (1u32 << (vector % 32))
+        != 0;
+    if enabled {
+        controller.disable_interrupt(vector);
+    }
+    // 2. 路由变化不消费 pending 事件；原本待 ack 的电平源必须继续屏蔽。
+    let result = controller.set_affinity(vector, CpuSet::singleton(cpu));
+    if enabled {
+        controller.enable_interrupt(vector)?;
+    } else {
+        controller.wait_distributor_write();
+    }
+    result
+}
+
 /// 设备中断（SPI）向量区间。
 pub(crate) fn device_interrupt_range() -> core::ops::Range<u32> {
     32..GIC.wait().lock().max_interrupt + 1

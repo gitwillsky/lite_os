@@ -4,8 +4,7 @@
 
 ## 核心规范
 
-- 远程开发入口使用 SSH 2（[RFC 4251](https://www.rfc-editor.org/rfc/rfc4251)）、OpenSSH 的 SFTP 子系统与 Unix socket 转发。
-  服务端来自 Alpine v3.22 的 OpenSSH `10.0_p1-r11`，各架构包摘要由 `scripts/userland/artifacts.py` 固定。
+- 远程开发入口使用 SSH 2（[RFC 4251](https://www.rfc-editor.org/rfc/rfc4251)）、OpenSSH 的 SFTP 子系统与 Unix socket 转发。 服务端来自 Alpine v3.22 的 OpenSSH `10.0_p1-r11`，各架构包摘要由 `scripts/userland/artifacts.py` 固定。
 - 桌面访问遵循 [RFB 3.8（RFC 6143）](https://www.rfc-editor.org/rfc/rfc6143)，在认证后的 SSH 流内使用 Raw 帧更新。
 - DHCPv4 状态、租约计时与报文选项分别以 [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131) 和 [RFC 2132](https://www.rfc-editor.org/rfc/rfc2132) 为准。
 
@@ -31,6 +30,7 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 - 虚拟时间下限参照固定 Linux revision 的 [CFS 设计](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/scheduler/sched-design-CFS.rst)。
 - 睡眠额度必须有界的成熟语义参照同树 [fair.c 的 entity_lag](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/fair.c)。
   公平类保留有界唤醒额度，不声明 EEVDF；CBS/EDF、Revisited CBS 及 sched_attr 依同树 `Documentation/scheduler/sched-deadline.rst`、`kernel/sched/deadline.c`、`kernel/sched/syscalls.c`。
+- CPU 分区参考 `Documentation/admin-guide/cgroup-v2.rst`；IRQ 亲和参考 `drivers/irqchip/{irq-gic-v3,irq-sifive-plic}.c`，均取上述 Linux revision。逻辑 CPU、权限与原生接口由 LiteOS 契约定义。
 
 ### 原生服务消息
 
@@ -120,7 +120,7 @@ LiteOS 采用服务私有 VMO 双环，不新增 zx_socket 对象或宣称其 wi
 
 - Virtual I/O Device `1.4` Committee Specification 01；source commit `917e900e0246b7fe21cdde795b0e566dd4f57d8d`。
 - 来源：[CS01 HTML](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)、[固定源码](https://github.com/oasis-tcs/virtio-spec/tree/917e900e0246b7fe21cdde795b0e566dd4f57d8d)。
-- 它定义 transport、feature negotiation、status、virtqueue ownership、notification、reset 与 device conformance。
+- 定义 transport、feature、virtqueue、DMA 与 reset；TX 校验和采用 [RFC 1071](https://www.rfc-editor.org/rfc/rfc1071.html) 的并行求和与奇偶规则，不使用其增量更新公式。
 
 ### Arm PrimeCell UART
 

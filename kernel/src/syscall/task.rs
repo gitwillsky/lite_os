@@ -198,6 +198,43 @@ pub(super) fn thread_set_affinity(call: &Call<'_>) -> Result<(), Status> {
     Ok(())
 }
 
+pub(super) fn thread_set_isolation(call: &Call<'_>) -> Result<(), Status> {
+    use crate::{execution::cpu, thread::IsolationError};
+
+    if !call
+        .resource(call.arg_handle(0), 0)?
+        .covers_system(native_abi::resource::system::SCHEDULE)
+    {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let count = call.arg(2);
+    if count > cpu::count() {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let mut words = [0u32; 2 * usize::BITS as usize];
+    let words = &mut words[..2 * count];
+    call.read_array_into(call.arg(1), words)?;
+    let mut changes = alloc::vec::Vec::new();
+    changes
+        .try_reserve_exact(count)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    for &[handle, id] in words.as_chunks::<2>().0 {
+        let cpu = if id == u32::MAX {
+            None
+        } else {
+            Some(cpu::id_at(id as usize).ok_or(native_abi::ERR_INVALID_ARGS)?)
+        };
+        let thread = call.thread_handle(handle, rights::MANAGE)?;
+        changes.push((thread.execution().ok_or(native_abi::ERR_BAD_STATE)?, cpu));
+    }
+    crate::thread::replace_isolation(&changes).map_err(|error| match error {
+        IsolationError::InvalidAssignment => native_abi::ERR_INVALID_ARGS,
+        IsolationError::Conflict => native_abi::ERR_NO_RESOURCES,
+        IsolationError::Terminated => native_abi::ERR_BAD_STATE,
+        IsolationError::NoMemory => native_abi::ERR_NO_MEMORY,
+    })
+}
+
 pub(super) fn cpu_current(call: &Call<'_>) -> Result<(), Status> {
     let cpu = crate::execution::cpu::current_id().index() as u32;
     call.write(call.arg(0), &cpu)

@@ -3,6 +3,18 @@ use super::{
 };
 
 impl Socket {
+    /// 配置 AF_PACKET OFD 的标准 AUXDATA 输出，不改变远端捕获队列。
+    pub(crate) fn set_packet_auxiliary(&self, enabled: bool) -> Result<(), SocketError> {
+        let SocketBackend::Packet(socket) = &self.backend else {
+            return Err(SocketError::OperationNotSupported);
+        };
+        socket.set_auxiliary(enabled);
+        Ok(())
+    }
+    pub(crate) fn packet_auxiliary(&self) -> bool {
+        matches!(&self.backend, SocketBackend::Packet(socket) if socket.auxiliary())
+    }
+
     /// 已创建 socket 的实际网络域；accept 从 listener 捕获，setns 不重定向既有 fd。
     pub(crate) fn net_namespace(&self) -> alloc::sync::Arc<super::NetNamespace> {
         self.memory.namespace()

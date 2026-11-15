@@ -4,7 +4,7 @@ use super::*;
 use crate::thread::scheduler::deadline::Parameters;
 
 /// 一个存活线程的调度容量凭据；即使所有就绪线程集中在同一 CPU，队列仍能容纳。
-pub(in crate::thread) struct ThreadSlot(());
+pub(in crate::thread) struct ThreadSlot(u64);
 
 impl ThreadSlot {
     /// 在创建线程的可失败阶段，先确保每个 CPU 的 mailbox 与有序集合都能容纳所有已接纳线程。
@@ -20,17 +20,27 @@ impl ThreadSlot {
                 count.checked_add(1)
             })
             .map_err(|_| ())?;
-        let slot = Self(());
+        let slot = Self(crate::id::next_koid());
         let required = previous + 1;
         if required > *topology.admitted_capacity.lock() {
             grow(topology, required)?;
         }
         Ok(slot)
     }
+
+    /// 容量凭据与弱索引共用执行体身份，避免索引延长线程或其栈的寿命。
+    pub(in crate::thread) fn id(&self) -> u64 {
+        self.0
+    }
 }
 
 impl Drop for ThreadSlot {
     fn drop(&mut self) {
+        PROCESSOR_TOPOLOGY
+            .wait()
+            .threads
+            .lock()
+            .retain(|(id, _)| *id != self.0);
         let previous = PROCESSOR_TOPOLOGY
             .wait()
             .thread_slots
@@ -43,6 +53,8 @@ impl Drop for ThreadSlot {
 fn grow(topology: &ProcessorTopology, required: usize) -> Result<(), ()> {
     // 1. 成倍准备所有备用队列；锁外分配，任何失败都保留现有容量。
     let capacity = required.checked_next_power_of_two().ok_or(())?;
+    let mut thread_index = Vec::new();
+    thread_index.try_reserve_exact(capacity).map_err(|_| ())?;
     let mut spares = Vec::new();
     spares
         .try_reserve_exact(topology.slots.len())
@@ -56,6 +68,11 @@ fn grow(topology: &ProcessorTopology, required: usize) -> Result<(), ()> {
     // 2. 以 admission → inbound 的锁序发布整批；并发创建可能已发布更大的一批。
     let mut admitted = topology.admitted_capacity.lock();
     if *admitted < capacity {
+        {
+            let mut threads = topology.threads.lock();
+            thread_index.extend(threads.drain(..));
+            core::mem::swap(&mut *threads, &mut thread_index);
+        }
         for (slot, (entries, runqueue)) in topology.slots.iter().zip(&mut spares) {
             let mut inbound = slot.processor.inbound.lock();
             core::mem::swap(&mut inbound.spare_entries, entries);

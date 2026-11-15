@@ -29,6 +29,12 @@ pub(crate) mod scheduler {
     pub(crate) use super::native_deadline as deadline;
 }
 pub(crate) mod processor {
+    pub(crate) fn shared_cpus() -> super::execution::cpu::CpuSet {
+        super::execution::cpu::possible()
+    }
+    pub(crate) fn cpu_is_shared(_: super::execution::cpu::CpuId) -> bool {
+        true
+    }
     pub(crate) struct DeadlineReservation;
     impl DeadlineReservation {
         pub(crate) fn replace(
@@ -77,6 +83,25 @@ mod tests {
             )
         });
         SchedulingEntity::new(DEFAULT_PRIORITY, 0, 0)
+    }
+
+    #[test]
+    fn partition_preserves_hard_affinity_and_requires_an_exclusive_grant() {
+        let _entity = entity();
+        let cpu0 = cpu::id_at(0).unwrap();
+        let cpu1 = cpu::id_at(1).unwrap();
+        let shared = cpu::CpuSet::singleton(cpu0);
+        assert_eq!(CpuAffinity::all().eligible_in(shared), shared);
+        assert!(
+            CpuAffinity::restricted_to(cpu::CpuSet::singleton(cpu1))
+                .unwrap()
+                .eligible_in(shared)
+                .is_empty()
+        );
+        assert_eq!(
+            CpuAffinity::exclusive(cpu1).eligible_in(shared),
+            cpu::CpuSet::singleton(cpu1)
+        );
     }
 
     #[test]

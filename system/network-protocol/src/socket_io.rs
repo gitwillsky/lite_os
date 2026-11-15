@@ -67,6 +67,30 @@ pub(super) fn get_packet(record: &Record) -> Result<Option<PacketAddress>, Statu
         _ => Err(invalid()),
     }
 }
+pub(super) fn packet_information(record: &mut Record, info: PacketInformation) {
+    record[8] = match info.checksum {
+        PacketChecksum::Unverified => 0,
+        PacketChecksum::Partial => 1,
+        PacketChecksum::Verified => 2,
+    } | (u64::from(info.network_offset) << 16);
+}
+pub(super) fn get_packet_information(record: &Record) -> Result<PacketInformation, Status> {
+    if record[8] & !0xffff_0003 != 0
+        || record[8] >> 16 > record[3]
+        || record[9..].iter().any(|&word| word != 0)
+    {
+        return Err(invalid());
+    }
+    Ok(PacketInformation {
+        checksum: match record[8] & 3 {
+            0 => PacketChecksum::Unverified,
+            1 => PacketChecksum::Partial,
+            2 => PacketChecksum::Verified,
+            _ => return Err(invalid()),
+        },
+        network_offset: (record[8] >> 16) as u16,
+    })
+}
 pub(super) fn send_info(record: &mut Record, info: Option<InternetSendPacketInfo>) {
     if let Some(info) = info {
         record[8] = 1
@@ -186,6 +210,7 @@ pub(super) fn execute(
             ServedSocket::Packet(socket) => {
                 socket.receive(length, request[3] != 0).map(|received| {
                     packet(&mut response, Some(received.source));
+                    packet_information(&mut response, received.information);
                     (received.data, received.full_length)
                 })
             }

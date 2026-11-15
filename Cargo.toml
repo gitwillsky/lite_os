@@ -5,6 +5,7 @@ members = [
     "abi/linux-abi",
     "abi/native-abi",
     "libraries/fallible-tree",
+    "libraries/packet-wire",
     "libraries/mmio",
     "libraries/span-heap",
     "system/native-runtime",

@@ -293,14 +293,15 @@ impl Netcfg {
     }
 
     fn install(&self, entry: &device_protocol::directory::Entry) -> Result<(), Status> {
-        let device = self.directory.open(entry)?;
         let mut inner = self.inner.lock();
         let Some(link) = inner.link.as_ref() else {
             return Err(native_abi::ERR_PEER_CLOSED);
         };
-        let (index, lifetime) = link
-            .installer
-            .install_device(&device.description, device.handles)?;
+        let (index, lifetime) = link.installer.install_device(
+            entry.id,
+            &entry.description,
+            alloc::vec![self.directory.duplicate()?.into_handle()],
+        )?;
         let key = inner.next_key;
         inner.next_key += 1;
         lifetime.wait_async(&self.port, key, signals::PEER_CLOSED)?;

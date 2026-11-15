@@ -446,6 +446,7 @@ impl RemotePacketSocket {
             source: socket_io::get_packet(&response)
                 .map_err(transport)?
                 .ok_or(SocketError::NetworkDown)?,
+            information: socket_io::get_packet_information(&response).map_err(transport)?,
         })
     }
 

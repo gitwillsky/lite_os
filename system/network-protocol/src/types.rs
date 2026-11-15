@@ -1,5 +1,6 @@
 //! 网络服务与使用者共享的领域词汇：socket 错误与就绪状态、地址、选项、路由与接口快照。
 
+use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
 use device_model::network::{NetworkLink, NetworkStatistics};
@@ -448,4 +449,40 @@ pub struct NetworkSnapshot {
 pub struct RouteSnapshot {
     pub name: [u8; 16],
     pub route: Ipv4RouteRequest,
+}
+
+/// 捕获时的 transport checksum 状态；Partial 与 Verified 互斥。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketChecksum {
+    /// 未提供硬件验证信息，接收者自行检查。
+    Unverified,
+    /// transport checksum 尚待设备补全，字节中仍包含伪头 seed。
+    Partial,
+    /// 已由设备验证，或驱动在交付前补全。
+    Verified,
+}
+
+/// 随实际捕获帧冻结的校验和状态与网络头位置；不包含 Linux cmsg 编码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketInformation {
+    pub checksum: PacketChecksum,
+    /// 相对本次 socket 交付内容的 L3 header 偏移。
+    pub network_offset: u16,
+}
+
+/// 一次 INET receive 的结果。
+pub struct InetReceived {
+    pub data: Vec<u8>,
+    /// 消息的完整长度（datagram 截断时大于 `data.len()`）。
+    pub full_length: usize,
+    pub source: Option<InetAddress>,
+    pub packet_info: Option<InternetPacketInfo>,
+}
+
+/// 一次 packet receive 的结果。
+pub struct PacketReceived {
+    pub data: Vec<u8>,
+    pub full_length: usize,
+    pub source: PacketAddress,
+    pub information: PacketInformation,
 }
