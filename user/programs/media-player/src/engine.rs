@@ -446,8 +446,16 @@ impl Engine {
     }
 
     /// 请求最新画布尺寸并取出已完成帧；尚在渲染时返回 None，不阻塞 UI。
-    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&mpv_client::Frame>> {
+    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<mpv_client::Frame>> {
         self.mpv.render(width, height)
+    }
+
+    pub fn recycle_frame(&mut self, frame: mpv_client::Frame) {
+        self.mpv.recycle_frame(frame);
+    }
+
+    pub fn clear_render_size(&mut self) {
+        self.mpv.clear_render_size();
     }
 
     /// 运行 mpv 命令；失败时把原因放进状态栏消息并返回 false。

@@ -18,6 +18,7 @@ pub struct WindowHost {
     dirty: bool,
     // OWNER: 装饰/配置/资源改变要求全幅；客户区的节点损伤不能清除这个要求。
     full: bool,
+    transparent: bool,
     resource_generation: u64,
 }
 impl WindowHost {
@@ -28,6 +29,7 @@ impl WindowHost {
             decoration: Decoration::new(kind),
             dirty: true,
             full: true,
+            transparent: false,
             resource_generation: 0,
         }
     }
@@ -49,6 +51,29 @@ impl WindowHost {
     pub fn invalidate_frame(&mut self) {
         self.dirty = true;
         self.full = true;
+    }
+
+    /// 允许客户区打开透明区域。下一帧更新遮挡声明并重绘窗口。
+    pub fn set_transparent(&mut self, display: &mut Display, transparent: bool) -> io::Result<()> {
+        if self.transparent != transparent {
+            self.transparent = transparent;
+            self.update_opaque_region(display)?;
+            self.invalidate_frame();
+        }
+        Ok(())
+    }
+
+    fn update_opaque_region(&self, display: &mut Display) -> io::Result<()> {
+        if let Some(configuration) = display.configuration(self.window) {
+            let rect = (!self.transparent).then_some(Rect::new(
+                0,
+                0,
+                configuration.width,
+                configuration.height,
+            ));
+            display.set_opaque_region(self.window, rect)?;
+        }
+        Ok(())
     }
     /// 当前有未提交变化或资源换代，且 Display 已允许绘制；不消费失效。
     pub fn needs_paint(&self, display: &Display, resources: &Resources) -> bool {
@@ -101,12 +126,9 @@ impl WindowHost {
             return Ok(HostEvent { close: false });
         }
         let mut close = matches!(event.kind, EventKind::Close);
-        if let EventKind::Configure(configuration) = event.kind {
+        if matches!(event.kind, EventKind::Configure(_)) {
             // 装饰与客户区先用不透明系统色填满；只在 configure 改变几何时发送提示，不逐帧创建 region。
-            display.set_opaque_region(
-                self.window,
-                Some(Rect::new(0, 0, configuration.width, configuration.height)),
-            )?;
+            self.update_opaque_region(display)?;
         }
         if let Some(configuration) = display.configuration(self.window) {
             let before = self.decoration.pressed_button(configuration);

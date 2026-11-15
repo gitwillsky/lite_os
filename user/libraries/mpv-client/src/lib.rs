@@ -10,27 +10,63 @@ mod ffi;
 mod render;
 
 use ffi::{Api, EventRecord, Handle};
-use linux_uapi::dynamic_library::Library;
+use linux_uapi::{
+    dynamic_library::Library,
+    shared_memory::{MemFd, SharedMapping},
+};
 use render::Renderer;
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     io::{self, Write},
-    os::unix::net::UnixStream,
+    os::{
+        fd::{AsFd, BorrowedFd},
+        unix::net::UnixStream,
+    },
     ptr,
 };
 
 /// Soname installed by `scripts/mpv_runtime.py`.
 pub const LIBRARY: &str = "libmpv.so.2";
 
-/// A completed software-rendered BGR0 frame at its actual device-pixel size.
-/// Its pixels remain borrowed until the next [`Mpv::render`] call or renderer destruction.
+/// Maximum producer slots across rendering, completed and submitted frames.
+pub const FRAME_SLOTS: usize = 3;
+
+/// A completed software-rendered XRGB frame in a fixed-size shared file.
 pub struct Frame {
-    /// Width in device pixels; may differ from the latest requested size during resize.
-    pub width: u32,
-    /// Height in device pixels.
-    pub height: u32,
-    /// Row-major 0x00RRGGBB pixels; the high byte is padding.
-    pub pixels: Vec<u32>,
+    slot: u32,
+    generation: u64,
+    width: u32,
+    height: u32,
+    stride: u32,
+    memory: MemFd,
+    mapping: SharedMapping,
+}
+
+impl Frame {
+    /// Stable slot in the producer ring.
+    pub fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// Identifies this allocation of a slot's backing file.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Actual width and height in device pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Padded row size in bytes.
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+
+    /// File backing the frame. Consumers must release it before recycling the frame.
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
+        self.memory.as_fd()
+    }
 }
 
 /// A property value in one of the formats the player reads.
@@ -377,15 +413,29 @@ impl Mpv {
 
     /// Requests the latest device-pixel size and takes a completed frame without waiting.
     /// Returns `None` while rendering; a completed frame can have an older size during resize.
-    /// The returned frame is borrowed until the next render call.
+    /// The returned frame must eventually be recycled after the consumer releases it.
     ///
     /// # Errors
     /// Zero/oversized dimensions, a stopped render thread, or an upstream rendering failure.
-    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&Frame>> {
+    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<Frame>> {
         self.render
             .as_mut()
             .ok_or_else(|| io::Error::other("mpv renderer is unavailable"))?
             .render(width, height)
+    }
+
+    /// Returns a completed or released frame to the renderer for reuse.
+    pub fn recycle_frame(&mut self, frame: Frame) {
+        if let Some(renderer) = &mut self.render {
+            renderer.recycle(frame);
+        }
+    }
+
+    /// Stops requesting frames while the video surface is hidden.
+    pub fn clear_render_size(&mut self) {
+        if let Some(renderer) = &mut self.render {
+            renderer.clear_size();
+        }
     }
 }
 

@@ -163,7 +163,7 @@ impl Display {
         }
         // SAFETY: 上面的内核查询确认写/尺寸封印；封印不可撤销，接收 FD 的另一端也不能写入或截断。
         let mapping = unsafe { ReadOnlyMapping::from_fd(memory.as_fd(), memory.len()) }?;
-        let pool = self.create_shm_pool(&memory, memory.len())?;
+        let pool = self.create_shm_pool(memory.as_fd(), memory.len())?;
         let buffer = self.transport.allocate(Interface::WlBuffer)?;
         wl_shm_pool::Request::CreateBuffer {
             id: buffer,

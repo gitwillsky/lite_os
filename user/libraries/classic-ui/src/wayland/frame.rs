@@ -3,7 +3,11 @@
 use super::{Configuration, Display, WindowId};
 use canvas::Rect;
 use linux_uapi::shared_memory::{MemFd, SharedMapping};
-use std::{collections::VecDeque, io, os::fd::AsFd};
+use std::{
+    collections::VecDeque,
+    io,
+    os::fd::{AsFd, BorrowedFd},
+};
 use wayland_wire::{
     protocol::{
         Interface, wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
@@ -407,7 +411,11 @@ impl Display {
         Ok(())
     }
 
-    fn commit_callback(&mut self, window: WindowId, callback: ObjectId) -> io::Result<()> {
+    pub(super) fn commit_callback(
+        &mut self,
+        window: WindowId,
+        callback: ObjectId,
+    ) -> io::Result<()> {
         let writer = &mut self.transport.writer;
         wl_surface::Request::Frame { callback }
             .encode(window.0, writer)
@@ -464,7 +472,7 @@ impl Display {
     ) -> io::Result<ObjectId> {
         let memory = MemFd::create("classic-ui", capacity)?;
         let mapping = SharedMapping::map(memory.as_fd(), capacity)?;
-        let pool = self.create_shm_pool(&memory, capacity)?;
+        let pool = self.create_shm_pool(memory.as_fd(), capacity)?;
         self.create_buffer(
             Buffer {
                 window,
@@ -482,7 +490,7 @@ impl Display {
     /// 两类 SHM 存储共用同一 FD publication；fd 参数只走 SCM_RIGHTS，不写进 Wayland 消息字节。
     pub(super) fn create_shm_pool(
         &mut self,
-        memory: &MemFd,
+        fd: BorrowedFd<'_>,
         length: usize,
     ) -> io::Result<ObjectId> {
         let length = i32::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -492,7 +500,7 @@ impl Display {
         request.object(Some(pool));
         request.int(length);
         request.end().map_err(io::Error::other)?;
-        self.transport.send_fd(request.bytes(), memory.as_fd())?;
+        self.transport.send_fd(request.bytes(), fd)?;
         Ok(pool)
     }
 

@@ -149,6 +149,11 @@ impl<'a> Painter<'a> {
         self.surface.fill_rect(rect, color);
     }
 
+    /// 将裁剪内的矩形设为完全透明，让下方子表面参与合成。
+    pub fn clear(&mut self, rect: Rect) {
+        self.surface.fill_rect(self.physical(rect), Color(0));
+    }
+
     /// 用任意 RGB 填充矩形：只给主题没有对应系统色的专用绘制（性能图表的绿色网格与曲线）使用。
     pub fn fill_rgb(&mut self, rect: Rect, rgb: Rgb) {
         let (rect, color) = (self.physical(rect), to_color(rgb));

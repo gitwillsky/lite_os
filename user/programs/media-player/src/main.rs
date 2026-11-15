@@ -1,4 +1,4 @@
-//! 媒体播放机：Windows 2000 外观的 libmpv 播放器；界面全部是共享控件，视频帧经 Canvas 媒体帧显示。
+//! 媒体播放机：Windows 2000 共享控件与独立的 libmpv 视频子表面。
 mod dialogs;
 mod engine;
 mod view;
@@ -457,6 +457,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let view = &shell.view;
         let action = match event.kind {
             EventKind::Close => Some(Action::Exit),
+            EventKind::VideoReleased { slot } if event.node == view.video.id() => {
+                view.release_video(&mut shell.engine.borrow_mut(), slot);
+                shell.sync(Changes {
+                    frame: true,
+                    ..Default::default()
+                });
+                None
+            }
+            EventKind::VideoReady if event.node == view.video.id() => {
+                shell.sync(Changes {
+                    frame: true,
+                    ..Default::default()
+                });
+                None
+            }
             EventKind::Configure { scale, .. } => {
                 view.scale.set(scale);
                 view.measure_status()?;

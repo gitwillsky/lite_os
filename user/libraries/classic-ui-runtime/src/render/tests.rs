@@ -243,7 +243,7 @@ fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_pop
             for region in regions {
                 painter.clipped(*region, |painter| {
                     painter.fill(bounds, C::ButtonFace);
-                    tree.paint(painter, true, &assets);
+                    tree.paint(painter, true, &assets, None);
                 });
             }
         };

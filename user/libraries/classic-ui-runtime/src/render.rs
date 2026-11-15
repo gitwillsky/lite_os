@@ -17,7 +17,13 @@ pub struct CanvasAssets<'a> {
     pub screen: Option<(i32, i32)>,
 }
 impl Tree {
-    pub fn paint(&self, p: &mut Painter<'_>, keyboard_focus: bool, canvas: &CanvasAssets<'_>) {
+    pub fn paint(
+        &self,
+        p: &mut Painter<'_>,
+        keyboard_focus: bool,
+        canvas: &CanvasAssets<'_>,
+        video: Option<(u64, Rect)>,
+    ) {
         if let Some(menu) = self
             .menubar
             .and_then(|id| self.nodes.get(&id))
@@ -26,7 +32,7 @@ impl Tree {
             p.set_cues(menu.state.cues_visible());
         }
         for id in self.roots() {
-            self.paint_node(id, p, keyboard_focus, false, canvas);
+            self.paint_node(id, p, keyboard_focus, false, canvas, video);
         }
         if let Some(node) = self
             .menubar
@@ -65,6 +71,7 @@ impl Tree {
         keyboard_focus: bool,
         inherited_disabled: bool,
         canvas: &CanvasAssets<'_>,
+        video: Option<(u64, Rect)>,
     ) {
         let node = &self.nodes[&id];
         if !node.visible() || node.clip.intersect(p.clip()).is_empty() {
@@ -345,7 +352,19 @@ impl Tree {
                     }
                 }
                 widget::CANVAS => {
-                    if let Some(frame) = &node.frame {
+                    if let Some((_, hole)) = video.filter(|(node, _)| *node == id) {
+                        if hole != rect {
+                            p.fill_rgb(
+                                rect,
+                                Rgb {
+                                    red: 0,
+                                    green: 0,
+                                    blue: 0,
+                                },
+                            );
+                        }
+                        p.clear(hole);
+                    } else if let Some(frame) = &node.frame {
                         p.clipped(rect, |p| frame.paint_fitted(p, rect));
                     }
                     for command in &node.drawing {
@@ -426,7 +445,7 @@ impl Tree {
                 });
             }
             for child in &node.children {
-                self.paint_node(*child, p, keyboard_focus, disabled, canvas);
+                self.paint_node(*child, p, keyboard_focus, disabled, canvas, video);
             }
         });
     }

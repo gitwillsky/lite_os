@@ -1,12 +1,13 @@
 //! 渲染线程独占 mpv_render_*；UI 只交换最新尺寸与已完成帧，双方不等待对方执行 libmpv。
 use crate::{
-    check,
+    FRAME_SLOTS, Frame, check,
     ffi::{self, Api, Handle, Param, RenderContext},
 };
+use linux_uapi::shared_memory::{MemFd, SharedMapping};
 use std::{
     ffi::c_void,
     io::{self, Write},
-    os::unix::net::UnixStream,
+    os::{fd::AsFd, unix::net::UnixStream},
     ptr,
     sync::{
         Arc, Mutex,
@@ -25,14 +26,20 @@ impl CoreHandle {
     }
 }
 
-/// 帧交接只持锁移动 Vec/尺寸；锁内禁止 libmpv 调用、像素复制或等待。
-/// 一个完成槽合并慢 UI 尚未取走的帧，一个 spare 复用 UI 归还的存储，避免帧队列持续膨胀。
+/// 帧交接只在锁内交换所有权。归还槽来自 UI 丢弃的帧或 Wayland buffer.release。
 #[derive(Default)]
 struct Mailbox {
     size: Option<(u32, u32)>,
     completed: Option<io::Result<crate::Frame>>,
-    spare: Option<Vec<u32>>,
+    spare: [Option<Frame>; FRAME_SLOTS],
     stop: bool,
+}
+impl Mailbox {
+    fn recycle(&mut self, frame: Frame) {
+        let slot = frame.slot as usize;
+        debug_assert!(self.spare[slot].is_none());
+        self.spare[slot] = Some(frame);
+    }
 }
 struct Wake {
     requests: SyncSender<()>,
@@ -83,17 +90,9 @@ impl State {
         unsafe { (self.api.render_update)(self.context) & ffi::UPDATE_FRAME != 0 }
     }
 
-    fn draw(&self, width: u32, height: u32, pixels: &mut Vec<u32>) -> io::Result<()> {
-        let count = (width as usize)
-            .checked_mul(height as usize)
-            .filter(|_| width != 0 && height != 0)
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        let mut size = [
-            i32::try_from(width).map_err(io::Error::other)?,
-            i32::try_from(height).map_err(io::Error::other)?,
-        ];
-        pixels.resize(count, 0);
-        let mut stride = width as usize * 4;
+    fn draw(&self, frame: &mut Frame) -> io::Result<()> {
+        let mut size = [frame.width as i32, frame.height as i32];
+        let mut stride = frame.stride as usize;
         let mut params = [
             Param {
                 kind: ffi::PARAM_SW_SIZE,
@@ -109,7 +108,7 @@ impl State {
             },
             Param {
                 kind: ffi::PARAM_SW_POINTER,
-                data: pixels.as_mut_ptr().cast(),
+                data: frame.mapping.as_non_null().as_ptr().cast(),
             },
             Param {
                 kind: ffi::PARAM_INVALID,
@@ -137,7 +136,6 @@ pub(super) struct Renderer {
     requests: SyncSender<()>,
     mailbox: Arc<Mutex<Mailbox>>,
     thread: Option<JoinHandle<()>>,
-    frame: Option<crate::Frame>,
 }
 impl Renderer {
     /// 创建唯一渲染 owner；失败时 join 已启动线程，调用者才能销毁 core。
@@ -168,45 +166,81 @@ impl Renderer {
                 if started.send(Ok(())).is_err() {
                     return;
                 }
-                let mut pixels = Vec::new();
+                let mut allocated = 0;
+                let mut generation = 0;
                 let mut rendered_size = None;
                 let mut pending = false;
                 while receiver.recv().is_ok() {
-                    let size = match rendering.lock() {
-                        Ok(mailbox) if !mailbox.stop => mailbox.size,
-                        _ => break,
-                    };
                     pending |= state.update();
-                    let Some((width, height)) = size else {
-                        continue;
-                    };
-                    if !pending && rendered_size == size {
-                        continue;
-                    }
-                    // 即使 UI 尚未消费旧帧也继续服务 mpv；等待 UI 会阻塞 core，
-                    // 而 UI 的同步 client API 又可能等待 core，重新形成死锁。
-                    let result = state
-                        .draw(width, height, &mut pixels)
-                        .map(|()| crate::Frame {
-                            width,
-                            height,
-                            pixels: std::mem::take(&mut pixels),
+                    let (size, frame, slot) = {
+                        let Ok(mut mailbox) = rendering.lock() else {
+                            break;
+                        };
+                        if mailbox.stop {
+                            break;
+                        }
+                        let Some(size) = mailbox.size else {
+                            rendered_size = None;
+                            continue;
+                        };
+                        if !pending && rendered_size == Some(size) {
+                            continue;
+                        }
+                        let spare = mailbox.spare.iter_mut().find_map(Option::take);
+                        let spare = spare.or_else(|| {
+                            if allocated == FRAME_SLOTS && matches!(mailbox.completed, Some(Ok(_)))
+                            {
+                                mailbox.completed.take().and_then(Result::ok)
+                            } else {
+                                None
+                            }
                         });
+                        let slot = match spare.as_ref() {
+                            Some(frame) => frame.slot,
+                            None if allocated < FRAME_SLOTS => allocated as u32,
+                            None => continue,
+                        };
+                        (size, spare, slot)
+                    };
+                    let (width, height) = size;
+                    let mut frame = if frame
+                        .as_ref()
+                        .is_some_and(|frame| (frame.width, frame.height) == size)
+                    {
+                        frame.expect("matching frame")
+                    } else {
+                        generation += 1;
+                        match new_frame(slot, generation, width, height) {
+                            Ok(replacement) => replacement,
+                            Err(error) => {
+                                if let Ok(mut mailbox) = rendering.lock() {
+                                    mailbox.spare[slot as usize] = frame;
+                                    if let Some(Ok(old)) = mailbox.completed.replace(Err(error)) {
+                                        mailbox.recycle(old);
+                                    }
+                                }
+                                let _ = (&writer).write(&[1]);
+                                continue;
+                            }
+                        }
+                    };
+                    allocated = allocated.max(slot as usize + 1);
+                    let rendered = state.draw(&mut frame);
                     let Ok(mut mailbox) = rendering.lock() else {
                         break;
                     };
-                    let previous = mailbox.completed.replace(result);
-                    let spare = mailbox.spare.take();
-                    drop(mailbox);
-                    if pixels.is_empty() {
-                        pixels = previous
-                            .and_then(Result::ok)
-                            .map(|frame| frame.pixels)
-                            .or(spare)
-                            .unwrap_or_default();
+                    let completed = if let Err(error) = rendered {
+                        mailbox.spare[slot as usize] = Some(frame);
+                        Err(error)
+                    } else {
+                        Ok(frame)
+                    };
+                    if let Some(Ok(old)) = mailbox.completed.replace(completed) {
+                        mailbox.recycle(old);
                     }
                     pending = false;
-                    rendered_size = size;
+                    rendered_size = Some(size);
+                    drop(mailbox);
                     let _ = (&writer).write(&[1]);
                 }
             })?;
@@ -218,7 +252,6 @@ impl Renderer {
                 requests,
                 mailbox,
                 thread: Some(thread),
-                frame: None,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -235,7 +268,7 @@ impl Renderer {
                 .map_or(true, |mailbox| mailbox.completed.is_some())
     }
 
-    pub(super) fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&crate::Frame>> {
+    pub(super) fn render(&mut self, width: u32, height: u32) -> io::Result<Option<Frame>> {
         if width == 0 || height == 0 || width > 16384 || height > 16384 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -254,22 +287,45 @@ impl Renderer {
             // callback 与尺寸变化共用一个有界唤醒，渲染线程总是读取最新尺寸。
             let _ = self.requests.try_send(());
         }
-        let Some(completed) = completed else {
-            return Ok(None);
-        };
-        let old = self.frame.replace(completed?);
-        if let Some(old) = old {
-            let spare = self
-                .mailbox
-                .lock()
-                .map_err(|_| io::Error::other("mpv render mailbox poisoned"))?
-                .spare
-                .replace(old.pixels);
-            drop(spare);
+        completed.transpose()
+    }
+
+    pub(super) fn recycle(&mut self, frame: Frame) {
+        if let Ok(mut mailbox) = self.mailbox.lock() {
+            mailbox.recycle(frame);
         }
-        Ok(self.frame.as_ref())
+        let _ = self.requests.try_send(());
+    }
+
+    pub(super) fn clear_size(&mut self) {
+        if let Ok(mut mailbox) = self.mailbox.lock() {
+            mailbox.size = None;
+            if let Some(Ok(frame)) = mailbox.completed.take() {
+                mailbox.recycle(frame);
+            }
+        }
+        let _ = self.requests.try_send(());
     }
 }
+fn new_frame(slot: u32, generation: u64, width: u32, height: u32) -> io::Result<Frame> {
+    // libmpv recommends 64-byte alignment for both the line pitch and address.
+    // mmap supplies a page-aligned base; every line, including the last, owns its padding.
+    let stride = (width * 4).next_multiple_of(64);
+    let bytes = stride as usize * height as usize;
+    let memory = MemFd::create("mpv-video-frame", bytes)?;
+    memory.preallocate()?;
+    let mapping = SharedMapping::map(memory.as_fd(), bytes)?;
+    Ok(Frame {
+        slot,
+        generation,
+        width,
+        height,
+        stride,
+        memory,
+        mapping,
+    })
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         // callback 自持 sender，所以不能依赖断开 channel 退出。stop 与最新尺寸
@@ -281,5 +337,19 @@ impl Drop for Renderer {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_target_has_aligned_rows_with_writable_last_row_padding() {
+        let frame = new_frame(0, 1, 65, 3).unwrap();
+        assert_eq!(frame.stride, 320);
+        assert_eq!(frame.mapping.as_non_null().as_ptr() as usize % 64, 0);
+        assert_eq!(frame.mapping.len(), 960);
+        assert_eq!(frame.memory.len(), 960);
     }
 }

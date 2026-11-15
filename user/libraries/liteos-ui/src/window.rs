@@ -1,4 +1,5 @@
 //! 安全窗口与控件句柄，稳定 ABI 内部保留所有控件行为。
+mod video;
 use crate::{
     Error, Result,
     connection::{Connection, text},
@@ -9,6 +10,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
 };
+pub use video::VideoBuffer;
 
 /// 窗口创建规格；parent 是本连接中的瞬时父窗口关系，不自动承诺模态策略。
 pub struct WindowOptions<'a> {
@@ -1025,6 +1027,7 @@ impl Widget {
             }
         })
     }
+
     /// 原子替换 Canvas 显示列表；不会把 Rust Painter 或像素分配器跨库传递。
     pub fn set_drawing(&self, values: &[Draw<'_>]) -> Result<()> {
         let commands: Vec<_> = values

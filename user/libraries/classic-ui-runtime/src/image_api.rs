@@ -1,7 +1,7 @@
 //! Image 资源选择与调色板的稳定 ABI 入口；应用只提供颜色，不接触解码或绘制。
 use super::{Context, abi, invalid, invoke};
 use classic_ui::Bitmap;
-use std::{ffi::c_void, io, rc::Rc, slice};
+use std::{ffi::c_void, io, os::fd::BorrowedFd, rc::Rc, slice};
 
 /// 创建和替换 Image 共用同一资源选择，避免整张位图被替换入口误当作图标。
 pub(super) fn resource(context: &mut Context, name: &str, width: i32) -> Option<Rc<Bitmap>> {
@@ -100,6 +100,25 @@ pub(super) unsafe extern "C" fn canvas_frame(
             }
             host.frame.invalidate();
             Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn canvas_video(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    frame: *const abi::VideoFrame,
+) -> i32 {
+    // SAFETY: ABI 调用期间借用有效的 context、可空描述记录和打开的文件描述符。
+    unsafe {
+        invoke(pointer, |context| {
+            let frame = match frame.as_ref() {
+                Some(frame) if frame.fd < 0 => return Err(invalid("invalid video descriptor")),
+                Some(frame) => Some((frame, BorrowedFd::borrow_raw(frame.fd))),
+                None => None,
+            };
+            super::video::present(context, window, id, frame)
         })
     }
 }

@@ -38,6 +38,7 @@ use std::{
 };
 pub use tasks::{AbortHandle, Cancelled, Clock, Sleep, Task};
 pub use toplevel::{Toplevel, ToplevelRequest};
+pub use window::VideoBuffer;
 pub use window::{
     ColorRole, Column, ColumnAlignment, Draw, EditCommand, FontRole, Icon, ListOptions, ListStyle,
     Menu, MenuItem, RowIcon, ToolbarButton, ToolbarKind, TreeRow, WeakWindow, Widget, WidgetKind,
@@ -62,6 +63,12 @@ pub enum EventKind {
         row: u64,
     },
     Close,
+    /// 视频共享缓冲归还给生产者。
+    VideoReleased {
+        slot: u32,
+    },
+    /// 视频子表面允许提交下一帧。
+    VideoReady,
     /// 连接上的标准顶层窗口快照发生变化；window/node 为零。
     ToplevelsChanged,
     Activate {
@@ -152,6 +159,10 @@ impl Event {
             },
             event::CLIPBOARD_ERROR => EventKind::ClipboardError { reason: event.code },
             event::CLIPBOARD_CHANGED => EventKind::ClipboardChanged,
+            event::VIDEO_RELEASED => EventKind::VideoReleased {
+                slot: u32::try_from(event.value).ok()?,
+            },
+            event::VIDEO_READY => EventKind::VideoReady,
             event::RENAME_REQUESTED => EventKind::RenameRequested { row: event.value },
             event::CONTEXT_MENU => EventKind::ContextMenu {
                 row: (event.value != 0).then_some(event.value),

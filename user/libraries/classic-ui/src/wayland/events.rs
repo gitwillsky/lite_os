@@ -192,7 +192,11 @@ impl Display {
             }
             AnyEvent::ZwlrLayerSurfaceV1(event) => self.layer_event(object, event)?,
             AnyEvent::WlBuffer(wl_buffer::Event::Release) => {
-                self.release_buffer(object)?;
+                if self.buffers.contains_key(&object) {
+                    self.release_buffer(object)?;
+                } else {
+                    self.release_stream_buffer(object);
+                }
             }
             AnyEvent::WlCallback(wayland_wire::protocol::wl_callback::Event::Done {
                 callback_data,
@@ -203,12 +207,12 @@ impl Display {
                     .find(|(_, window)| window.frame == Some(object))
                 {
                     window.frame = None;
-                    self.events.push_back(Event {
-                        window: *id,
-                        kind: EventKind::FrameReady {
-                            time: callback_data,
-                        },
-                    });
+                    let window = *id;
+                    let (window, kind) = match self.stream_parent(window) {
+                        Some(parent) => (parent, EventKind::StreamFrameReady),
+                        None => (window, EventKind::FrameReady { time: callback_data }),
+                    };
+                    self.events.push_back(Event { window, kind });
                 }
             }
             AnyEvent::WlPointer(wl_pointer::Event::Enter {
@@ -423,6 +427,7 @@ mod tests {
                     },
                 )]),
                 buffers: HashMap::new(),
+                streams: HashMap::new(),
                 events: VecDeque::new(),
                 pointer: None,
                 keyboard: None,

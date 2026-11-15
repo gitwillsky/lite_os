@@ -90,6 +90,8 @@ regular read 在单个 iovec 内集中读取最多 64 KiB 的驻留内容，仍�
 Wayland 共享池只在创建和增长时建立映射；每次提交复制 O(损伤像素)，直接写入最终 CPU 内容或 fence 管理的上传存储。
 用相同 Git pack、视频和 AArch64 HVF/SMP guest 比较解析阶段的 scanout 提交间隔和 Git 耗时；
 该诊断记录并发负载下的尾延迟，不为宿主采样增加阻塞门槛。
+视频生产者直接渲染到三个可复用的共享槽，稳定提交无整帧复制与新分配；父窗口只在控件或几何失效时重绘。
+对照同时记录视频播放下的 scanout 提交间隔、Git 解析时间与 GPU 命令量，单独核对拖动、缩放和菜单覆盖场景。
 
 StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs，不进入已有内容的 read/write；
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测

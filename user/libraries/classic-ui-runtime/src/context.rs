@@ -21,6 +21,7 @@ pub struct WindowRecord {
     pub parent: Option<u64>,
     pub modal: bool,
     pub frame: WindowHost,
+    pub(super) video: Option<super::video::Video>,
     pub body: WindowBody,
 }
 impl WindowRecord {
@@ -143,6 +144,7 @@ impl Context {
                 parent: parent_id,
                 modal,
                 frame,
+                video: None,
                 body: WindowBody::Widgets(Tree::new()),
             },
         );
@@ -452,6 +454,10 @@ impl Context {
             let Some(_configuration) = self.display.configuration(input.window) else {
                 return Ok(None);
             };
+            if let Some(event) = super::video::event(host, id, &input.kind) {
+                self.events.push_back(event);
+                return Ok(self.events.pop_front());
+            }
             let mut handled = clipboard_handled;
             let close = host.frame.event(&mut self.display, &input)?.close;
             let mut file_action = super::file_dialog::Action::Pending;
@@ -715,17 +721,25 @@ impl Context {
                 );
                 tree.damage(&probe, keyboard_focus, canvas.now)
             };
+            let video = host
+                .video
+                .as_ref()
+                .filter(|video| video.visible)
+                .map(|video| (video.node, video.area));
             let presented = host.frame.paint(
                 &mut self.display,
                 &mut self.resources,
                 &host.title,
                 &damage,
                 |painter, _client, _, _| {
-                    tree.paint(painter, keyboard_focus, &canvas);
+                    tree.paint(painter, keyboard_focus, &canvas, video);
                     Ok(())
                 },
             )?;
             if presented {
+                if let Some(video) = &host.video {
+                    self.display.stream_parent_committed(video.surface)?;
+                }
                 let mut scratch = [0];
                 let surface =
                     canvas::Surface::new(&mut scratch, 1, 1, 1).expect("damage probe surface");
@@ -879,6 +893,7 @@ fn layout_record(
         tree.size_grip = allowed;
         let grip = tree.grip_rect();
         host.frame.set_size_grip(grip);
+        super::video::layout(&mut host.video, &mut host.frame, display, tree)?;
     }
     Ok(())
 }

@@ -296,7 +296,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   非 Canvas、边长为 0 或超过 16384、`count` 不等于 `width*height` 返回 INVALID 且旧帧不变，`(0,0)` 清除。
   异步帧尺寸可落后于当前几何，Canvas 在同一绘制层采样旧帧，窗口配置与控件重绘无需等待新尺寸渲染。
   `fullscreen(window, on)` 只编码标准 `xdg_toplevel.set_fullscreen/unset_fullscreen`，结果由 Configure 事件通知。
-  Benchmark 决策：每帧仍需一次 O(像素数) 复制与一次 blit；同尺寸提交在代码审查中确认无帧存储分配，不据此推断帧率。
+  播放器通过 ABI 表尾的 `canvas_video` 提交封印的 XRGB SHM 槽。Display 独占 wl_buffer 与 release，mpv 渲染线程只写有权复用的槽；
+  每窗一个视频子表面，位置和缩放随父提交，稳态独立画帧。父窗口在视频处留透明区域，菜单和输入保留在父窗口。
 - `combo_dropped_height(window, id, height)` 追加到 ABI 表尾，对应对话框模板 COMBOBOX 的 cy：展开总高度减去文字区为列表高度，
   按整行取可见项数，项目更少时收缩；0 恢复默认最多 16 行，负数或非组合框返回 INVALID。下拉列表画在本窗口表面内，
   打开时在窗口范围内定位，下方放不下且上方更宽裕时向上展开；仍放不下时减少可见行而不越出窗口。

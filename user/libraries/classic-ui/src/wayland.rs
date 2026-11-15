@@ -10,6 +10,7 @@ mod layer;
 mod security;
 mod shell;
 pub use shell::{ShellArrangement, ShellCommand};
+mod stream;
 mod subsurface;
 pub use subsurface::ImageId;
 mod transport;
@@ -160,6 +161,10 @@ pub enum EventKind {
     },
     /// 一个提交缓冲可重新写入；不表示内容变化，不应单独触发重绘。
     BufferAvailable,
+    /// The compositor released the stream buffer with this producer slot.
+    StreamBufferReleased(u32),
+    /// A video child is ready to commit another frame.
+    StreamFrameReady,
     /// foreign-toplevel 的完整 done/closed 更新；连接级事件借一个存活窗口携带。
     ToplevelsChanged,
 }
@@ -246,6 +251,7 @@ pub struct Display {
     output_mode: Option<(i32, i32)>,
     windows: HashMap<WindowId, Window>,
     buffers: HashMap<ObjectId, frame::Buffer>,
+    streams: HashMap<WindowId, stream::Stream>,
     events: VecDeque<Event>,
     pointer: Option<WindowId>,
     keyboard: Option<WindowId>,
@@ -442,6 +448,7 @@ impl Display {
             output_mode: None,
             windows: HashMap::new(),
             buffers: HashMap::new(),
+            streams: HashMap::new(),
             events: VecDeque::new(),
             pointer: None,
             keyboard: None,
@@ -835,6 +842,7 @@ impl Display {
             self.destroy_window(child)?;
         }
         self.retire_idle_buffers(window)?;
+        self.retire_stream(window)?;
         let state = self
             .windows
             .remove(&window)

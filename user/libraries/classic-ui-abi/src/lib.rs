@@ -204,6 +204,22 @@ pub mod event {
     pub const CONTEXT_MENU: u32 = 25;
     /// 单列列表项的复选框被点击或按下空格。value 是行 ID。
     pub const TOGGLE_ROW_CHECK: u32 = 26;
+    /// 已释放此前提交的流缓冲，value 是生产者槽编号。
+    pub const VIDEO_RELEASED: u32 = 27;
+    /// 视频子表面可以继续提交。
+    pub const VIDEO_READY: u32 = 28;
+}
+
+/// 单个 XRGB8888 共享缓冲。重新分配同一槽的文件时更换 generation。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VideoFrame {
+    pub fd: i32,
+    pub slot: u32,
+    pub generation: u64,
+    pub width: i32,
+    pub height: i32,
+    pub stride: i32,
 }
 
 /// 事件中的 value 用于选择行标识；text 是一个已提交 Unicode scalar，0 表示没有文本。
@@ -567,6 +583,9 @@ pub struct Api {
     /// 文本以系统字体用途（编号同 [`Api::set_font`]）在窗口当前 scale 下的逻辑像素宽度（GetTextExtentPoint32）；
     /// 用于按实际字体决定状态栏分格等固定宽度。未知用途或空输出返回 INVALID，未知窗口返回 NOT_FOUND。
     pub text_width: unsafe extern "C" fn(*mut c_void, u64, u32, Text, *mut i32) -> i32,
+    /// 向窗口的 Canvas 视频子表面提交借用的封印 memfd。PENDING 时仍由调用者持有；
+    /// OK 后 VIDEO_RELEASED 才允许重写。传 null 隐藏子表面，已有在途槽继续释放。
+    pub canvas_video: unsafe extern "C" fn(*mut c_void, u64, u64, *const VideoFrame) -> i32,
 }
 
 /// [`Api::message_box`] 的 style 位（Win32 MessageBox 的 uType 布局）。

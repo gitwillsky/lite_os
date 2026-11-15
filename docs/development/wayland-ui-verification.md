@@ -69,6 +69,8 @@ WindowHost/Tree 经 `paint_frame` 在已释放共享缓冲中按节点失效直�
 合成器按 [Wayland 1.24 的共享内存实现](https://github.com/wayland-mirror/wayland/blob/1.24.0/src/wayland-shm.c) 复用每个池的只读映射。
 访问未封印文件前检查字节上限，覆盖同页的截断；C 复制保护并发截断引发的 SIGBUS，Rust 侧沿用协议错误与连接清理。
 损伤像素直接进入 CPU 内容、VirGL 小矩形内联命令或已有的 fence 管理上传暂存区。
+媒体播放机的 libmpv 软件输出直接写入页对齐、行距按 64 字节取整的封印 memfd。视频槽最多三个，提交后必须等 wl_buffer.release；
+未提交的完成帧只保留最新一张。视频位于输入透明的子表面，控件绘制在父表面；缩放时旧帧等比适配并与父窗口几何一起更新。
 `canvas::Surface::blit` 对同倍率且实际像素完全不透明的可见行直接复制；其余保留预乘 alpha 合成与整数缩放。
 该快路径不缓存不透明状态，也不信任客户端声明。O(帧像素数) 的成本由相同工作负载的离线前后微基准与既有 canvas 基线评估；
 SHM 的 stride/offset/末行/truncation、blit 语义测试与真实窗口的重复提交、尺寸变更验证等价性。

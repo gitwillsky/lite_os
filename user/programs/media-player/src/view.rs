@@ -1,10 +1,12 @@
-//! 窗口控件与菜单：全部使用共享控件，视频帧经 Canvas 的媒体帧入口显示。
+//! 窗口控件与菜单。视频流使用 Canvas 的独立共享缓冲子表面。
 use crate::engine::{Changes, Engine, Preview, Repeat, State, TrackKind, clock};
 use liteos_ui::{
-    Draw, FontRole, Layout, Menu, MenuItem, Range, Rect, ToolbarButton, ToolbarKind, Widget,
+    FontRole, Layout, Menu, MenuItem, Range, Rect, ToolbarButton, ToolbarKind, Widget,
     WidgetKind as Kind, WidgetSpec, Window, state,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+mod video;
+use video::VideoFrames;
 
 /// 菜单与按钮触发的动作；轨道、速度等带参数的菜单项在 `Action::decode` 里还原。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -373,6 +375,7 @@ pub struct View {
     pub scale: Cell<i32>,
     /// 上一次刷新滑块与时间标签的时刻；位置事件每帧到达，界面只需约 10 Hz。
     last_position: Cell<Option<std::time::Instant>>,
+    frames: RefCell<VideoFrames>,
 }
 
 impl View {
@@ -491,6 +494,7 @@ impl View {
             fast_scaling: Cell::new(false),
             scale: Cell::new(1),
             last_position: Cell::new(None),
+            frames: RefCell::new(VideoFrames::default()),
         };
         view.measure_status()?;
         Ok(view)
@@ -585,53 +589,6 @@ impl View {
             self.list.select_rows(&[index as u64 + 1])?;
         }
         Ok(())
-    }
-
-    /// 视频画布的设备像素尺寸：逻辑矩形乘以窗口 scale。
-    pub fn canvas_pixels(&self) -> liteos_ui::Result<Option<(u32, u32)>> {
-        let area = self.video.geometry()?;
-        let scale = self.scale.get().max(1);
-        Ok((area.width > 0 && area.height > 0)
-            .then(|| ((area.width * scale) as u32, (area.height * scale) as u32)))
-    }
-
-    /// 渲染当前帧；空闲时清除旧帧，在黑底上居中显示 Windows Media 标志（WMP 6.4 未打开媒体时的画面）。
-    pub fn render(&self, engine: &mut Engine) -> liteos_ui::Result<()> {
-        let Some((width, height)) = self.canvas_pixels()? else {
-            return Ok(());
-        };
-        if engine.state.idle {
-            self.video.set_frame(0, 0, &[])?;
-            let area = self.video.geometry()?;
-            let rect = Rect::new(0, 0, area.width, area.height);
-            return self.video.set_drawing(&[
-                Draw {
-                    kind: 1,
-                    rect,
-                    color: 0,
-                    bold: false,
-                    text: "",
-                },
-                Draw {
-                    kind: 8,
-                    rect,
-                    color: 0,
-                    bold: false,
-                    text: LOGO,
-                },
-            ]);
-        }
-        self.video.set_drawing(&[])?;
-        match engine.render(width, height) {
-            Ok(Some(frame)) => self
-                .video
-                .set_frame(frame.width, frame.height, &frame.pixels),
-            Ok(None) => Ok(()),
-            Err(error) => {
-                engine.state.message = format!("渲染失败：{error}");
-                self.controls_state(&engine.state)
-            }
-        }
     }
 
     pub fn show_side(&self, visible: bool) -> liteos_ui::Result<()> {
