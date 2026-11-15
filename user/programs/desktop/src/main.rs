@@ -30,12 +30,13 @@ use std::{
 const TASKBAR_HEIGHT: i32 = 28;
 
 /// 开始菜单“程序”使用用户与系统安装条目；设置程序只在控制面板出现。
-fn installed_programs(changes: Option<&mut DirectoryChanges>) -> Vec<desktop_entry::Entry> {
-    let mut apps = match changes {
-        Some(changes) => {
-            let (apps, watch) = desktop_entry::watch_installed(changes);
+fn installed_programs(changes: &mut Option<DirectoryChanges>) -> Vec<desktop_entry::Entry> {
+    let mut apps = match changes.as_mut() {
+        Some(watcher) => {
+            let (apps, watch) = desktop_entry::watch_installed(watcher);
             if let Err(error) = watch {
                 eprintln!("desktop: application directories: {error}");
+                *changes = None;
             }
             apps
         }
@@ -187,7 +188,7 @@ impl Desktop {
         let mut application_changes = DirectoryChanges::open()
             .inspect_err(|error| eprintln!("desktop: application notifications: {error}"))
             .ok();
-        let apps = installed_programs(application_changes.as_mut());
+        let apps = installed_programs(&mut application_changes);
         Ok(Self {
             background,
             taskbar,
@@ -478,7 +479,7 @@ impl Desktop {
             // 图标只落在网格单元上，已经对齐；保留命令以与原版菜单一致。
             Action::LineUpIcons => {}
             Action::Refresh => {
-                self.apps = installed_programs(self.application_changes.as_mut());
+                self.apps = installed_programs(&mut self.application_changes);
                 self.refresh_icons();
             }
             Action::Window(id, request) => display.control_toplevel(id, request)?,
@@ -1222,7 +1223,9 @@ impl Desktop {
                 code: 0x111,
                 pressed: false,
                 ..
-            } if Some(window) != self.menu.visible() => self.context_menu(display, art, window, false)?,
+            } if Some(window) != self.menu.visible() => {
+                self.context_menu(display, art, window, false)?
+            }
             EventKind::Close if Some(window) == self.menu.window() => self.retire_menu(display)?,
             _ => {}
         }
@@ -1243,6 +1246,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut revision = 0;
     let mut external = PollBuffer::default();
     // 持续移动鼠标时也按普通空闲循环的频率查目录，避免每个输入批次都查询文件系统。
+    // 仅在通知不可用时沿用原周期扫描，避免丢失未登记目录的应用变更。
+    let mut application_poll = Instant::now();
     let mut icon_poll = Instant::now();
     let mut pending = HashSet::new();
     loop {
@@ -1337,25 +1342,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pending.insert(state.background);
         }
         state.tick_auto_hide(&mut display)?;
-        if applications_ready
-            && let Some(changes) = &mut state.application_changes
-        {
-            match changes.drain() {
-                Ok(true) => {
-                    let apps = installed_programs(Some(changes));
-                    if apps != state.apps {
-                        state.apps = apps;
-                        if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
-                            state.refresh_icons();
-                        }
-                        state.apps_changed = true;
-                    }
-                }
-                Ok(false) => {}
+        let applications_changed = match &mut state.application_changes {
+            Some(changes) if applications_ready => match changes.drain() {
+                Ok(changed) => changed,
                 Err(error) => {
                     eprintln!("desktop: application notifications: {error}");
                     state.application_changes = None;
+                    true
                 }
+            },
+            Some(_) => false,
+            None => application_poll.elapsed() >= Duration::from_secs(1),
+        };
+        if applications_changed {
+            application_poll = Instant::now();
+            let apps = installed_programs(&mut state.application_changes);
+            if apps != state.apps {
+                state.apps = apps;
+                if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
+                    state.refresh_icons();
+                }
+                state.apps_changed = true;
             }
         }
         if icon_poll.elapsed() >= Duration::from_millis(100)
