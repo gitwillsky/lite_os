@@ -238,12 +238,17 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - 中文 fallback 使用 Noto Sans CJK SC Regular/Bold，SHA-256 分别为
   `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`、
   `b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a`。
+- 盲文点阵 fallback 使用 Noto Sans Symbols 2 `2.008` Regular，两种字重共用该字体的 `U+2800–U+28FF` 字形。
+  TTF SHA-256 为 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`。
+  [Unicode 17.0 §21.1.1](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-21/)、
+  [Google Fonts 固定版本](https://github.com/google/fonts/tree/7b6724ac7ececc713e9ba93af309f7520c9a80a3/ofl/notosanssymbols2)、
+  [SIL OFL 1.1](../assets/fonts/NotoSansSymbols2-OFL.txt)。
 - 来源：[JetBrains Mono 官方 release](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304)、
   [Noto CJK 官方仓库](https://github.com/notofonts/noto-cjk)、
   [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)。
 - Unicode cell width 使用 unicode-width `0.2.2`，checksum
   `b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254`。
-- checked atlas SHA-256 为 `dab03e4beb2ee1b5ac689bc3a608461530ce58774557d011881f782f8a892d61`；
+- checked atlas SHA-256 为 `c7c2f2e1248277ce7f210b8d82efbe5bbf4d6a433b577c4fcfa5b732d282f36f`；
   terminfo 使用 ncurses `6.5` source format。
 
 ### Wayland

@@ -13,6 +13,7 @@ class TerminalFontTests(unittest.TestCase):
             cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         self.assertIn("Chinese samples nonempty", result.stdout)
+        self.assertIn("256 distinct Braille glyphs per face", result.stdout)
 
 
 if __name__ == "__main__":

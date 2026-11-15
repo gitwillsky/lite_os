@@ -1,4 +1,4 @@
-//! Checked terminal A8 atlas (JetBrains Mono NL + Noto CJK, 16x32 physical cells).
+//! Checked terminal A8 atlas from Latin, CJK and symbol faces (16x32 physical cells).
 //!
 //! The atlas mirrors `scripts/generate_terminal_font.py`: a 32-byte header, a
 //! sorted u32 codepoint table, then two tightly packed 32x32 A8 faces. A narrow
@@ -10,7 +10,7 @@ use std::{fs, io};
 
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x03";
-pub const GLYPH_COUNT: usize = 4470;
+pub const GLYPH_COUNT: usize = 4726;
 pub const FACE_COUNT: usize = 2;
 /// Physical cell extent; one cell is one terminal grid column/row.
 pub const CELL_WIDTH: usize = 16;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the checked LiteOS terminal A8 atlas from fixed Latin and CJK faces.
+"""Generate the checked LiteOS terminal A8 atlas from fixed Latin, CJK and symbol faces.
 
 Run with the pinned host interpreter: .local/tools/classic-assets/bin/python scripts/generate_terminal_font.py
 Normal builds consume the checked atlas and need neither Pillow nor the font sources.
@@ -28,6 +28,7 @@ MEDIUM_SHA256 = "44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74
 BOLD_SHA256 = "0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3"
 PRIMARY_PIXEL_SIZE = 24
 CJK_PIXEL_SIZE = 24
+SYMBOL_PIXEL_SIZE = 20
 MAX_BYTES = 10 * 1024 * 1024
 
 
@@ -38,10 +39,12 @@ def sha256(path: Path) -> str:
 
 CJK_REGULAR = INPUTS / "fonts/NotoSansCJKsc-Regular.otf"
 CJK_BOLD = INPUTS / "fonts/NotoSansCJKsc-Bold.otf"
+SYMBOLS = INPUTS / "fonts/NotoSansSymbols2-Regular.ttf"
 
 CJK_REGULAR_SHA256 = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
 
 CJK_BOLD_SHA256 = "b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a"
+SYMBOLS_SHA256 = "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21"
 
 CJK_REGULAR_URL = (
     "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
@@ -52,6 +55,14 @@ CJK_BOLD_URL = (
     "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
     "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
 )
+SYMBOLS_URL = (
+    "https://raw.githubusercontent.com/google/fonts/7b6724ac7ececc713e9ba93af309f7520c9a80a3/"
+    "ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf"
+)
+
+# Unicode 17.0 §21.1.1. The Latin and CJK faces omit this block, so they
+# cannot supply glyphs for Braille-based progress indicators and plots.
+BRAILLE = range(0x2800, 0x2900)
 
 def ensure_font(path: Path, url: str, expected: str) -> None:
     """Fetch one pinned OTF into the cache; a matching cached copy skips the network."""
@@ -111,41 +122,35 @@ def primary_codepoints() -> set[int]:
 
 
 def codepoints() -> list[int]:
-    """Return the sorted terminal glyph contract including GB2312 level-1 Chinese."""
-    return sorted(primary_codepoints() | set(cjk_codepoints()))
+    """Return the sorted union of the selected terminal font repertoires."""
+    return sorted(primary_codepoints() | set(cjk_codepoints()) | set(BRAILLE))
 
 
 def render_face(primary_path: Path, cjk_path: Path, glyphs: list[int]) -> bytes:
-    """Rasterize one fixed-cell face with a pinned Noto CJK fallback."""
+    """Rasterize one atlas face using the first source assigned to each codepoint."""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ModuleNotFoundError as error:
         raise SystemExit("regen-font requires Pillow; --verify only needs Python") from error
 
-    primary = ImageFont.truetype(
-        primary_path,
-        PRIMARY_PIXEL_SIZE,
-        layout_engine=ImageFont.Layout.BASIC,
+    sources = (
+        (primary_path, PRIMARY_PIXEL_SIZE, CELL_WIDTH, primary_codepoints()),
+        (cjk_path, CJK_PIXEL_SIZE, BITMAP_WIDTH, cjk_codepoints()),
+        # Noto Sans Symbols 2 has one weight. Reuse it for both atlas faces.
+        (SYMBOLS, SYMBOL_PIXEL_SIZE, CELL_WIDTH, BRAILLE),
     )
-    cjk = ImageFont.truetype(
-        cjk_path,
-        CJK_PIXEL_SIZE,
-        layout_engine=ImageFont.Layout.BASIC,
-    )
-    metrics = {
-        True: primary.getmetrics(),
-        False: cjk.getmetrics(),
-    }
-    primary_glyphs = primary_codepoints()
+    glyph_sources = {}
+    for path, size, width, repertoire in sources:
+        font = ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+        ascent, descent = font.getmetrics()
+        baseline = (CELL_HEIGHT - ascent - descent) // 2 + ascent
+        for codepoint in repertoire:
+            glyph_sources.setdefault(codepoint, (font, width // 2, baseline))
     rendered = bytearray()
     for codepoint in glyphs:
-        is_primary = codepoint in primary_glyphs
-        font = primary if is_primary else cjk
-        ascent, descent = metrics[is_primary]
-        baseline = (CELL_HEIGHT - ascent - descent) // 2 + ascent
+        font, center, baseline = glyph_sources[codepoint]
         image = Image.new("L", (BITMAP_WIDTH, CELL_HEIGHT), 0)
         draw = ImageDraw.Draw(image)
-        center = CELL_WIDTH // 2 if is_primary else BITMAP_WIDTH // 2
         draw.text(
             (center, baseline),
             chr(codepoint),
@@ -166,6 +171,7 @@ def generate(medium: Path, bold: Path, output: Path) -> None:
             raise RuntimeError(f"font identity mismatch: {path}: expected {expected}, got {actual}")
     ensure_font(CJK_REGULAR, CJK_REGULAR_URL, CJK_REGULAR_SHA256)
     ensure_font(CJK_BOLD, CJK_BOLD_URL, CJK_BOLD_SHA256)
+    ensure_font(SYMBOLS, SYMBOLS_URL, SYMBOLS_SHA256)
     glyphs = codepoints()
     faces = (
         render_face(medium, CJK_REGULAR, glyphs),
@@ -191,7 +197,7 @@ def generate(medium: Path, bold: Path, output: Path) -> None:
 
 
 def verify(path: Path) -> None:
-    """Reparse the atlas and prove representative Chinese glyphs are real bitmaps."""
+    """Check the atlas layout and the stored CJK and Braille pixel coverage."""
     data = path.read_bytes()
     if data[:8] != MAGIC:
         raise RuntimeError(f"bad magic: {data[:8]!r}")
@@ -217,12 +223,14 @@ def verify(path: Path) -> None:
     if faces != codepoints_offset + glyph_count * 4 or len(data) != expected_size:
         raise RuntimeError("terminal atlas size is invalid")
     samples = [glyphs.index(ord(character)) for character in "中文乱码"]
-    face_bytes = glyph_count * BITMAP_WIDTH * CELL_HEIGHT
+    glyph_bytes = BITMAP_WIDTH * CELL_HEIGHT
+    face_bytes = glyph_count * glyph_bytes
+    braille_offset = glyphs.index(BRAILLE.start) * glyph_bytes
     for face in range(FACE_COUNT):
         base = faces + face * face_bytes
         for character, index in zip("中文乱码", samples):
-            start = base + index * BITMAP_WIDTH * CELL_HEIGHT
-            bitmap = data[start : start + BITMAP_WIDTH * CELL_HEIGHT]
+            start = base + index * glyph_bytes
+            bitmap = data[start : start + glyph_bytes]
             if not any(bitmap):
                 raise RuntimeError(f"terminal face {face} has an empty {character!r} glyph")
             if not any(
@@ -235,9 +243,22 @@ def verify(path: Path) -> None:
                 raise RuntimeError(
                     f"terminal face {face} keeps {character!r} inside one narrow cell"
                 )
+        start = base + braille_offset
+        braille = [
+            data[offset : offset + glyph_bytes]
+            for offset in range(start, start + len(BRAILLE) * glyph_bytes, glyph_bytes)
+        ]
+        if any(braille[0]) or len(set(braille)) != len(BRAILLE):
+            raise RuntimeError(f"terminal face {face} has missing or duplicate Braille glyphs")
+        if any(
+            any(bitmap[row + CELL_WIDTH : row + BITMAP_WIDTH])
+            for bitmap in braille
+            for row in range(0, glyph_bytes, BITMAP_WIDTH)
+        ):
+            raise RuntimeError(f"terminal face {face} spills Braille outside one cell")
     print(
         f"verified {path.relative_to(ROOT)}: {FACE_COUNT} faces, {glyph_count} glyphs, "
-        f"{len(data)} bytes, Chinese samples nonempty"
+        f"{len(data)} bytes, Chinese samples nonempty, {len(BRAILLE)} distinct Braille glyphs per face"
     )
 
 
