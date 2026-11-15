@@ -1,6 +1,7 @@
 //! 标准 Wayland 客户端窗口。连接独占协议对象、configure、输入焦点与帧生命周期。
 
 mod clipboard;
+mod dmabuf;
 mod events;
 mod file_drag;
 mod foreign;
@@ -11,6 +12,7 @@ mod security;
 mod shell;
 pub use shell::{ShellArrangement, ShellCommand};
 mod stream;
+pub use stream::StreamBuffer;
 mod subsurface;
 pub use subsurface::ImageId;
 mod input_method;
@@ -266,6 +268,7 @@ pub struct Display {
     windows: HashMap<WindowId, Window>,
     buffers: HashMap<ObjectId, frame::Buffer>,
     streams: HashMap<WindowId, stream::Stream>,
+    stream_dma: dmabuf::Registration,
     events: VecDeque<Event>,
     pointer: Option<WindowId>,
     keyboard: Option<WindowId>,
@@ -483,6 +486,7 @@ impl Display {
                 .map_err(io::Error::other)?;
             text_input.object = Some(id);
         }
+        let stream_dma = dmabuf::Registration::new(registry, &globals);
         let mut display = Self {
             transport,
             compositor,
@@ -497,6 +501,7 @@ impl Display {
             windows: HashMap::new(),
             buffers: HashMap::new(),
             streams: HashMap::new(),
+            stream_dma,
             events: VecDeque::new(),
             pointer: None,
             keyboard: None,

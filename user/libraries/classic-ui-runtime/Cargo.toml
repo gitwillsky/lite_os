@@ -15,10 +15,11 @@ canvas = { path = "../canvas" }
 classic-theme = { path = "../classic-theme" }
 typeface = { path = "../typeface" }
 linux-uapi.workspace = true
-terminal-font.workspace = true
 calendar = { path = "../calendar" }
 keyboard.workspace = true
 sound = { path = "../sound" }
+
+unicode-segmentation = "=1.12.0"
 
 [lints]
 workspace = true

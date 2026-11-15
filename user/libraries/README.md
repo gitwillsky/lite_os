@@ -27,8 +27,6 @@
 | [`mpv-client/`](mpv-client/README.md) | libmpv 客户端：属性、命令、事件、软件渲染 | 媒体播放机的内部依赖 |
 | [`sound/`](sound/README.md) | 系统提示音 | 共享库 `libsound.so` |
 | [`sndvol/`](sndvol/README.md) | 音量状态与布局 | 共享库 `libsndvol.so` |
-| [`terminal-font/`](terminal-font/README.md) | 终端字体图集 | 终端/共享 UI 的内部依赖 |
-| [`terminal-model/`](terminal-model/README.md) | 终端模型 | 终端程序的内部依赖 |
 
 新增库需登记 workspace、根 workspace exclude、目录索引与 architecture-check 的目录清单。
 系统内部 Rust dylib 才依赖 liteos-runtime 并登记 SYSTEM_LIBRARIES；公开 SDK cdylib 静态纳入 Rust/std，

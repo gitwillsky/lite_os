@@ -27,6 +27,7 @@ const WAIT_NOWAIT: u32 = 1;
 // Offsets in virglrenderer-1.1.0's virgl_caps_v2.
 const CAPABILITY_BITS: usize = 392;
 const CAPABILITY_BITS_V2: usize = 688;
+const CAP_COMMAND_TRANSFER: u32 = 1 << 17;
 const CAP_COPY_TRANSFER: u32 = 1 << 26;
 const CAP_COPY_TRANSFER_BOTH_DIRECTIONS: u32 = 1 << 7;
 
@@ -74,6 +75,16 @@ impl VirglCapabilities {
         };
         bits(CAPABILITY_BITS) & CAP_COPY_TRANSFER != 0
             && bits(CAPABILITY_BITS_V2) & CAP_COPY_TRANSFER_BOTH_DIRECTIONS != 0
+    }
+
+    /// Reports whether the VirGL2 host accepts ordered TRANSFER3D commands.
+    pub fn supports_command_transfer(&self) -> bool {
+        let flags = u32::from_le_bytes(
+            self.bytes[CAPABILITY_BITS..][..4]
+                .try_into()
+                .expect("capset extent"),
+        );
+        flags & CAP_COMMAND_TRANSFER != 0
     }
 }
 
@@ -150,6 +161,21 @@ impl VirglContext {
             height,
             FORMAT_B8G8R8A8_UNORM,
             BIND_SAMPLER_VIEW | BIND_RENDER_TARGET,
+            0,
+        )?)
+    }
+
+    /// Allocates a fully mapped, top-to-bottom XRGB8888 texture for CPU-produced frames.
+    ///
+    /// Its tightly laid-out pitch is `width * 4`. The producer must wait before rewriting
+    /// backing and transfer the initialized area to the host before publishing the texture.
+    /// Returns an error for invalid dimensions or a failed GEM allocation or mapping.
+    pub fn create_xrgb_texture(&self, width: u32, height: u32) -> io::Result<VirglResource> {
+        self.create_resource(ResourceSpec::texture(
+            width,
+            height,
+            FORMAT_B8G8R8X8_UNORM,
+            BIND_SAMPLER_VIEW,
             0,
         )?)
     }
@@ -638,27 +664,27 @@ impl VirglResource {
         )
     }
 
-    /// Uploads the complete byte range of a `PIPE_BUFFER` resource.
-    pub fn transfer_buffer_to_host(&self) -> io::Result<()> {
-        if self.height != 1 || self.stride != 1 || self.width as usize != self.mapping.size {
-            return Err(invalid_input("VirGL resource is not a byte buffer"));
+    /// Encodes a guest-to-host transfer of the first `length` bytes of a vertex buffer.
+    ///
+    /// The host executes the upload in command order. Include this resource in the
+    /// exec BO list and keep its backing unmodified until that submission completes.
+    /// Returns InvalidInput for a non-byte buffer or a range outside its backing.
+    pub fn encode_vertex_upload(
+        &self,
+        commands: &mut CommandEncoder,
+        length: u32,
+    ) -> io::Result<()> {
+        if length == 0
+            || length > self.width
+            || length as usize > self.size()
+            || self.height != 1
+            || self.stride != 1
+            || self.format != FORMAT_R8_UNORM
+        {
+            return Err(invalid_input("invalid VirGL vertex upload"));
         }
-        let mut transfer = raw::VirtGpuTransfer3d {
-            bo_handle: self.handle.get(),
-            region: raw::VirtGpuBox {
-                x: 0,
-                y: 0,
-                z: 0,
-                width: self.width,
-                height: 1,
-                depth: 1,
-            },
-            ..raw::VirtGpuTransfer3d::default()
-        };
-        self.device.ioctl(
-            raw::DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST,
-            (&raw mut transfer).cast(),
-        )
+        commands.upload_vertex_buffer(self.resource_id(), length);
+        Ok(())
     }
 
     /// Waits until the most recent exec or transfer referencing this resource completes.

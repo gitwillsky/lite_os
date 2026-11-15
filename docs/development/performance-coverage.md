@@ -90,8 +90,8 @@ regular read 在单个 iovec 内集中读取最多 64 KiB 的驻留内容，仍�
 Wayland 共享池只在创建和增长时建立映射；每次提交复制 O(损伤像素)，直接写入最终 CPU 内容或 fence 管理的上传存储。
 用相同 Git pack、视频和 AArch64 HVF/SMP guest 比较解析阶段的 scanout 提交间隔和 Git 耗时；
 该诊断记录并发负载下的尾延迟，不为宿主采样增加阻塞门槛。
-视频生产者直接渲染到三个可复用的共享槽，稳定提交无整帧复制与新分配；父窗口只在控件或几何失效时重绘。
-对照同时记录视频播放下的 scanout 提交间隔、Git 解析时间与 GPU 命令量，单独核对拖动、缩放和菜单覆盖场景。
+视频生产者直接渲染到三个可复用的共享槽；GPU 路径由生产者上传，合成器导入同一 PRIME 缓冲，稳定提交无整帧 CPU 复制。
+用固定 pack、视频和拖动轨迹对比 SHM/PRIME 的输入读取、DRM 完成与 scanout 间隔，核对实际传输类型和视频像素。
 
 StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs，不进入已有内容的 read/write；
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测
@@ -320,6 +320,7 @@ CPU_BUSY 直接交付已有纳秒快照，删除第二份转换 Vec。代价是�
 损伤在 commit owner 累计到呈现；Scanout 只保存 surface 身份与几何、双缓冲有效性和一帧损伤，不复制或保活像素。
 场景比较使用排序 Vec 与二分查询；区域分割复用 Vec，128 块上界约束碎片化。CPU/GPU 共用可见区域，
 GPU 使用标准 VirGL scissor 保持原始顶点/UV，不增加 shader 或逐像素 CPU 判定；背景只需一像素纹理。
+VirGL 顶点用同一次 exec 的有序 TRANSFER3D 上传已经写入的前缀，省去每个合成帧单独的传输 ioctl、队列请求与完成 fence。
 编码固定至既有 virglrenderer 1.1.0 的 SCISSOR_STATE 与 rasterizer scissor bit；正 viewport Y scale 下由输出 owner 转换坐标。
 opaque 来自 XRGB 或标准 region 的保守覆盖证明，不为判断透明度扫描全部像素；透明混合的区域必须不重叠。
 Benchmark 决策：最终使用已有 canvas/真实输出交互 workload，对比局部提交、视频覆盖下的拖动/缩放、遮挡与重新露出，

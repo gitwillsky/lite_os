@@ -42,6 +42,15 @@ impl Input {
         }
         Ok(())
     }
+    /// Queues user input without closing the terminal when the PTY is backlogged.
+    pub fn send(&self, bytes: Vec<u8>) -> bool {
+        if let Err(error) = self.push(bytes) {
+            eprintln!("terminal: input: {error}");
+            return false;
+        }
+        true
+    }
+
     pub async fn pending(&self) {
         poll_fn(|cx| {
             let mut queue = self.0.borrow_mut();
@@ -71,5 +80,31 @@ impl Input {
             queue.offset = 0;
         }
         Ok(count)
+    }
+}
+
+/// Encodes clipboard text using xterm bracketed paste when the application enabled it.
+pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let mut bytes = Vec::with_capacity(text.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        // A pasted ESC cannot end the bracketed-paste payload or turn it into terminal input.
+        bytes.extend(text.bytes().filter(|byte| !matches!(byte, 0x1b | 0x03)));
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bracketed_paste_preserves_multiline_text_and_owns_the_delimiters() {
+        assert_eq!(
+            super::paste("甲\n乙\x1b[201~", true),
+            "\x1b[200~甲\n乙[201~\x1b[201~".as_bytes()
+        );
+        assert_eq!(super::paste("甲\r\n乙\n", false), "甲\r乙\r".as_bytes());
     }
 }

@@ -153,6 +153,8 @@ pub struct SystemFonts {
     pub status: LogicalFont,
     pub message: LogicalFont,
     pub icon: LogicalFont,
+    pub monospace: LogicalFont,
+    pub caption_symbols: LogicalFont,
     /// “平滑屏幕字体边缘”；关闭时轮廓字形为单色。
     pub smoothing: bool,
 }
@@ -171,7 +173,9 @@ impl Default for SystemFonts {
             menu: blank.clone(),
             status: blank.clone(),
             message: blank.clone(),
-            icon: blank,
+            icon: blank.clone(),
+            monospace: blank.clone(),
+            caption_symbols: blank,
             smoothing: false,
         }
     }
@@ -187,6 +191,8 @@ impl SystemFonts {
             "StatusFont" => &mut self.status,
             "MessageFont" => &mut self.message,
             "IconFont" => &mut self.icon,
+            "MonospaceFont" => &mut self.monospace,
+            "CaptionSymbolFont" => &mut self.caption_symbols,
             _ => return None,
         })
     }

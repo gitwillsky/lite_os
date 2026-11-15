@@ -1,6 +1,7 @@
 //! Cross-OFD PRIME ownership and implicit synchronization on the production kernel, without UI.
 use linux_uapi::drm::{
     CommandEncoder, DrmDevice, FORMAT_B8G8R8A8_UNORM, FORMAT_B8G8R8X8_UNORM, ObjectKind,
+    VirglContext,
 };
 use std::{io, os::fd::AsFd};
 
@@ -44,6 +45,69 @@ fn fragmented_upload() -> Result<(), String> {
 }
 fn step<T>(phase: &str, result: io::Result<T>) -> Result<T, String> {
     result.map_err(|error| format!("PRIME {phase}: {error}"))
+}
+
+fn verify_padded_upload(
+    producer: &DrmDevice,
+    graphics: &VirglContext,
+    consumer: &VirglContext,
+) -> Result<(), String> {
+    // Match mpv's aligned storage and a visible width that excludes the padding.
+    const WIDTH: u32 = 27;
+    let (padded_width, height) = (32, 2);
+    let texture = step(
+        "padded allocation",
+        graphics.create_xrgb_texture(padded_width, height),
+    )?;
+    let colors = [0x0012_3456, 0x009a_bcde];
+    for (row, color) in colors.into_iter().enumerate() {
+        texture.write_row(row, 0, &[color; WIDTH as usize]);
+    }
+    step(
+        "padded upload",
+        texture.transfer_to_host(0, 0, WIDTH, height),
+    )?;
+    let fd = step("padded export", producer.export_dma_buf(texture.handle()))?;
+    let imported = step(
+        "padded import",
+        consumer.import_texture(
+            fd.as_fd(),
+            padded_width,
+            height,
+            padded_width * 4,
+            texture.format(),
+        ),
+    )?;
+    let mut readback = step(
+        "padded readback allocation",
+        consumer.create_vertex_buffer(WIDTH * height * 4),
+    )?;
+    // Read into another GEM to verify host texture contents and cross-context command order.
+    step(
+        "padded readback",
+        consumer.staged_transfer(&imported, &readback, [0, 0, WIDTH, height], None, true),
+    )?;
+    step("padded readback wait", readback.wait())?;
+    for (row, expected) in readback
+        .bytes_mut()
+        .as_chunks::<4>()
+        .0
+        .as_chunks::<{ WIDTH as usize }>()
+        .0
+        .iter()
+        .zip(colors)
+    {
+        if row
+            .iter()
+            .any(|pixel| u32::from_ne_bytes(*pixel) & 0x00ff_ffff != expected)
+        {
+            return Err(format!(
+                "PRIME padded upload expected {expected:#08x} on every texel"
+            ));
+        }
+    }
+    println!("drm-flip-probe: prime padded XRGB upload ok");
+    Ok(())
 }
 
 /// Verify exported resources survive their producer's OFD/context, repeat/self import returns
@@ -107,6 +171,7 @@ pub(super) fn verify() -> Result<(), String> {
     if consumer_shared != consumer_memory {
         return Err("imported GEM is not reported as drm-shared-memory".into());
     }
+    verify_padded_upload(&producer, &graphics, &imported_graphics)?;
     // The exported fd/consumer must retain the GEM object, not the producer's whole DRM file.
     drop(resource);
     if step(

@@ -114,7 +114,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - 顶层窗口销毁后，已在途的 configure 仅被解码，活窗口才发送 ack；否则无效请求会断开同一应用的整条连接。
 - xdg-dialog 对象独占 compositor 的模态提示，toplevel 销毁后附属对象 inert；对象编号复用不得恢复旧关联。
   客户端 Context 拥有 UI 父子生命周期与输入筛选，不把可选的 compositor 策略当成应用安全保证。
-- 等宽 atlas 只在需要该文字角色时加载一份，Rc 保活绘制借用；缺少缓存会在终端输出时反复读入约 9 MiB 字体。
+- 等宽 Canvas 文字与 `monospace_cell_size` 共用主题 `MonospaceFont` 的当前 scale 度量。Terminal 用该尺寸布局 VT 网格并投影 PTY 大小。
   蒙版缩放只遍历裁剪范围且不分配；独立缩放成本尚未测量；不由整体 canvas 基线推断。
 - terminal 的 VT 模型、输入队列和控件只在 UI 线程使用。队列上限 1 MiB；读端每轮最多消费 64 KiB，防止持续输出饿死输入。
   PTY 使用现有 SessionChild launcher，正常关闭在后台终止完整进程组并回收，异常退出仍执行兜底清理。
@@ -292,8 +292,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   非 Canvas、边长为 0 或超过 16384、`count` 不等于 `width*height` 返回 INVALID 且旧帧不变，`(0,0)` 清除。
   异步帧尺寸可落后于当前几何，Canvas 在同一绘制层采样旧帧，窗口配置与控件重绘无需等待新尺寸渲染。
   `fullscreen(window, on)` 只编码标准 `xdg_toplevel.set_fullscreen/unset_fullscreen`，结果由 Configure 事件通知。
-  播放器通过 ABI 表尾的 `canvas_video` 提交封印的 XRGB SHM 槽。Display 独占 wl_buffer 与 release，mpv 渲染线程只写有权复用的槽；
-  每窗一个视频子表面，位置和缩放随父提交，稳态独立画帧。父窗口在视频处留透明区域，菜单和输入保留在父窗口。
+  播放器通过 `canvas_video` 提交 XRGB 槽。ABI v1 表尾的 `video_device` 和 `use_dma_video` 为已协商主设备选择 PRIME，默认仍为封印 SHM。
+  Display 独占 wl_buffer、release 和 viewport；mpv 渲染线程只写有权复用的槽，并等自己的上传 fence。每窗一个视频子表面，位置和缩放随父提交，稳态独立画帧；父窗口保留菜单和输入。
 - `combo_dropped_height(window, id, height)` 追加到 ABI 表尾，对应对话框模板 COMBOBOX 的 cy：展开总高度减去文字区为列表高度，
   按整行取可见项数，项目更少时收缩；0 恢复默认最多 16 行，负数或非组合框返回 INVALID。下拉列表画在本窗口表面内，
   打开时在窗口范围内定位，下方放不下且上方更宽裕时向上展开；仍放不下时减少可见行而不越出窗口。
@@ -383,16 +383,16 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   kernel、rootfs 与开发镜像同步均消费受 Git 管理的文件。缺失、损坏和未登记文件必须失败，不读取本地覆盖。
 - 只发布实际消费者需要的原生尺寸和格式；新增资源必须在导入器登记 ISO 来源，不引入原创或替代资源回退。
 
-## 字体目录与缓存
+## 字体目录、布局与绘制
 
-- typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。
-  轮廓字体经 linux-uapi `ReadOnlyMapping` 只读 `MAP_PRIVATE` 映射，同一 TTC 成员共享一份映射；页按需载入并跨进程共享页缓存，
-  不再每进程整文件读入。字体文件只以 rename 替换，不得原地改写或截断（映射的 unsafe 前置条件）。
-- OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
-  与已光栅化字形（上限 4096，满时按最近使用序号淘汰最旧四分之一）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
-- classic_ui::Fonts 拥有六个系统字体用途、每个 scale 的原版 Marlett 标题按钮字体与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
-  sfnt 优先 Unicode cmap；仅缺少 Unicode 时采用 Windows Symbol format 4，保持原始 PUA 码位。
-- 字节码解释器只在给定指令流上执行，越界、栈错误与步数上限使本次程序失败并退回未 hinting 轮廓，从不 panic。
+- Fontconfig 根据 `/etc/fonts/fonts.conf`、系统和 XDG 用户配置匹配字体家族、样式与覆盖范围。主题持有逻辑字体角色；主界面与终端使用同一 Fontconfig 配置，媒体字幕也读取它。
+- typeface 持有线程内 PangoCairo FontMap、字体上下文和布局对象。Native 绑定地址只初始化一次并随进程存活，因为 GLib 的类型注册可能保留原库回调。所有对象由其创建方成对释放。Linux/macOS 使用同一绘制机制，宿主只改变共享库命名。
+- Pango 对完整文本执行 Unicode 断行、双向重排与公开的字节索引映射，HarfBuzz 提供塑形，FreeType 装载轮廓及内嵌字形。
+  单行和多行编辑的命中、光标和视觉选区都来自该布局，编辑单位为字素簇。
+- Canvas 独占预乘 ARGB 像素；PangoCairo 只在同步调用期间取得独占借用，使用设备裁剪矩形和 backing 原点。返回前释放 Cairo 对象并 flush，每次都沿用 Canvas 的 damage/commit。
+- `classic_ui::Fonts` 缓存整数 scale 的主题字体角色和最多 16 个应用派生逻辑字体。等宽角色首次使用才创建字体上下文；
+  没有该缓存会在终端每次绘制重复匹配和度量。资源重载销毁旧目录引用并按新配置解析，现有 Rc 借用保持可用。
+- `scripts/font_runtime.py` 以固定 Alpine APK 的 ELF 依赖闭包安装共享库，`mpv_runtime` 复用已安装的同名依赖。跨架构分别校验。
 
 ## Wayland 提交、采样与输入
 
@@ -467,7 +467,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   Benchmark 决策为在现有来宾比较窗口首次绘制、交互缩放和持续局部更新的延迟及内存，确认共用暂存的分配和内联写入成本。
   四边形仍在输出坐标中定位；CPU 后端直接画进扫描缓冲。成本由实际输出下的菜单驻留和交互帧诊断，沿用 flip 与像素门禁。
 - GPU.views 以真实资源编号与采样格式为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
-  上一帧 flip 完成后才能淘汰视图/覆盖顶点，exec 成功后才发布新缓存。没有逐四边形重复资源表或每帧重复创建采样视图。
+  上一帧 flip 完成后才能淘汰视图/覆盖顶点。VirGL2 通过同一 exec 的有序 TRANSFER3D 上传本帧顶点前缀，绘制成功提交后才发布新缓存。
 - Session 记录成功提交的硬件光标状态，内置图像按素材名去重，客户端图像按不可变像素引用和物理热点去重。位置独立更新。
   set_cursor 校验最近 enter 序号后分配角色，后续 offset 从设置时热点扣除累计增量。用真实窗口移动和光标上传次数对照。
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；

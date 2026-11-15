@@ -185,14 +185,18 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub fn uses_dmabuf(&self) -> bool {
+        self.mpv.uses_dmabuf()
+    }
+
     /// 载入 libmpv、创建核心并订阅状态属性；返回唤醒 socket 的读端。
     ///
     /// # Errors
     /// 缺少 libmpv 或其依赖、选项被拒绝、核心/渲染上下文创建失败。
-    pub fn create(screenshots: &str) -> io::Result<(Self, UnixStream)> {
+    pub fn create(screenshots: &str, video_device: Option<u64>) -> io::Result<(Self, UnixStream)> {
         let mut options = OPTIONS.to_vec();
         options.push(("screenshot-directory", screenshots));
-        let (mpv, reader) = Mpv::create(&options)?;
+        let (mpv, reader) = Mpv::create(&options, video_device)?;
         for (id, name, format) in [
             (TIME, "time-pos", Format::Double),
             (DURATION, "duration", Format::Double),

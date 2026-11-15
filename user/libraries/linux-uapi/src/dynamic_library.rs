@@ -1,8 +1,8 @@
 //! Runtime loading of an upstream shared object (`dlopen`/`dlsym`).
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::raw;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::ffi::CStr;
 use std::{
     ffi::{CString, c_void},
@@ -15,8 +15,8 @@ use std::{
 /// Symbols obtained from it must not be used after it is dropped. Callers that
 /// keep function pointers store the `Library` next to them.
 pub struct Library {
-    // Only Linux can construct a `Library`; other targets fail in `open`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // Linux and the macOS test host can construct a `Library`; other targets fail in `open`.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     handle: NonNull<c_void>,
 }
 
@@ -30,12 +30,12 @@ impl Library {
     ///
     /// # Errors
     /// `InvalidInput` for an embedded NUL; otherwise `NotFound`/`Other` carrying the loader's message
-    /// (missing file, missing dependency, wrong architecture). Non-Linux targets return `Unsupported`.
+    /// (missing file, missing dependency, wrong architecture). Platforms without a loader binding return `Unsupported`.
     pub fn open(name: &str) -> io::Result<Self> {
         let name = CString::new(name).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "library name contains NUL")
         })?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             // SAFETY: `name` is a valid C string for the duration of the call.
             let handle = unsafe { raw::dlopen(name.as_ptr(), raw::RTLD_LAZY | raw::RTLD_LOCAL) };
@@ -43,7 +43,7 @@ impl Library {
                 .map(|handle| Self { handle })
                 .ok_or_else(last_error)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = name;
             Err(io::ErrorKind::Unsupported.into())
@@ -62,7 +62,7 @@ impl Library {
         assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<*mut c_void>());
         let name = CString::new(name)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "symbol name contains NUL"))?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             // SAFETY: handle is live; `name` is a valid C string.
             let address = unsafe { raw::dlsym(self.handle.as_ptr(), name.as_ptr()) };
@@ -72,7 +72,7 @@ impl Library {
             // SAFETY: the caller guarantees `T` is a function pointer type; sizes were checked above.
             Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&address) })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = name;
             Err(io::ErrorKind::Unsupported.into())
@@ -82,7 +82,7 @@ impl Library {
 
 impl Drop for Library {
     fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         // SAFETY: the handle came from a successful dlopen and is closed exactly once.
         unsafe {
             raw::dlclose(self.handle.as_ptr());
@@ -90,7 +90,7 @@ impl Drop for Library {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn last_error() -> io::Error {
     // SAFETY: dlerror returns null or a NUL-terminated message valid until the next dl call on this thread.
     let message = unsafe { raw::dlerror() };

@@ -45,14 +45,6 @@
         "conversion": "LCS1 premultiplied ARGB; 2x nearest-neighbor; CUR hotspots"
       }
     },
-    "fonts/fontmap.ini": {
-      "group": "fonts",
-      "bytes": 203,
-      "sha256": "30fa82e2779a1456862f2d4e13aadf5797e07afac1a37b2148b2257c37366228",
-      "origin": {
-        "source": "LiteOS font mapping configuration"
-      }
-    },
     "fonts/marlett.ttf": {
       "group": "fonts",
       "bytes": 24480,

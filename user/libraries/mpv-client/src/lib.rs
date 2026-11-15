@@ -10,16 +10,13 @@ mod ffi;
 mod render;
 
 use ffi::{Api, EventRecord, Handle};
-use linux_uapi::{
-    dynamic_library::Library,
-    shared_memory::{MemFd, SharedMapping},
-};
+use linux_uapi::dynamic_library::Library;
 use render::Renderer;
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     io::{self, Write},
     os::{
-        fd::{AsFd, BorrowedFd},
+        fd::{AsFd, BorrowedFd, OwnedFd},
         unix::net::UnixStream,
     },
     ptr,
@@ -31,15 +28,14 @@ pub const LIBRARY: &str = "libmpv.so.2";
 /// Maximum producer slots across rendering, completed and submitted frames.
 pub const FRAME_SLOTS: usize = 3;
 
-/// A completed software-rendered XRGB frame in a fixed-size shared file.
+/// A completed software-rendered XRGB frame in shareable backing.
 pub struct Frame {
     slot: u32,
     generation: u64,
     width: u32,
     height: u32,
     stride: u32,
-    memory: MemFd,
-    mapping: SharedMapping,
+    fd: OwnedFd,
 }
 
 impl Frame {
@@ -65,7 +61,7 @@ impl Frame {
 
     /// File backing the frame. Consumers must release it before recycling the frame.
     pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.memory.as_fd()
+        self.fd.as_fd()
     }
 }
 
@@ -184,13 +180,19 @@ fn c_string(value: &str) -> io::Result<CString> {
 impl Mpv {
     /// Loads libmpv, applies `options`, initialises the core and creates the software render context.
     ///
+    /// `video_device` is the device the compositor advertised for implicit XRGB8888 dma-bufs.
+    /// If it cannot supply compatible buffers, use sealed shared memory.
+    ///
     /// Returns the core and the read end of the wake-up socket: it becomes readable whenever mpv has
     /// events or a new video frame; drain it and then call [`Mpv::poll`] / [`Mpv::render_ready`].
     ///
     /// # Errors
     /// `NotFound` when libmpv or one of its dependencies cannot be loaded, `InvalidInput` for a rejected
     /// option, other kinds for core or render-context creation failures.
-    pub fn create(options: &[(&str, &str)]) -> io::Result<(Self, UnixStream)> {
+    pub fn create(
+        options: &[(&str, &str)],
+        video_device: Option<u64>,
+    ) -> io::Result<(Self, UnixStream)> {
         let library = Library::open(LIBRARY)?;
         // SAFETY: the signatures in `ffi::Api` mirror mpv 0.40's client.h/render.h.
         let api = unsafe { Api::load(&library)? };
@@ -216,11 +218,16 @@ impl Mpv {
         // SAFETY: handle is live and not yet initialised.
         check(&player.api, unsafe { (player.api.initialize)(handle) })?;
         // SAFETY: player 在 Renderer 停止并 join 后才销毁 handle 和 library。
-        player.render = Some(unsafe { Renderer::start(api, handle, render_writer)? });
+        player.render = Some(unsafe { Renderer::start(api, handle, render_writer, video_device)? });
         let data = ptr::addr_of!(*player.wake).cast_mut().cast::<c_void>();
         // SAFETY: Wake 地址稳定，Drop 在释放它之前先撤销 callback。
         unsafe { (api.set_wakeup_callback)(handle, Some(wake), data) };
         Ok((player, reader))
+    }
+
+    /// Whether all frames use DRM PRIME, as selected at startup.
+    pub fn uses_dmabuf(&self) -> bool {
+        self.render.as_ref().is_some_and(|renderer| renderer.dmabuf)
     }
 
     /// Sets an option before initialisation or a property afterwards (`set_property_string` semantics).

@@ -29,15 +29,14 @@ pub struct Mask<'a> {
     pub stride: usize,
 }
 
-/// 1 位/像素覆盖蒙版（最高位在左，置位即完全覆盖），供 [`Surface::draw_bit_mask`] 着色。
-/// 无抗锯齿字形用它存储，比 8 位 [`Mask`] 小 8 倍。
-#[derive(Clone, Copy)]
-pub struct BitMask<'a> {
-    pub bits: &'a [u8],
+/// Exclusive view of a premultiplied ARGB draw buffer for a native rasterizer.
+pub struct DrawBuffer<'a> {
+    pub pixels: &'a mut [u32],
     pub width: i32,
     pub height: i32,
-    /// 每行字节数，至少 `ceil(width / 8)`。
     pub stride: usize,
+    pub origin: (i32, i32),
+    pub clip: Rect,
 }
 
 fn fits(len: usize, width: i32, height: i32, stride: usize) -> bool {
@@ -85,6 +84,19 @@ impl<'a> Surface<'a> {
     /// 以更短的借用期重新借出同一缓冲，保留当前裁剪；返回值存活期间原 Surface 不可用。
     pub fn reborrow(&mut self) -> Surface<'_> {
         Surface {
+            pixels: self.pixels,
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            origin: self.origin,
+            clip: self.clip,
+        }
+    }
+
+    /// Borrows the frame for a synchronous raster operation. The caller must honor the clip
+    /// and translate from canvas coordinates using the buffer origin.
+    pub fn draw_buffer(&mut self) -> DrawBuffer<'_> {
+        DrawBuffer {
             pixels: self.pixels,
             width: self.width,
             height: self.height,
@@ -334,59 +346,6 @@ impl<'a> Surface<'a> {
                     0 => {}
                     255 => *pixel = value,
                     _ => *pixel = over(value, *pixel),
-                }
-            }
-        }
-    }
-
-    /// 将覆盖率蒙版缩放到目标矩形并着色，不分配临时像素。
-    /// 非正尺寸或源缓冲布局错误时不绘制；裁剪与其他 Surface 操作一致。
-    pub fn draw_mask_scaled(&mut self, mask: Mask<'_>, rect: Rect, color: Color) {
-        if rect.is_empty()
-            || mask.width <= 0
-            || mask.height <= 0
-            || !fits(mask.coverage.len(), mask.width, mask.height, mask.stride)
-        {
-            return;
-        }
-        for (left, top, row) in self.visible_rows(rect) {
-            let sy = (i64::from(top - rect.y) * i64::from(mask.height) / i64::from(rect.height))
-                as usize;
-            for (column, pixel) in row.iter_mut().enumerate() {
-                let sx = ((i64::from(left - rect.x) + column as i64) * i64::from(mask.width)
-                    / i64::from(rect.width)) as usize;
-                let coverage = u32::from(mask.coverage[sy * mask.stride + sx]);
-                match coverage {
-                    0 => {}
-                    255 if color.alpha() == 255 => *pixel = color.0,
-                    _ => *pixel = over(scale_color(color, coverage), *pixel),
-                }
-            }
-        }
-    }
-
-    /// 用 `color`（不透明或预乘）按 1 位蒙版着色，左上角放在 `(x, y)`；源缓冲布局错误时不绘制。
-    pub fn draw_bit_mask(&mut self, mask: BitMask<'_>, x: i32, y: i32, color: Color) {
-        let row_bytes = (mask.width.max(0) as usize).div_ceil(8);
-        if mask.width < 0
-            || mask.height < 0
-            || mask.stride < row_bytes
-            || (mask.height > 0
-                && mask.bits.len() < mask.stride * (mask.height as usize - 1) + row_bytes)
-        {
-            return;
-        }
-        let opaque = color.alpha() == 255;
-        for (left, top, row) in self.visible_rows(Rect::new(x, y, mask.width, mask.height)) {
-            let source = &mask.bits[(top - y) as usize * mask.stride..];
-            for (column, pixel) in row.iter_mut().enumerate() {
-                let sx = (left + column as i32 - x) as usize;
-                if source[sx / 8] & (0x80 >> (sx % 8)) != 0 {
-                    *pixel = if opaque {
-                        color.0
-                    } else {
-                        over(color.0, *pixel)
-                    };
                 }
             }
         }

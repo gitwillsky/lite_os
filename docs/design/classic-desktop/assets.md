@@ -139,15 +139,8 @@ classic-ui 的 Bitmap 保活只读 MAP_PRIVATE 视图；每进程 Weak 目录只
   `start.wav`（ieuinit.inf 的“启动导航”），保持 ISO 原始字节；`start.wav` 是 Microsoft ADPCM，由 `sound` 解码，帧数以 fact 块为准。
   `recycle.wav` 只属于 mmopt.inf 的 Utopia 方案，默认方案的“清空回收站”是 `ding.wav`，因此不导入。
 - 消息框图标：`message-warning/question/error/information` 取 user32.dll 101/102/103/104（MB_ICON*），只发布 32 像素。
-- `fonts/`：原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf`、`marlett.ttf` 与唯一的 `fontmap.ini` 配置。
-  SimSun/NSimSun 两个 face 和 12/13/14/15/16/18 ppem 内嵌点阵全部保留。Tahoma 中文经标准 FontLink 进入宋体；
-  只安装 manifest 登记的原版字体。`fontmap.ini` 是 LiteOS 配置，不冒充 ISO 文件。
-  标题按钮从 Marlett 的 Windows Symbol cmap 读取 U+F030/F031/F032/F072，按物理字号重新 hinting，
-  不再手画最小化、最大化、还原和关闭的低分辨率点阵；普通文本不自动转换到符号私用区。
-
-字体 ppem = 磅值 × 96 × scale / 72；匹配原生点阵时用点阵，否则渲染原版轮廓并执行 hinting。
-主题的灰度平滑策略保持不变；9pt 在 scale=2 时为 24ppem，宋体没有这个字号的点阵，因此使用原版轮廓，
-不能把字体来源恢复等同于所有倍率均为点阵字体。
-
-`assets/fonts/` 中终端 atlas、JetBrains 源字体及许可证仍由终端与蓝屏生成器实际使用；它们不属于系统界面字体回退链。
+- `fonts/` 保存原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf` 和 `marlett.ttf`。SimSun/NSimSun 的 TrueType 集合和内嵌点阵完整保留。
+  标题按钮由主题的 CaptionSymbolFont 选择 Marlett，通过原版 Symbol cmap 中 U+F030/F031/F032/F072 取字形，按墨迹范围居中。
+- `assets/fonts/` 保存 JetBrains Mono、Noto Sans Symbols 2 和许可证。系统运行时安装轮廓文件；蓝屏生成器复用 JetBrains Bold。
+  Fontconfig 匹配策略在 `user/base/fonts.conf`，字体尺寸与角色由主题管理。应用共用 PangoCairo 绘制。
 主题颜色、窗口度量与字体角色属于 `theme/classic.theme`，不与 ISO 二进制素材混作同一所有权。

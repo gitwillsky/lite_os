@@ -255,8 +255,9 @@ pub struct Widget {
     pub text: Text,
 }
 
-/// 自绘批次：kind=1 填充，2 矩形框，3 文本，4 换行文本、5 等宽文字（8×16 逻辑单元格），
+/// 自绘批次：kind=1 填充，2 矩形框，3 文本，4 换行文本、5 等宽文字（单元格见 monospace_cell_size），
 /// 6 居中单行文字；颜色为 0x00RRGGBB。kind=7 墙纸预览，text 为路径，color 为 0 居中/1 平铺/2 拉伸。
+/// kind=9 为等宽斜体文字，使用与 kind=5 相同的单元格。
 /// kind=8 系统界面位图：text 为位图名，按原尺寸在 rect 内水平垂直居中并裁剪到 rect，缺图时不绘制。
 /// 文本与绘图命令在调用期间复制，不包含裸像素或 Rust 对象。
 #[repr(C)]
@@ -585,13 +586,19 @@ pub struct Api {
     /// 文本以系统字体用途（编号同 [`Api::set_font`]）在窗口当前 scale 下的逻辑像素宽度（GetTextExtentPoint32）；
     /// 用于按实际字体决定状态栏分格等固定宽度。未知用途或空输出返回 INVALID，未知窗口返回 NOT_FOUND。
     pub text_width: unsafe extern "C" fn(*mut c_void, u64, u32, Text, *mut i32) -> i32,
-    /// 向窗口的 Canvas 视频子表面提交借用的封印 memfd。PENDING 时仍由调用者持有；
+    /// 向窗口的 Canvas 视频子表面提交借用的 XRGB8888 缓冲。PENDING 时仍由调用者持有；
     /// OK 后 VIDEO_RELEASED 才允许重写。传 null 隐藏子表面，已有在途槽继续释放。
     pub canvas_video: unsafe extern "C" fn(*mut c_void, u64, u64, *const VideoFrame) -> i32,
     /// 设定自绘终端的局部文本光标；空矩形停用文本输入。
     pub canvas_text_caret: unsafe extern "C" fn(*mut c_void, u64, u64, Rect) -> i32,
     /// 读取最近一条 TEXT_COMMIT 的 UTF-8；与 read_text 同样支持长度查询。
     pub read_text_commit: unsafe extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> i32,
+    /// 返回合成器可导入 XRGB8888 dma-buf 的 DRM 设备号。PENDING 表示需要共享内存。
+    pub video_device: unsafe extern "C" fn(*mut c_void, *mut u64) -> i32,
+    /// 已在 video_device 上建立生产者后选择 PRIME。必须在创建视频子表面前调用。
+    pub use_dma_video: unsafe extern "C" fn(*mut c_void) -> i32,
+    /// Query this window's active monospace cell size in logical pixels (writes Rect.width/height).
+    pub monospace_cell_size: unsafe extern "C" fn(*mut c_void, u64, *mut Rect) -> i32,
 }
 
 /// [`Api::message_box`] 的 style 位（Win32 MessageBox 的 uType 布局）。

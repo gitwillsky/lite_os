@@ -1,6 +1,6 @@
 //! 多行编辑、选区、UTF-8 光标与双向滚动的共同 owner；应用仅在打开/保存时传递文本。
 use super::{
-    text_document::{Document, Position},
+    text_document::{Document, Position, byte_at, column_at},
     widgets::Tree,
 };
 use canvas::Rect;
@@ -34,33 +34,9 @@ struct Geometry {
 fn contains(r: Rect, p: (i32, i32)) -> bool {
     p.0 >= r.x && p.0 < r.right() && p.1 >= r.y && p.1 < r.bottom()
 }
-fn expand(line: &str) -> String {
-    let mut text = String::new();
-    let mut column = 0;
-    for ch in line.chars() {
-        if ch == '\t' {
-            let count = 8 - column % 8;
-            text.extend(std::iter::repeat_n(' ', count));
-            column += count;
-        } else {
-            text.push(ch);
-            column += 1;
-        }
-    }
-    text
-}
-fn prefix(p: &Painter<'_>, line: &str, column: usize) -> i32 {
-    let end = line
-        .char_indices()
-        .nth(column)
-        .map_or(line.len(), |(offset, _)| offset);
-    let slice = &line[..end];
-    let width = if slice.as_bytes().contains(&b'\t') {
-        p.text_width(&expand(slice), false)
-    } else {
-        p.text_width(slice, false)
-    };
-    (width + p.scale() - 1) / p.scale()
+fn caret_x(p: &Painter<'_>, line: &str, column: usize) -> i32 {
+    let x = p.text_layout(line, false).caret_x(byte_at(line, column));
+    (x + p.scale() - 1) / p.scale()
 }
 impl TextEditor {
     pub fn new(text: &str) -> Self {
@@ -119,7 +95,7 @@ impl TextEditor {
             self.widths.clear();
             self.extents.clear();
             for line in self.document.lines() {
-                let width = (p.text_width(&expand(line), false) + p.scale() - 1) / p.scale();
+                let width = (p.text_width(line, false) + p.scale() - 1) / p.scale();
                 self.widths.push(width);
                 *self.extents.entry(width).or_default() += 1;
             }
@@ -133,17 +109,10 @@ impl TextEditor {
             .clamp(0, self.document.lines().len() as i32 - 1) as usize;
         let target = point.0 - area.x - 2 + self.horizontal.position;
         let line = &self.document.lines()[row];
-        // 二分字符边界避免按字符重复测量前缀导致长行命中为二次复杂度。
-        let (mut low, mut high) = (0, line.chars().count());
-        while low < high {
-            let mid = low + (high - low) / 2;
-            if target < (prefix(p, line, mid) + prefix(p, line, mid + 1)) / 2 {
-                high = mid;
-            } else {
-                low = mid + 1;
-            }
-        }
-        (row, low)
+        let index = p
+            .text_layout(line, false)
+            .hit(target.saturating_mul(p.scale()), 0);
+        (row, column_at(line, index))
     }
     fn reveal(&mut self, rect: Rect, p: &Painter<'_>) {
         let area = self.geometry(rect).text;
@@ -154,7 +123,7 @@ impl TextEditor {
         } else if top + self.line_height > self.vertical.position + area.height {
             self.vertical.position = top + self.line_height - area.height;
         }
-        let x = prefix(p, &self.document.lines()[row], column);
+        let x = caret_x(p, &self.document.lines()[row], column);
         if x < self.horizontal.position {
             self.horizontal.position = x;
         } else if x + 4 > self.horizontal.position + area.width {
@@ -185,7 +154,7 @@ impl TextEditor {
             }
             let widths: Vec<_> = self.document.lines()[start..new_end]
                 .iter()
-                .map(|line| (p.text_width(&expand(line), false) + p.scale() - 1) / p.scale())
+                .map(|line| (p.text_width(line, false) + p.scale() - 1) / p.scale())
                 .collect();
             for width in &widths {
                 *self.extents.entry(*width).or_default() += 1;
@@ -255,7 +224,7 @@ impl TextEditor {
     pub fn caret(&self, rect: Rect, p: &Painter<'_>) -> Rect {
         let g = self.geometry(rect);
         let (row, column) = self.document.cursor();
-        let left = g.text.x + 2 + prefix(p, &self.document.lines()[row], column)
+        let left = g.text.x + 2 + caret_x(p, &self.document.lines()[row], column)
             - self.horizontal.position;
         let top = g.text.y + row as i32 * self.line_height - self.vertical.position;
         if g.text.is_empty() {
@@ -287,52 +256,45 @@ impl TextEditor {
             {
                 let y = g.text.y + row as i32 * self.line_height - self.vertical.position;
                 let x = g.text.x + 2 - self.horizontal.position;
+                let layout = p.text_layout(line, false);
+                p.paint_text_layout(x, y, &layout, Ink::Color(C::WindowText));
                 if let Some((start, end)) = self.document.selected_columns(row) {
-                    let left = prefix(p, line, start);
-                    let right = prefix(p, line, end);
-                    let newline = self
+                    let selection = layout.selection(byte_at(line, start)..byte_at(line, end));
+                    let scale = p.scale();
+                    for range in selection {
+                        let left = range.start.div_euclid(scale);
+                        let right = (range.end + scale - 1).div_euclid(scale);
+                        let highlight = Rect::new(x + left, y, right - left, self.line_height);
+                        p.clipped(highlight, |p| {
+                            p.fill(highlight, if focused { C::Hilight } else { C::ButtonFace });
+                            p.paint_text_layout(
+                                x,
+                                y,
+                                &layout,
+                                Ink::Color(if focused {
+                                    C::HilightText
+                                } else {
+                                    C::WindowText
+                                }),
+                            );
+                        });
+                    }
+                    if self
                         .document
                         .selection()
-                        .is_some_and(|(_, end)| row < end.0);
-                    p.fill(
-                        Rect::new(
-                            x + left,
-                            y,
-                            right - left + if newline { 4 } else { 0 },
-                            self.line_height,
-                        ),
-                        if focused { C::Hilight } else { C::ButtonFace },
-                    );
-                    let byte = |column| {
-                        line.char_indices()
-                            .nth(column)
-                            .map_or(line.len(), |(index, _)| index)
-                    };
-                    let before = &line[..byte(start)];
-                    // Tab 停靠点属于整行；先完整展开，再按展开后的字节边界拆分绘制。
-                    let shown = expand(line);
-                    let a = expand(before).len();
-                    let b = expand(&line[..byte(end)]).len();
-                    p.text(x, y, &shown[..a], Ink::Color(C::WindowText), false);
-                    p.text(
-                        x + left,
-                        y,
-                        &shown[a..b],
-                        Ink::Color(if focused {
-                            C::HilightText
-                        } else {
-                            C::WindowText
-                        }),
-                        false,
-                    );
-                    p.text(x + right, y, &shown[b..], Ink::Color(C::WindowText), false);
-                } else {
-                    p.text(x, y, &expand(line), Ink::Color(C::WindowText), false);
+                        .is_some_and(|(_, end)| row < end.0)
+                    {
+                        let end = layout.caret_x(line.len()) / scale;
+                        p.fill(
+                            Rect::new(x + end, y, 4, self.line_height),
+                            if focused { C::Hilight } else { C::ButtonFace },
+                        );
+                    }
                 }
                 if focused && self.document.cursor().0 == row {
                     p.fill(
                         Rect::new(
-                            x + prefix(p, line, self.document.cursor().1),
+                            x + layout.caret_x(byte_at(line, self.document.cursor().1)) / p.scale(),
                             y,
                             1,
                             self.line_height,

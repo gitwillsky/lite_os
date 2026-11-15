@@ -370,7 +370,7 @@ pub(super) unsafe extern "C" fn draw(
             };
             let mut drawing = Vec::with_capacity(count);
             for command in values {
-                if !(1..=8).contains(&command.kind)
+                if !(1..=9).contains(&command.kind)
                     || command.rect.width < 0
                     || command.rect.height < 0
                     || [
@@ -910,6 +910,23 @@ pub(super) unsafe extern "C" fn text_width(
         invoke(pointer, |context| {
             let value = text(value)?;
             output.write(context.text_width(window, role, &value)?);
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn monospace_cell_size(
+    pointer: *mut c_void,
+    window: u64,
+    output: *mut abi::Rect,
+) -> i32 {
+    if output.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: The ABI caller supplies an exclusive output; no borrow crosses the call.
+    unsafe {
+        invoke(pointer, |context| {
+            output.write(context.monospace_cell_size(window)?);
             Ok(())
         })
     }

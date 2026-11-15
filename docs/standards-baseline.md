@@ -235,21 +235,18 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 
 - JetBrains Mono `2.304`；source zip SHA-256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`；SIL OFL 1.1。
 - Medium/Bold TTF SHA-256：`44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c`、`0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3`。
-- 中文 fallback 使用 Noto Sans CJK SC Regular/Bold，SHA-256 分别为
-  `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`、
-  `b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a`。
-- 盲文点阵 fallback 使用 Noto Sans Symbols 2 `2.008` Regular，两种字重共用该字体的 `U+2800–U+28FF` 字形。
-  TTF SHA-256 为 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`。
-  [Unicode 17.0 §21.1.1](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-21/)、
-  [Google Fonts 固定版本](https://github.com/google/fonts/tree/7b6724ac7ececc713e9ba93af309f7520c9a80a3/ofl/notosanssymbols2)、
+- Noto Sans Symbols 2 `2.008` Regular 提供含盲文的符号回退，TTF SHA-256 为
+  `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`。
+  [固定 Google Fonts 源码](https://github.com/google/fonts/tree/7b6724ac7ececc713e9ba93af309f7520c9a80a3/ofl/notosanssymbols2)、
   [SIL OFL 1.1](../assets/fonts/NotoSansSymbols2-OFL.txt)。
-- 来源：[JetBrains Mono 官方 release](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304)、
-  [Noto CJK 官方仓库](https://github.com/notofonts/noto-cjk)、
-  [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)。
-- Unicode cell width 使用 unicode-width `0.2.2`，checksum
-  `b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254`。
-- checked atlas SHA-256 为 `c7c2f2e1248277ce7f210b8d82efbe5bbf4d6a433b577c4fcfa5b732d282f36f`；
-  terminfo 使用 ncurses `6.5` source format。
+- 终端仿真固定 `alacritty_terminal 0.26.0`、`vte 0.15.0`、`unicode-width 0.2.2`，
+  校验值由 [user/Cargo.lock](../user/Cargo.lock) 固定。控制序列参照 [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)
+  与 [XTerm](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)，terminfo 为 Alpine ncurses `6.5_p20250503-r0`。
+- 共享字体栈使用 Alpine v3.22 的 Pango `1.56.3`、Cairo `1.18.4`、Fontconfig `2.15.0`、HarfBuzz `11.2.1`
+  和 FreeType `2.13.3`，各目标 APK 和 SHA-256 见 [字体运行时包清单](../scripts/font-runtime-packages.json)。
+  [Fontconfig 配置](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-user.html)、
+  [Pango Layout](https://docs.gtk.org/Pango/class.Layout.html)、
+  [HarfBuzz 塑形](https://harfbuzz.github.io/what-is-harfbuzz.html)。
 
 ### Wayland
 

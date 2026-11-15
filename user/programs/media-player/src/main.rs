@@ -399,10 +399,11 @@ fn key_action(code: u32, modifiers: u32) -> Option<Action> {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = Application::new()?;
+    let video_device = app.video_device()?;
     let window = app.window(WindowOptions::new("媒体播放机", APP_ID, 720, 520))?;
     let view = View::new(&window)?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    let (engine, reader) = match Engine::create(&format!("{home}/Pictures")) {
+    let (engine, reader) = match Engine::create(&format!("{home}/Pictures"), video_device) {
         Ok(value) => value,
         Err(error) => {
             // 缺少 libmpv（如 riscv64）或其依赖时给出原因，而不是静默退出。
@@ -425,6 +426,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     };
+    if engine.uses_dmabuf() {
+        app.use_dma_video()?;
+    }
     let shell = Rc::new(Shell {
         window: window.clone(),
         view,

@@ -122,3 +122,24 @@ pub(super) unsafe extern "C" fn canvas_video(
         })
     }
 }
+
+pub(super) unsafe extern "C" fn video_device(pointer: *mut c_void, out: *mut u64) -> i32 {
+    // SAFETY: ABI 调用者在同步调用期间提供有效的 context 和可写输出。
+    unsafe {
+        invoke(pointer, |context| {
+            let out = out
+                .as_mut()
+                .ok_or_else(|| invalid("null video device output"))?;
+            *out = context
+                .display
+                .stream_dma_device()?
+                .ok_or(io::ErrorKind::WouldBlock)?;
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn use_dma_video(pointer: *mut c_void) -> i32 {
+    // SAFETY: 调用期间借用有效 context；不保留借用，也不执行应用回调。
+    unsafe { invoke(pointer, |context| context.display.use_dma_streams()) }
+}

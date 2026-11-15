@@ -248,13 +248,11 @@ pub fn frame(
             label(&mut p, d, 50, 174, "按 Ctrl-Alt-Delete 解锁。");
         }
         Page::Message => {
-            for (i, line) in typeface::wrap(&s.message, 390 * c.scale, |ch| {
-                fonts
-                    .role(FontRole::Message)
-                    .measure(&ch.to_string(), false)
-            })
-            .iter()
-            .enumerate()
+            for (i, line) in fonts
+                .role(FontRole::Message)
+                .wrap(&s.message, 390 * c.scale, false)
+                .iter()
+                .enumerate()
             {
                 label(&mut p, d, 25, 130 + i as i32 * 19, &s.message[line.clone()]);
             }

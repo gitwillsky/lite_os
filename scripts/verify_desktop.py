@@ -190,7 +190,8 @@ def check_pinyin(session) -> None:
     launch_run(session, 'file-explorer /var/tmp/ime-folder --select old.txt')
     session.console.wait_for(('compositor: window "ime-folder"',))
     # 第三个可调整窗口位于初始位置 +2×19。等待启动扫描及 --select 已发表。
-    label = (324, 228)
+    # 字体塑形后文字墨迹可覆盖标题区域里的像素；采样选中标签的顶部填充，再由 F2 实际改名裁决。
+    label = (324, 232)
     wait_screen(session, [(label, SELECTED)], 'rename fixture selected')
     tap(session, 'f2')
     # 选区从图标标签变成编辑框；编辑框上方像素成为窗口色。

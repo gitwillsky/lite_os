@@ -8,6 +8,7 @@ from apk_elf_closure import LIBRARIES, extract_closure
 from build_cache import cache_lock, fingerprint, manifest_matches, publish_directory, sha256, temporary_directory, write_manifest
 from build_target import target_from_environment
 from mesa_runtime import mesa_userland
+from font_runtime import font_userland
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = Path(__file__).with_name("mpv-runtime-packages.json")
@@ -16,7 +17,7 @@ SEEDS = {f"{LIBRARIES}/libmpv.so.2": "usr/lib/libmpv.so.2"}
 TREES = {"/usr/share/alsa": "usr/share/alsa"}
 
 
-def mpv_userland():
+def mpv_userland(fonts=None):
     """返回 AArch64 libmpv 的受控安装清单；其他 target 不安装，播放器在运行期报告缺少 libmpv。
 
     Mesa 运行时已经安装的 soname 不再重复安装。任一 APK 哈希、ELF 架构或 DT_NEEDED 闭包不完整即失败。
@@ -25,7 +26,8 @@ def mpv_userland():
     target = target_from_environment()
     if target.arch != "aarch64":
         return ()
-    provided = frozenset(item.destination for item in mesa_userland())
+    fonts = font_userland() if fonts is None else fonts
+    provided = frozenset(item.destination for item in (*mesa_userland(), *fonts))
     packages = json.loads(PACKAGES.read_text())
     payload = {"kind": "mpv-runtime", "recipe_version": 1, "arch": target.arch, "packages": packages,
                "seeds": SEEDS, "trees": TREES, "provided": sorted(provided)}

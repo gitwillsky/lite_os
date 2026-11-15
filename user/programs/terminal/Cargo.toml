@@ -8,7 +8,7 @@ publish.workspace = true
 liteos-ui = { path = "../../libraries/liteos-ui" }
 linux-uapi.workspace = true
 keyboard.workspace = true
-terminal-model.workspace = true
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 
 [lints]
 workspace = true

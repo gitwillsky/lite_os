@@ -178,6 +178,19 @@ impl Window {
         })?;
         Ok(width)
     }
+    /// Returns the active monospace cell size in logical pixels. Re-query on Configure.
+    /// Fails if this window is closed or the system fonts cannot be loaded.
+    pub fn monospace_cell_size(&self) -> Result<(i32, i32)> {
+        self.inner.check()?;
+        let c = &self.inner.connection;
+        let mut result = abi::Rect::default();
+        // SAFETY: The live context is borrowed for this call and result is writable and exclusive.
+        c.check(unsafe {
+            (c.api.monospace_cell_size)(c.context.as_ptr(), self.id(), &mut result)
+        })?;
+        Ok((result.width, result.height))
+    }
+
     /// 请求进入或退出全屏（标准 xdg_toplevel）；实际尺寸由随后的 Configure 事件给出。
     pub fn set_fullscreen(&self, on: bool) -> Result<()> {
         self.inner.check()?;
@@ -386,6 +399,7 @@ pub struct ListOptions {
     pub full_row_select: bool,
 }
 /// 列正文的对齐方式。
+/// kind=9 为等宽斜体文字，使用与 kind=5 相同的单元格。
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub enum ColumnAlignment {
@@ -403,7 +417,7 @@ pub enum EditCommand<'a> {
     Insert(&'a str),
 }
 /// 一个自绘命令，坐标相对 Canvas 客户区；文本在 set_drawing 返回前复制。
-/// kind=1 填充、2 边框、3 普通文字、4 换行文字、5 系统等宽文字（8×16 逻辑像素，宽字符两格）、
+/// kind=1 填充、2 边框、3 普通文字、4 换行文字、5 系统等宽文字（单元格见 Window::monospace_cell_size）、
 /// 6 在矩形内水平垂直居中的单行文字（超宽截断）、7 墙纸预览（矩形代表整个屏幕，text 为图片路径，
 /// color 为显示方式 0 居中、1 平铺、2 拉伸；居中与平铺按屏幕比例缩小原图，图片无法解码时不绘制）、
 /// 8 系统界面位图（text 为位图名，原尺寸在矩形内居中并裁剪，缺图时不绘制）。

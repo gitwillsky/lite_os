@@ -9,8 +9,6 @@ use classic_ui_abi::{state, widget};
 pub struct CanvasAssets<'a> {
     /// 同次失效计算、光栅和确认共用时刻，防止提示在中途到期时被错误确认。
     pub now: std::time::Instant,
-    /// 等宽文字命令（kind 5）的系统终端字体。
-    pub mono: Option<&'a terminal_font::TerminalFont>,
     /// 墙纸预览命令（kind 7）的异步加载器；等待或失败时只画背景。
     pub pictures: &'a PictureLoader,
     /// 屏幕逻辑尺寸；预览按 `命令矩形宽 / 屏幕宽` 缩小居中与平铺的原图。
@@ -396,10 +394,8 @@ impl Tree {
                             3 => p.clipped(r, |p| {
                                 p.text(r.x, r.y, &command.text, Ink::Rgb(rgb), command.bold);
                             }),
-                            5 => {
-                                if let Some(font) = canvas.mono {
-                                    p.monospace(r, &command.text, font, rgb, command.bold);
-                                }
+                            5 | 9 => {
+                                p.monospace(r, &command.text, rgb, command.bold, command.kind == 9)
                             }
                             4 => {
                                 p.text_wrapped(r, &command.text, Ink::Rgb(rgb), command.bold);

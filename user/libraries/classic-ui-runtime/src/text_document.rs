@@ -1,6 +1,8 @@
-//! 多行编辑控件的文本模型：按行保存，光标与选区以（行，字符列）表示；不含任何绘制。
+//! 多行编辑控件的文本模型：按行保存，光标与选区以（行，字素簇列）表示；不含任何绘制。
 
-/// 光标或选区端点：（行，字符列）。
+use unicode_segmentation::UnicodeSegmentation;
+
+/// 光标或选区端点：（行，字素簇列）。
 pub type Position = (usize, usize);
 
 #[derive(Default)]
@@ -12,15 +14,21 @@ pub struct Document {
     pub modified: bool,
 }
 
-fn char_count(line: &str) -> usize {
-    line.chars().count()
+fn column_count(line: &str) -> usize {
+    line.graphemes(true).count()
 }
 
 /// 第 `column` 个字符的字节偏移；`column` 越过行尾时是行长。
-fn byte_at(line: &str, column: usize) -> usize {
-    line.char_indices()
+pub(super) fn byte_at(line: &str, column: usize) -> usize {
+    line.grapheme_indices(true)
         .nth(column)
         .map_or(line.len(), |(i, _)| i)
+}
+
+pub(super) fn column_at(line: &str, byte: usize) -> usize {
+    line.grapheme_indices(true)
+        .take_while(|(index, _)| *index < byte)
+        .count()
 }
 
 impl Document {
@@ -64,7 +72,7 @@ impl Document {
         if row < start.0 || row > end.0 {
             return None;
         }
-        let length = char_count(&self.lines[row]);
+        let length = column_count(&self.lines[row]);
         let from = if row == start.0 { start.1 } else { 0 };
         let to = if row == end.0 { end.1 } else { length };
         Some((from, to))
@@ -90,7 +98,7 @@ impl Document {
 
     fn clamp(&self, (row, column): Position) -> Position {
         let row = row.min(self.lines.len() - 1);
-        (row, column.min(char_count(&self.lines[row])))
+        (row, column.min(column_count(&self.lines[row])))
     }
 
     /// 移动光标；`extend` 为真时保留（或建立）选区，否则清除选区。
@@ -111,7 +119,7 @@ impl Document {
         let target = if column > 0 {
             (row, column - 1)
         } else if row > 0 {
-            (row - 1, char_count(&self.lines[row - 1]))
+            (row - 1, column_count(&self.lines[row - 1]))
         } else {
             (0, 0)
         };
@@ -123,7 +131,7 @@ impl Document {
         if !extend && let Some((_, end)) = self.selection() {
             return self.set_cursor(end, false);
         }
-        let target = if column < char_count(&self.lines[row]) {
+        let target = if column < column_count(&self.lines[row]) {
             (row, column + 1)
         } else if row + 1 < self.lines.len() {
             (row + 1, 0)
@@ -150,7 +158,7 @@ impl Document {
         self.anchor = Some((0, 0));
         self.cursor = (
             self.lines.len() - 1,
-            char_count(&self.lines[self.lines.len() - 1]),
+            column_count(&self.lines[self.lines.len() - 1]),
         );
     }
 
@@ -161,8 +169,9 @@ impl Document {
         };
         let tail = self.lines[end.0][byte_at(&self.lines[end.0], end.1)..].to_owned();
         let head = self.lines[start.0][..byte_at(&self.lines[start.0], start.1)].to_owned();
+        let head_length = head.len();
         self.lines.splice(start.0..=end.0, [head + &tail]);
-        self.cursor = start;
+        self.cursor = (start.0, column_at(&self.lines[start.0], head_length));
         self.anchor = None;
         self.modified = true;
         true
@@ -183,10 +192,11 @@ impl Document {
             let mut new_lines: Vec<String> = middle.iter().map(|line| (*line).to_owned()).collect();
             new_lines.push(format!("{last}{tail}"));
             self.lines.splice(row + 1..row + 1, new_lines);
-            self.cursor = (row + rest.len(), char_count(last));
+            let row = row + rest.len();
+            self.cursor = (row, column_at(&self.lines[row], last.len()));
         } else {
             self.lines[row].push_str(&tail);
-            self.cursor = (row, column + char_count(first));
+            self.cursor = (row, column_at(&self.lines[row], offset + first.len()));
         }
         self.anchor = None;
         self.modified = true;
@@ -201,12 +211,13 @@ impl Document {
             let line = &mut self.lines[row];
             let (start, end) = (byte_at(line, column - 1), byte_at(line, column));
             line.replace_range(start..end, "");
-            self.cursor = (row, column - 1);
+            self.cursor = (row, column_at(line, start));
         } else if row > 0 {
             let line = self.lines.remove(row);
-            let length = char_count(&self.lines[row - 1]);
-            self.lines[row - 1].push_str(&line);
-            self.cursor = (row - 1, length);
+            let head = &mut self.lines[row - 1];
+            let length = head.len();
+            head.push_str(&line);
+            self.cursor = (row - 1, column_at(head, length));
         } else {
             return;
         }
@@ -218,13 +229,17 @@ impl Document {
             return;
         }
         let (row, column) = self.cursor;
-        if column < char_count(&self.lines[row]) {
+        if column < column_count(&self.lines[row]) {
             let line = &mut self.lines[row];
             let (start, end) = (byte_at(line, column), byte_at(line, column + 1));
             line.replace_range(start..end, "");
+            self.cursor = (row, column_at(line, start));
         } else if row + 1 < self.lines.len() {
             let next = self.lines.remove(row + 1);
-            self.lines[row].push_str(&next);
+            let line = &mut self.lines[row];
+            let length = line.len();
+            line.push_str(&next);
+            self.cursor = (row, column_at(line, length));
         } else {
             return;
         }

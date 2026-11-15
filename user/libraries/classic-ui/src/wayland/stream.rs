@@ -1,18 +1,32 @@
-//! External XRGB video buffers use standard wl_shm on an independently committed child.
+//! External XRGB video buffers share one independently committed child and slot lifecycle.
 
 use super::*;
 use canvas::Rect;
 use std::{fs::File, os::fd::BorrowedFd};
-use wayland_wire::protocol::{wl_buffer, wl_shm, wl_shm_pool, wl_subsurface};
+use wayland_wire::{
+    protocol::{wl_buffer, wl_shm, wl_shm_pool, wl_subsurface, wp_viewport},
+    wire::Fixed,
+};
 
 /// Producer slots are bounded even when the compositor defers release.
 pub const STREAM_SLOTS: usize = 3;
+
+/// External XRGB8888 producer slot. Size excludes padding and pitch is in bytes.
+pub struct StreamBuffer<'a> {
+    pub fd: BorrowedFd<'a>,
+    pub slot: u32,
+    pub generation: u64,
+    pub size: (i32, i32),
+    pub stride: i32,
+}
 
 pub(super) struct Stream {
     parent: WindowId,
     bounds: Rect,
     synchronized: bool,
     slots: [Option<Buffer>; STREAM_SLOTS],
+    /// Crop row padding from dma-bufs. Repeated frames at the same size need no viewport request.
+    source: Option<(i32, i32)>,
 }
 
 struct Buffer {
@@ -45,6 +59,7 @@ impl Display {
                 bounds,
                 synchronized: true,
                 slots: [const { None }; STREAM_SLOTS],
+                source: None,
             },
         );
         Ok(window)
@@ -109,19 +124,23 @@ impl Display {
         Ok(())
     }
 
-    /// Attaches a sealed SHM producer slot as XRGB8888, without reading or copying it.
-    /// `geometry` is width/height in pixels and stride in bytes. `generation` changes when
-    /// the producer replaces the file behind a slot. The fd is borrowed for registration.
+    /// Attaches a sealed SHM or negotiated dma-buf producer slot as XRGB8888.
+    /// The generation changes when the producer replaces the file behind a slot.
     /// Returns false while frame pacing, suspension or an outstanding buffer prevents submit.
     /// A successful submission freezes the producer slot until `StreamBufferReleased`.
     pub fn submit_stream(
         &mut self,
         window: WindowId,
-        slot: u32,
-        generation: u64,
-        fd: BorrowedFd<'_>,
-        [width, height, stride]: [i32; 3],
+        buffer: StreamBuffer<'_>,
     ) -> io::Result<bool> {
+        let StreamBuffer {
+            fd,
+            slot,
+            generation,
+            size: (width, height),
+            stride,
+        } = buffer;
+        let dmabuf = self.stream_dma.selected();
         let index = slot as usize;
         let stream = self.streams.get(&window).ok_or(io::ErrorKind::NotFound)?;
         let previous = stream.slots.get(index).ok_or(io::ErrorKind::InvalidInput)?;
@@ -131,6 +150,9 @@ impl Display {
         {
             return Ok(false);
         }
+        let buffer_width = if dmabuf { stride / 4 } else { width };
+        let source = (buffer_width != width).then_some((width, height));
+        let change_source = stream.source != source;
         let object = match previous {
             Some(buffer) if buffer.generation == generation => buffer.object,
             _ => {
@@ -141,28 +163,24 @@ impl Display {
                 if width <= 0
                     || height <= 0
                     || width.checked_mul(4).is_none_or(|bytes| bytes > stride)
-                    || !linux_uapi::shared_memory::is_shrink_sealed(fd)
-                    || File::from(fd.try_clone_to_owned()?).metadata()?.len() < extent as u64
+                    || source.is_some_and(|(w, h)| w > i32::MAX >> 8 || h > i32::MAX >> 8)
                 {
                     return Err(io::ErrorKind::InvalidInput.into());
                 }
-                let pool = self.create_shm_pool(fd, extent as usize)?;
-                let object = self.transport.allocate(Interface::WlBuffer)?;
+                let object = if dmabuf {
+                    if stride % 4 != 0 {
+                        return Err(io::ErrorKind::InvalidInput.into());
+                    }
+                    self.dma_stream_buffer(fd, buffer_width, height, stride)?
+                } else {
+                    if !linux_uapi::shared_memory::is_shrink_sealed(fd)
+                        || File::from(fd.try_clone_to_owned()?).metadata()?.len() < extent as u64
+                    {
+                        return Err(io::ErrorKind::InvalidInput.into());
+                    }
+                    self.shm_stream_buffer(fd, extent as usize, width, height, stride)?
+                };
                 let writer = &mut self.transport.writer;
-                wl_shm_pool::Request::CreateBuffer {
-                    id: object,
-                    offset: 0,
-                    width,
-                    height,
-                    stride,
-                    format: wl_shm::Format::Xrgb8888,
-                }
-                .encode(pool, writer)
-                .map_err(io::Error::other)?;
-                // The buffer holds the server-side pool reference after destruction.
-                wl_shm_pool::Request::Destroy
-                    .encode(pool, writer)
-                    .map_err(io::Error::other)?;
                 let slot = &mut self
                     .streams
                     .get_mut(&window)
@@ -182,6 +200,24 @@ impl Display {
         };
         let callback = self.transport.allocate(Interface::WlCallback)?;
         let writer = &mut self.transport.writer;
+        if change_source {
+            let [x, y, width, height] = source
+                .map_or([-1; 4], |(w, h)| [0, 0, w, h])
+                .map(Fixed::from_int);
+            wp_viewport::Request::SetSource {
+                x,
+                y,
+                width,
+                height,
+            }
+            .encode(
+                self.windows[&window]
+                    .viewport
+                    .expect("stream owns a viewport"),
+                writer,
+            )
+            .map_err(io::Error::other)?;
+        }
         wl_surface::Request::Attach {
             buffer: Some(object),
             x: 0,
@@ -202,15 +238,42 @@ impl Display {
             .get_mut(&window)
             .expect("validated stream window");
         state.mapped = true;
-        self.streams
-            .get_mut(&window)
-            .expect("validated stream")
-            .slots[index]
+        let stream = self.streams.get_mut(&window).expect("validated stream");
+        stream.source = source;
+        stream.slots[index]
             .as_mut()
             .expect("registered stream buffer")
             .busy = true;
         self.commit_callback(window, callback)?;
         Ok(true)
+    }
+
+    fn shm_stream_buffer(
+        &mut self,
+        fd: BorrowedFd<'_>,
+        extent: usize,
+        width: i32,
+        height: i32,
+        stride: i32,
+    ) -> io::Result<ObjectId> {
+        let pool = self.create_shm_pool(fd, extent)?;
+        let id = self.transport.allocate(Interface::WlBuffer)?;
+        let writer = &mut self.transport.writer;
+        wl_shm_pool::Request::CreateBuffer {
+            id,
+            offset: 0,
+            width,
+            height,
+            stride,
+            format: wl_shm::Format::Xrgb8888,
+        }
+        .encode(pool, writer)
+        .map_err(io::Error::other)?;
+        // The buffer holds the server-side pool reference after destruction.
+        wl_shm_pool::Request::Destroy
+            .encode(pool, writer)
+            .map_err(io::Error::other)?;
+        Ok(id)
     }
 
     pub(super) fn release_stream_buffer(&mut self, object: ObjectId) {

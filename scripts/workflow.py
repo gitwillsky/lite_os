@@ -13,12 +13,12 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
 from classic_assets import boot_scene
-from local_inputs import TOOLS
 from host_topology import default_guest_cpu_count
 from ext4_image import create_data_volume, find_debugfs, find_e2fsck, find_tune2fs
 from utm_runtime import run_gui as run_utm_gui
@@ -431,8 +431,14 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     # 只执行 cargo test 不会因 #[link] 自动构建另一个 package 的 cdylib，干净 checkout 会缺少 -lliteos_ui。
     run(["cargo", "build", "--manifest-path", "user/Cargo.toml", "-p", "classic-ui-runtime"], environment=_env_with(environment, CARGO_PROFILE_DEV_PANIC="unwind"))
     host_libraries = str(ROOT / "user/target/debug")
-    user_environment = _env_with(environment, LIBRARY_PATH=host_libraries, DYLD_LIBRARY_PATH=host_libraries, LD_LIBRARY_PATH=host_libraries)
-    run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=user_environment)
+    with tempfile.TemporaryDirectory(prefix="liteos-font-tests-") as cache:
+        (Path(cache) / "fontconfig").mkdir()
+        user_environment = _env_with(
+            environment, LIBRARY_PATH=host_libraries, DYLD_LIBRARY_PATH=host_libraries,
+            LD_LIBRARY_PATH=host_libraries, FONTCONFIG_FILE=str(ROOT / "user/base/fonts.conf"),
+            XDG_CACHE_HOME=cache,
+        )
+        run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=user_environment)
     # 门禁脚本自身的判定逻辑与固定值（APK digest、gate 阈值、cache 身份）由这些测试守住；
     # 缺少这一步它们会在无人运行时悄悄过期。
     run(
@@ -588,13 +594,6 @@ def verify_apk_apps_scope(environment: Mapping[str, str] | None = None) -> None:
     """构建一次产品产物后执行 APK runtime gate。"""
     build(environment)
     verify_runtime_apk_apps(environment)
-
-
-def regenerate_terminal_font(environment: Mapping[str, str] | None = None) -> None:
-    """生成并立即校验 terminal font checked asset。"""
-    python = TOOLS / "classic-assets/bin/python"
-    run([python, ROOT / "scripts/generate_terminal_font.py"], environment=environment)
-    run([python, ROOT / "scripts/generate_terminal_font.py", "--verify"], environment=environment)
 
 
 def verify_host(environment: Mapping[str, str] | None = None) -> None:
@@ -794,7 +793,6 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-riscv64-secondary": verify_riscv64_secondary,
         "build": build,
         "verify": verify,
-        "regen-font": regenerate_terminal_font,
         "clean": clean,
         "clean-musl": clean_musl,
         "clean-busybox": clean_busybox,

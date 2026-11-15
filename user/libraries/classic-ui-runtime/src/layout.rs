@@ -114,11 +114,13 @@ impl Tree {
                 let inner = (width - node.layout.padding * 2).max(0);
                 let height = match &custom {
                     Some(face) => {
-                        typeface::wrap(node.text(), inner * scale, |ch| {
-                            face.glyph(ch, false).advance
-                        })
-                        .len() as i32
-                            * line
+                        (face
+                            .layout(node.text(), false, false, Some(inner * scale))
+                            .size()
+                            .1
+                            + scale
+                            - 1)
+                            / scale
                     }
                     None => font.wrapped_height(inner, node.text(), false),
                 };

@@ -203,10 +203,10 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   `/bin/session-launch` 建立 parent-death、session/process-group 与同步 exec-error 契约；
   多线程客户端不得运行 `pre_exec`。图形监督进程的 stderr 进入 `/dev/console`；PTY 模式由 launcher
   在 setsid 后执行 TIOCSCTTY，目标 stdin/stdout/stderr 均指向 slave，独立 CLOEXEC fd 只承担 exec-status。
-- `terminal-model` 独占 VT parser/screen、选择与有效颜色投影，`keyboard` 独占 CSI/SS3 与已提交 Unicode 的输入编码。
-  `/bin/terminal` 使用共享 SDK Canvas 与标准 PTY，没有私有 terminal helper 协议。
-- PTY 会话继承已认证账户的环境与凭据；显式提供 `TERM=linux`、`SHELL=/bin/sh`，优先使用当前
-  HOME、USER、PATH，仅缺失时采用系统默认值。工作目录是账户 HOME，不能强制切回 root。
+- `/bin/terminal` 经 Alacritty 持有 VT parser、网格、回滚与选区。前端负责 Canvas、鼠标/焦点、粘贴、剪贴板和 PTY 回复投递。
+  `keyboard` 拥有 xterm CSI/SS3 与已提交 Unicode 的键盘输入编码。程序通过标准 PTY、termios 和 signal 与子进程交互。
+- `/bin/terminal` 为自己的 PTY 会话提供 `TERM=xterm-256color`、`COLORTERM=truecolor` 和 UTF-8 locale 默认值。
+  PTY 启动继承当前 HOME、USER、PATH，缺失时采用系统默认值，默认 shell 为 `/bin/sh`。工作目录为账户 HOME。
   `SessionCommand` 拥有环境覆盖项与工作目录，spawn 失败时不留下半个会话。
 - 新建 console/PTY 的 Linux sane termios 必须发布 `VSTART=^Q`、`VSTOP=^S` 与 `VSUSP=^Z`；
   control chars 留为 NUL 会让进入 raw mode 的交互式 CLI 观察到非标准 TTY 初态。
@@ -269,7 +269,7 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   已销毁的句柄保留“已宣告”记录到窗口消失，防止同一窗口反复重新宣告。句柄操作由稳定的 `(ClientId, surface)` 路由，窗口消失后忽略。
 - `wl_pointer.set_cursor` 只采用当前指针焦点客户端的最新 enter serial。光标 surface commit 更新硬件图像，null surface 或无 buffer 隐藏，
   换焦点恢复默认箭头；缩放抓取使用对应方向箭头，结束或目标消失时恢复。
-- `keyboard`、`terminal-model`、`terminal-font`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
+- `keyboard`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup
 

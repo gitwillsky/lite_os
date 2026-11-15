@@ -189,8 +189,11 @@ static API: Api = Api {
     slider_channel: widget_api::slider_channel,
     text_width: widget_api::text_width,
     canvas_video: image_api::canvas_video,
+    video_device: image_api::video_device,
+    use_dma_video: image_api::use_dma_video,
     canvas_text_caret: context_api::canvas_text_caret,
     read_text_commit: context_api::read_text_commit,
+    monospace_cell_size: widget_api::monospace_cell_size,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

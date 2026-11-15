@@ -14,6 +14,7 @@ const SET_CONSTANT_BUFFER: u32 = 12;
 const SET_SCISSOR_STATE: u32 = 15;
 const BIND_SAMPLER_STATES: u32 = 18;
 const BIND_SHADER: u32 = 31;
+const TRANSFER3D: u32 = 43;
 const COPY_TRANSFER3D: u32 = 45;
 const LINK_SHADER: u32 = 52;
 const INLINE_WRITE_PARAMETERS: usize = 11;
@@ -62,6 +63,14 @@ pub struct CommandEncoder {
 }
 
 impl CommandEncoder {
+    pub(super) fn upload_vertex_buffer(&mut self, resource: u32, length: u32) {
+        // TRANSFER3D interprets a PIPE_BUFFER box in bytes. Zero pitches let the renderer
+        // infer the layout, and direction 1 copies the already attached guest backing.
+        self.header_raw(TRANSFER3D, 0, 13);
+        self.words
+            .extend([resource, 0, 0, 0, 0, 0, 0, 0, length, 1, 1, 0, 1]);
+    }
+
     /// Encodes an ordered VirGL COPY_TRANSFER3D between a texture and a staging backing.
     pub(super) fn copy_transfer(
         &mut self,
@@ -481,6 +490,18 @@ mod tests {
                 0xff00_0002
             ]
         );
+    }
+
+    #[test]
+    fn vertex_upload_encodes_a_byte_box_and_precedes_the_draw() {
+        let mut encoder = CommandEncoder::new();
+        encoder.upload_vertex_buffer(29, 96);
+        encoder.draw_triangles(0, 6);
+        assert_eq!(
+            &encoder.words()[..14],
+            &[43 | (13 << 16), 29, 0, 0, 0, 0, 0, 0, 0, 96, 1, 1, 0, 1]
+        );
+        assert_eq!(encoder.words()[14] & 0xff, DRAW_VBO);
     }
 
     #[test]

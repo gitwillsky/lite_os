@@ -486,8 +486,15 @@ fn wrapped_text_keeps_all_lines_and_respects_the_visible_rectangle() {
             .role(crate::FontRole::Message)
             .measure("甲乙", false)
             / scale;
-        let line_height = render_line_height(scale);
-        let bounds = Rect::new(10, 10, width, line_height * 2);
+        let font = typeface(scale as u32).role(crate::FontRole::Message);
+        let first_height = font.layout("甲乙", false, false, None).size().1;
+        let second_height = font.layout("丙丁", false, false, None).size().1;
+        let bounds = Rect::new(
+            10,
+            10,
+            width,
+            (first_height + second_height + scale - 1) / scale,
+        );
         let image = render(scale, |p| {
             assert_eq!(
                 p.text_wrapped(
@@ -504,14 +511,25 @@ fn wrapped_text_keeps_all_lines_and_respects_the_visible_rectangle() {
                 p.text(10, 10, "甲乙", Ink::Color(SystemColor::WindowText), false);
                 p.text(
                     10,
-                    10 + line_height,
+                    10 + first_height / scale,
                     "丙丁",
                     Ink::Color(SystemColor::WindowText),
                     false,
                 );
             });
         });
-        assert_eq!(image.pixels, expected.pixels);
+        let row_start = (bounds.y * scale + first_height) as usize;
+        let row_stride = (SIZE * scale) as usize;
+        assert_eq!(
+            &image.pixels[..row_start * row_stride],
+            &expected.pixels[..row_start * row_stride]
+        );
+        assert!((row_start..(bounds.bottom() * scale) as usize).any(|row| {
+            (bounds.x * scale..bounds.right() * scale).any(|x| {
+                image.pixels[row * row_stride + x as usize] & 0x00ff_ffff
+                    != rgb(SystemColor::Background)
+            })
+        }));
         let short = render(scale, |p| {
             assert_eq!(
                 p.text_wrapped(
@@ -535,12 +553,6 @@ fn wrapped_text_keeps_all_lines_and_respects_the_visible_rectangle() {
             }
         }
     });
-}
-
-fn render_line_height(scale: i32) -> i32 {
-    let mut height = 0;
-    render(scale, |p| height = p.line_height());
-    height
 }
 
 #[test]

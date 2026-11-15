@@ -111,86 +111,108 @@ pub fn text_edit(code: u32, value: i32, modifiers: Modifiers) -> Option<TextEdit
     }
 }
 
-/// Translates one key event into the PTY byte sequence a terminal receives (`None` for modifier,
-/// release and unmapped keys). `application_cursor_keys` selects DECCKM `ESC O x` navigation.
-pub fn terminal_bytes(
-    state: &mut Modifiers,
-    code: u32,
-    value: i32,
-    application_cursor_keys: bool,
-) -> Option<Vec<u8>> {
-    let pressed = value != 0;
-    // 修饰键折叠交给本 crate 的 keymap，避免与 UI 文本输入各持一份键码表。
-    if state.apply(code, value) || !pressed {
-        return None;
-    }
-    terminal_input(
-        code,
-        pressed,
-        *state,
-        character(code as u16, *state),
-        application_cursor_keys,
-    )
-}
-
-/// 将已提交的 Wayland/XKB Unicode 文本和物理功能键编码为终端输入。
-/// 修饰状态由输入服务提供，不再次按键帽推算字符；释放事件及无文本键返回 None。
-/// DECCKM 仅影响导航转义序列，不改变提交文字的 UTF-8。
+/// Encodes an evdev press and its Wayland/XKB text using xterm input sequences.
+/// The two application modes select SS3 cursor or keypad sequences. Unmapped keys
+/// and desktop shortcuts using Super return `None`.
 pub fn terminal_input(
     code: u32,
-    pressed: bool,
     state: Modifiers,
     text: Option<char>,
-    application_cursor_keys: bool,
+    application_cursor: bool,
+    application_keypad: bool,
 ) -> Option<Vec<u8>> {
-    if !pressed {
+    if state.super_key {
         return None;
     }
-    let special: Option<&[u8]> = match code {
-        1 => Some(b"\x1b"),
-        14 => Some(b"\x7f"),
-        15 => Some(if state.shift { b"\x1b[Z" } else { b"\t" }),
-        28 => Some(b"\r"),
-        102 => Some(if application_cursor_keys {
-            b"\x1bOH"
-        } else {
-            b"\x1b[1~"
-        }),
-        103 => Some(if application_cursor_keys {
-            b"\x1bOA"
-        } else {
-            b"\x1b[A"
-        }),
-        104 => Some(b"\x1b[5~"),
-        105 => Some(if application_cursor_keys {
-            b"\x1bOD"
-        } else {
-            b"\x1b[D"
-        }),
-        106 => Some(if application_cursor_keys {
-            b"\x1bOC"
-        } else {
-            b"\x1b[C"
-        }),
-        107 => Some(if application_cursor_keys {
-            b"\x1bOF"
-        } else {
-            b"\x1b[4~"
-        }),
-        108 => Some(if application_cursor_keys {
-            b"\x1bOB"
-        } else {
-            b"\x1b[B"
-        }),
-        109 => Some(b"\x1b[6~"),
-        110 => Some(b"\x1b[2~"),
-        111 => Some(b"\x1b[3~"),
+    let modifier =
+        1 + u8::from(state.shift) + 2 * u8::from(state.alt) + 4 * u8::from(state.control);
+    let keypad = match code {
+        55 => Some((b'j', '*')),
+        71 => Some((b'w', '7')),
+        72 => Some((b'x', '8')),
+        73 => Some((b'y', '9')),
+        74 => Some((b'm', '-')),
+        75 => Some((b't', '4')),
+        76 => Some((b'u', '5')),
+        77 => Some((b'v', '6')),
+        78 => Some((b'k', '+')),
+        79 => Some((b'q', '1')),
+        80 => Some((b'r', '2')),
+        81 => Some((b's', '3')),
+        82 => Some((b'p', '0')),
+        83 => Some((b'n', '.')),
+        96 => Some((b'M', '\r')),
+        98 => Some((b'o', '/')),
+        117 => Some((b'X', '=')),
         _ => None,
     };
-    if let Some(bytes) = special {
-        return Some(bytes.to_vec());
+    if let Some((key, _)) = keypad
+        && application_keypad
+        && modifier == 1
+    {
+        return Some(vec![0x1b, b'O', key]);
     }
-    let character = text?;
+
+    let final_byte = match code {
+        102 => Some(b'H'),
+        103 => Some(b'A'),
+        105 => Some(b'D'),
+        106 => Some(b'C'),
+        107 => Some(b'F'),
+        108 => Some(b'B'),
+        59..=62 => Some(b'P' + (code - 59) as u8),
+        _ => None,
+    };
+    if let Some(key) = final_byte {
+        return Some(if modifier != 1 {
+            format!("\x1b[1;{modifier}{}", char::from(key)).into_bytes()
+        } else {
+            vec![
+                0x1b,
+                if application_cursor || (59..=62).contains(&code) {
+                    b'O'
+                } else {
+                    b'['
+                },
+                key,
+            ]
+        });
+    }
+
+    let numbered = match code {
+        110 => Some(2),
+        111 => Some(3),
+        104 => Some(5),
+        109 => Some(6),
+        63..=68 => Some([15, 17, 18, 19, 20, 21][(code - 63) as usize]),
+        87 => Some(23),
+        88 => Some(24),
+        _ => None,
+    };
+    if let Some(key) = numbered {
+        return Some(if modifier == 1 {
+            format!("\x1b[{key}~").into_bytes()
+        } else {
+            format!("\x1b[{key};{modifier}~").into_bytes()
+        });
+    }
+
+    if code == 15 && state.shift {
+        return Some(b"\x1b[Z".to_vec());
+    }
+    let character = match code {
+        1 => '\x1b',
+        14 => {
+            if state.control {
+                '\x08'
+            } else {
+                '\x7f'
+            }
+        }
+        15 => '\t',
+        28 | 96 => '\r',
+        _ => text.or_else(|| keypad.map(|(_, character)| character))?,
+    };
     let mut bytes = Vec::with_capacity(5);
     if state.alt {
         bytes.push(0x1b);
@@ -200,6 +222,8 @@ pub fn terminal_input(
         bytes.push(match value {
             b' ' | b'@' | b'2' => 0,
             b'A'..=b'Z' | b'['..=b'_' => value & 0x1f,
+            b'3'..=b'7' => value - b'3' + 0x1b,
+            b'/' => 0x1f,
             b'?' | b'8' => 0x7f,
             _ => value,
         });
@@ -268,32 +292,62 @@ mod tests {
 
 #[cfg(test)]
 mod terminal_tests {
-    use super::{Modifiers, terminal_bytes};
+    use super::{Modifiers, terminal_input};
 
     #[test]
-    fn normal_cursor_mode_keeps_csi_navigation_encoding() {
-        for (code, expected) in [
-            (103, b"\x1b[A".as_slice()),
-            (105, b"\x1b[D".as_slice()),
-            (106, b"\x1b[C".as_slice()),
-            (108, b"\x1b[B".as_slice()),
-        ] {
-            assert_eq!(
-                terminal_bytes(&mut Modifiers::default(), code, 1, false).as_deref(),
-                Some(expected),
-            );
-        }
+    fn xterm_cursor_key_modes_and_modifiers() {
+        let plain = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..plain
+        };
+        assert_eq!(
+            terminal_input(105, plain, None, false, false).as_deref(),
+            Some(&b"\x1b[D"[..])
+        );
+        assert_eq!(
+            terminal_input(105, plain, None, true, false).as_deref(),
+            Some(&b"\x1bOD"[..])
+        );
+        assert_eq!(
+            terminal_input(105, shift, None, true, false).as_deref(),
+            Some(&b"\x1b[1;2D"[..])
+        );
+    }
+
+    #[test]
+    fn xterm_function_and_keypad_encodings_match_terminfo() {
+        let plain = Modifiers::default();
+        assert_eq!(
+            terminal_input(59, plain, None, false, false).as_deref(),
+            Some(&b"\x1bOP"[..])
+        );
+        assert_eq!(
+            terminal_input(88, plain, None, false, false).as_deref(),
+            Some(&b"\x1b[24~"[..])
+        );
+        assert_eq!(
+            terminal_input(96, plain, None, false, true).as_deref(),
+            Some(&b"\x1bOM"[..])
+        );
     }
 
     #[test]
     fn control_letters_and_alt_prefix_follow_pty_conventions() {
-        let mut modifiers = Modifiers::default();
-        assert!(terminal_bytes(&mut modifiers, 29, 1, false).is_none()); // left control down
-        assert_eq!(terminal_bytes(&mut modifiers, 46, 1, false), Some(vec![3])); // Ctrl-C
-        terminal_bytes(&mut modifiers, 29, 0, false);
-        terminal_bytes(&mut modifiers, 56, 1, false); // left alt down
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
         assert_eq!(
-            terminal_bytes(&mut modifiers, 30, 1, false),
+            terminal_input(46, control, Some('c'), false, false),
+            Some(vec![3])
+        );
+        assert_eq!(
+            terminal_input(30, alt, Some('a'), false, false),
             Some(vec![0x1b, b'a'])
         );
     }

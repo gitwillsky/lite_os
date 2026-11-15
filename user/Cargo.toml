@@ -33,8 +33,6 @@ members = [
     "programs/resolvd",
     "libraries/linux-uapi",
     "libraries/mpv-client",
-    "libraries/terminal-font",
-    "libraries/terminal-model",
     "libraries/typeface",
     "libraries/wayland-scanner",
     "libraries/wayland-wire",
@@ -48,8 +46,6 @@ publish = false
 [workspace.dependencies]
 linux-uapi = { path = "libraries/linux-uapi" }
 keyboard = { path = "libraries/keyboard" }
-terminal-font = { path = "libraries/terminal-font" }
-terminal-model = { path = "libraries/terminal-model" }
 unicode-width = "=0.2.2"
 
 [profile.dev]

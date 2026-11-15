@@ -663,18 +663,6 @@ impl Context {
         Ok(self.events.pop_front())
     }
     fn paint(&mut self) -> io::Result<()> {
-        let needs_mono = self.windows.values().any(|host| {
-            host.controls().is_ok_and(|tree| {
-                tree.nodes
-                    .values()
-                    .any(|node| node.drawing.iter().any(|command| command.kind == 5))
-            })
-        });
-        let mono = if needs_mono {
-            Some(self.resources.terminal_font()?)
-        } else {
-            None
-        };
         let referenced = self
             .windows
             .values()
@@ -702,7 +690,6 @@ impl Context {
 
         let canvas = super::render::CanvasAssets {
             now: std::time::Instant::now(),
-            mono: mono.as_deref(),
             pictures: &self.pictures,
             screen: self.display.screen_size(),
         };
@@ -941,15 +928,26 @@ impl Context {
         role: classic_ui::FontRole,
         value: &str,
     ) -> io::Result<i32> {
-        let protocol = self.host(window)?.frame.window();
-        let scale = self
-            .display
-            .configuration(protocol)
-            .map_or(1, |configuration| configuration.scale)
-            .max(1);
+        let scale = self.window_scale(window)?;
         let fonts = self.resources.fonts(scale)?;
         Ok((fonts.role(role).measure(value, false) + scale - 1) / scale)
     }
+
+    pub(super) fn monospace_cell_size(&mut self, window: u64) -> io::Result<abi::Rect> {
+        let scale = self.window_scale(window)?;
+        let (width, height) = self.resources.fonts(scale)?.monospace_cell_size();
+        Ok(abi::Rect::new(0, 0, width, height))
+    }
+
+    fn window_scale(&self, window: u64) -> io::Result<i32> {
+        let protocol = self.host(window)?.frame.window();
+        Ok(self
+            .display
+            .configuration(protocol)
+            .map_or(1, |configuration| configuration.scale)
+            .max(1))
+    }
+
     pub(super) fn app_id(&mut self, window: u64, value: &str) -> io::Result<()> {
         let host = self.host(window)?;
         if host.app_id == value {

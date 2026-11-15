@@ -96,7 +96,6 @@ impl PtySession {
         set_window_size(master.as_fd(), size)?;
         let home = std::env::var_os("HOME").unwrap_or_else(|| SESSION_HOME.into());
         let mut values = vec![
-            ("TERM".into(), "linux".into()),
             ("HOME".into(), home.clone()),
             ("SHELL".into(), SESSION_SHELL.into()),
             (

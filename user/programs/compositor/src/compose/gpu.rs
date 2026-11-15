@@ -73,10 +73,12 @@ struct Overlay {
 impl Gpu {
     pub(crate) fn new(device: &DrmDevice, width: u32, height: u32) -> io::Result<Self> {
         let context = device.initialize_virgl("liteos-compositor")?;
-        if !context.capabilities().supports_staged_transfer() {
+        if !context.capabilities().supports_staged_transfer()
+            || !context.capabilities().supports_command_transfer()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "VirGL2 scanout needs bidirectional staged transfer",
+                "VirGL2 scanout needs ordered and bidirectional staged transfers",
             ));
         }
         let target = || -> io::Result<Target> {
@@ -342,8 +344,12 @@ impl Gpu {
                 }
             }
         }
-        vertices.transfer_buffer_to_host()?;
         let mut commands = CommandEncoder::new();
+        // The prior flip released this backing. Upload the written prefix in the draw
+        // submission so it has the same ordering and fence as its consumers.
+        if offset != 0 {
+            vertices.encode_vertex_upload(&mut commands, offset as u32)?;
+        }
         commands.create_surface(
             TARGET,
             target.resource.resource_id(),

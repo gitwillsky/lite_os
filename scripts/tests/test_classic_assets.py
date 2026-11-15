@@ -22,7 +22,7 @@ class ProductAssetTests(unittest.TestCase):
             self.assertTrue(paths)
             self.assertTrue(all(path.is_relative_to(classic_assets.DIRECTORY) for path in paths))
         self.assertEqual({path.name for path in classic_assets.fonts()},
-                         {'simsun.ttc', 'tahoma.ttf', 'tahomabd.ttf', 'marlett.ttf', 'fontmap.ini'})
+                         {'simsun.ttc', 'tahoma.ttf', 'tahomabd.ttf', 'marlett.ttf'})
         self.assertIn('network-places-32.bmp', {path.name for path in classic_assets.shell_bitmaps()})
         self.assertEqual(set(dict(classic_assets.sounds())),
                          {'logon.wav', 'logoff.wav', 'chord.wav', 'ding.wav', 'start.wav'})

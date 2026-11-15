@@ -5,7 +5,7 @@ use super::{
     widgets::{Tree, invalid},
 };
 use canvas::Rect;
-use classic_ui::{Display, EventKind, WindowHost, WindowId};
+use classic_ui::{Display, EventKind, StreamBuffer, WindowHost, WindowId};
 use classic_ui_abi::{self as abi, VideoFrame};
 use std::{io, os::fd::BorrowedFd};
 
@@ -102,10 +102,13 @@ pub(super) fn present(
     }
     if !context.display.submit_stream(
         video.surface,
-        frame.slot,
-        frame.generation,
-        fd,
-        [frame.width, frame.height, frame.stride],
+        StreamBuffer {
+            fd,
+            slot: frame.slot,
+            generation: frame.generation,
+            size: extent,
+            stride: frame.stride,
+        },
     )? {
         return Err(io::ErrorKind::WouldBlock.into());
     }

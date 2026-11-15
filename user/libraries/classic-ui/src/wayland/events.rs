@@ -430,6 +430,7 @@ mod tests {
                 )]),
                 buffers: HashMap::new(),
                 streams: HashMap::new(),
+                stream_dma: super::super::dmabuf::Registration::Unsupported,
                 events: VecDeque::new(),
                 pointer: None,
                 keyboard: None,

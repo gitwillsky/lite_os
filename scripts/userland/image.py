@@ -4,8 +4,9 @@ from __future__ import annotations
 import shutil
 import sys
 import tempfile
-from apk_cache import cached_apk_bootstrap
+from apk_cache import cached_apk_bootstrap, download
 from apk_rootfs import assemble_apk_rootfs
+from apk_apps_cache import fixed_application_packages
 from build_cache import (
     build_environment,
     cache_lock,
@@ -234,6 +235,11 @@ def create_image(
     finally:
         if script_path is not None:
             script_path.unlink(missing_ok=True)
+    name, digest = next(
+        (name, digest) for name, digest in fixed_application_packages()
+        if name.startswith("ncurses-terminfo-base-")
+    )
+    terminfo = download(name, digest)
     with tempfile.TemporaryDirectory(prefix="liteos-apk-rootfs-") as workspace:
         assemble_apk_rootfs(
             image,
@@ -242,7 +248,7 @@ def create_image(
             BUSYBOX_LINKS,
             STRESS_LINKS,
             FORBIDDEN_BOOT_MARKERS,
-            (),
+            (terminfo,),
         )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
@@ -385,6 +391,7 @@ def create_published_image(
         ROOT / "scripts/create_fs.py",
         *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "rust.py")),
         ROOT / "scripts/apk_cache.py",
+        ROOT / "scripts/apk_apps_cache.py",
         ROOT / "scripts/apk_package.py",
         ROOT / "scripts/apk_rootfs.py",
         ROOT / "scripts/ext4_image.py",

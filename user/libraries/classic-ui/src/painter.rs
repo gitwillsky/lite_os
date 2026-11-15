@@ -1,4 +1,4 @@
-use canvas::{BitMask, Color, Mask, Rect, Surface};
+use canvas::{Color, Rect, Surface};
 use classic_theme::{Edge, Rgb, SystemColor, Theme};
 use typeface::Typeface;
 
@@ -270,85 +270,70 @@ impl<'a> Painter<'a> {
         });
     }
 
-    /// 按 `typeface::wrap` 的词与中文断行规则把 `text` 断成不超过 `width` 逻辑像素的行（字节范围）。
+    /// 按 Unicode 断行规则布局，返回原字符串中的行字节范围。
     pub fn wrap_lines(&self, width: i32, text: &str) -> Vec<std::ops::Range<usize>> {
-        if width <= 0 {
-            return Vec::new();
-        }
-        typeface::wrap(text, self.px(width), |ch| {
-            self.typeface.glyph(ch, false).advance
-        })
+        self.typeface.wrap(text, self.px(width), false)
     }
 
-    /// 返回给定逻辑宽度下完整文本所需的高度，与 text_wrapped 共用断行规则。
-    /// 非正宽度返回零；无错误返回。
+    /// 以与 `text_wrapped` 相同的布局返回所需逻辑高度。
     pub fn wrapped_height(&self, width: i32, text: &str, bold: bool) -> i32 {
         if width <= 0 {
             return 0;
         }
-        let count = typeface::wrap(text, self.px(width), |ch| {
-            self.typeface.glyph(ch, bold).advance
-        })
-        .len();
-        (count as i32).saturating_mul(self.line_height())
+        self.logical_ceil(
+            self.typeface
+                .layout(text, bold, false, Some(self.px(width)))
+                .size()
+                .1,
+        )
     }
 
-    /// 在逻辑矩形中按词与中文断行规则绘制文本，并裁剪到矩形边界。
-    ///
-    /// # Parameters
-    /// - `rect`: 排版宽度与可见区域；非正尺寸不绘制。
-    /// - `text`: 文本，换行符强制换行；复用 `typeface::wrap` 的断行规则。
-    /// - `ink`、`bold`: 文字颜色与粗体。
-    ///
-    /// # Returns
-    /// 全部行所需的逻辑高度；可能大于 `rect.height`，空矩形返回 0。无错误返回。
+    /// 以同一份 Pango 段落布局进行换行、测量和绘制，返回逻辑高度并裁剪到 `rect`。
     pub fn text_wrapped(&mut self, rect: Rect, text: &str, ink: Ink, bold: bool) -> i32 {
         if rect.is_empty() {
             return 0;
         }
-        let lines = typeface::wrap(text, self.px(rect.width), |ch| {
-            self.typeface.glyph(ch, bold).advance
-        });
-        let line_height = self.line_height();
+        let layout = self
+            .typeface
+            .layout(text, bold, false, Some(self.px(rect.width)));
         self.clipped(rect, |p| {
-            for (index, line) in lines.iter().enumerate() {
-                let y = rect.y + index as i32 * line_height;
-                if y >= rect.bottom() {
-                    break;
-                }
-                p.ink_physical(p.px(rect.x), p.px(y), &text[line.clone()], ink, bold);
-            }
+            p.draw_ink(&layout, p.px(rect.x), p.px(rect.y), ink)
         });
-        lines.len() as i32 * line_height
+        self.logical_ceil(layout.size().1)
     }
 
-    /// 用系统等宽字体绘制 8×16 逻辑像素网格文字；宽字符占两格。
-    /// font 为资源上下文拥有的 atlas，未知字符显示其替代字形；矩形外全部裁剪，无错误返回。
-    pub fn monospace(
-        &mut self,
-        rect: Rect,
-        text: &str,
-        font: &terminal_font::TerminalFont,
-        rgb: Rgb,
-        bold: bool,
-    ) {
-        use unicode_width::UnicodeWidthChar;
+    /// 绘制系统等宽文字。单元格由字体度量决定，双宽字符占两格，字素簇在同一格塑形。
+    pub fn monospace(&mut self, rect: Rect, text: &str, rgb: Rgb, bold: bool, italic: bool) {
+        use unicode_segmentation::UnicodeSegmentation;
+        use unicode_width::UnicodeWidthStr;
+
+        let (font, (width, _)) = self.fonts.monospace();
         self.clipped(rect, |p| {
-            let mut x = rect.x;
-            for character in text.chars() {
-                let columns = character.width().unwrap_or(1).clamp(1, 2) as i32;
-                if x >= rect.right() {
+            let color = to_color(rgb);
+            let cell_width = p.px(*width);
+            let physical = p.physical(rect);
+            let (ascent, descent) = font.metrics();
+            let baseline = physical.y + (physical.height - ascent - descent) / 2 + ascent;
+            let mut next = physical.x;
+            for cluster in text.graphemes(true) {
+                let columns = cluster.width();
+                if columns == 0 {
+                    continue;
+                }
+                if next >= physical.right() {
                     break;
                 }
-                let mask = Mask {
-                    coverage: font.bitmap(font.glyph(character), bold),
-                    width: columns * 16,
-                    height: terminal_font::CELL_HEIGHT as i32,
-                    stride: terminal_font::BITMAP_WIDTH,
-                };
-                let target = p.physical(Rect::new(x, rect.y, columns * 8, 16));
-                p.surface.draw_mask_scaled(mask, target, to_color(rgb));
-                x += columns * 8;
+                let width = (cell_width * columns as i32).min(physical.right() - next);
+                if !cluster.chars().all(char::is_whitespace) {
+                    let layout = font.layout(cluster, bold, italic, None);
+                    p.draw_layout(
+                        &layout,
+                        next + (width - layout.size().0) / 2,
+                        baseline - layout.baseline(),
+                        color,
+                    );
+                }
+                next += width;
             }
         });
     }
@@ -358,58 +343,58 @@ impl<'a> Painter<'a> {
         self.ink_physical(self.px(x), self.px(y), text, ink, bold)
     }
 
-    /// 禁用样式是浮雕：先在 (+1, +1) 逻辑像素用高光色，再原位用阴影色。
-    fn ink_physical(&mut self, x: i32, y: i32, text: &str, ink: Ink, bold: bool) -> i32 {
-        match ink {
-            Ink::Rgb(rgb) => self.text_physical(x, y, text, to_color(rgb), bold),
-            Ink::Color(color) => {
-                let color = self.color(color);
-                self.text_physical(x, y, text, color, bold)
-            }
-            Ink::Disabled => {
-                let highlight = self.color(SystemColor::ButtonHilight);
-                let shadow = self.color(SystemColor::ButtonShadow);
-                self.text_physical(x + self.scale, y + self.scale, text, highlight, bold);
-                self.text_physical(x, y, text, shadow, bold)
-            }
-        }
+    /// 用当前字体塑形单行文本，供同一控件绘制与计算光标、命中和选区。
+    pub fn text_layout<'b>(&self, text: &'b str, bold: bool) -> typeface::Layout<'b>
+    where
+        'a: 'b,
+    {
+        self.typeface.layout(text, bold, false, None)
     }
 
-    fn text_physical(&mut self, x: i32, y: i32, text: &str, color: Color, bold: bool) -> i32 {
-        let baseline = y + self.typeface.metrics().0;
-        let mut pen = x;
-        for character in text.chars() {
-            let glyph = self.typeface.glyph(character, bold);
-            if glyph.width > 0 {
-                let (x, y) = (pen + glyph.left, baseline - glyph.top);
-                match &glyph.coverage {
-                    typeface::Coverage::Gray(gray) => self.surface.draw_mask(
-                        Mask {
-                            coverage: gray,
-                            width: glyph.width,
-                            height: glyph.height,
-                            stride: glyph.width as usize,
-                        },
-                        x,
-                        y,
-                        color,
-                    ),
-                    typeface::Coverage::Mono { bits, stride } => self.surface.draw_bit_mask(
-                        BitMask {
-                            bits,
-                            width: glyph.width,
-                            height: glyph.height,
-                            stride: *stride,
-                        },
-                        x,
-                        y,
-                        color,
-                    ),
-                }
+    /// 绘制已塑形单行文字。坐标以逻辑像素表示。
+    pub fn paint_text_layout(&mut self, x: i32, y: i32, layout: &typeface::Layout<'_>, ink: Ink) {
+        self.draw_ink(layout, self.px(x), self.px(y), ink);
+    }
+
+    fn ink_physical(&mut self, x: i32, y: i32, text: &str, ink: Ink, bold: bool) -> i32 {
+        let layout = self.typeface.layout(text, bold, false, None);
+        self.draw_ink(&layout, x, y, ink);
+        layout.size().0
+    }
+
+    fn draw_ink(&mut self, layout: &typeface::Layout<'_>, x: i32, y: i32, ink: Ink) {
+        let color = match ink {
+            Ink::Rgb(rgb) => to_color(rgb),
+            Ink::Color(color) => self.color(color),
+            Ink::Disabled => {
+                let highlight = self.color(SystemColor::ButtonHilight);
+                self.draw_layout(layout, x + self.scale, y + self.scale, highlight);
+                self.color(SystemColor::ButtonShadow)
             }
-            pen += glyph.advance;
-        }
-        pen - x
+        };
+        self.draw_layout(layout, x, y, color);
+    }
+
+    fn draw_layout(&mut self, layout: &typeface::Layout<'_>, x: i32, y: i32, color: Color) {
+        let target = self.surface.draw_buffer();
+        let (ox, oy) = target.origin;
+        layout.draw(
+            typeface::RenderTarget {
+                pixels: target.pixels,
+                width: target.width,
+                height: target.height,
+                stride: target.stride,
+                clip: (
+                    target.clip.x - ox,
+                    target.clip.y - oy,
+                    target.clip.width,
+                    target.clip.height,
+                ),
+            },
+            x - ox,
+            y - oy,
+            color.0,
+        );
     }
 
     /// 助记键字母的字符区间：标签里形如 `(F)` 的括号内单个 ASCII 字母，返回字母在 `label` 中的字节范围。
@@ -422,20 +407,25 @@ impl<'a> Painter<'a> {
 
     /// 画一个带助记键的标签；`cues` 打开时在助记字母下画 1 逻辑像素下划线。
     fn label_physical(&mut self, x: i32, y: i32, label: &str, ink: Ink, bold: bool) {
-        self.ink_physical(x, y, label, ink, bold);
+        let layout = self.typeface.layout(label, bold, false, None);
+        self.draw_ink(&layout, x, y, ink);
         let (true, Some(span)) = (self.cues, Self::mnemonic_span(label)) else {
             return;
         };
-        let before = self.text_width(&label[..span.start], bold);
-        let width = self.text_width(&label[span], bold);
-        let (ascent, _) = self.typeface.metrics();
         let color = match ink {
             Ink::Rgb(rgb) => to_color(rgb),
             Ink::Color(color) => self.color(color),
             Ink::Disabled => self.color(SystemColor::ButtonShadow),
         };
-        let rect = Rect::new(x + before, y + ascent + self.scale, width, self.scale);
-        self.surface.fill_rect(rect, color);
+        for range in layout.selection(span) {
+            let rect = Rect::new(
+                x + range.start,
+                y + layout.baseline() + self.scale,
+                range.end - range.start,
+                self.scale,
+            );
+            self.surface.fill_rect(rect, color);
+        }
     }
 
     /// 在逻辑坐标 `(x, y)` 画一个带助记键的标签（菜单项、按钮名）。
@@ -456,8 +446,7 @@ impl<'a> Painter<'a> {
 
     /// 用任意 RGB 在逻辑坐标 `(x, y)` 画一行文字；与 [`Painter::fill_rgb`] 一样只给性能图表这类没有系统色对应的绘制用。
     pub fn text_rgb(&mut self, x: i32, y: i32, text: &str, rgb: Rgb) {
-        let color = to_color(rgb);
-        self.text_physical(self.px(x), self.px(y), text, color, false);
+        self.ink_physical(self.px(x), self.px(y), text, Ink::Rgb(rgb), false);
     }
 
     /// 在 `rect` 内水平、垂直居中绘制一行文本。
@@ -471,6 +460,16 @@ impl<'a> Painter<'a> {
         self.clipped(rect, |p| {
             p.ink_physical(x, y, &text, ink, bold);
         });
+    }
+
+    /// 将字形的实际墨迹对中，用于标题栏符号。
+    pub(crate) fn symbol_centered(&mut self, rect: Rect, text: &str, ink: Ink) {
+        let physical = self.physical(rect);
+        let layout = self.typeface.layout(text, false, false, None);
+        let (left, top, width, height) = layout.ink_bounds();
+        let x = physical.x + (physical.width - width) / 2 - left;
+        let y = physical.y + (physical.height - height) / 2 - top;
+        self.clipped(rect, |p| p.draw_ink(&layout, x, y, ink));
     }
 
     /// 将 ASCII 点阵按逻辑像素绘制：`#` 为前景像素，其余透明；每个逻辑像素画成 `scale` × `scale`。

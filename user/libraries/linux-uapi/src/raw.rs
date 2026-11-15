@@ -675,11 +675,13 @@ unsafe extern "C" {
     pub(crate) fn statvfs(path: *const c_char, buffer: *mut StatVfs) -> c_int;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const RTLD_LAZY: c_int = 1;
 #[cfg(target_os = "linux")]
 pub(crate) const RTLD_LOCAL: c_int = 0;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+pub(crate) const RTLD_LOCAL: c_int = 4;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 unsafe extern "C" {
     pub(crate) fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     pub(crate) fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;

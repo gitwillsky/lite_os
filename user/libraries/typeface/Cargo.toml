@@ -12,7 +12,7 @@ linux-uapi = { path = "../linux-uapi" }
 liteos-runtime = { path = "../liteos-runtime" }
 
 [[bench]]
-name = "glyphs"
+name = "text"
 harness = false
 
 [lints]

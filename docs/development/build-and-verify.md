@@ -33,7 +33,7 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
   再执行 `make setup`。`scripts/host_setup.py` 是 host 工具安装的唯一 owner：用 Homebrew 安装
   `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、
-  `openssl@3`、`gh`、`ninja`、`pkgconf`；安装 rustup 并按
+  `openssl@3`、`gh`、`ninja`、`pkgconf` 和 `pango`；安装 rustup 并按
   `rust-toolchain.toml` 安装固定 toolchain；构建带 xHCI 修复的 UTM 开发副本，不覆盖用户应用。缺少 `llvm` 会让
   musl 构建以 `Clang, LLVM archive tools, and the pinned Rust rust-lld are required` 失败。
 - UTM 构建由 `scripts/utm_build.py` 拥有，`make setup` 与 `make run-gui` 共用此入口。
@@ -299,7 +299,7 @@ guest reset 转成可裁决的 QEMU 退出，不能用 host 强制终止冒充 r
 | `sync-userland`、`reset-rootfs` | 准备或恢复开发镜像 |
 | `verify-unit`、`verify-architecture-benchmark` | 定位 host/static/unit 问题 |
 | `verify-runtime-*`、`verify-runtime-gates` | 定位单个 guest 门禁；由 `verify-runtime` 统一串行调用 |
-| `regen-font`、`regen-ui-font`、`regen-icon-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
+| `regen-ui-font`、`regen-icon-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
 | `diagnose-scheduler-latency` | 量化多 CPU 调度的均衡延迟；诊断工具，不判定通过与否，也不属于任何门禁 |
 
 ## Rust SDK 开发镜像
@@ -361,7 +361,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 - `fallible-tree`：实际 AVL 拓扑、fallible publication、节点迁移与 OOM。
 - `span-heap`：实际块对齐/不重叠、realloc、跨线程释放、退出 owner 接管与空 span 归还；同属 host Clippy 全目标与 unit scope。
 - `scheduler-unit`：实际 native SchedulingState 的 Ready token/generation、退出约束和 Policy 计时；另测 ready heap 与 placement/preemption。
-- `user/` Cargo workspace：linux-uapi、keyboard、terminal-model、terminal-font、canvas、classic-theme、classic-ui、typeface、wayland-scanner 与 wayland-wire 的单元测试。
+- `user/` Cargo workspace：linux-uapi、keyboard、terminal、canvas、classic-theme、classic-ui、typeface、wayland-scanner 与 wayland-wire 的单元测试。
 - native 线性 Ready token 同时由 production-path 单测与唯一 committer 结构约束；wait registry 的取消、跨 source 排他与独立 publication 由真实 owner fixture 验证，禁止复制测试版调度器/等待队列。
 - filesystem 可睡眠 owner 由静态字段/adapter contract 与真实 `TaskMutex` FIFO handoff host
   test 共同约束：两个排队 waiter 必须按 ticket 获取，handoff 期间 `try_lock` 不得插队，

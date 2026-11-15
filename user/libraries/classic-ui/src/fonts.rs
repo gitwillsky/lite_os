@@ -1,6 +1,10 @@
 //! 一个 scale 下解析好的系统字体集合；正文字体来自主题的 `[Fonts]`，标题按钮使用原版 Marlett 符号。
 use classic_theme::{LogicalFont, SystemFonts};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 use typeface::{FontCatalog, Typeface};
 
 /// 系统字体的用途，对应 `NONCLIENTMETRICS` 与图标字体。
@@ -28,6 +32,10 @@ pub struct Fonts {
     icon: Typeface,
     /// 标题按钮符号每个 scale 直接光栅化原版轮廓，不放大低分辨率手绘点阵。
     caption_symbols: Typeface,
+    // OWNER: 当前 scale 的 Fonts 只在线程内懒解析等宽字体一次。
+    // FAILURE: 每次绘制重新创建字体上下文会重复 Fontconfig 匹配与 Pango 度量。
+    monospace: OnceCell<(Typeface, (i32, i32))>,
+    monospace_request: LogicalFont,
     catalog: Rc<FontCatalog>,
     scale: u32,
     smoothing: bool,
@@ -47,15 +55,9 @@ impl Fonts {
             status: resolve(&system.status),
             message: resolve(&system.message),
             icon: resolve(&system.icon),
-            caption_symbols: catalog.resolve(
-                &LogicalFont {
-                    face: "Marlett".into(),
-                    points: 9,
-                    weight: 400,
-                },
-                scale,
-                false,
-            ),
+            caption_symbols: catalog.resolve(&system.caption_symbols, scale, false),
+            monospace: OnceCell::new(),
+            monospace_request: system.monospace.clone(),
             smoothing: system.smoothing,
             catalog,
             scale,
@@ -65,6 +67,24 @@ impl Fonts {
 
     pub(crate) fn caption_symbols(&self) -> &Typeface {
         &self.caption_symbols
+    }
+
+    pub(crate) fn monospace(&self) -> &(Typeface, (i32, i32)) {
+        self.monospace.get_or_init(|| {
+            let font = self
+                .catalog
+                .resolve(&self.monospace_request, self.scale, self.smoothing);
+            let scale = self.scale as i32;
+            let (ascent, descent) = font.metrics();
+            let width = ((font.measure("0", false) + scale - 1) / scale).max(1);
+            let height = ((ascent + descent + scale - 1) / scale).max(1);
+            (font, (width, height))
+        })
+    }
+
+    /// 返回当前等宽字体的单元格宽高（逻辑像素），供 Canvas 与应用共享网格几何。
+    pub fn monospace_cell_size(&self) -> (i32, i32) {
+        self.monospace().1
     }
 
     /// 某个用途的系统字体。

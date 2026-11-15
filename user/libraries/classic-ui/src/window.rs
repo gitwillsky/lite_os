@@ -174,7 +174,7 @@ impl Painter<'_> {
         let area = Rect::new(area.x + offset, area.y + offset, area.width, area.height);
         let font = self.fonts.caption_symbols();
         self.with_font(font, |p| {
-            p.text_centered(
+            p.symbol_centered(
                 area,
                 glyph,
                 if enabled {
@@ -182,7 +182,6 @@ impl Painter<'_> {
                 } else {
                     Ink::Disabled
                 },
-                false,
             )
         });
     }
@@ -200,17 +199,15 @@ impl Painter<'_> {
                 .last()
                 .map_or_else(String::new, |length| ellipsis[..length].to_owned());
         }
-        let budget = max_width - self.text_width(ellipsis, bold);
-        let mut out = String::new();
-        let mut used = 0;
-        for character in text.chars() {
-            let step = self.text_width(character.encode_utf8(&mut [0; 4]), bold);
-            if used + step > budget {
-                break;
-            }
-            used += step;
-            out.push(character);
-        }
-        out + ellipsis
+        use unicode_segmentation::UnicodeSegmentation;
+        let ends: Vec<_> = text
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .collect();
+        let count = ends.partition_point(|&end| {
+            self.text_width(&format!("{}{ellipsis}", &text[..end]), bold) <= max_width
+        });
+        let end = ends[count.saturating_sub(1)];
+        format!("{}{ellipsis}", &text[..end])
     }
 }

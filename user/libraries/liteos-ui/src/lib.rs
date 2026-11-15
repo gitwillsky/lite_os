@@ -276,6 +276,27 @@ impl Application {
     pub fn watch(&mut self, fd: std::os::fd::OwnedFd) -> Result<AsyncFd> {
         self.connection.watch(fd)
     }
+    /// 通过 Wayland 查询可导入 XRGB8888 dma-buf 的 DRM 设备号。
+    /// 缺少兼容设备时返回 None，显示连接失败时返回错误。
+    pub fn video_device(&self) -> Result<Option<u64>> {
+        let mut number = 0;
+        // SAFETY: 运行库在同步调用期间借用有效的 context，并写入 number。
+        let status = unsafe {
+            (self.connection.api.video_device)(self.connection.context.as_ptr(), &mut number)
+        };
+        if status == abi::PENDING {
+            return Ok(None);
+        }
+        self.connection.check(status)?;
+        Ok(Some(number))
+    }
+    /// 用已协商设备的 XRGB8888 dma-buf 提交视频。必须在首次创建视频子表面前启用。
+    /// 设备未经协商或子表面已建立时返回错误。
+    pub fn use_dma_video(&self) -> Result<()> {
+        // SAFETY: 同步调用期间借用本 Application 的 UI context。
+        self.connection
+            .check(unsafe { (self.connection.api.use_dma_video)(self.connection.context.as_ptr()) })
+    }
     /// 异步读取 UTF-8 剪贴板；无文本返回 None，超时、超限或无效 UTF-8 返回错误。
     pub fn clipboard_text(&mut self, timeout: Duration) -> Result<ClipboardRead> {
         self.clipboard().read(None, timeout)

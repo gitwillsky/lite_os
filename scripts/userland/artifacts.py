@@ -29,10 +29,34 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGET = target_from_environment()
 
 
+TERMINAL_FONTS = (
+    ("JetBrainsMonoNL-Medium.ttf", "44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c"),
+    ("JetBrainsMonoNL-Bold.ttf", "0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3"),
+    ("NotoSansSymbols2-Regular.ttf", "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21"),
+)
+
+
+def terminal_fonts() -> tuple[UserlandArtifact, ...]:
+    """Install the checked outline faces and their redistribution notices."""
+    directory = ROOT / "assets/fonts"
+    fonts = []
+    for name, expected in TERMINAL_FONTS:
+        source = directory / name
+        if sha256(source) != expected:
+            raise RuntimeError(f"terminal font identity changed: {source}")
+        fonts.append(UserlandArtifact(source, f"/usr/share/liteos/fonts/{name}"))
+    return (
+        *fonts,
+        *(UserlandArtifact(directory / name, f"/usr/share/liteos/licenses/{name}")
+          for name in ("JetBrainsMono-LICENSE", "NotoSansSymbols2-OFL.txt")),
+    )
+
+
 def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
     from ui_sdk import sdk_files
     from mesa_runtime import mesa_userland
+    from font_runtime import font_userland
     from mpv_runtime import mpv_userland
     from fuse_runtime import fuse_userland
     from file_type_icons import userland as file_type_icons
@@ -63,6 +87,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     # 系统墙纸目录由 Git 持有的原创壁纸组成，显示属性按文件名列出。
     wallpapers = tuple(UserlandArtifact(path, f"/usr/share/liteos/wallpapers/{path.name}")
                        for path in classic_wallpapers())
+    font_runtime = font_userland()
     return (
         UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
         UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
@@ -72,7 +97,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
         UserlandArtifact(ROOT / "assets/pinyin/pinyin.tsv", "/usr/share/liteos/pinyin.tsv"),
         UserlandArtifact(ROOT / "assets/pinyin/pinyin-NOTICE.md", "/usr/share/liteos/pinyin-NOTICE.md"),
-        UserlandArtifact(ROOT / "assets/fonts/liteos-terminal.a8", "/usr/share/liteos/liteos-terminal.a8"),
+        *terminal_fonts(),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
         # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。
         *(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
@@ -82,7 +107,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/fonts.conf", "/etc/fonts/fonts.conf"),
         UserlandArtifact(ROOT / "user/base/mime/packages/liteos.xml", "/usr/share/mime/packages/liteos.xml"),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(), *file_type_icons(),
+        *programs, *fonts, ui, *wallpapers, *mesa_userland(), *font_runtime, *mpv_userland(font_runtime), *fuse_userland(), *file_type_icons(),
         *_openssh_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),

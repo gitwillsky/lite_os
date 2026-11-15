@@ -1,9 +1,4 @@
 # typeface
 
-- **类型**：库
-- **作用**：字体与文本排版
-- **产物 / 安装位置**：共享库 `libtypeface.so`
-- **对应的 Windows 2000 组件**：gdi32.dll 的字体部分
-- **依赖**：liteos-runtime、linux-uapi（只读映射轮廓字体文件，多进程共享页缓存）
-
-BDF 点阵、sfnt 轮廓与内嵌点阵、灰度光栅、中西文选择、仿粗体与 CJK 换行。
+共享系统字体布局与绘制库，产物 `libtypeface.so`。通过 Fontconfig 解析系统和用户字体，Pango 使用 HarfBuzz 与 FreeType
+塑形、断行和度量，Cairo 同步绘制到调用者的裁剪 ARGB 缓冲。布局提供 UTF-8 字节索引到光标、命中和视觉选区的映射。

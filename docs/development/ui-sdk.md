@@ -75,9 +75,9 @@ Canvas 可通过 `set_frame(width, height, &[u32])` 显示应用生成的设备�
 
 桌面“终端”入口运行 `/bin/terminal`，默认以当前账户的 HOME、USER、PATH 启动 `/bin/sh`。
 也可以 `/bin/terminal /绝对路径/程序 参数...` 启动指定命令。PTY 使用标准 session/process-group、termios 与 Linux 终端编码。
-Ctrl+Shift+C 复制选区，Ctrl+Shift+V 异步粘贴；滚轮浏览已有历史。窗口尺寸变化先准备模型存储，再提交 PTY 尺寸并发布模型。
-终端使用 `TERM=linux`，运行 ncurses 应用时应通过现有 APK 安装对应的 `ncurses-terminfo-base`。
-该入口与共享控件迁移已接入代码和安装清单，尚未进行 GUI 或 guest 运行验收。
+Ctrl+Shift+C 复制选区，Ctrl+Shift+V 按应用的 bracketed paste 模式粘贴。滚轮浏览历史，TUI 开启鼠标模式时接收鼠标报告，按住 Shift 可选取文字。
+终端提供 `TERM=xterm-256color` 和 `COLORTERM=truecolor`，基线镜像由 Alpine `ncurses-terminfo-base` 安装对应的 terminfo。
+应用可启用备用屏幕、应用键盘、光标样式、鼠标/焦点报告和同步更新。窗口尺寸经 PTY 更新并重排终端网格。
 
 ## 验收边界
 

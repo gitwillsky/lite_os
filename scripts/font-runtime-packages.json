@@ -1,0 +1,238 @@
+{
+  "aarch64": [
+    {
+      "name": "brotli-libs-1.1.1-r0.apk",
+      "sha256": "c4ecb26f02ab93c7e41c019c98bf024bd6d90593be308a003bc516806732500e"
+    },
+    {
+      "name": "cairo-1.18.4-r0.apk",
+      "sha256": "c4bed9c2c90a24c690dd2efeb939c90fab636030a5e66ea4971ef04883f35fe0"
+    },
+    {
+      "name": "fontconfig-2.15.0-r3.apk",
+      "sha256": "a8bb31f32197dc18297aa3a618f630ed7c3efdfb875caa8a7b1fc2648834cbea"
+    },
+    {
+      "name": "freetype-2.13.3-r0.apk",
+      "sha256": "0cb7c95edd545b634912d869ff6c50deeedde9b0d18cdc4f934ff9ef816bb1b3"
+    },
+    {
+      "name": "fribidi-1.0.16-r1.apk",
+      "sha256": "878af8e74e2725eb157d5582871fd7602cf068a648c3aa97c90df468a07aba4c"
+    },
+    {
+      "name": "glib-2.84.4-r0.apk",
+      "sha256": "339817d41dc00fd898e8a24dc4a36b8e04608c3fd8642ecc97b00b6f5581e8bc"
+    },
+    {
+      "name": "graphite2-1.3.14-r6.apk",
+      "sha256": "f255e6bc5f37ca9606d277ae13ba31165132018825c2994b7db5366a1a4a33e1"
+    },
+    {
+      "name": "harfbuzz-11.2.1-r0.apk",
+      "sha256": "176652f7ee9852c0346788f95b5483a7ff15c6c9f02411781b436b280b04c6dc"
+    },
+    {
+      "name": "libblkid-2.41.6-r1.apk",
+      "sha256": "76a8fbfae2ab5ff50c7f30e22812c403a2d9375de85a0a0f2c288ab906d24fb4"
+    },
+    {
+      "name": "libbsd-0.12.2-r0.apk",
+      "sha256": "8a51acec613887f12a294685465c17b0d03f2c9b1adfae805d8e6b8d8421cd77"
+    },
+    {
+      "name": "libbz2-1.0.8-r6.apk",
+      "sha256": "1d588037cc45108acafdbb1507e9f683019a8816fb74d9aba9b0a2dc099463c4"
+    },
+    {
+      "name": "libeconf-0.6.3-r0.apk",
+      "sha256": "cdd4311aff72d53056134468b68a68f22829f995627b434d2f88960884319de9"
+    },
+    {
+      "name": "libexpat-2.10.0-r0.apk",
+      "sha256": "cceec3fb87a26a0d8fb5da40eaeb03db5c688c055bea0eb9502393d32510f37a"
+    },
+    {
+      "name": "libffi-3.4.8-r0.apk",
+      "sha256": "9391f60a14c146655deaf65115563bc8dcd749cf0f93ec567e6443f2ed7d3bfc"
+    },
+    {
+      "name": "libintl-0.24.1-r0.apk",
+      "sha256": "17bacc149386d7dcb2ed4488afddc2dba644081cbc134b5839fbbe5e1b875bf9"
+    },
+    {
+      "name": "libmd-1.1.0-r0.apk",
+      "sha256": "b1624431ed1932069c17b02f21e1fb2c8d4db42c3be1e2f8c5a22ccac27b78aa"
+    },
+    {
+      "name": "libmount-2.41.6-r1.apk",
+      "sha256": "1165810277d292a5986824447229c146bbb355f1641cea66b0741bbd891cc3e6"
+    },
+    {
+      "name": "libpng-1.6.59-r0.apk",
+      "sha256": "93132da4155e062e12347aca01a761491b8fc40a1ffa955bd588d911550f2bdf"
+    },
+    {
+      "name": "libx11-1.8.11-r0.apk",
+      "sha256": "727ebb88fd3162b667dfd8a0cf3c33034329b6549cf80d52cfccf6acf349ca2a"
+    },
+    {
+      "name": "libxau-1.0.12-r0.apk",
+      "sha256": "1dcbaf3a2995c60ba9f442e580eea9e03a1d68898b54bdc9eeba25a68124888b"
+    },
+    {
+      "name": "libxcb-1.17.0-r0.apk",
+      "sha256": "c7d7f55f5ea61eefc749201a041e774ad60a5e0ca4d59acc89eb56f6c201b08f"
+    },
+    {
+      "name": "libxdmcp-1.1.5-r1.apk",
+      "sha256": "6988bfc23df3e551de62de498bbe661963f13bac2c48b501d82ddd0a3d3eafe5"
+    },
+    {
+      "name": "libxext-1.3.6-r2.apk",
+      "sha256": "350f7644ff73f655f448f3df8c8ef98310fbcdeb64ddf22672b75dab66d4efc0"
+    },
+    {
+      "name": "libxft-2.3.8-r3.apk",
+      "sha256": "4778715c09bfdfb0627181e1f669970871c50f0efd5f6cc68c46d61b524f44c5"
+    },
+    {
+      "name": "libxrender-0.9.12-r0.apk",
+      "sha256": "c5ca01bcebe58393b17257251b4a36d7c4363052e780f3cb966365d9208a51ce"
+    },
+    {
+      "name": "pango-1.56.3-r0.apk",
+      "sha256": "c4604ee879ab3af826e36c227f005a3ad0c81afe19ffdc8c85a77f38425704b4"
+    },
+    {
+      "name": "pcre2-10.46-r1.apk",
+      "sha256": "7c24699bbfc009e02c23577071a09c80f687c051138f3863eb732eeb45da1f36"
+    },
+    {
+      "name": "pixman-0.46.4-r0.apk",
+      "sha256": "35128ab74fdcdc1cd1edc3621905a9520396b332ac756cc01e0df3a2471756c7"
+    },
+    {
+      "name": "zlib-1.4-r0.apk",
+      "sha256": "279972bab4f817182d9617984880bc29471f1d3016f92265be10d71e6f95ca74"
+    }
+  ],
+  "riscv64": [
+    {
+      "name": "brotli-libs-1.1.1-r0.apk",
+      "sha256": "9242503378f28bcec2a4bb376eb4267936a8ca3d8fe7ef3e43b3d4a24352b102"
+    },
+    {
+      "name": "cairo-1.18.4-r0.apk",
+      "sha256": "43846f5e17d878395105e163d72475d4b5c703c7064cf3e5dbe554fdd0bf6ec5"
+    },
+    {
+      "name": "fontconfig-2.15.0-r3.apk",
+      "sha256": "a922160189d065679a0298e245e10a57b9745714bde78667a04bb7737ce0c322"
+    },
+    {
+      "name": "freetype-2.13.3-r0.apk",
+      "sha256": "a9954b009fc7d5ae527a80feafe3d19a128e3e787c7a0a448b898aab02291d5e"
+    },
+    {
+      "name": "fribidi-1.0.16-r1.apk",
+      "sha256": "9abecd0884415edb591ae1f0238c90fd9013c2410747b31cc4c25c129e6be656"
+    },
+    {
+      "name": "glib-2.84.4-r0.apk",
+      "sha256": "b54231843332b72b06aa18a8b9355e900b3f275c744d66decd9abc8588470d1d"
+    },
+    {
+      "name": "graphite2-1.3.14-r6.apk",
+      "sha256": "a5ddd9d2dd26fb612dffd1a9348e8c81d2cda682bb5c8966995e86f865c46d10"
+    },
+    {
+      "name": "harfbuzz-11.2.1-r0.apk",
+      "sha256": "44b7b18d0096d78fe6a0e0ceb345860013b60ba4e0b10bebe388d4e6de822cf7"
+    },
+    {
+      "name": "libblkid-2.41.6-r1.apk",
+      "sha256": "4bb6905e9f395cf3eef1cfc26a300031cf645cf0a64201b9757361aa5cabbf60"
+    },
+    {
+      "name": "libbsd-0.12.2-r0.apk",
+      "sha256": "7a6001ab8958fbddcd332bcd532198054f1025476c6b8ce1888cff3388516fc5"
+    },
+    {
+      "name": "libbz2-1.0.8-r6.apk",
+      "sha256": "76767f573585693791cfd8117628579a8d01dc443ed5f5068196faca26992c5c"
+    },
+    {
+      "name": "libeconf-0.6.3-r0.apk",
+      "sha256": "7ae8936c81b2fc53f1ebc010693b88c9d2709cb6a3791041d16b1a66d2f2e458"
+    },
+    {
+      "name": "libexpat-2.10.0-r0.apk",
+      "sha256": "4b055fa2f2af27535df2edff64be568104eda5f5b58a28f438c3c0a874c84c56"
+    },
+    {
+      "name": "libffi-3.4.8-r0.apk",
+      "sha256": "b37f5365f3ec64ef9e10e8dc083bde800833e9612f958afb98123b597d169015"
+    },
+    {
+      "name": "libintl-0.24.1-r0.apk",
+      "sha256": "df32da5508168ef2cc293ae1a2cb6843ccc7604b016352bdb176a063c5d5c9a7"
+    },
+    {
+      "name": "libmd-1.1.0-r0.apk",
+      "sha256": "6e216dd3c8a83489423aaccf64184cf3581c60df70f45a57cd2c66a4f05cc89e"
+    },
+    {
+      "name": "libmount-2.41.6-r1.apk",
+      "sha256": "e483eb0783c551c0dee0eb67acabc909a19fa9ba2067f5df4c02efb1c90e2d41"
+    },
+    {
+      "name": "libpng-1.6.59-r0.apk",
+      "sha256": "47042713a095b6c29162034e4ca699fa9bab5e4b25812d5f5984f6a9206e0b1b"
+    },
+    {
+      "name": "libx11-1.8.11-r0.apk",
+      "sha256": "fe2b4f2d06d940c04e9dd1919bf1e423faed4de7bc3be981a2f32a076b8d3512"
+    },
+    {
+      "name": "libxau-1.0.12-r0.apk",
+      "sha256": "c9a1335067fefb3afd0cad6d87bd541f9171029f3284e7e7efb3fafe864df5ba"
+    },
+    {
+      "name": "libxcb-1.17.0-r0.apk",
+      "sha256": "8395a6f4fae117be72c3112161fe71a4316ef16153ffbd8106148b1249be1bd0"
+    },
+    {
+      "name": "libxdmcp-1.1.5-r1.apk",
+      "sha256": "f930028e92422b3ce350f6e0b7956116d33c61a5e678c42fc8ff483e79c7ee71"
+    },
+    {
+      "name": "libxext-1.3.6-r2.apk",
+      "sha256": "2c7e427497859e95e8eb76b1f3a5fe8e2b5d50ce0e3b098b59fe9ee30a05c4ef"
+    },
+    {
+      "name": "libxft-2.3.8-r3.apk",
+      "sha256": "b7de3d76bf243d9bc409806238f02291c2e758c7aa0a83efda257669323d0412"
+    },
+    {
+      "name": "libxrender-0.9.12-r0.apk",
+      "sha256": "bc4097beaa7f8246b0c60390c5a558f786650d600ff3e1fcd67770b3e7f01bce"
+    },
+    {
+      "name": "pango-1.56.3-r0.apk",
+      "sha256": "5a0e86f78042ceef257444eb9bf188648d298cc2637a3babd2e03021bf17e644"
+    },
+    {
+      "name": "pcre2-10.46-r1.apk",
+      "sha256": "f7663832d8a2661b17bbd6552d11ebd523c6049d121f8fe9826946aed9c72225"
+    },
+    {
+      "name": "pixman-0.46.4-r0.apk",
+      "sha256": "26166090ca4c25043231f22cec125500a395cd5fdc80df73caf6571bd29ae88e"
+    },
+    {
+      "name": "zlib-1.4-r0.apk",
+      "sha256": "56f35f130e09d26f40b8224947b5e0cef1d2ace090311e23bbcd0e5833bc2e17"
+    }
+  ]
+}

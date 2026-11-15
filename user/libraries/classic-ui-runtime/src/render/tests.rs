@@ -183,7 +183,6 @@ fn retained_tree_damage_matches_full_raster_after_content_focus_geometry_and_pop
         let pictures = PictureLoader::default();
         let now = std::time::Instant::now();
         let assets = CanvasAssets {
-            mono: None,
             pictures: &pictures,
             screen: None,
             now,

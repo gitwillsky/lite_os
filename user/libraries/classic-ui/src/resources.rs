@@ -1,11 +1,6 @@
 //! UI 上下文资源；应用不再拥有字体目录和按 scale 重复的加载分支。
 use classic_theme::Theme;
-use std::{
-    collections::BTreeMap,
-    io,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{collections::BTreeMap, io, path::Path, rc::Rc};
 use typeface::FontCatalog;
 
 use crate::Fonts;
@@ -13,12 +8,10 @@ use crate::Fonts;
 /// 一个 UI 上下文的主题和字体 owner；不修改进程环境，不跨线程共享。
 pub struct Resources {
     theme: Theme,
-    font_directory: PathBuf,
     /// 字体目录只在首次绘制时扫描一次；主题重载不需要重新读取字体文件。
     catalog: Option<Rc<FontCatalog>>,
     fonts: BTreeMap<i32, Rc<Fonts>>,
     generation: u64,
-    terminal: Option<Rc<terminal_font::TerminalFont>>,
     icons: Option<crate::AppIcons>,
     large_icons: Option<crate::AppIcons>,
     images: BTreeMap<(String, i32), Option<Rc<crate::Bitmap>>>,
@@ -29,11 +22,9 @@ impl Resources {
         Ok(Self {
             theme: Theme::load(&[Path::new("/etc/liteos/theme.theme")])
                 .map_err(|error| io::Error::other(error.to_string()))?,
-            font_directory: PathBuf::from("/usr/share/liteos/fonts"),
             catalog: None,
             fonts: BTreeMap::new(),
             generation: 1,
-            terminal: None,
             icons: None,
             large_icons: None,
             images: BTreeMap::new(),
@@ -98,15 +89,6 @@ impl Resources {
             None
         }
     }
-    /// 按需读取系统等宽字体，只由资源上下文持有一份解析结果；资源缺失或损坏返回错误。
-    pub fn terminal_font(&mut self) -> io::Result<Rc<terminal_font::TerminalFont>> {
-        if let Some(font) = &self.terminal {
-            return Ok(font.clone());
-        }
-        let font = Rc::new(terminal_font::TerminalFont::open()?);
-        self.terminal = Some(font.clone());
-        Ok(font)
-    }
     /// 当前主题，只借用权威值；没有第二份应用侧可写镜像。
     pub fn theme(&self) -> &Theme {
         &self.theme
@@ -125,8 +107,9 @@ impl Resources {
             .ok_or_else(|| io::Error::other("resource generations exhausted"))?;
         self.theme = theme;
         self.generation = generation;
-        // 系统字体属于主题：重载后按新主题重新解析，字体目录本身保持。
+        // 主题和系统 Fontconfig 的改动在下一次绘制一起生效。
         self.fonts.clear();
+        self.catalog = None;
         Ok(())
     }
     /// 取得整数 scale 下按主题解析的系统字体；scale 非正或字体目录不可用返回错误。
@@ -143,10 +126,7 @@ impl Resources {
         let catalog = match &self.catalog {
             Some(catalog) => catalog.clone(),
             None => {
-                let catalog = Rc::new(
-                    FontCatalog::load(&self.font_directory)
-                        .map_err(|error| io::Error::other(error.to_string()))?,
-                );
+                let catalog = Rc::new(FontCatalog::system()?);
                 self.catalog = Some(catalog.clone());
                 catalog
             }

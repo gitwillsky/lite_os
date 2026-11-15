@@ -477,11 +477,6 @@ def publish(directory: Path) -> dict:
                 path = result / group / original.name
                 shutil.copyfile(original, path)
                 record(path, group, {"source": original.name, "conversion": "original bytes"})
-        mapping = result / "fonts/fontmap.ini"
-        mapping.write_text("; 原版字体目录；仅保留逻辑字体别名与 Tahoma 的中文 FontLink。\n"
-                           "[FontSubstitutes]\nMS Shell Dlg=Tahoma\nMS Shell Dlg 2=Tahoma\n"
-                           "SimSun=宋体\nNSimSun=新宋体\n\n[SystemLink]\nTahoma=宋体\n")
-        record(mapping, "fonts", {"source": "LiteOS font mapping configuration"})
         manifest = {"version": 1, "iso": source["iso"], "language": 2052,
                     "tools": source["tools"], "files": dict(sorted(files.items()))}
         # 3. 清除旧源图与旧产品文件，只留下 manifest 声明的运行时文件和主题配置。

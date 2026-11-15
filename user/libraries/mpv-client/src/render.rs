@@ -3,11 +3,21 @@ use crate::{
     FRAME_SLOTS, Frame, check,
     ffi::{self, Api, Handle, Param, RenderContext},
 };
-use linux_uapi::shared_memory::{MemFd, SharedMapping};
+use linux_uapi::{
+    drm::{DrmDevice, VirglContext, VirglResource},
+    shared_memory::{MemFd, SharedMapping},
+};
 use std::{
     ffi::c_void,
+    fs,
     io::{self, Write},
-    os::{fd::AsFd, unix::net::UnixStream},
+    os::{
+        fd::AsFd,
+        unix::{
+            fs::{FileTypeExt, MetadataExt},
+            net::UnixStream,
+        },
+    },
     ptr,
     sync::{
         Arc, Mutex,
@@ -90,7 +100,7 @@ impl State {
         unsafe { (self.api.render_update)(self.context) & ffi::UPDATE_FRAME != 0 }
     }
 
-    fn draw(&self, frame: &mut Frame) -> io::Result<()> {
+    fn draw(&self, frame: &Frame, storage: &mut Storage) -> io::Result<()> {
         let mut size = [frame.width as i32, frame.height as i32];
         let mut stride = frame.stride as usize;
         let mut params = [
@@ -108,7 +118,7 @@ impl State {
             },
             Param {
                 kind: ffi::PARAM_SW_POINTER,
-                data: frame.mapping.as_non_null().as_ptr().cast(),
+                data: storage.writable_pixels()?.cast(),
             },
             Param {
                 kind: ffi::PARAM_INVALID,
@@ -119,7 +129,10 @@ impl State {
         check(&self.api, unsafe {
             (self.api.render_render)(self.context, params.as_mut_ptr())
         })?;
-        Ok(())
+        match storage {
+            Storage::Shm(_) => Ok(()),
+            Storage::Dma(texture) => texture.transfer_to_host(0, 0, frame.width, frame.height),
+        }
     }
 }
 impl Drop for State {
@@ -136,6 +149,7 @@ pub(super) struct Renderer {
     requests: SyncSender<()>,
     mailbox: Arc<Mutex<Mailbox>>,
     thread: Option<JoinHandle<()>>,
+    pub(super) dmabuf: bool,
 }
 impl Renderer {
     /// 创建唯一渲染 owner；失败时 join 已启动线程，调用者才能销毁 core。
@@ -146,6 +160,7 @@ impl Renderer {
         api: Api,
         core: *mut Handle,
         writer: UnixStream,
+        video_device: Option<u64>,
     ) -> io::Result<Self> {
         let core = CoreHandle(core);
         let (requests, receiver) = mpsc::sync_channel(1);
@@ -163,9 +178,13 @@ impl Renderer {
                         return;
                     }
                 };
-                if started.send(Ok(())).is_err() {
+                let graphics = video_device.and_then(open_video_device);
+                if started.send(Ok(graphics.is_some())).is_err() {
                     return;
                 }
+                // Mappings stay on this thread. A mailbox frame is the unique permit to
+                // write its slot, and the exported fd keeps backing alive after renderer exit.
+                let mut storage = [const { None }; FRAME_SLOTS];
                 let mut allocated = 0;
                 let mut generation = 0;
                 let mut rendered_size = None;
@@ -203,15 +222,18 @@ impl Renderer {
                         (size, spare, slot)
                     };
                     let (width, height) = size;
-                    let mut frame = if frame
+                    let frame = if frame
                         .as_ref()
                         .is_some_and(|frame| (frame.width, frame.height) == size)
                     {
                         frame.expect("matching frame")
                     } else {
                         generation += 1;
-                        match new_frame(slot, generation, width, height) {
-                            Ok(replacement) => replacement,
+                        match new_frame(graphics.as_ref(), slot, generation, width, height) {
+                            Ok((frame, target)) => {
+                                storage[slot as usize] = Some(target);
+                                frame
+                            }
                             Err(error) => {
                                 if let Ok(mut mailbox) = rendering.lock() {
                                     mailbox.spare[slot as usize] = frame;
@@ -225,7 +247,12 @@ impl Renderer {
                         }
                     };
                     allocated = allocated.max(slot as usize + 1);
-                    let rendered = state.draw(&mut frame);
+                    let rendered = state.draw(
+                        &frame,
+                        storage[slot as usize]
+                            .as_mut()
+                            .expect("allocated frame slot"),
+                    );
                     let Ok(mut mailbox) = rendering.lock() else {
                         break;
                     };
@@ -248,10 +275,11 @@ impl Renderer {
             .recv()
             .unwrap_or_else(|_| Err(io::Error::other("mpv render thread stopped during startup")))
         {
-            Ok(()) => Ok(Self {
+            Ok(dmabuf) => Ok(Self {
                 requests,
                 mailbox,
                 thread: Some(thread),
+                dmabuf,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -307,23 +335,75 @@ impl Renderer {
         let _ = self.requests.try_send(());
     }
 }
-fn new_frame(slot: u32, generation: u64, width: u32, height: u32) -> io::Result<Frame> {
+enum Storage {
+    Shm(SharedMapping),
+    Dma(VirglResource),
+}
+
+impl Storage {
+    fn writable_pixels(&mut self) -> io::Result<*mut u8> {
+        match self {
+            Self::Shm(mapping) => Ok(mapping.as_non_null().as_ptr()),
+            Self::Dma(texture) => {
+                // A mailbox frame can be superseded before publication. Its own upload
+                // may still read this backing even if Wayland never acquired the slot.
+                texture.wait()?;
+                Ok(texture.as_mut_ptr())
+            }
+        }
+    }
+}
+
+fn open_video_device(number: u64) -> Option<(DrmDevice, VirglContext)> {
+    let entry = fs::read_dir("/dev/dri")
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            fs::metadata(entry.path()).is_ok_and(|metadata| {
+                metadata.file_type().is_char_device() && metadata.rdev() == number
+            })
+        })?;
+    let path = entry.path();
+    let device = DrmDevice::open(path.to_str()?).ok()?;
+    let graphics = device.initialize_virgl("mpv-video").ok()?;
+    if graphics.device_number().ok()? != number {
+        return None;
+    }
+    Some((device, graphics))
+}
+
+fn new_frame(
+    graphics: Option<&(DrmDevice, VirglContext)>,
+    slot: u32,
+    generation: u64,
+    width: u32,
+    height: u32,
+) -> io::Result<(Frame, Storage)> {
     // libmpv recommends 64-byte alignment for both the line pitch and address.
     // mmap supplies a page-aligned base; every line, including the last, owns its padding.
     let stride = (width * 4).next_multiple_of(64);
     let bytes = stride as usize * height as usize;
-    let memory = MemFd::create("mpv-video-frame", bytes)?;
-    memory.preallocate()?;
-    let mapping = SharedMapping::map(memory.as_fd(), bytes)?;
-    Ok(Frame {
-        slot,
-        generation,
-        width,
-        height,
-        stride,
-        memory,
-        mapping,
-    })
+    let (fd, storage) = if let Some((device, graphics)) = graphics {
+        let texture = graphics.create_xrgb_texture(stride / 4, height)?;
+        let fd = device.export_dma_buf(texture.handle())?;
+        (fd, Storage::Dma(texture))
+    } else {
+        let memory = MemFd::create("mpv-video-frame", bytes)?;
+        memory.preallocate()?;
+        let mapping = SharedMapping::map(memory.as_fd(), bytes)?;
+        (memory.as_fd().try_clone_to_owned()?, Storage::Shm(mapping))
+    };
+    Ok((
+        Frame {
+            slot,
+            generation,
+            width,
+            height,
+            stride,
+            fd,
+        },
+        storage,
+    ))
 }
 
 impl Drop for Renderer {
@@ -346,10 +426,12 @@ mod tests {
 
     #[test]
     fn render_target_has_aligned_rows_with_writable_last_row_padding() {
-        let frame = new_frame(0, 1, 65, 3).unwrap();
+        let (frame, Storage::Shm(mapping)) = new_frame(None, 0, 1, 65, 3).unwrap() else {
+            panic!("expected shared memory");
+        };
         assert_eq!(frame.stride, 320);
-        assert_eq!(frame.mapping.as_non_null().as_ptr() as usize % 64, 0);
-        assert_eq!(frame.mapping.len(), 960);
-        assert_eq!(frame.memory.len(), 960);
+        assert_eq!(mapping.as_non_null().as_ptr() as usize % 64, 0);
+        assert_eq!(mapping.len(), 960);
+        assert_eq!(fs::File::from(frame.fd).metadata().unwrap().len(), 960);
     }
 }

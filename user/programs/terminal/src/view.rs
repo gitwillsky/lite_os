@@ -1,126 +1,142 @@
-//! VT 网格投影成一批 Canvas 命令；字体、裁剪与像素提交仍由共享运行库执行。
+//! Projects the visible terminal grid into one atomic Canvas drawing batch.
+use crate::model::{Area, CursorShape, Model};
 use liteos_ui::{Draw, Rect, Widget};
-use terminal_model::{ATTR_BOLD, ATTR_HIDDEN, ATTR_UNDERLINE, CellPosition, Grid, Model};
-pub const WIDTH: i32 = 8;
-pub const HEIGHT: i32 = 16;
-pub fn geometry(widget: &Widget) -> liteos_ui::Result<(usize, usize)> {
+
+// Up to five commands per cell (background, glyph, two underline strokes and
+// strikeout), plus the full-window fill and cursor, within the 65,536-command ABI.
+const MAX_CELLS: usize = 13_000;
+
+pub fn geometry(widget: &Widget, cell: (i32, i32), scale: i32) -> liteos_ui::Result<Area> {
     let rect = widget.geometry()?;
-    let columns = (rect.width / WIDTH).clamp(1, 512) as usize;
-    // 每格最多背景、字形、下划线三个命令，给清屏和光标保留空间，遵守 ABI 批次上限。
-    let rows = ((rect.height / HEIGHT).max(1) as usize).min(16000 / columns);
-    Ok((columns, rows.max(1)))
+    let (width, height) = cell;
+    let columns = (rect.width / width).clamp(2, 512.min(32768 / width)) as u16;
+    let rows = ((rect.height / height).max(1) as usize)
+        .min((32768 / height) as usize)
+        .min(MAX_CELLS / usize::from(columns))
+        .max(1) as u16;
+    Ok(Area {
+        columns,
+        rows,
+        cell,
+        scale,
+    })
 }
-pub fn paint(widget: &Widget, model: &Model, focused: bool) -> liteos_ui::Result<()> {
-    let bounds = widget.geometry()?;
-    let (column, row) = model.cursor().unwrap_or((0, 0));
-    widget.text_caret(Rect::new(
-        column as i32 * WIDTH,
-        row as i32 * HEIGHT,
-        1,
-        HEIGHT,
-    ))?;
-    let (_, background) = model.default_colors();
-    let selection = model.selection_projection();
-    let mut commands = Vec::new();
-    let mut text = Vec::new();
-    commands.push(Draw {
+
+fn fill(rect: Rect, color: u32) -> Draw<'static> {
+    Draw {
         kind: 1,
-        rect: Rect {
-            x: 0,
-            y: 0,
-            width: bounds.width,
-            height: bounds.height,
-        },
-        color: background,
+        rect,
+        color,
         bold: false,
         text: "",
-    });
-    for row in 0..model.rows() {
-        for column in 0..model.columns() {
-            let mut cell = model.rendered_cell(row, column);
-            if selection.as_ref().is_some_and(|selection| {
-                let point = CellPosition {
-                    row,
-                    column: if cell.is_wide_continuation() {
-                        column.saturating_sub(1)
-                    } else {
-                        column
-                    },
-                };
-                point >= selection.start && point <= selection.end
-            }) {
-                cell.background = 0x00000080;
-                cell.foreground = 0x00ffffff;
-            }
-            let rect = Rect {
-                x: column as i32 * WIDTH,
-                y: row as i32 * HEIGHT,
-                width: WIDTH,
-                height: HEIGHT,
+    }
+}
+
+pub fn paint(
+    widget: &Widget,
+    model: &Model,
+    focused: bool,
+    blink_on: bool,
+) -> liteos_ui::Result<()> {
+    let bounds = widget.geometry()?;
+    let screen = model.screen();
+    let cursor = screen.cursor();
+    let (width, height) = model.size().cell;
+    let cell_rect = |row: usize, column: usize| {
+        Rect::new(column as i32 * width, row as i32 * height, width, height)
+    };
+    let caret = cursor.as_ref().map_or_else(
+        || cell_rect(0, 0),
+        |cursor| cell_rect(cursor.row, cursor.column),
+    );
+    widget.text_caret(Rect::new(caret.x, caret.y, 1, caret.height))?;
+    let background = screen.background();
+    let mut commands = vec![fill(
+        Rect::new(0, 0, bounds.width, bounds.height),
+        background,
+    )];
+    let mut glyphs = Vec::new();
+    for cell in screen.cells() {
+        let rect = cell_rect(cell.row, cell.column);
+        let at_cursor = cursor.as_ref().filter(|cursor| {
+            cursor.row == cell.row
+                && cursor.column == cell.column
+                && cursor.shape != CursorShape::Hidden
+                && (!focused || !cursor.blinking || blink_on)
+        });
+        if cell.width == 0 {
+            continue;
+        }
+
+        let rect = Rect::new(rect.x, rect.y, rect.width * cell.width as i32, rect.height);
+        if cell.background != background {
+            commands.push(fill(rect, cell.background));
+        }
+        let mut foreground = cell.foreground;
+        if let Some(cursor) = at_cursor {
+            let shape = if focused {
+                cursor.shape
+            } else {
+                CursorShape::HollowBlock
             };
-            if cell.background != background {
-                commands.push(Draw {
-                    kind: 1,
-                    rect,
-                    color: cell.background,
-                    bold: false,
-                    text: "",
-                });
-            }
-            if !cell.is_wide_continuation()
-                && cell.codepoint > 0x20
-                && cell.attributes & ATTR_HIDDEN == 0
-            {
-                let mut glyph = String::new();
-                glyph.push(char::from_u32(cell.codepoint).unwrap_or('\u{fffd}'));
-                let wide = column + 1 < model.columns()
-                    && model.projected_cell(row, column + 1).is_wide_continuation();
-                text.push((
-                    Rect {
-                        width: if wide { WIDTH * 2 } else { WIDTH },
-                        ..rect
-                    },
-                    glyph,
-                    cell.foreground,
-                    cell.attributes,
-                ));
-            }
-            if cell.attributes & ATTR_UNDERLINE != 0 {
-                commands.push(Draw {
-                    kind: 1,
-                    rect: Rect {
-                        y: rect.y + HEIGHT - 2,
-                        height: 1,
-                        ..rect
-                    },
-                    color: cell.foreground,
-                    bold: false,
-                    text: "",
-                });
+            match shape {
+                CursorShape::Block => {
+                    commands.push(fill(rect, cursor.color));
+                    foreground = cell.background;
+                }
+                CursorShape::HollowBlock => {
+                    commands.push(Draw {
+                        kind: 2,
+                        ..fill(rect, cursor.color)
+                    });
+                }
+                CursorShape::Underline => {
+                    commands.push(fill(
+                        Rect::new(rect.x, rect.y + height - 2, rect.width, 2),
+                        cursor.color,
+                    ));
+                }
+                CursorShape::Beam => {
+                    commands.push(fill(Rect::new(rect.x, rect.y, 1, height), cursor.color));
+                }
+                CursorShape::Hidden => {}
             }
         }
+        if cell.hidden {
+            continue;
+        }
+        if cell.character != ' ' || !cell.combining.is_empty() {
+            let text: String = std::iter::once(cell.character)
+                .chain(cell.combining.iter().copied())
+                .collect();
+            glyphs.push((rect, text, foreground, cell.bold, cell.italic));
+        }
+        if let Some(color) = cell.underline {
+            commands.push(fill(
+                Rect::new(rect.x, rect.y + height - 2, rect.width, 1),
+                color,
+            ));
+            if cell.double_underline {
+                commands.push(fill(
+                    Rect::new(rect.x, rect.y + height - 4, rect.width, 1),
+                    color,
+                ));
+            }
+        }
+        if cell.strikeout {
+            commands.push(fill(
+                Rect::new(rect.x, rect.y + height / 2, rect.width, 1),
+                foreground,
+            ));
+        }
     }
-    for (rect, glyph, color, attrs) in &text {
+    for (rect, text, color, bold, italic) in &glyphs {
         commands.push(Draw {
-            kind: 5,
+            kind: if *italic { 9 } else { 5 },
             rect: *rect,
             color: *color,
-            bold: attrs & ATTR_BOLD != 0,
-            text: glyph,
-        });
-    }
-    if focused && let Some((column, row)) = model.cursor() {
-        commands.push(Draw {
-            kind: 2,
-            rect: Rect {
-                x: column as i32 * WIDTH,
-                y: row as i32 * HEIGHT,
-                width: WIDTH,
-                height: HEIGHT,
-            },
-            color: model.default_colors().0,
-            bold: false,
-            text: "",
+            bold: *bold,
+            text,
         });
     }
     widget.set_drawing(&commands)

@@ -44,8 +44,8 @@ pub use editing::{Edit, FocusChain};
 pub use wayland::{
     Configuration, CursorShape, Display, Event, EventKind, ImageId, InputMethodEvent, Key,
     KeyboardInteractivity, Layer, LayerSettings, ShellArrangement, ShellCommand, ShellConnection,
-    ShellLease, TextInputEdit, TextPurpose, Toplevel, ToplevelId, ToplevelRequest, WindowId,
-    WindowRequest, layer_anchor,
+    ShellLease, StreamBuffer, TextInputEdit, TextPurpose, Toplevel, ToplevelId, ToplevelRequest,
+    WindowId, WindowRequest, layer_anchor,
 };
 
 pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, StatusLayout, thumb_span};

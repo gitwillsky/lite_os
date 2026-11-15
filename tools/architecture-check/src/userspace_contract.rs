@@ -52,7 +52,7 @@ const PROGRAMS: [&str; 16] = [
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
-const LIBRARIES: [&str; 22] = [
+const LIBRARIES: [&str; 20] = [
     "calendar",
     "canvas",
     "classic-theme",
@@ -70,8 +70,6 @@ const LIBRARIES: [&str; 22] = [
     "network-drive",
     "sndvol",
     "sound",
-    "terminal-font",
-    "terminal-model",
     "typeface",
     "wayland-scanner",
     "wayland-wire",
@@ -184,7 +182,10 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
 
 /// 上游 C 库的绑定 crate：符号经 linux-uapi 的 `dlopen` 解析，源码里只允许 `extern "C" fn` 类型与回调，
 /// 不得有符号导入块或 `#[link]`；缺少这条界线，第三方库绑定只能挤进 linux-uapi，混淆 OS 接口与应用库。
-const UPSTREAM_BINDINGS: [&str; 1] = ["user/libraries/mpv-client"];
+const UPSTREAM_BINDINGS: [&str; 2] = [
+    "user/libraries/mpv-client",
+    "user/libraries/typeface/src/pango/ffi.rs",
+];
 
 /// 源码里是否含符号导入块（`extern "C" { .. }`），含嵌套模块。
 #[derive(Default)]
@@ -350,18 +351,14 @@ fn check_graphics_device_path(root: &Path, errors: &mut Vec<String>) {
 }
 
 fn check_assets(root: &Path, errors: &mut Vec<String>) {
-    let terminal_atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
-    if terminal_atlas.get(..8) != Some(b"LTA8\0\0\0\x03") || terminal_atlas.len() != 9_172_472 {
-        errors.push(
-            "assets/fonts/liteos-terminal.a8: checked terminal atlas identity changed".to_owned(),
-        );
-    }
     let boot_scene = fs::read(root.join("assets/classic/boot-scene.lbs")).unwrap_or_default();
     if boot_scene.get(..4) != Some(b"LBS2") || boot_scene.len() != 30_642 {
         errors
             .push("assets/classic/boot-scene.lbs: checked boot scene identity changed".to_owned());
     }
     for removed in [
+        "assets/fonts/liteos-terminal.a8",
+        "user/base/liteos.terminfo",
         "assets/wallpaper.xrgb",
         "assets/desktop-sprites.argb",
         "user/base/startmenu.conf",

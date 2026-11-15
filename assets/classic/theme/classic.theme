@@ -53,13 +53,15 @@ TaskbarButtonMaxWidth=160
 TaskbarButtonGap=2
 
 [Fonts]
-; 系统界面默认 Tahoma 9 磅，中文经 fontmap.ini 回退宋体；标题粗体，开启灰度平滑。
+; 系统界面默认 Tahoma 9 磅，中文经 Fontconfig 回退宋体；标题粗体，开启灰度平滑。
 CaptionFont=Tahoma,9,700
 SmCaptionFont=Tahoma,9,700
 MenuFont=Tahoma,9,400
 StatusFont=Tahoma,9,400
 MessageFont=Tahoma,9,400
 IconFont=Tahoma,9,400
+MonospaceFont=monospace,9,400
+CaptionSymbolFont=Marlett,9,400
 FontSmoothing=2
 
 [Internet Explorer]

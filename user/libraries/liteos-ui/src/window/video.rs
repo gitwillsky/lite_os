@@ -2,7 +2,7 @@ use super::{Result, Widget};
 use classic_ui_abi as abi;
 use std::os::fd::{AsRawFd, BorrowedFd};
 
-/// 供 Canvas 视频子表面采样的 XRGB8888 共享内存。stride 以字节计。
+/// 供 Canvas 视频子表面采样的 XRGB8888 缓冲。stride 以字节计。
 pub struct VideoBuffer<'a> {
     pub fd: BorrowedFd<'a>,
     pub slot: u32,

@@ -27,7 +27,7 @@ from utm_build import ensure_built
 ROOT = Path(__file__).resolve().parent.parent
 DOWNLOADS = INPUTS / "host"
 # llvm 与 e2fsprogs 为 keg-only；verify_musl/ext4_image 已固定从 /opt/homebrew/opt 回退定位。
-BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3", "gh", "ninja", "pkgconf")
+BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3", "gh", "ninja", "pkgconf", "pango")
 RUSTUP_INIT_URL = "https://static.rust-lang.org/rustup/dist/aarch64-apple-darwin/rustup-init"
 CARGO_BIN = Path.home() / ".cargo" / "bin"
 

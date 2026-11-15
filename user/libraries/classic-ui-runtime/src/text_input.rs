@@ -128,11 +128,12 @@ impl Tree {
         }
         let node = &self.nodes[id];
         let scale = painter.scale();
-        let width = ((painter.text_width(text, false) + scale - 1) / scale).max(1);
+        let layout = painter.text_layout(text, false);
+        let width = ((layout.size().0 + scale - 1) / scale).max(1);
         let extent = Rect::new(caret.x, caret.y, width + 1, caret.height);
         painter.clipped(node.clip, |p| {
             p.fill(extent, C::Window);
-            p.text(caret.x, caret.y, text, Ink::Color(C::WindowText), false);
+            p.paint_text_layout(caret.x, caret.y, &layout, Ink::Color(C::WindowText));
             p.fill(
                 Rect::new(caret.x, caret.bottom() - 1, width, 1),
                 C::WindowText,
@@ -140,7 +141,7 @@ impl Tree {
             if let Ok(cursor) = usize::try_from(*cursor)
                 && text.is_char_boundary(cursor)
             {
-                let offset = p.text_width(&text[..cursor], false) / scale;
+                let offset = layout.caret_x(cursor) / scale;
                 p.fill(
                     Rect::new(caret.x + offset, caret.y, 1, caret.height),
                     C::WindowText,

@@ -1,7 +1,8 @@
 //! 单行编辑与 Tab 焦点顺序；只消费语义按键，不拥有 socket 或绘制状态。
 
 use crate::Key;
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// 单行文本、UTF-8 字节边界上的光标与选择锚点。文本内容只由此对象修改。
 #[derive(Debug, Default)]
@@ -40,7 +41,7 @@ impl Edit {
 
     /// 返回按字符数生成的掩码，不按 UTF-8 字节数泄露字符宽度。
     pub fn masked(&self) -> String {
-        "*".repeat(self.text.chars().count())
+        "*".repeat(self.text.graphemes(true).count())
     }
 
     /// 当前光标的 UTF-8 字节偏移；始终位于字符边界。
@@ -55,12 +56,31 @@ impl Edit {
 
     /// 将光标移到 UTF-8 字节边界，extend 保留选择锚点；非法位置保持原状，返回是否改变。
     pub fn select_position(&mut self, position: usize, extend: bool) -> bool {
-        if position > self.text.len() || !self.text.is_char_boundary(position) {
+        if position != self.text.len()
+            && !self
+                .text
+                .grapheme_indices(true)
+                .any(|(index, _)| index == position)
+        {
             return false;
         }
         let before = (self.cursor, self.anchor);
         self.move_to(position, extend);
         before != (self.cursor, self.anchor)
+    }
+
+    fn display(&self, password: bool) -> (Cow<'_, str>, usize, Range<usize>) {
+        if password {
+            let ordinal = |index| self.text[..index].graphemes(true).count();
+            let selected = self.selection();
+            (
+                Cow::Owned(self.masked()),
+                ordinal(self.cursor),
+                ordinal(selected.start)..ordinal(selected.end),
+            )
+        } else {
+            (Cow::Borrowed(self.text()), self.cursor(), self.selection())
+        }
     }
 
     fn move_to(&mut self, position: usize, selecting: bool) {
@@ -75,7 +95,13 @@ impl Edit {
         let start = range.start;
         let changed = &self.text[range.clone()] != text;
         self.text.replace_range(range, text);
-        self.cursor = start + text.len();
+        let after = start + text.len();
+        self.cursor = self
+            .text
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .find(|index| *index >= after)
+            .unwrap_or(self.text.len());
         self.anchor = self.cursor;
         changed
     }
@@ -101,7 +127,7 @@ impl Edit {
                     self.selection().start
                 } else {
                     self.text[..self.cursor]
-                        .char_indices()
+                        .grapheme_indices(true)
                         .next_back()
                         .map_or(0, |(index, _)| index)
                 };
@@ -112,9 +138,9 @@ impl Edit {
                     self.selection().end
                 } else {
                     self.text[self.cursor..]
-                        .chars()
+                        .graphemes(true)
                         .next()
-                        .map_or(self.cursor, |character| self.cursor + character.len_utf8())
+                        .map_or(self.cursor, |cluster| self.cursor + cluster.len())
                 };
                 self.move_to(position, key.modifiers.shift);
             }
@@ -123,7 +149,7 @@ impl Edit {
             14 => {
                 if self.selection().is_empty() {
                     self.anchor = self.text[..self.cursor]
-                        .char_indices()
+                        .grapheme_indices(true)
                         .next_back()
                         .map_or(0, |(index, _)| index);
                 }
@@ -132,9 +158,9 @@ impl Edit {
             111 => {
                 if self.selection().is_empty() {
                     self.anchor = self.text[self.cursor..]
-                        .chars()
+                        .graphemes(true)
                         .next()
-                        .map_or(self.cursor, |character| self.cursor + character.len_utf8());
+                        .map_or(self.cursor, |cluster| self.cursor + cluster.len());
                 }
                 changed = self.replace_selection("");
             }
@@ -294,7 +320,7 @@ impl crate::Painter<'_> {
     /// Geometry is derived from the same text rectangle used by drawing and hit testing.
     pub fn edit_caret(&self, rect: canvas::Rect, edit: &Edit, bordered: bool) -> canvas::Rect {
         let inner = edit_text_area(rect, (0, 0), bordered);
-        let caret = self.logical_ceil(self.text_width(&edit.text()[..edit.cursor()], false));
+        let caret = self.logical_ceil(self.text_layout(edit.text(), false).caret_x(edit.cursor()));
         canvas::Rect::new(
             inner.x + caret.min((inner.width - 1).max(0)),
             inner.y,
@@ -304,29 +330,21 @@ impl crate::Painter<'_> {
     }
 
     fn hit_text(&self, inner: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
-        let caret = if password {
-            edit.text()[..edit.cursor()].chars().count() as i32 * self.text_width("*", false)
-        } else {
-            self.text_width(&edit.text()[..edit.cursor()], false)
-        };
+        let (text, cursor, _) = edit.display(password);
+        let layout = self.text_layout(&text, false);
+        let caret = layout.caret_x(cursor);
         let shift = self.logical_ceil((caret + self.scale - self.px(inner.width)).max(0));
-        let target = self.px(x - inner.x + shift);
-        let mut pen = 0;
-        for (index, character) in edit.text().char_indices() {
-            let mut bytes = [0; 4];
-            let text = if password {
-                "*"
-            } else {
-                character.encode_utf8(&mut bytes)
-            };
-            let advance = self.text_width(text, false);
-            if target < pen + advance / 2 {
-                return index;
-            }
-            pen += advance;
+        let index = layout.hit(self.px(x - inner.x + shift), 0);
+        if password {
+            edit.text()
+                .grapheme_indices(true)
+                .nth(index)
+                .map_or_else(|| edit.text().len(), |(index, _)| index)
+        } else {
+            index
         }
-        edit.text().len()
     }
+
     fn paint_edit(
         &mut self,
         rect: canvas::Rect,
@@ -353,20 +371,9 @@ impl crate::Painter<'_> {
             );
         }
         let inner = edit_text_area(rect, frame.unwrap_or((0, 0)), framed);
-        let masked;
-        let (text, cursor, selection) = if password {
-            masked = edit.masked();
-            let selection = edit.selection();
-            (
-                masked.as_str(),
-                edit.text()[..edit.cursor()].chars().count(),
-                edit.text()[..selection.start].chars().count()
-                    ..edit.text()[..selection.end].chars().count(),
-            )
-        } else {
-            (edit.text(), edit.cursor(), edit.selection())
-        };
-        let caret = self.text_width(&text[..cursor], false);
+        let (text, cursor, selection) = edit.display(password);
+        let layout = self.text_layout(&text, false);
+        let caret = layout.caret_x(cursor);
         let scroll = (caret + self.scale - self.px(inner.width)).max(0);
         let shift = self.logical_ceil(scroll);
         let x = inner.x - shift;
@@ -374,36 +381,35 @@ impl crate::Painter<'_> {
         let previous = self.surface.clip();
         self.surface
             .set_clip(previous.intersect(self.physical(inner)));
-        self.text(
+        self.paint_text_layout(
             x,
             y,
-            text,
+            &layout,
             if enabled {
                 Ink::Color(SystemColor::WindowText)
             } else {
                 Ink::Disabled
             },
-            false,
         );
-        if focused && !selection.is_empty() {
-            let left = self.text_width(&text[..selection.start], false);
-            let right = self.text_width(&text[..selection.end], false);
-            let highlight = canvas::Rect::new(
-                self.px(x) + left,
-                self.px(y),
-                right - left,
-                self.px(self.line_height()),
-            );
-            self.surface
-                .fill_rect(highlight, self.color(SystemColor::Hilight));
-            self.surface.set_clip(
-                previous
-                    .intersect(self.physical(inner))
-                    .intersect(highlight),
-            );
-            self.text(x, y, text, Ink::Color(SystemColor::HilightText), false);
-            self.surface
-                .set_clip(previous.intersect(self.physical(inner)));
+        if focused {
+            for range in layout.selection(selection) {
+                let highlight = canvas::Rect::new(
+                    self.px(x) + range.start,
+                    self.px(y),
+                    range.end - range.start,
+                    self.px(self.line_height()),
+                );
+                self.surface
+                    .fill_rect(highlight, self.color(SystemColor::Hilight));
+                self.surface.set_clip(
+                    previous
+                        .intersect(self.physical(inner))
+                        .intersect(highlight),
+                );
+                self.paint_text_layout(x, y, &layout, Ink::Color(SystemColor::HilightText));
+                self.surface
+                    .set_clip(previous.intersect(self.physical(inner)));
+            }
         }
         if focused {
             self.surface.fill_rect(
