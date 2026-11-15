@@ -236,6 +236,7 @@ def _build_rust_user_targets(
             linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
             env.update({
                 "LITEOS_MUSL_CLANG": str(musl.compiler),
+                "LITEOS_MUSL_AR": str(musl.archiver),
                 "LITEOS_MUSL_LLD": str(musl.linker),
                 "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
                 "LITEOS_MUSL_SYSROOT": str(musl.install),

@@ -10,6 +10,10 @@ use std::{
 
 use crate::raw;
 
+mod read_only;
+
+pub use read_only::ReadOnlySharedMapping;
+
 #[cfg(target_os = "linux")]
 const MFD_CLOEXEC: u32 = 0x0001;
 #[cfg(target_os = "linux")]
@@ -30,17 +34,37 @@ const F_SEAL_WRITE: i32 = 0x0008;
 pub fn is_immutable(fd: BorrowedFd<'_>) -> bool {
     #[cfg(target_os = "linux")]
     {
-        const F_GET_SEALS: i32 = 1034;
-        // SAFETY: 标准无指针 fcntl 查询；借用保活 fd，无共享可变内存。
-        let seals = unsafe { raw::fcntl(fd.as_raw_fd(), F_GET_SEALS, 0) };
         let required = F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE;
-        seals >= 0 && seals & required == required
+        has_seals(fd, required)
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = fd;
         false
     }
+}
+
+/// Reports whether Linux sealing prevents this borrowed file from shrinking.
+///
+/// An unsupported or failed query returns false. The file may still grow or be written.
+pub fn is_shrink_sealed(fd: BorrowedFd<'_>) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        has_seals(fd, F_SEAL_SHRINK)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = fd;
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn has_seals(fd: BorrowedFd<'_>, required: i32) -> bool {
+    const F_GET_SEALS: i32 = 1034;
+    // SAFETY: 标准无指针 fcntl 查询；借用保活 fd。
+    let seals = unsafe { raw::fcntl(fd.as_raw_fd(), F_GET_SEALS, 0) };
+    seals >= 0 && seals & required == required
 }
 
 /// A sized anonymous shared-memory file.
@@ -258,6 +282,10 @@ pub struct SharedMapping {
 impl SharedMapping {
     /// Maps exactly `len` bytes from offset zero of `fd`.
     pub fn map(fd: BorrowedFd<'_>, len: usize) -> io::Result<Self> {
+        Self::map_with_protection(fd, len, raw::PROT_READ | raw::PROT_WRITE)
+    }
+
+    fn map_with_protection(fd: BorrowedFd<'_>, len: usize, protection: i32) -> io::Result<Self> {
         if len == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -268,7 +296,7 @@ impl SharedMapping {
             raw::mmap(
                 std::ptr::null_mut(),
                 len,
-                raw::PROT_READ | raw::PROT_WRITE,
+                protection,
                 raw::MAP_SHARED,
                 fd.as_raw_fd(),
                 0,

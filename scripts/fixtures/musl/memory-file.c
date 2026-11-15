@@ -208,6 +208,23 @@ static void tmpfs_semantics(void)
 	CHECK(45, free_blocks("/tmp") == baseline);
 }
 
+static void batched_read_partial_copy(void)
+{
+	int fd = memfd_create("partial-read", 0);
+	size_t len = 19 * PAGE;
+	CHECK(140, fd >= 0 && ftruncate(fd, len) == 0);
+	CHECK(141, pwrite(fd, "A", 1, 0) == 1 && pwrite(fd, "B", 1, 16 * PAGE) == 1);
+	CHECK(142, pwrite(fd, "C", 1, 17 * PAGE) == 1);
+	char *output = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	CHECK(143, output != MAP_FAILED && mprotect(output + 17 * PAGE, PAGE, PROT_NONE) == 0);
+	/* 大块驻留读遇到坏页面时，仍然逐页确认已交付字节与共享文件位置。 */
+	CHECK(144, read(fd, output, len) == 17 * PAGE && lseek(fd, 0, SEEK_CUR) == 17 * PAGE);
+	CHECK(145, output[0] == 'A' && output[PAGE] == 0 && output[16 * PAGE] == 'B');
+	CHECK(146, mprotect(output + 17 * PAGE, PAGE, PROT_READ | PROT_WRITE) == 0);
+	CHECK(147, read(fd, output, len) == 2 * PAGE && output[0] == 'C' && output[PAGE] == 0);
+	CHECK(148, read(fd, output, len) == 0 && munmap(output, len) == 0 && close(fd) == 0);
+}
+
 static void quota_semantics(void)
 {
 	/* size=16k 的 tmpfs：写入超出配额得到 ENOSPC，而映射触碰超出配额的页得到 SIGBUS。 */
@@ -254,6 +271,7 @@ static void quota_semantics(void)
 int main(void)
 {
 	memfd_semantics();
+	batched_read_partial_copy();
 	write_seal_semantics();
 	tmpfs_semantics();
 	quota_semantics();

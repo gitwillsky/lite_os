@@ -65,9 +65,10 @@ compositor 报告各自的首个事件。它不测量时间，参考帧与比对
 WindowHost/Tree 经 `paint_frame` 在已释放共享缓冲中按节点失效直接光栅，不保留私有画布或扫描整帧像素。
 每个窗口最多 3 块 memfd 缓冲轮换，稳定后只留一块空闲缓冲；外部像素调用 `Display::present` 时与上一次提交逐行比较，只经 `MemFd::write_segments` 写入变化区域
 （宽矩形连同行间一次写，窄矩形逐行写）并以 `damage_buffer` 声明，复用缓冲补写它落后的各帧损伤。比较是一次 O(帧像素) 的内存比较，
-换掉的是整帧共享内存写入、合成器整帧 `pread` 与纹理整幅上传。
-buffer.release 回收资源，断开由 RAII 清理。
-合成器只读取损伤矩形：宽矩形按 64 KiB 预算批量 `pread`（大 stride 时至少一行），窄矩形逐行读，保留截断文件的协议错误语义。
+共享内存写入与纹理上传限于实际损伤。buffer.release 回收资源，断开由 RAII 清理。
+合成器按 [Wayland 1.24 的共享内存实现](https://github.com/wayland-mirror/wayland/blob/1.24.0/src/wayland-shm.c) 复用每个池的只读映射。
+访问未封印文件前检查字节上限，覆盖同页的截断；C 复制保护并发截断引发的 SIGBUS，Rust 侧沿用协议错误与连接清理。
+损伤像素直接进入 CPU 内容、VirGL 小矩形内联命令或已有的 fence 管理上传暂存区。
 `canvas::Surface::blit` 对同倍率且实际像素完全不透明的可见行直接复制；其余保留预乘 alpha 合成与整数缩放。
 该快路径不缓存不透明状态，也不信任客户端声明。O(帧像素数) 的成本由相同工作负载的离线前后微基准与既有 canvas 基线评估；
 SHM 的 stride/offset/末行/truncation、blit 语义测试与真实窗口的重复提交、尺寸变更验证等价性。

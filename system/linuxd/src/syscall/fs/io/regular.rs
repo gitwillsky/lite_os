@@ -1,5 +1,8 @@
 use super::*;
 
+// 与原生 VMO transfer 的单次暂存容量一致，防止逐页请求重复争用共享地址空间。
+const READ_BATCH_BYTES: usize = 64 * 1024;
+
 /// 一次 regular-file read 跨 vector 的进度：同步循环与 io_uring 的异步读共用同一套“每块交付与收尾”规则。
 ///
 /// chunk 取 `PAGE_SIZE`，同时匹配 page-cache frame 与 user-copy fault/copy 粒度；保持 512-byte staging
@@ -109,8 +112,43 @@ pub(in crate::syscall) fn read_vectors_from(
     vectors: &[UserIoVec],
     mut progress: ReadProgress,
 ) -> isize {
+    let max_vector = vectors
+        .iter()
+        .map(|vector| vector.length)
+        .max()
+        .unwrap_or(0);
+    let capacity = max_vector.min(READ_BATCH_BYTES);
+    let mut staging = Vec::new();
+    if capacity > crate::memory::PAGE_SIZE && staging.try_reserve_exact(capacity).is_ok() {
+        staging.resize(capacity, 0);
+    }
     let mut chunk = [0u8; crate::memory::PAGE_SIZE];
     while let Some(count) = progress.next_count(vectors) {
+        let requested = (vectors[progress.index].length - progress.done).min(staging.len());
+        if requested > crate::memory::PAGE_SIZE {
+            if let Ok(Some(read)) = file.read_available(*position, &mut staging[..requested]) {
+                task.account_read_storage(read.storage_bytes);
+                // 成批读驻留源，但沿用逐页 copyout 与 offset 提交。后页 EFAULT 时，
+                // 保留已经交付的前缀，不能把未交付的数据算入返回值。
+                for (index, part) in staging[..requested]
+                    .chunks(crate::memory::PAGE_SIZE)
+                    .enumerate()
+                {
+                    let bytes = read
+                        .bytes
+                        .saturating_sub(index * crate::memory::PAGE_SIZE)
+                        .min(part.len());
+                    if let Some(result) =
+                        progress.deliver(task, vectors, position, part, bytes, part.len())
+                    {
+                        return result;
+                    }
+                }
+                continue;
+            }
+            // 冷页、直接 I/O 或暂存访问失败沿用原阻塞路径，本 syscall 无需重复探测。
+            staging.clear();
+        }
         let read = match file.read(*position, &mut chunk[..count]) {
             Ok(read) => read,
             Err(error) => return progress.failed(error),
@@ -145,7 +183,7 @@ pub(in crate::syscall) fn read_available(
 ) -> Option<isize> {
     // BUDGET: 只在 64KiB 暂存预算内内联；不完整的缓存副本不能交付，避免重试时复制一半用户结果。
     // 大请求沿同一个 blocking read owner 执行，不截断 I/O，也不为探测申请任意大小的内存。
-    if total > 64 * 1024 {
+    if total > READ_BATCH_BYTES {
         return None;
     }
     if ofd.inode_ref().inode_type() == InodeType::Directory {

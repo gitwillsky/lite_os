@@ -369,7 +369,33 @@ impl CommandEncoder {
         pixels: &[u32],
     ) {
         assert_eq!(pixels.len(), width as usize * height as usize);
-        let length = INLINE_WRITE_PARAMETERS + pixels.len();
+        self.inline_write_header(resource, [x, y, width, height], pixels.len());
+        self.words.extend_from_slice(pixels);
+    }
+
+    /// Reserves the inline payload for a source that can fill it directly.
+    pub(super) fn inline_write_pixels(
+        &mut self,
+        resource: u32,
+        rect: [u32; 4],
+        count: usize,
+    ) -> std::io::Result<&mut [u32]> {
+        self.words
+            .try_reserve_exact(1 + INLINE_WRITE_PARAMETERS + count)
+            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        self.inline_write_header(resource, rect, count);
+        let start = self.words.len();
+        self.words.resize(start + count, 0);
+        Ok(&mut self.words[start..])
+    }
+
+    fn inline_write_header(
+        &mut self,
+        resource: u32,
+        [x, y, width, height]: [u32; 4],
+        count: usize,
+    ) {
+        let length = INLINE_WRITE_PARAMETERS + count;
         assert!(
             length <= usize::from(u16::MAX),
             "inline write exceeds one packet"
@@ -389,7 +415,6 @@ impl CommandEncoder {
             height,
             1,
         ]);
-        self.words.extend_from_slice(pixels);
     }
 
     fn header(&mut self, command: u32, object: ObjectKind, length: u32) {
@@ -433,7 +458,10 @@ mod tests {
     #[test]
     fn inline_write_packet_matches_virgl_protocol_layout() {
         let mut encoder = CommandEncoder::new();
-        encoder.inline_write(29, 3, 4, 2, 1, &[0xff00_0001, 0xff00_0002]);
+        encoder
+            .inline_write_pixels(29, [3, 4, 2, 1], 2)
+            .unwrap()
+            .copy_from_slice(&[0xff00_0001, 0xff00_0002]);
         assert_eq!(
             encoder.words(),
             &[

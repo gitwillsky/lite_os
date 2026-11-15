@@ -5259,6 +5259,7 @@ system/linuxd/src/fs/memory_file.rs :: pub (crate) struct MemoryFile
 system/linuxd/src/fs/memory_file.rs :: pub (crate) struct MemoryWrite < 'a >
 system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryFile :: fn allocate_with_metadata (& self , offset : u64 , length : u64 , modified : impl FnOnce () ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryFile :: fn new (id : SharedFileId , budget : Arc < StorageBudget > , allow_sealing : bool ,) -> Result < Arc < Self > , FileSystemError >
+system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryFile :: fn read_available (& self , offset : u64 , output : & mut [u8] ,) -> Result < Option < usize > , FileSystemError >
 system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryFile :: fn times (& self) -> Arc < super :: inode_times :: InodeTimes >
 system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryFile :: fn truncate_with_metadata < G > (& self , size : u64 , prepare : impl FnOnce () -> Result < G , FileSystemError > , commit : impl FnOnce (& mut G) ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/memory_file.rs :: pub (super) impl MemoryWrite < '_ > :: fn belongs_to (& self , file : & MemoryFile) -> bool

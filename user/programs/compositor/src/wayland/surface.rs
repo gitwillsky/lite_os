@@ -119,7 +119,8 @@ impl Content {
                 pixels
                     .try_reserve_exact(width * height)
                     .map_err(|_| super::shm::ReadError::NoMemory)?;
-                spec.read_rect(spec.bounds(), |_, row| pixels.extend_from_slice(row))?;
+                pixels.resize(width * height, 0);
+                spec.copy_pixels(spec.bounds(), &mut pixels, width)?;
                 Pixels::Memory(pixels)
             }
             Some(gpu) => {
@@ -129,14 +130,7 @@ impl Content {
                 // 单像素 SHM 同时保留已读到的确切像素，复用现有 readback owner。
                 // 透明输入根由此无需每帧混合整屏；绝不为此读回 GPU 或扫描大缓冲。
                 let readback = OnceCell::new();
-                gpu.stage_texture(&texture, [0, 0, width as u32, height as u32], |staging| {
-                    spec.read_rect(spec.bounds(), |y, row| {
-                        staging.write_words(y * width, row);
-                        if width == 1 && height == 1 {
-                            let _ = readback.set(row.to_vec());
-                        }
-                    })
-                })?;
+                upload_shm_rect(gpu, &texture, spec, spec.bounds(), &readback)?;
                 Pixels::Texture {
                     texture: Rc::new(texture),
                     context: gpu.clone(),
@@ -162,7 +156,6 @@ impl Content {
         damage: &[canvas::Rect],
         gpu: Option<&linux_uapi::drm::VirglContext>,
     ) -> Result<bool, super::shm::ReadError> {
-        use super::shm::ReadError::Upload;
         // XRGB 强制 alpha=255；格式变化时不能把旧 ARGB 的未损伤透明像素当成不透明。
         if (self.width, self.height) != (spec.width, spec.height)
             || self.opaque != (spec.format == wayland_wire::protocol::wl_shm::Format::Xrgb8888)
@@ -176,10 +169,8 @@ impl Content {
         match (pixels, gpu) {
             (Pixels::Memory(memory), None) => {
                 for rect in damage {
-                    let x = rect.x as usize;
-                    spec.read_rect(*rect, |y, row| {
-                        memory[y * width + x..][..row.len()].copy_from_slice(row);
-                    })?;
+                    let offset = rect.y as usize * width + rect.x as usize;
+                    spec.copy_pixels(*rect, &mut memory[offset..], width)?;
                 }
             }
             (
@@ -189,25 +180,8 @@ impl Content {
                 Some(gpu),
             ) => {
                 *readback = OnceCell::new();
-                // 纹理可能仍被在途帧引用；write_texture 按资源状态选择 transfer 或命令流内联写入，不等待 fence。
-                let mut rows = Vec::new();
                 for rect in damage {
-                    rows.clear();
-                    rows.try_reserve_exact(rect.width as usize * rect.height as usize)
-                        .map_err(|_| super::shm::ReadError::NoMemory)?;
-                    spec.read_rect(*rect, |_, row| rows.extend_from_slice(row))?;
-                    gpu.write_texture(
-                        texture,
-                        rect.x as u32,
-                        rect.y as u32,
-                        rect.width as u32,
-                        rect.height as u32,
-                        &rows,
-                    )
-                    .map_err(Upload)?;
-                    if self.width == 1 && self.height == 1 {
-                        let _ = readback.set(rows.clone());
-                    }
+                    upload_shm_rect(gpu, texture, spec, *rect, readback)?;
                 }
             }
             _ => return Ok(false),
@@ -303,6 +277,28 @@ impl Content {
             self.size.1.saturating_mul(scale),
         )
     }
+}
+
+fn upload_shm_rect(
+    gpu: &linux_uapi::drm::VirglContext,
+    texture: &linux_uapi::drm::VirglResource,
+    spec: &super::shm::BufferSpec,
+    rect: canvas::Rect,
+    readback: &OnceCell<Vec<u32>>,
+) -> Result<(), super::shm::ReadError> {
+    let area = [
+        rect.x as u32,
+        rect.y as u32,
+        rect.width as u32,
+        rect.height as u32,
+    ];
+    gpu.upload_sampled_rect(texture, area, |pixels| {
+        spec.copy_pixels(rect, pixels, rect.width as usize)?;
+        if spec.width == 1 && spec.height == 1 {
+            let _ = readback.set(pixels.to_vec());
+        }
+        Ok(())
+    })
 }
 
 /// 待提交的真实缓冲 owner；destroy wl_buffer 不能撤销已经 attach 的引用。

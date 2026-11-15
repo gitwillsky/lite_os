@@ -7,10 +7,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use fallible_tree::{FallibleMap, VacantEntry};
-use native_runtime::Pager;
+use native_runtime::{Pager, Vmo};
 use pager_pool::SupplyBuffer;
 
-use native_runtime::native_abi::vmo;
+use native_runtime::native_abi::{Status, vmo};
 
 use super::{FileSystemError, StorageBudget};
 use crate::memory::{MemoryObject, PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping};
@@ -166,6 +166,46 @@ impl MemoryFile {
 
     pub(crate) fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
         let state = self.state()?;
+        self.read_pages(&state, offset, output, Vmo::read)
+            .map_err(|_| FileSystemError::IoError)
+    }
+
+    /// 读取内存文件的驻留页和洞。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 文件字节偏移。
+    /// - `output`: 成功时填充到 EOF 或缓冲末尾。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回已读字节数。状态正忙或已计费页需要补页时返回 None，暂存内容不可交付。
+    ///
+    /// # Errors
+    ///
+    /// VMO 读取失败返回 IoError，暂存内容不可交付。
+    pub(super) fn read_available(
+        &self,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<Option<usize>, FileSystemError> {
+        let Some(state) = self.state.try_lock() else {
+            return Ok(None);
+        };
+        match self.read_pages(&state, offset, output, Vmo::read_available) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(native_runtime::native_abi::ERR_SHOULD_WAIT) => Ok(None),
+            Err(_) => Err(FileSystemError::IoError),
+        }
+    }
+
+    fn read_pages(
+        &self,
+        state: &State,
+        offset: u64,
+        output: &mut [u8],
+        mut read: impl FnMut(&Vmo, &mut [u8], u64) -> Result<(), Status>,
+    ) -> Result<usize, Status> {
         let length = self.size();
         if offset >= length {
             return Ok(0);
@@ -201,10 +241,11 @@ impl MemoryFile {
                 run_end += PAGE_SIZE as u64;
             }
             let run_end = run_end.min(end);
-            self.object
-                .vmo()
-                .read(&mut output[start..(run_end - offset) as usize], cursor)
-                .map_err(|_| FileSystemError::IoError)?;
+            read(
+                self.object.vmo(),
+                &mut output[start..(run_end - offset) as usize],
+                cursor,
+            )?;
             cursor = run_end;
         }
         Ok(count)

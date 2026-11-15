@@ -2,6 +2,10 @@
 
 use super::*;
 
+// 一轮持锁复制的上限，与原生 VMO 读写的暂存粒度一致。本轮末尾归还共享空间，
+// 避免大请求长时间阻塞同 owner 的映射修改和 futex 检查。
+const COPY_BATCH_BYTES: usize = 64 * 1024;
+
 impl AddressSpace {
     /// 从当前地址空间复制用户内存；缺页按普通缺页处理。
     ///
@@ -106,29 +110,38 @@ impl AddressSpace {
         let required = access.required() | PagePermissions::USER;
         let mut cursor = address;
         while cursor < end {
-            let offset = cursor % PAGE_SIZE;
-            let chunk = (PAGE_SIZE - offset).min(end - cursor);
-            let start = cursor - address;
-            let copied = {
-                let owner = self
-                    .shared
-                    .as_deref()
-                    .filter(|owner| owner.range.contains(&cursor))
-                    .unwrap_or(self);
-                let mut inner = owner.lock()?;
+            let owner = self
+                .shared
+                .as_deref()
+                .filter(|owner| owner.range.contains(&cursor))
+                .unwrap_or(self);
+            if !owner.range.contains(&cursor) {
+                return Err(VmError::NotMapped);
+            }
+            let limit = end
+                .min(cursor.saturating_add(COPY_BATCH_BYTES))
+                .min(owner.range.end);
+            let mut inner = owner.lock()?;
+            while cursor < limit {
                 let vpn = VirtualAddress::from(cursor).floor();
-                match inner.views.normal.translate(vpn) {
-                    Some(entry) if entry.permissions().contains(required) => {
-                        inner.mark_accessed(vpn, entry)?;
-                        operation(entry.ppn().as_page_mut_ptr(), offset, start..start + chunk);
-                        true
-                    }
-                    _ => false,
-                }
-            };
-            if copied {
+                let Some(entry) = inner
+                    .views
+                    .normal
+                    .translate(vpn)
+                    .filter(|entry| entry.permissions().contains(required))
+                else {
+                    break;
+                };
+                let offset = cursor % PAGE_SIZE;
+                let chunk = (PAGE_SIZE - offset).min(limit - cursor);
+                let start = cursor - address;
+                inner.mark_accessed(vpn, entry)?;
+                operation(entry.ppn().as_page_mut_ptr(), offset, start..start + chunk);
                 cursor += chunk;
-            } else {
+            }
+            drop(inner);
+            // 遇到缺页必须先归还空间锁；fault 可能等待 pager，并重新取得同一 owner。
+            if cursor < limit {
                 self.fault(cursor, access)?;
             }
         }

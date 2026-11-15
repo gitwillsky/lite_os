@@ -25,7 +25,7 @@ fn id(value: u32) -> ObjectId {
     ObjectId::new(value).unwrap()
 }
 
-fn shm_file(bytes: &[u8]) -> OwnedFd {
+pub(super) fn shm_file(bytes: &[u8]) -> OwnedFd {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
@@ -807,8 +807,19 @@ fn a_file_truncated_after_buffer_creation_is_an_error_not_a_crash() {
 #[test]
 fn pools_only_grow() {
     let mut harness = Harness::bound();
+    let fd = shm_file(&[0; 128]);
+    let raw = fd.as_raw_fd();
     harness
-        .create_buffer(&[0; 64], 2, 2, 8, wl_shm::Format::Argb8888)
+        .send_with_fds(
+            |w| {
+                w.begin(id(4), 0);
+                w.object(Some(id(10)));
+                w.fd(raw);
+                w.int(64);
+                w.end().unwrap();
+            },
+            vec![fd],
+        )
         .unwrap();
     harness
         .send(|w| {

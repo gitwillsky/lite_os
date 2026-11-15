@@ -1,46 +1,62 @@
-//! `wl_shm`：用 `pread` 读取客户端共享内存，而不是 mmap。
-//!
-//! 客户端可以在合成器读取时截断文件；mmap 会因此 SIGBUS，`pread` 只会短读，可转成协议错误，也不需要 unsafe。
+//! `wl_shm` 池持有只读共享映射。按损伤直接复制到调用方拥有的像素存储。
 
+use linux_uapi::shared_memory::{ReadOnlySharedMapping, is_immutable, is_shrink_sealed};
 use std::{
-    cell::{Cell, OnceCell},
+    cell::{OnceCell, RefCell},
     fs::File,
-    os::{
-        fd::{AsFd, OwnedFd},
-        unix::fs::FileExt,
-    },
+    io,
+    os::fd::{AsFd, OwnedFd},
     rc::Rc,
 };
-
 use wayland_wire::protocol::wl_shm::Format;
 
-/// 一个 `wl_shm_pool`：客户端文件与当前声明的大小。
+/// 一个 `wl_shm_pool` 的文件和映射，最后一个 buffer 释放时一同退休。
 pub struct Pool {
     file: File,
-    size: Cell<usize>,
-    // PROOF: F_SEAL_WRITE/GROW/SHRINK 不可撤销；只有真实封印的文件才可跨 surface 复用快照。
+    mapping: RefCell<ReadOnlySharedMapping>,
+    // 封印不可撤销。仅在实际禁止缩小时免除每次读之前的 EOF 检查；SIGBUS 仍可能来自 backing 故障。
+    shrink_sealed: bool,
+    // 写封印与尺寸封印同时成立时，可跨 surface 复用同一像素快照。
     immutable: bool,
 }
 
 impl Pool {
-    pub fn new(fd: OwnedFd, size: usize) -> Rc<Self> {
-        let immutable = linux_uapi::shared_memory::is_immutable(fd.as_fd());
-        Rc::new(Self {
+    /// 建立整个声明区间的只读映射。文件过短、无法 mmap 或无法安装恢复处理时返回 I/O 错误。
+    pub fn new(fd: OwnedFd, size: usize) -> io::Result<Rc<Self>> {
+        let file = File::from(fd);
+        let immutable = is_immutable(file.as_fd());
+        let shrink_sealed = immutable || is_shrink_sealed(file.as_fd());
+        let mapping = Self::map(&file, size)?;
+        Ok(Rc::new(Self {
+            file,
+            mapping: RefCell::new(mapping),
+            shrink_sealed,
             immutable,
-            file: File::from(fd),
-            size: Cell::new(size),
-        })
+        }))
+    }
+
+    fn map(file: &File, size: usize) -> io::Result<ReadOnlySharedMapping> {
+        if file.metadata()?.len() < size as u64 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        ReadOnlySharedMapping::map(file.as_fd(), size)
     }
 
     pub(super) fn immutable(&self) -> bool {
         self.immutable
     }
+
     pub fn size(&self) -> usize {
-        self.size.get()
+        self.mapping.borrow().len()
     }
 
-    pub fn grow(&self, size: usize) {
-        self.size.set(size);
+    /// 按客户端提供的更大 extent 重建视图。准备失败时保留原有映射。
+    pub fn grow(&self, size: usize) -> io::Result<()> {
+        assert!(size >= self.size(), "wl_shm pool cannot shrink");
+        if size > self.size() {
+            *self.mapping.borrow_mut() = Self::map(&self.file, size)?;
+        }
+        Ok(())
     }
 }
 
@@ -64,7 +80,7 @@ pub enum ReadError {
     NoMemory,
     Upload(std::io::Error),
 }
-use ReadError::{NoMemory, Truncated};
+use ReadError::Truncated;
 
 impl From<std::io::Error> for ReadError {
     fn from(error: std::io::Error) -> Self {
@@ -72,64 +88,39 @@ impl From<std::io::Error> for ReadError {
     }
 }
 
-/// 单次 `pread` 的字节预算；大 stride 退化为单行，不分配整个客户端 pool。
-const BATCH: usize = 64 * 1024;
-
 impl BufferSpec {
-    /// 逐行读取 `rect` 内的像素，转换成预乘 `0xAARRGGBB` 后交给 `row(y, pixels)`；`Xrgb8888` 强制不透明。
+    /// 将 `rect` 从池复制到调用方提供的像素存储。只写每行有效像素。
     ///
-    /// # Parameters
-    ///
-    /// - `rect`: buffer 像素坐标，调用者保证非空且在 buffer 之内。
-    /// - `row`: 每行回调一次，`y` 为 buffer 行号，`pixels` 从 `rect.x` 开始、长 `rect.width`。
-    ///
-    /// # Errors
-    ///
-    /// 文件内容短于声明（客户端截断了共享内存），或无法分配读缓冲。
-    pub fn read_rect(
+    /// XRGB 补上不透明 alpha。共享文件过短或访问触发 SIGBUS 时返回 Truncated，输出可能已部分更新。
+    pub(super) fn copy_pixels(
         &self,
         rect: canvas::Rect,
-        mut row: impl FnMut(usize, &[u32]),
+        output: &mut [u32],
+        stride: usize,
     ) -> Result<(), ReadError> {
+        assert!(!rect.is_empty() && rect.intersect(self.bounds()) == rect);
         let (x, top) = (rect.x as usize, rect.y as usize);
         let (width, height) = (rect.width as usize, rect.height as usize);
-        let row_bytes = width * 4;
-        // 1. 窄矩形（如单个按钮）逐行读，避免把行间无关字节一起读入；
-        // 2. 宽矩形在固定预算内多行一批读，减少 pread 次数；最后一行只读到矩形右边缘，
-        //    不能要求客户端在 buffer 尾部额外提供 padding。
-        let rows_per_read = if row_bytes * 2 < self.stride {
-            1
-        } else {
-            (BATCH / self.stride).max(1).min(height)
-        };
-        let length = (rows_per_read - 1) * self.stride + row_bytes;
-        let mut batch = Vec::new();
-        batch.try_reserve_exact(length).map_err(|_| NoMemory)?;
-        batch.resize(length, 0);
-        let mut pixels = Vec::new();
-        pixels.try_reserve_exact(width).map_err(|_| NoMemory)?;
-        for start in (0..height).step_by(rows_per_read) {
-            let count = rows_per_read.min(height - start);
-            let len = (count - 1) * self.stride + row_bytes;
-            let at = (self.offset + (top + start) * self.stride + x * 4) as u64;
-            self.pool
-                .file
-                .read_exact_at(&mut batch[..len], at)
-                .map_err(|_| Truncated)?;
-            for (index, line) in batch[..len].chunks(self.stride).enumerate() {
-                pixels.clear();
-                pixels.extend(line[..row_bytes].as_chunks::<4>().0.iter().map(|chunk| {
-                    let value = u32::from_le_bytes(*chunk);
-                    if self.format == Format::Xrgb8888 {
-                        value | 0xFF00_0000
-                    } else {
-                        value
-                    }
-                }));
-                row(top + start + index, &pixels);
-            }
+        assert!(stride >= width && (height - 1) * stride + width <= output.len());
+        let offset = self.offset + top * self.stride + x * 4;
+        let end = offset + (height - 1) * self.stride + width * 4;
+        let mapping = self.pool.mapping.borrow();
+        assert!(end <= mapping.len(), "validated buffer is inside its pool");
+        // mmap 对 EOF 同一页内的空尾只返回零。未封印的文件需要主动检查字节上限，
+        // 检查后的并发截断或其他同步 backing fault 则由同一段 C 访问保护。
+        if !self.pool.shrink_sealed
+            && self.pool.file.metadata().map_err(|_| Truncated)?.len() < end as u64
+        {
+            return Err(Truncated);
         }
-        Ok(())
+        let alpha = if self.format == Format::Xrgb8888 {
+            0xff00_0000
+        } else {
+            0
+        };
+        mapping
+            .copy_words(offset, self.stride, output, stride, [width, height], alpha)
+            .map_err(|_| Truncated)
     }
 
     /// 整幅 buffer 的像素矩形。
@@ -145,7 +136,7 @@ mod tests {
     use std::{io::Write, os::fd::AsFd};
 
     #[test]
-    fn batched_reads_preserve_rows_padding_offset_and_truncation_errors() {
+    fn mapped_reads_preserve_rows_padding_offset_and_truncation_errors() {
         for (width, height, stride, offset) in
             [(3, 4, 20, 16), (300, 200, 1232, 36), (3, 2, 70000, 0)]
         {
@@ -163,7 +154,7 @@ mod tests {
                 .write_all(&bytes)
                 .unwrap();
             let mut spec = BufferSpec {
-                pool: Pool::new(memory.as_fd().try_clone_to_owned().unwrap(), len),
+                pool: Pool::new(memory.as_fd().try_clone_to_owned().unwrap(), len).unwrap(),
                 offset,
                 width,
                 height,
@@ -172,12 +163,9 @@ mod tests {
                 snapshot: OnceCell::new(),
             };
             let read = |spec: &BufferSpec, rect: canvas::Rect| {
-                let mut pixels = Vec::new();
-                spec.read_rect(rect, |y, row| {
-                    assert_eq!(y, rect.y as usize + pixels.len() / rect.width as usize);
-                    pixels.extend_from_slice(row);
-                })
-                .map(|()| pixels)
+                let mut pixels = vec![0; (rect.width * rect.height) as usize];
+                spec.copy_pixels(rect, &mut pixels, rect.width as usize)
+                    .map(|()| pixels)
             };
             assert_eq!(read(&spec, spec.bounds()).unwrap(), expected);
             // 损伤子矩形：列偏移与行号都按 buffer 坐标取，不能读成矩形左上角的偏移。
@@ -195,8 +183,13 @@ mod tests {
                 expected.iter().map(|v| v | 0xff000000).collect::<Vec<_>>()
             );
             let short = MemFd::create("shm-short", len - 1).unwrap();
-            spec.pool = Pool::new(short.as_fd().try_clone_to_owned().unwrap(), len);
-            assert!(matches!(read(&spec, spec.bounds()), Err(Truncated)));
+            assert_eq!(
+                Pool::new(short.as_fd().try_clone_to_owned().unwrap(), len)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof,
+            );
         }
     }
 }

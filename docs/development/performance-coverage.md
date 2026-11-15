@@ -83,6 +83,13 @@ MemoryFile 的稀疏补页复用唯一文件 pager 工作池，每次真实 page
 quota lease 与 AVL 节点只在首次文件页提交时分配，普通洞读不分配，连续驻留读写仍批量调用 native copy。
 冷补页的 IPC/调度成本由实际 guest 稀疏、映射、配额失败与回收 workload 诊断，不用 host 虚构 native syscall 延迟，
 既有原生 VMO/translation 和 regular-write 门槛保持原值。
+regular read 在单个 iovec 内集中读取最多 64 KiB 的驻留内容，仍按页交付用户缓冲并更新位置。
+冷页、直接 I/O 或暂存分配失败沿现有阻塞路径。原生复制在同一 owner 内合并持锁区间，缺页前释放。
+成本对照使用同一 Git pack 和 AArch64 HVF/SMP 下的真实媒体播放，记录阶段时间与 scanout 提交间隔；
+超出一批后遇到 EFAULT 的已交付前缀由 guest `memory-file.c` 覆盖。
+Wayland 共享池只在创建和增长时建立映射；每次提交复制 O(损伤像素)，直接写入最终 CPU 内容或 fence 管理的上传存储。
+用相同 Git pack、视频和 AArch64 HVF/SMP guest 比较解析阶段的 scanout 提交间隔和 Git 耗时；
+该诊断记录并发负载下的尾延迟，不为宿主采样增加阻塞门槛。
 
 StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs，不进入已有内容的 read/write；
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测

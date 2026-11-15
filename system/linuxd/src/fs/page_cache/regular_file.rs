@@ -217,6 +217,14 @@ impl RegularFile {
         let (inode, object) = match &self.0 {
             RegularFileBackend::Cached(file) => (&file.inode, &file.object),
             RegularFileBackend::SharedVmo(file) => (&file.inode, &file.memory),
+            RegularFileBackend::Memory { file, .. } => {
+                return file.read_available(offset, output).map(|bytes| {
+                    bytes.map(|bytes| RegularFileRead {
+                        bytes,
+                        storage_bytes: 0,
+                    })
+                });
+            }
             _ => return Ok(None),
         };
         if !inode.data_cache_valid() {

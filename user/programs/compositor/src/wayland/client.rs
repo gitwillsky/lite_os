@@ -417,7 +417,7 @@ impl Client {
             AnyRequest::WlDisplay(request) => self.display(request),
             AnyRequest::WlRegistry(request) => self.registry(object, request),
             AnyRequest::WlCompositor(request) => self.compositor(version, request),
-            AnyRequest::WlShm(request) => self.shm(version, request),
+            AnyRequest::WlShm(request) => self.shm(object, version, request),
             AnyRequest::WlShmPool(request) => self.pool(object, request),
             AnyRequest::WlOutput(_) => Ok(()),
             AnyRequest::ZwpLinuxDmabufV1(request) => self.dmabuf(object, version, request),
@@ -595,7 +595,12 @@ impl Client {
         }
     }
 
-    fn shm(&mut self, version: u32, request: wl_shm::Request) -> Result<(), Fail> {
+    fn shm(
+        &mut self,
+        object: ObjectId,
+        version: u32,
+        request: wl_shm::Request,
+    ) -> Result<(), Fail> {
         match request {
             wl_shm::Request::CreatePool { id, fd, size } => {
                 let size = usize::try_from(size)
@@ -603,17 +608,19 @@ impl Client {
                     .filter(|size| *size > 0)
                     .ok_or_else(|| {
                         Fail::new(
-                            id,
+                            object,
                             wl_shm::Error::InvalidStride as u32,
                             "pool size must be positive",
                         )
                     })?;
-                self.create(
-                    id,
-                    Interface::WlShmPool,
-                    version,
-                    Data::Pool(Pool::new(fd, size)),
-                )
+                let pool = Pool::new(fd, size).map_err(|_| {
+                    Fail::new(
+                        object,
+                        wl_shm::Error::InvalidFd as u32,
+                        "invalid shm backing",
+                    )
+                })?;
+                self.create(id, Interface::WlShmPool, version, Data::Pool(pool))
             }
             wl_shm::Request::Release => Ok(()),
         }
@@ -689,7 +696,13 @@ impl Client {
             }
             wl_shm_pool::Request::Resize { size } => {
                 match usize::try_from(size) {
-                    Ok(size) if size >= pool.size() => pool.grow(size),
+                    Ok(size) if size >= pool.size() => pool.grow(size).map_err(|_| {
+                        Fail::new(
+                            object,
+                            wl_shm::Error::InvalidFd as u32,
+                            "cannot map resized pool",
+                        )
+                    })?,
                     _ => {
                         return Err(Fail::new(
                             object,

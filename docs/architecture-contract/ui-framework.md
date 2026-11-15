@@ -475,8 +475,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   set_cursor 校验最近 enter 序号后分配角色，后续 offset 从设置时热点扣除累计增量。用真实窗口移动和光标上传次数对照。
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
-  SHM 提交的成本从“整幅 pread + 整幅 CPU 副本 + 新建纹理 + 整幅上传”降为 O(损伤像素)，复用纹理与采样视图；
-  由 shm 子矩形读取与损伤/写时复制单元测试守护语义，不新增宿主墙钟阈值。
+  wl_shm 池持有唯一只读映射，由仍引用该池的 buffer 保活；增长成功后替换映射。提交仅复制损伤像素，直接写入 CPU 快照或现有 GPU 上传存储；
+  Linux UAPI 层在 C 访问范围内恢复映射 SIGBUS，保留其他 SIGBUS 的处理；损伤、写时复制和协议错误仍由合成器负责。
   验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，opaque 只用于已证明安全的遮挡剔除。
 
 ## 键盘对象与迟绑定
