@@ -444,7 +444,7 @@ fn show_connections(
 
     let cursor = if let Some(token) = token {
         let (epoch, after) = connection_token(token, '-')?;
-        Cursor { epoch, after }
+        Cursor { epoch, after, ..Cursor::default() }
     } else {
         Cursor::default()
     };
@@ -491,7 +491,7 @@ fn write_connection_snapshot(
         let Some(after) = page.next else {
             return Ok(());
         };
-        cursor = Cursor { epoch, after };
+        cursor = Cursor { epoch, after, ..cursor };
     }
 }
 
@@ -554,7 +554,7 @@ fn show_firewall(
         "规则链  序号  入接口  源地址  目的地址  目的服务  连接状态  动作  报文数  IP 字节数"
     )?;
     loop {
-        let page = client.firewall_counters(domain, cursor)?;
+        let (_, page) = client.firewall_counters(domain, cursor)?;
         if page.rows.is_empty() && cursor.offset == 0 {
             return writeln!(output, "没有预路由规则");
         }

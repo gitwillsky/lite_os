@@ -27,6 +27,8 @@ pub(super) enum Item {
     Command(Glyph, &'static str),
     /// 只有图标的命令，文字作为悬停提示（翻页、刷新、筛选）。
     Icon(Glyph, &'static str),
+    /// 没有专用图标的文字命令。
+    Text(&'static str),
     Separator,
 }
 
@@ -58,6 +60,7 @@ impl Bar {
                         *text,
                         false,
                     ),
+                    Item::Text(text) => (ToolbarKind::Button, "", 0, *text, true),
                     Item::Separator => (ToolbarKind::Separator, "", 0, "", false),
                 };
                 ToolbarButton {
@@ -203,6 +206,8 @@ impl Body {
                 ..Layout::default()
             },
         )?;
+        // 面板在添加第一条命令时才显示；没有动作的列表（如地址）不留空白面板。
+        panel.set_state(state::HIDDEN)?;
         let title = crate::child(&panel, WidgetKind::Label, "动作", Layout::default())?;
         title.set_font(FontRole::Message, None, Some(700))?;
         Ok(Self {
@@ -216,6 +221,7 @@ impl Body {
     ///
     /// 错误：窗口已关闭。
     pub(super) fn action(&self, text: &str) -> liteos_ui::Result<Action> {
+        self.panel.set_state(0)?;
         Ok(Action {
             link: crate::child(&self.panel, WidgetKind::Link, text, Layout::default())?,
         })

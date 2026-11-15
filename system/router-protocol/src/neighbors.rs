@@ -1,5 +1,5 @@
 //! 双栈邻居事实与管理分页。邻居状态仅由 ARP/ND owner 产生。
-use crate::{Decoder, Invalid};
+use crate::{Decoder, Invalid, routing::Family};
 use alloc::vec::Vec;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -12,6 +12,7 @@ pub const LIMIT: usize = 64;
 /// 版本、接口编号、地址族与固定宽度地址。
 pub const CURSOR_BYTES: usize = 25;
 const VERSION: u32 = 1;
+const CURSOR_VERSION: u32 = 2;
 const HEADER: usize = 6;
 const ENTRY_BYTES: usize = ROW_BYTES + 16;
 
@@ -24,48 +25,98 @@ pub struct Key {
     pub address: IpAddr,
 }
 
-/// 编码要跳过的最后一条邻居。None 从第一个可见接口开始。
-pub fn cursor(after: Option<Key>) -> [u8; CURSOR_BYTES] {
-    let mut bytes = [0; CURSOR_BYTES];
-    bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
-    if let Some(key) = after {
-        bytes[4..8].copy_from_slice(&key.interface.to_le_bytes());
-        match key.address {
-            IpAddr::V4(address) => {
-                bytes[8] = 4;
-                bytes[9..13].copy_from_slice(&address.octets());
-            }
-            IpAddr::V6(address) => {
-                bytes[8] = 6;
-                bytes[9..].copy_from_slice(&address.octets());
-            }
-        }
-    }
-    bytes
+/// 单族邻居查询。从同族、同域上一页的最后一条记录续读。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    family: Family,
+    after: Option<Key>,
 }
 
-/// 解码页起点。
-/// # Errors
-/// 版本、长度、接口或地址编码无效。
-pub fn parse_cursor(bytes: &[u8]) -> Result<Option<Key>, Invalid> {
-    let mut decoder = Decoder::new(bytes);
-    if decoder.u32()? != VERSION {
-        return Err(Invalid);
-    }
-    let interface = decoder.u32()?;
-    let family = decoder.u8()?;
-    let address: [u8; 16] = decoder.take(16)?.try_into().expect("address width");
-    decoder.finish()?;
-    let address = match (interface, family) {
-        (0, 0) if address == [0; 16] => return Ok(None),
-        (0, _) => return Err(Invalid),
-        (_, 4) if address[4..] == [0; 12] => {
-            IpAddr::from(<[u8; 4]>::try_from(&address[..4]).expect("IPv4 width"))
+impl Cursor {
+    /// 返回指定地址族的首页查询。
+    pub const fn first(family: Family) -> Self {
+        Self {
+            family,
+            after: None,
         }
-        (_, 6) => IpAddr::from(address),
-        _ => return Err(Invalid),
-    };
-    Ok(Some(Key { interface, address }))
+    }
+
+    /// 从指定地址族的一条邻居记录之后开始读取。
+    /// # Errors
+    /// 续页时必须使用非零接口和同族地址。
+    pub fn after(family: Family, key: Key) -> Result<Self, Invalid> {
+        let cursor = Self::first(family);
+        if !cursor.matches(key.address) || key.interface == 0 {
+            return Err(Invalid);
+        }
+        Ok(Self {
+            after: Some(key),
+            ..cursor
+        })
+    }
+
+    /// 所查询的地址族。
+    pub const fn family(self) -> Family {
+        self.family
+    }
+
+    /// 要跳过的最后一条邻居，首页为 None。
+    pub const fn position(self) -> Option<Key> {
+        self.after
+    }
+
+    fn matches(self, address: IpAddr) -> bool {
+        address.is_ipv4() == (self.family == Family::Ipv4)
+    }
+
+    /// 编码版本 2 的页起点。首页也携带地址族。
+    pub fn encode(self) -> [u8; CURSOR_BYTES] {
+        let mut bytes = [0; CURSOR_BYTES];
+        bytes[..4].copy_from_slice(&CURSOR_VERSION.to_le_bytes());
+        bytes[8] = match self.family {
+            Family::Ipv4 => 4,
+            Family::Ipv6 => 6,
+        };
+        if let Some(key) = self.after {
+            bytes[4..8].copy_from_slice(&key.interface.to_le_bytes());
+            match key.address {
+                IpAddr::V4(address) => bytes[9..13].copy_from_slice(&address.octets()),
+                IpAddr::V6(address) => bytes[9..].copy_from_slice(&address.octets()),
+            }
+        }
+        bytes
+    }
+
+    /// 解码页起点。
+    /// # Errors
+    /// 版本、长度、接口或地址编码无效。
+    pub fn parse(bytes: &[u8]) -> Result<Self, Invalid> {
+        let mut decoder = Decoder::new(bytes);
+        if decoder.u32()? != CURSOR_VERSION {
+            return Err(Invalid);
+        }
+        let interface = decoder.u32()?;
+        let family = match decoder.u8()? {
+            4 => Family::Ipv4,
+            6 => Family::Ipv6,
+            _ => return Err(Invalid),
+        };
+        let address: [u8; 16] = decoder.take(16)?.try_into().expect("address width");
+        decoder.finish()?;
+        if interface == 0 {
+            return (address == [0; 16])
+                .then(|| Self::first(family))
+                .ok_or(Invalid);
+        }
+        let address = match family {
+            Family::Ipv4 if address[4..] == [0; 12] => {
+                IpAddr::from(<[u8; 4]>::try_from(&address[..4]).expect("IPv4 width"))
+            }
+            Family::Ipv4 => return Err(Invalid),
+            Family::Ipv6 => IpAddr::from(address),
+        };
+        Self::after(family, Key { interface, address })
+    }
 }
 
 /// 邻居事实及在同一次捕获中读取的系统接口名。
@@ -126,13 +177,19 @@ pub(crate) fn valid_page_length(length: u64) -> bool {
 }
 
 impl Page {
-    fn validate(&self, after: Option<Key>) -> Result<(), Invalid> {
+    fn validate(&self, cursor: Option<Cursor>) -> Result<(), Invalid> {
         if self.rows.len() > LIMIT
             || self.more && self.rows.len() != LIMIT
-            || self
-                .rows
-                .first()
-                .is_some_and(|row| after.is_some_and(|key| row.neighbor.key() <= key))
+            || cursor.is_some_and(|cursor| {
+                self.rows
+                    .iter()
+                    .any(|row| !cursor.matches(row.neighbor.address))
+                    || cursor.position().is_some_and(|key| {
+                        self.rows
+                            .first()
+                            .is_some_and(|row| row.neighbor.key() <= key)
+                    })
+            })
             || !self
                 .rows
                 .is_sorted_by(|a, b| a.neighbor.key() < b.neighbor.key())
@@ -159,10 +216,10 @@ impl Page {
         Ok(bytes)
     }
 
-    /// 解码页并核对续读键。不会返回部分页。
+    /// 解码页并核对地址族及续读键。不会返回部分页。
     /// # Errors
     /// 长度、字段、页序、游标无效或内存不足。
-    pub fn parse(bytes: &[u8], after: Option<Key>) -> Result<Self, Invalid> {
+    pub fn parse(bytes: &[u8], cursor: Cursor) -> Result<Self, Invalid> {
         if !valid_page_length(bytes.len() as u64) {
             return Err(Invalid);
         }
@@ -181,7 +238,7 @@ impl Page {
         }
         decoder.finish()?;
         let page = Self { rows, more };
-        page.validate(after)?;
+        page.validate(Some(cursor))?;
         Ok(page)
     }
 }

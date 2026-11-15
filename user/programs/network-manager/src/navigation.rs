@@ -34,7 +34,8 @@ const NAVIGATION: &[Menu] = {
     use Action::Open;
     use Dialog::Settings;
     use Page::{
-        Backups, Configuration, Connections, Diagnostics, Firewall, Interfaces, Neighbors, Routes,
+        Addresses, Arp, Backups, Bandwidth, Bridges, Configuration, Interfaces, Ipv4Firewall,
+        Ipv4Routes, Ipv6Firewall, Ipv6Neighbors, Ipv6Routes, Ping, Routes, Trace,
     };
     &[
         Menu::Item(Entry {
@@ -43,30 +44,47 @@ const NAVIGATION: &[Menu] = {
         }),
         Menu::Item(Entry {
             label: "网桥",
-            action: Action::Dialog(Settings(Some(Section::Bridges))),
+            action: Open(Bridges),
         }),
         Menu::Group(
             "IP",
             &[
                 Entry {
-                    label: "地址",
-                    action: Action::Dialog(Settings(Some(Section::Interfaces))),
+                    label: "ARP",
+                    action: Open(Arp),
                 },
                 Entry {
-                    label: "邻居",
-                    action: Open(Neighbors),
+                    label: "地址",
+                    action: Open(Addresses),
                 },
                 Entry {
                     label: "防火墙",
-                    action: Open(Firewall),
-                },
-                Entry {
-                    label: "转发连接",
-                    action: Open(Connections),
+                    action: Open(Ipv4Firewall),
                 },
                 Entry {
                     label: "地址分发与 DNS",
                     action: Action::Dialog(Settings(Some(Section::AddressServices))),
+                },
+                Entry {
+                    label: "路由",
+                    action: Open(Ipv4Routes),
+                },
+            ],
+        ),
+        Menu::Group(
+            "IPv6",
+            &[
+                Entry {
+                    label: "防火墙",
+                    action: Open(Ipv6Firewall),
+                },
+                Entry {
+                    label: "邻居",
+                    action: Open(Ipv6Neighbors),
+                },
+                Entry {
+                    label: "路由",
+                    action: Open(Ipv6Routes),
                 },
             ],
         ),
@@ -118,10 +136,20 @@ const NAVIGATION: &[Menu] = {
         ),
         Menu::Group(
             "工具",
-            &[Entry {
-                label: "网络诊断",
-                action: Open(Diagnostics),
-            }],
+            &[
+                Entry {
+                    label: "Ping",
+                    action: Open(Ping),
+                },
+                Entry {
+                    label: "路由跟踪",
+                    action: Open(Trace),
+                },
+                Entry {
+                    label: "带宽测试",
+                    action: Open(Bandwidth),
+                },
+            ],
         ),
         Menu::Item(Entry {
             label: "新终端",
@@ -134,8 +162,11 @@ const NAVIGATION: &[Menu] = {
     ]
 };
 
-/// 工作区窗口的标题即其菜单项名称。
+/// 工作区窗口默认使用菜单项名称；IPv6 防火墙在标题上注明地址族。
 pub(super) fn title(page: Page) -> &'static str {
+    if page == Page::Ipv6Firewall {
+        return "IPv6 防火墙";
+    }
     NAVIGATION
         .iter()
         .flat_map(|menu| match menu {

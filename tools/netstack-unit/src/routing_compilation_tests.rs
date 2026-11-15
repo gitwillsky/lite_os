@@ -250,6 +250,7 @@ mod routing_compilation {
                 prefix_length: 16,
                 preference: 1,
                 metric: 2,
+                disabled: false,
                 action: router_protocol::configuration::StaticAction::Forward {
                     members: vec![router_protocol::configuration::StaticMember {
                         weight: 1,

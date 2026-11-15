@@ -570,29 +570,35 @@ pub(crate) fn neighbor_snapshot(
         network
             .visible_interfaces()
             .filter(|interface| index == 0 || interface.index == index)
-            .flat_map(|interface| interface_neighbors(interface, None)),
+            .flat_map(|interface| interface_neighbors(interface, None, None)),
     )
 }
 
 fn interface_neighbors(
     interface: &NetworkInterface,
+    family: Option<router_protocol::routing::Family>,
     after: Option<IpAddr>,
 ) -> impl Iterator<Item = neighbors::Neighbor> + Clone {
-    let ipv4 = match after {
-        Some(IpAddr::V6(_)) => None,
-        Some(IpAddr::V4(address)) => Some(interface.arp.rows(interface.index, Some(address))),
-        None => Some(interface.arp.rows(interface.index, None)),
+    use router_protocol::routing::Family;
+    let ipv4_after = match after {
+        Some(IpAddr::V4(address)) => Some(address),
+        _ => None,
     };
     let ipv6_after = match after {
         Some(IpAddr::V6(address)) => Some(address),
         _ => None,
     };
-    ipv4.into_iter().flatten().chain(
-        interface
-            .ipv6
-            .iter()
-            .flat_map(move |state| state.neighbors(interface.index, ipv6_after)),
-    )
+    (family != Some(Family::Ipv6))
+        .then(|| interface.arp.rows(interface.index, ipv4_after))
+        .into_iter()
+        .flatten()
+        .chain(
+            interface
+                .ipv6
+                .iter()
+                .filter(move |_| family != Some(Family::Ipv4))
+                .flat_map(move |state| state.neighbors(interface.index, ipv6_after)),
+        )
 }
 
 /// 读取同域中游标后的首批邻居。只从相关缓存的有序索引续读。
@@ -600,13 +606,14 @@ fn interface_neighbors(
 /// 域、分页缓冲或编码失败。
 pub(crate) fn neighbor_page(
     scope: &Namespace,
-    after: Option<neighbors::Key>,
+    cursor: neighbors::Cursor,
 ) -> Result<Vec<u8>, SocketError> {
     let mut rows = Vec::new();
     rows.try_reserve_exact(neighbors::LIMIT)
         .map_err(|_| SocketError::NoMemory)?;
     let network = stack(scope)?.lock()?;
     let mut more = false;
+    let after = cursor.position();
     // 安装递增编号，网桥发布按编号排序，移除保留顺序。ARP 和 ND 也分别按地址有序。
     let first = after.map_or(0, |key| {
         network
@@ -622,7 +629,7 @@ pub(crate) fn neighbor_page(
             .map(|key| key.address);
         let mut name = [0; 16];
         name[..interface.name().len()].copy_from_slice(interface.name());
-        for neighbor in interface_neighbors(interface, address) {
+        for neighbor in interface_neighbors(interface, Some(cursor.family()), address) {
             if rows.len() == neighbors::LIMIT {
                 more = true;
                 break 'interfaces;

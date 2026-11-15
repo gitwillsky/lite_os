@@ -5,13 +5,20 @@ use liteos_ui::{Event, EventKind, Layout, Widget, WidgetKind, state};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Interfaces,
+    Bridges,
     Routes,
-    Firewall,
-    Neighbors,
-    Connections,
+    Ipv4Routes,
+    Ipv6Routes,
+    Ipv4Firewall,
+    Arp,
+    Ipv6Neighbors,
+    Ipv6Firewall,
     Configuration,
     Backups,
-    Diagnostics,
+    Addresses,
+    Ping,
+    Trace,
+    Bandwidth,
 }
 
 impl Page {
@@ -19,23 +26,32 @@ impl Page {
     fn size(self) -> (i32, i32) {
         match self {
             Self::Interfaces => (900, 400),
-            Self::Routes => (820, 420),
-            Self::Firewall | Self::Connections => (760, 400),
-            Self::Neighbors => (720, 380),
+            Self::Routes | Self::Ipv4Routes | Self::Ipv6Routes => (820, 420),
+            Self::Ipv4Firewall | Self::Ipv6Firewall => (940, 430),
+            Self::Arp | Self::Ipv6Neighbors => (790, 420),
             Self::Configuration | Self::Backups => (720, 460),
-            Self::Diagnostics => (640, 420),
+            Self::Bridges => (900, 420),
+            Self::Addresses => (720, 360),
+            Self::Ping | Self::Trace | Self::Bandwidth => (640, 420),
         }
     }
 
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 15] = [
         Self::Interfaces,
+        Self::Bridges,
         Self::Routes,
-        Self::Firewall,
-        Self::Neighbors,
-        Self::Connections,
+        Self::Ipv4Routes,
+        Self::Ipv6Routes,
+        Self::Ipv4Firewall,
+        Self::Arp,
+        Self::Ipv6Neighbors,
+        Self::Ipv6Firewall,
         Self::Configuration,
         Self::Backups,
-        Self::Diagnostics,
+        Self::Addresses,
+        Self::Ping,
+        Self::Trace,
+        Self::Bandwidth,
     ];
 }
 

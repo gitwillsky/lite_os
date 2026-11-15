@@ -6,12 +6,13 @@ mod policy;
 mod table;
 mod tcp;
 pub(super) use nat::{EndpointEdits, TranslationEdit};
-pub(super) use packet::{Datagram, Key, Packet};
 pub(in crate::inet) use packet::prepare_transport;
+pub(super) use packet::{Datagram, Key, Packet};
 use packet::{Endpoint, Protocol, trackable_addresses};
 pub(in crate::inet) use policy::{PolicySlot, RetainedPolicies};
 use table::{FlowShards, Tables};
 
+use ::tcp::time::{Duration, Instant};
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{hash::BuildHasher, net::SocketAddr};
 use fallible_tree::{FallibleMap, VacantEntry};
@@ -22,7 +23,6 @@ use native_runtime::{
 use router_protocol::connections::changes::{self, Change};
 use router_protocol::{connections, firewall::ConnectionState};
 use siphasher::sip::SipHasher13;
-use ::tcp::time::{Duration, Instant};
 
 const CAPACITY: usize = 1_000_000;
 const RETIRE_BATCH: usize = 64;
@@ -117,6 +117,16 @@ impl FlowObservation {
     }
 }
 
+impl Datagram {
+    fn source(self) -> Endpoint {
+        self.key.endpoints[usize::from(self.reversed)]
+    }
+
+    fn destination(self) -> Endpoint {
+        self.key.endpoints[usize::from(!self.reversed)]
+    }
+}
+
 impl Flow {
     fn phase(&self) -> connections::Phase {
         if let Some(tcp) = &self.tcp {
@@ -128,13 +138,13 @@ impl Flow {
         }
     }
 
-    fn record(&self, key: Key, now: Instant) -> connections::Connection {
-        let [first, second] = key.endpoints;
-        let ((source, source_port), (destination, destination_port)) = if self.original_reversed {
-            (second, first)
-        } else {
-            (first, second)
+    fn record(&self, key: Key, wire: Option<Datagram>, now: Instant) -> connections::Connection {
+        let original = Datagram {
+            key,
+            reversed: self.original_reversed,
         };
+        let wire = wire.unwrap_or(original);
+        let socket = |(address, port)| SocketAddr::new(address, port);
         let protocol = match key.protocol {
             Protocol::Tcp => connections::Protocol::Tcp,
             Protocol::Udp => connections::Protocol::Udp,
@@ -142,8 +152,11 @@ impl Flow {
         };
         connections::Connection {
             id: self.generation,
-            source: SocketAddr::new(source, source_port),
-            destination: SocketAddr::new(destination, destination_port),
+            source: socket(original.source()),
+            destination: socket(original.destination()),
+            reply_source: socket(wire.destination()),
+            reply_destination: socket(wire.source()),
+            seen_reply: self.replied,
             protocol,
             phase: self.phase(),
             idle_ms: (self.expires - now).total_millis(),
@@ -585,7 +598,7 @@ impl Flows {
                 {
                     return None;
                 }
-                let previous_phase = self.journal.as_ref().map(|_| flow.phase());
+                let previous = self.journal.as_ref().map(|_| (flow.phase(), flow.replied));
                 if flow.expires > now
                     && generation.is_none_or(|generation| generation == flow.generation)
                 {
@@ -617,21 +630,14 @@ impl Flows {
                 } else {
                     None
                 };
-                let replaced = flow.generation != previous_id;
-                let change = self.journal.as_ref().and_then(|_| {
-                    if replaced {
-                        Some(Change::Added(flow.record(key, now)))
-                    } else if previous_phase != Some(flow.phase()) {
-                        Some(Change::Updated(flow.record(key, now)))
-                    } else {
-                        None
-                    }
+                let changed = previous.is_some_and(|previous| {
+                    flow.generation != previous_id || previous != (flow.phase(), flow.replied)
                 });
-                Some((slot, previous_id, flow.generation, reschedule, change))
+                Some((slot, previous_id, flow.generation, reschedule, changed))
             })
         };
         if let Some(edited) = edited {
-            let Some((slot, previous_id, generation, reschedule, change)) = edited else {
+            let Some((slot, previous_id, generation, reschedule, changed)) = edited else {
                 return;
             };
             let replaced = generation != previous_id;
@@ -650,11 +656,19 @@ impl Flows {
                 self.tables.replace_translation(key, translation);
                 self.retire_policy(previous_id);
             }
-            if let Some((journal, change)) = self.journal.as_mut().zip(change) {
+            if changed {
+                let wire = self.tables.hashed_outgoing(key, tracked.hash);
+                let row = self
+                    .tables
+                    .with_flow(key, |flow| flow.record(key, wire, now))
+                    .expect("confirmed flow");
+                let journal = self.journal.as_mut().expect("observed flow");
                 if replaced {
                     journal.publish(Change::Removed(previous_id));
+                    journal.publish(Change::Added(row));
+                } else {
+                    journal.publish(Change::Updated(row));
                 }
-                journal.publish(change);
             }
         } else if let Some(mut deadline) = tracked.deadline {
             self.generation += 1;
@@ -667,7 +681,10 @@ impl Flows {
                 replied: false,
                 tcp: tracked.tcp_storage,
             };
-            let added = self.journal.as_ref().map(|_| flow.record(key, now));
+            let added = self
+                .journal
+                .as_ref()
+                .map(|_| flow.record(key, translation, now));
             if let Some(wire) = translation {
                 self.tables.install_translation(key, wire);
             }
@@ -704,10 +721,14 @@ impl Flows {
         // 大量到期项尚在分批退休时也限制锁内工作；空页仍可推进游标。
         for (id, key) in positions.by_ref().take(connections::PAGE_LIMIT * 4) {
             last = *id;
+            if !cursor.family.includes(key.endpoints[0].0) {
+                continue;
+            }
+            let wire = self.tables.outgoing(*key);
             let row = self
                 .tables
                 .with_flow(*key, |flow| {
-                    (flow.expires > now).then(|| flow.record(*key, now))
+                    (flow.expires > now).then(|| flow.record(*key, wire, now))
                 })
                 .expect("indexed flow");
             let Some(row) = row else {

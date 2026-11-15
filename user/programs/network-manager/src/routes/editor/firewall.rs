@@ -12,6 +12,7 @@ use network_config::configuration::{
 
 mod rule;
 mod sets;
+pub(crate) use rule::{RuleKind, edit as edit_rule, rule_address};
 
 pub(super) async fn edit(
     dialogs: &Dialogs,
@@ -178,6 +179,7 @@ pub(super) async fn edit(
                             &targets,
                             &sets,
                             index.map(|index| &items[index]),
+                            None,
                         )
                         .await
                     },

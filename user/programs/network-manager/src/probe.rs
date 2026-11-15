@@ -146,9 +146,9 @@ impl Probe {
             self.cancel.stop();
         }
         let outcome = self.completion.await;
-        let complete = result?;
+        let (complete, summary) = result?;
         let activity = self.kind.activity();
-        Ok(match outcome? {
+        let state = match outcome? {
             Outcome::Exited(status) if status.success() && complete => format!("{activity}已结束"),
             Outcome::Exited(status) if status.success() => format!("{activity}未返回完整结果"),
             Outcome::Exited(status) => status.code().map_or_else(
@@ -157,6 +157,11 @@ impl Probe {
             ),
             Outcome::Cancelled => format!("已停止{activity}"),
             Outcome::TimedOut => format!("{activity}超时"),
+        };
+        Ok(if summary.is_empty() {
+            state
+        } else {
+            format!("{state}　{}", summary.join("；"))
         })
     }
 }
@@ -166,7 +171,7 @@ async fn read_output(
     readiness: &mut AsyncFd,
     output: &Widget,
     kind: Kind,
-) -> Result<bool, Error> {
+) -> Result<(bool, Vec<String>), Error> {
     let limit = if matches!(kind, Kind::Bandwidth { .. }) {
         BANDWIDTH_OUTPUT_LIMIT
     } else {
@@ -220,26 +225,113 @@ async fn read_output(
             }
         }
         if count == 0 {
-            return Ok(!matches!(kind, Kind::Bandwidth { .. }) || report.finished);
+            let complete = !matches!(kind, Kind::Bandwidth { .. }) || report.finished;
+            return Ok((complete, report.summary));
         }
     }
 }
 
+/// 诊断窗口的分列结果：每行以制表符分隔，列与 [`Kind::columns`] 对应；
+/// 统计行和无法归入表格的提示（如解析失败）进入状态栏摘要。
 #[derive(Default)]
 struct Report {
     rows: Vec<String>,
+    summary: Vec<String>,
     finished: bool,
+}
+
+impl Kind {
+    /// 结果表的列标题与宽度：Ping 按应答分列，逐跳探测按跳分列，带宽测试按时段分列。
+    pub(super) fn columns(self) -> &'static [(&'static str, i32)] {
+        match self {
+            Self::Ping => &[
+                ("序号", 56),
+                ("主机", 200),
+                ("时间", 96),
+                ("大小", 64),
+                ("TTL", 56),
+            ],
+            Self::Trace => &[("跳", 48), ("地址", 280), ("往返时间", 240)],
+            Self::Bandwidth { .. } => &[("时段", 160), ("速率", 320)],
+        }
+    }
 }
 
 impl Report {
     fn line(&mut self, kind: Kind, text: &str) {
-        let Kind::Bandwidth { download, .. } = kind else {
-            self.rows.push(text.into());
+        match kind {
+            Kind::Ping => self.ping(text),
+            Kind::Trace => self.trace(text),
+            Kind::Bandwidth { download, .. } => self.bandwidth(download, text),
+        }
+    }
+
+    /// BusyBox ping：`64 bytes from 10.0.2.2: seq=0 ttl=255 time=0.476 ms`。
+    /// 开头的 `PING …` 与分隔行省略，统计两行进入摘要。
+    fn ping(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() || text.starts_with("PING ") || text.starts_with("---") {
+            return;
+        }
+        let reply = text.split_once(" bytes from ").and_then(|(size, rest)| {
+            let (host, fields) = rest.split_once(": ")?;
+            let field = |name: &str| {
+                fields
+                    .split_whitespace()
+                    .find_map(|item| item.strip_prefix(name))
+            };
+            let time = fields.split_once("time=").map(|(_, time)| time.trim())?;
+            Some(format!(
+                "{}\t{host}\t{time}\t{size}\t{}",
+                field("seq=").or_else(|| field("icmp_seq=")).unwrap_or(""),
+                field("ttl=").unwrap_or(""),
+            ))
+        });
+        match reply {
+            Some(row) => self.rows.push(row),
+            None => self
+                .summary
+                .push(ping_statistics(text).unwrap_or_else(|| text.into())),
+        }
+    }
+
+    /// BusyBox traceroute：` 1  10.0.2.2 (10.0.2.2)  0.512 ms  0.3 ms  *`，首行标题进入摘要。
+    fn trace(&mut self, text: &str) {
+        let mut tokens = text.split_whitespace();
+        let Some(hop) = tokens.next().filter(|hop| hop.parse::<u8>().is_ok()) else {
+            if !text.trim().is_empty() {
+                self.summary.push(text.trim().into());
+            }
             return;
         };
+        let rest: Vec<_> = tokens.collect();
+        let mut address = Vec::new();
+        let mut times = Vec::new();
+        let mut index = 0;
+        while index < rest.len() {
+            match (rest[index], rest.get(index + 1)) {
+                ("*", _) => times.push("*".to_owned()),
+                (value, Some(&"ms")) if value.parse::<f64>().is_ok() => {
+                    times.push(format!("{value} ms"));
+                    index += 1;
+                }
+                (value, _) => address.push(value),
+            }
+            index += 1;
+        }
+        self.rows.push(format!(
+            "{hop}\t{}\t{}",
+            address.join(" "),
+            times.join("  ")
+        ));
+    }
+
+    fn bandwidth(&mut self, download: bool, text: &str) {
         let Ok(frame) = serde_json::from_str::<Value>(text) else {
             // 加载器和进程在 JSON 流开启前也可能向 stderr 输出错误。
-            self.rows.push(text.into());
+            if !text.trim().is_empty() {
+                self.summary.push(text.trim().into());
+            }
             return;
         };
         let direction = if download { "下载" } else { "上传" };
@@ -253,7 +345,7 @@ impl Report {
                     sample["bits_per_second"].as_f64(),
                 ) {
                     self.rows.push(format!(
-                        "{start:.1}–{end:.1} 秒　{direction} {}",
+                        "{start:.1}–{end:.1} 秒\t{direction} {}",
                         bitrate(rate)
                     ));
                 }
@@ -264,21 +356,33 @@ impl Report {
                     data["sum_received"]["bits_per_second"].as_f64(),
                 ) {
                     self.finished = true;
-                    self.rows.push(format!(
-                        "{direction}平均速率　{}（接收端）",
-                        bitrate(received)
+                    self.summary.push(format!(
+                        "{direction}平均速率 {}（接收端），发送端 {}",
+                        bitrate(received),
+                        bitrate(sent)
                     ));
-                    self.rows.push(format!("发送端平均速率　{}", bitrate(sent)));
                 }
             }
             Some("error") => {
                 if let Some(message) = data.as_str() {
-                    self.rows.push(format!("带宽测试错误　{message}"));
+                    self.summary.push(format!("带宽测试错误：{message}"));
                 }
             }
             _ => {}
         }
     }
+}
+
+/// 把 BusyBox ping 的两行统计译成界面语言；其他行原样返回 None。
+fn ping_statistics(text: &str) -> Option<String> {
+    if let Some(values) = text.strip_prefix("round-trip min/avg/max = ") {
+        return Some(format!("往返 最小/平均/最大 {values}"));
+    }
+    let mut parts = text.split(", ");
+    let sent = parts.next()?.strip_suffix(" packets transmitted")?;
+    let received = parts.next()?.strip_suffix(" packets received")?;
+    let loss = parts.next()?.strip_suffix(" packet loss")?;
+    Some(format!("发送 {sent}，接收 {received}，丢包 {loss}"))
 }
 
 fn bitrate(bits_per_second: f64) -> String {

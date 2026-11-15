@@ -84,7 +84,7 @@ pub(super) async fn edit(
     Ok(ports.map(|ports| ports.into_iter().collect()))
 }
 
-async fn edit_port(
+pub(super) async fn edit_port(
     dialogs: &Dialogs,
     parent: &Window,
     choices: &[(&ConfigurationName, &RouterInterface)],
@@ -109,17 +109,17 @@ async fn edit_port(
     {
         interface.select(Some(index as u64 + 1))?;
     }
-    let (_, pvid) = field(
+    let (_pvid_label, pvid) = field(
         &root,
         "入口 PVID",
         &draft.pvid.map_or_else(String::new, |vid| vid.to_string()),
     )?;
-    let (_, tagged) = field(
+    let (_tagged_label, tagged) = field(
         &root,
         "带标签出口",
         &vlan_text(&draft.vlans, VlanEgress::Tagged),
     )?;
-    let (_, untagged) = field(
+    let (_untagged_label, untagged) = field(
         &root,
         "去标签出口",
         &vlan_text(&draft.vlans, VlanEgress::Untagged),
@@ -127,7 +127,7 @@ async fn edit_port(
     let isolated = checkbox(&root, "隔离此端口与其他隔离端口", draft.isolated)?;
     let edge = checkbox(&root, "边缘端口（连接终端）", draft.edge)?;
     let point = checkbox(&root, "点到点链路", draft.point_to_point)?;
-    let (_, cost) = field(&root, "路径代价", &draft.path_cost.to_string())?;
+    let (_cost_label, cost) = field(&root, "路径代价", &draft.path_cost.to_string())?;
     let hint = if choices.is_empty() {
         "没有可用的物理接口。先在路由接口保存网卡属性，或从其他桥移除端口。"
     } else {
@@ -184,10 +184,14 @@ async fn edit_port(
                     status.set_text("路径代价须为 1–200000000。")?;
                     continue;
                 };
-                if current.is_none_or(|(old, _)| old != name) && profile.has_layer3_configuration()
-                {
+                if current.is_none_or(|(old, _)| old != name) {
+                    let consequence = if profile.has_layer3_configuration() {
+                        "端口现有的地址、默认路由、地址池和 IPv6 通告将被移除。"
+                    } else {
+                        "端口将由网桥接管，经过此接口的管理连接可能中断。"
+                    };
                     let message = format!(
-                        "接口 {} 已有三层设置。加入网桥会从草稿移除该端口的地址、默认路由、地址池与 IPv6 通告。可在对应 VLAN 网关配置这些设置。继续？",
+                        "将接口 {} 加入网桥？{consequence}三层配置可迁至对应 VLAN 网关。",
                         name.as_str()
                     );
                     if dialogs

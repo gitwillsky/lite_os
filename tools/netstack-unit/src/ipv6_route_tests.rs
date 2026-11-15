@@ -222,6 +222,7 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
         prefix_length: 24,
         preference: 1,
         metric: 0,
+        disabled: false,
         action: StaticAction::Discard,
     });
     let source4 = changed.route_source(Family::Ipv4, |_| Ok(Some(2))).unwrap();
@@ -246,7 +247,12 @@ fn gateway6_keeps_remote_ip_resolves_gateway_and_preserves_routes_across_interfa
     transaction.activate().unwrap();
     transaction.confirm().unwrap();
     let routes = prepared.next;
-    let empty = Configuration::default()
+    // 停用声明经过持久化往返后仍是停用，只替换本族来源。
+    for route in changed.routes.iter_mut().filter(|route| route.destination.is_ipv6()) {
+        route.disabled = true;
+    }
+    let changed = Configuration::decode(&changed.encode().unwrap()).unwrap();
+    let empty = changed
         .route_source(Family::Ipv6, |_| Ok(None))
         .unwrap();
     let clear = routing_rib::sources::Routes::capture_source(

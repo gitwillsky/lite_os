@@ -1,5 +1,6 @@
 //! LiteOS 网络管理器。诊断与配置各自使用系统已有入口。
 
+mod addresses;
 mod backup;
 mod capture;
 mod configuration;
@@ -8,6 +9,7 @@ mod diagnostics;
 mod firewall;
 mod interface_properties;
 mod item_list;
+mod item_properties;
 mod navigation;
 mod neighbors;
 mod observation;
@@ -123,22 +125,55 @@ fn run() -> liteos_ui::Result<()> {
     // 3. 底部状态栏：主机与系统版本、CPU、内存、运行时间和本地时间。
     let _system_status =
         system_status::SystemStatus::new(&mut app, &window, &content, background.clone())?;
-    let mut diagnostics =
-        diagnostics::Page::new(&workspace.content(Page::Diagnostics)?, background.clone())?;
+    // 「工具」菜单的每种诊断是独立窗口，按页面与工具一一对应。
+    let mut tools = [
+        (Page::Ping, diagnostics::Tool::Ping),
+        (Page::Trace, diagnostics::Tool::Trace),
+        (Page::Bandwidth, diagnostics::Tool::Bandwidth),
+    ]
+    .map(|(page, tool)| {
+        diagnostics::Page::new(&workspace.content(page)?, background.clone(), tool)
+            .map(|view| (page, view))
+    })
+    .into_iter()
+    .collect::<liteos_ui::Result<Vec<_>>>()?;
+    let addresses_root = workspace.content(Page::Addresses)?;
+    let mut addresses = addresses::Page::new(&app, &addresses_root, background.clone())?;
     let backup_root = workspace.content(Page::Backups)?;
     let mut backups = backup::Page::new(&backup_root, app.dialogs(), background.clone(), button)?;
     let config_root = workspace.content(Page::Configuration)?;
     let mut settings =
         configuration::Page::new(&config_root, app.dialogs(), background.clone(), button)?;
-    let connections_root = workspace.content(Page::Connections)?;
-    let mut connections = connections::Page::new(&mut app, &connections_root, background.clone())?;
-    let firewall_root = workspace.content(Page::Firewall)?;
-    let mut firewall = firewall::Page::new(&app, &firewall_root, background.clone())?;
-    let neighbors_root = workspace.content(Page::Neighbors)?;
-    let mut neighbors = neighbors::Page::new(&app, &neighbors_root, background.clone())?;
+    use network_config::configuration::connections::Family;
+    let mut firewalls = [
+        (Page::Ipv4Firewall, Family::Ipv4),
+        (Page::Ipv6Firewall, Family::Ipv6),
+    ]
+    .map(|(page, family)| {
+        firewall::FirewallWindow::new(&app, &workspace.content(page)?, background.clone(), family)
+            .map(|view| (page, view))
+    })
+    .into_iter()
+    .collect::<liteos_ui::Result<Vec<_>>>()?;
+    let mut neighbors = [
+        (Page::Arp, network_config::neighbors::Family::Ipv4),
+        (Page::Ipv6Neighbors, network_config::neighbors::Family::Ipv6),
+    ]
+    .map(|(page, family)| {
+        neighbors::Page::new(&app, &workspace.content(page)?, background.clone(), family)
+            .map(|view| (page, view))
+    })
+    .into_iter()
+    .collect::<liteos_ui::Result<Vec<_>>>()?;
     let routes_root = workspace.content(Page::Routes)?;
     let mut routes = routes::Page::new(&app, &routes_root, background.clone())?;
+    let ipv4_routes = workspace.content(Page::Ipv4Routes)?;
+    let ipv6_routes = workspace.content(Page::Ipv6Routes)?;
+    let mut static_routes =
+        routes::StaticRoutes::new(&app, [&ipv4_routes, &ipv6_routes], background.clone())?;
     let traffic_root = workspace.content(Page::Interfaces)?;
+    let mut bridges =
+        routes::BridgePage::new(&app, &workspace.content(Page::Bridges)?, background.clone())?;
     let mut traffic = traffic::Page::new(&app, &traffic_root, background.clone())?;
     let mut interfaces = interface_properties::InterfaceWindows::new(&app, background.clone());
     workspace.open(Page::Interfaces)?;
@@ -191,48 +226,66 @@ fn run() -> liteos_ui::Result<()> {
             if settings.confirm_close(app, &window)? {
                 return Ok(ControlFlow::PreventDefault);
             }
-            diagnostics.stop()?;
+            for (_, tool) in &tools {
+                tool.stop()?;
+            }
             if traffic.finish_capture_before_close() {
                 return Ok(ControlFlow::PreventDefault);
             }
             return Ok(ControlFlow::Exit);
         }
         if let Some(page) = workspace.closed(&event) {
-            if page == Page::Diagnostics {
-                diagnostics.stop()?;
+            if let Some((_, tool)) = tools.iter().find(|(open, _)| *open == page) {
+                tool.stop()?;
             }
             // 配置草稿随应用保留；主窗口的退出仍由原有草稿确认处理。
             workspace.close(page)?;
             changed = true;
         }
         if changed {
-            connections.selected_tab(app, &window, workspace.is_open(Page::Connections)?)?;
-            firewall.selected_tab(app, &window, workspace.is_open(Page::Firewall)?)?;
-            neighbors.selected_tab(app, &window, workspace.is_open(Page::Neighbors)?)?;
+            addresses.selected_tab(app, &window, workspace.is_open(Page::Addresses)?)?;
+            bridges.selected_tab(app, &window, workspace.is_open(Page::Bridges)?)?;
+            for (page, view) in &mut firewalls {
+                view.show(app, &window, workspace.is_open(*page)?)?;
+            }
+            for (page, view) in &mut neighbors {
+                view.selected_tab(app, &window, workspace.is_open(*page)?)?;
+            }
             routes.selected_tab(app, &window, workspace.is_open(Page::Routes)?)?;
+            static_routes.show(
+                app,
+                &window,
+                [
+                    workspace.is_open(Page::Ipv4Routes)?,
+                    workspace.is_open(Page::Ipv6Routes)?,
+                ],
+            )?;
             traffic.selected_tab(app, &window, workspace.is_open(Page::Interfaces)?)?;
         }
         backups.handle(app, &window, &event, opened == Some(Page::Backups))?;
         settings.handle(app, &window, &event, opened == Some(Page::Configuration))?;
         if routing_domains.handle(app, &window, &event)? {
             let domain = routing_domains.selected();
-            connections.select_domain(app, &window, domain.clone())?;
-            firewall.select_domain(app, &window, domain.clone())?;
-            neighbors.select_domain(app, &window, domain.clone())?;
+            addresses.select_domain(app, &window, domain.clone())?;
+            bridges.select_domain(app, &window, domain.clone())?;
+            for (_, view) in &mut firewalls {
+                view.select_domain(app, &window, domain.clone())?;
+            }
+            for (_, view) in &mut neighbors {
+                view.select_domain(app, &window, domain.clone())?;
+            }
             routes.select_domain(app, &window, domain.clone())?;
+            static_routes.select_domain(app, &window, domain.clone())?;
             traffic.select_domain(app, &window, domain)?;
         }
-        connections.handle(app, &window, &event)?;
-        if firewall.configure_requested(&event) {
-            routes.open(
-                app,
-                &window,
-                routes::Dialog::Settings(Some(routes::Section::Firewall)),
-            )?;
+        for (page, view) in &mut firewalls {
+            view.handle(app, &window, &workspace, &event, workspace.is_open(*page)?)?;
         }
-        firewall.handle(app, &window, &event)?;
-        neighbors.handle(app, &window, &event)?;
+        for (_, view) in &mut neighbors {
+            view.handle(app, &window, &workspace, &event)?;
+        }
         routes.handle(app, &window, &event)?;
+        static_routes.handle(app, &window, &workspace, &event)?;
         match traffic.request(&event)? {
             Some(traffic::Request::Dialog(dialog)) => routes.open(app, &window, dialog)?,
             Some(traffic::Request::Properties(row)) => {
@@ -246,9 +299,16 @@ fn run() -> liteos_ui::Result<()> {
         interfaces.handle(app, &window, &event, routing_domains.selected())?;
         interfaces.prune();
         traffic.handle(app, &window, &event)?;
-        if workspace.is_open(Page::Diagnostics)? {
-            diagnostics.handle(app, &window, &event, routing_domains.selected())?;
+        for (page, tool) in &mut tools {
+            if workspace.is_open(*page)? {
+                tool.handle(app, &window, &event, routing_domains.selected())?;
+            }
         }
+        if let Some(dialog) = addresses.request(&event) {
+            routes.open(app, &window, dialog)?;
+        }
+        addresses.handle(app, &window, &event)?;
+        bridges.handle(app, &window, &event)?;
         Ok(ControlFlow::Continue)
     })
 }

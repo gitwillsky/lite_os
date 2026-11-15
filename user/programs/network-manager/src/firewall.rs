@@ -1,130 +1,79 @@
-//! 防火墙规则和计数的只读观察。选中页的规则身份由收到的快照确定。
+//! IPv4 与 IPv6 防火墙工作区。每个窗口共用规则页和连接页的生命周期。
 
-use crate::{
-    child,
-    item_list::{Glyph, Item, Summary, Tool, note, set_note, toolbar},
-    observation::receive,
-};
-use liteos_ui::{
-    Application, Background, Clock, Column, Event, EventKind, Layout, ListOptions, ListStyle, Task,
-    Widget, WidgetKind, Window,
-};
-use network_config::firewall::{
-    self, FirewallObservation, RuleConditions,
-    counters::{Cursor, LIMIT, Page as CounterPage, observation::Update},
-};
-use std::{
-    cell::{Cell, RefCell},
-    io,
-    os::fd::AsFd,
-    rc::Rc,
-    sync::Arc,
-};
+mod catalog;
+mod rules;
 
-type Error = Box<dyn std::error::Error>;
+use crate::{child, connections, routes::RuleKind, workspace::Workspace};
+use liteos_ui::{Application, Background, Event, EventKind, Layout, Widget, WidgetKind, Window};
+use network_config::configuration::connections::Family;
+use std::sync::Arc;
 
-pub(super) struct Page {
-    view: Rc<View>,
-    task: Option<Task<()>>,
-    visible: bool,
-    domain: Option<Arc<str>>,
+pub(super) struct FirewallWindow {
+    tabs: Widget,
+    rules: [(Widget, rules::Page); 2],
+    connections: (Widget, connections::Page),
 }
 
-struct View {
-    list: Widget,
-    details: Widget,
-    previous: Tool,
-    next: Tool,
-    refresh: Tool,
-    configure: Tool,
-    summary: Summary,
-    background: Background,
-    clock: Clock,
-    // 游标在未收到快照或会话断开时仍保留，使刷新能重新读取当前页。
-    cursor: Cell<Cursor>,
-    snapshot: RefCell<Option<CounterPage>>,
-}
-
-impl Page {
+impl FirewallWindow {
     pub(super) fn new(
         app: &Application,
         parent: &Widget,
         background: Background,
+        family: Family,
     ) -> liteos_ui::Result<Self> {
-        let [configure, _, previous, next, refresh] = toolbar(
+        let tabs = child(
             parent,
-            [
-                Item::Command(Glyph::Add, "新建"),
-                Item::Separator,
-                Item::Icon(Glyph::Previous, "上一页"),
-                Item::Icon(Glyph::Next, "下一页"),
-                Item::Icon(Glyph::Refresh, "刷新"),
-            ],
-        )?;
-        let list = child(
-            parent,
-            WidgetKind::List,
+            WidgetKind::Tabs,
             "",
             Layout {
                 grow: 1,
-                ..Default::default()
+                ..Layout::default()
             },
         )?;
-        list.set_list_style(
-            ListStyle::Details,
-            ListOptions {
-                multiple: false,
-                full_row_select: true,
-            },
-        )?;
-        list.set_columns(&[
-            Column {
-                id: 1,
-                title: "规则链",
-                width: 140,
-            },
-            Column {
-                id: 2,
-                title: "序号",
-                width: 58,
-            },
-            Column {
-                id: 3,
-                title: "动作",
-                width: 190,
-            },
-            Column {
-                id: 4,
-                title: "报文数",
-                width: 107,
-            },
-            Column {
-                id: 5,
-                title: "IP 字节数",
-                width: 135,
-            },
-        ])?;
-        let details = note(parent)?;
-        let view = View {
-            list,
-            details,
-            previous,
-            next,
-            refresh,
-            configure,
-            summary: Summary::new(parent)?,
-            background,
-            clock: app.clock(),
-            cursor: Cell::default(),
-            snapshot: RefCell::default(),
+        let pane = |title| {
+            child(
+                &tabs,
+                WidgetKind::Column,
+                title,
+                Layout {
+                    grow: 1,
+                    padding: 3,
+                    gap: 3,
+                    ..Layout::default()
+                },
+            )
         };
-        view.buttons()?;
+        let rule_pane = |title, kind| {
+            let parent = pane(title)?;
+            let scope = catalog::Scope { family, kind };
+            let view = rules::Page::new(app, &parent, background.clone(), scope)?;
+            Ok((parent, view))
+        };
+        let rules = [
+            rule_pane("过滤规则", RuleKind::Filter)?,
+            rule_pane("NAT", RuleKind::Nat)?,
+        ];
+        let parent = pane("连接")?;
+        let connections = connections::Page::new(app, &parent, background, family)?;
         Ok(Self {
-            view: Rc::new(view),
-            task: None,
-            visible: false,
-            domain: None,
+            tabs,
+            rules,
+            connections: (parent, connections),
         })
+    }
+
+    pub(super) fn show(
+        &mut self,
+        app: &mut Application,
+        window: &Window,
+        open: bool,
+    ) -> liteos_ui::Result<()> {
+        let selected = self.tabs.selection()?;
+        for (pane, rules) in &mut self.rules {
+            rules.show(app, window, open && selected == Some(pane.id()))?;
+        }
+        let (pane, connections) = &mut self.connections;
+        connections.selected_tab(app, window, open && selected == Some(pane.id()))
     }
 
     pub(super) fn select_domain(
@@ -133,217 +82,29 @@ impl Page {
         window: &Window,
         domain: Option<Arc<str>>,
     ) -> liteos_ui::Result<()> {
-        self.domain = domain;
-        self.view.cursor.set(Cursor::default());
-        if self.visible {
-            self.subscribe(app, window, Cursor::default())?;
+        for (_, rules) in &mut self.rules {
+            rules.select_domain(app, window, domain.clone())?;
         }
-        Ok(())
-    }
-
-    pub(super) fn selected_tab(
-        &mut self,
-        app: &mut Application,
-        window: &Window,
-        visible: bool,
-    ) -> liteos_ui::Result<()> {
-        if self.visible == visible {
-            return Ok(());
-        }
-        self.visible = visible;
-        if visible {
-            self.subscribe(app, window, self.view.cursor.get())?;
-        } else {
-            self.task = None;
-        }
-        Ok(())
-    }
-
-    pub(super) fn configure_requested(&self, event: &Event) -> bool {
-        self.visible && self.view.configure.activated(event)
+        self.connections.1.select_domain(app, window, domain)
     }
 
     pub(super) fn handle(
         &mut self,
         app: &mut Application,
         window: &Window,
+        workspace: &Workspace,
         event: &Event,
+        open: bool,
     ) -> liteos_ui::Result<()> {
-        if !self.visible {
+        if !open {
             return Ok(());
         }
-        let view = &self.view;
-        if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
-            return view.show_details();
+        if event.node == self.tabs.id() && matches!(event.kind, EventKind::Select { .. }) {
+            self.show(app, window, true)?;
         }
-        if !matches!(event.kind, EventKind::Activate { .. }) {
-            return Ok(());
+        for (_, rules) in &mut self.rules {
+            rules.handle(app, window, event)?;
         }
-        let cursor = if view.refresh.activated(event) {
-            view.cursor.get()
-        } else {
-            let snapshot = view.snapshot.borrow();
-            let Some(page) = snapshot.as_ref() else {
-                return Ok(());
-            };
-            let offset = if view.previous.activated(event) && view.cursor.get().offset != 0 {
-                view.cursor.get().offset.saturating_sub(LIMIT as u32)
-            } else if view.next.activated(event)
-                && let Some(next) = page.next
-            {
-                next
-            } else {
-                return Ok(());
-            };
-            Cursor {
-                revision: if offset == 0 { 0 } else { page.revision },
-                offset,
-            }
-        };
-        self.subscribe(app, window, cursor)
-    }
-
-    fn subscribe(
-        &mut self,
-        app: &mut Application,
-        window: &Window,
-        cursor: Cursor,
-    ) -> liteos_ui::Result<()> {
-        self.task = None;
-        let view = self.view.clone();
-        view.cursor.set(cursor);
-        view.snapshot.borrow_mut().take();
-        view.list.set_rows(&[])?;
-        view.show_details()?;
-        view.buttons()?;
-        view.refresh.set_enabled(false)?;
-        view.summary.notice("正在读取防火墙计数…")?;
-        let parent = window.clone();
-        let domain = self.domain.clone();
-        self.task = Some(app.spawn_local(window, async move {
-            if let Err(error) = view.observe(&parent, domain, cursor).await {
-                let _ = view.refresh.set_enabled(true);
-                let _ = view
-                    .summary
-                    .notice(&format!("防火墙计数已停止更新，请刷新。{error}"));
-            }
-        })?);
-        Ok(())
-    }
-}
-
-impl View {
-    fn buttons(&self) -> liteos_ui::Result<()> {
-        let snapshot = self.snapshot.borrow();
-        self.previous
-            .set_enabled(snapshot.is_some() && self.cursor.get().offset != 0)?;
-        self.next
-            .set_enabled(snapshot.as_ref().is_some_and(|page| page.next.is_some()))
-    }
-
-    async fn observe(
-        &self,
-        window: &Window,
-        domain: Option<Arc<str>>,
-        cursor: Cursor,
-    ) -> Result<(), Error> {
-        let mut stream = self
-            .background
-            .run(move || FirewallObservation::start(domain.as_deref(), cursor))?
-            .await?;
-        let mut fd = window.watch(stream.as_fd().try_clone_to_owned()?)?;
-        loop {
-            match receive(&self.clock, &mut fd, stream.remaining(), || {
-                stream.try_next()
-            })
-            .await?
-            {
-                Update::Heartbeat => {}
-                Update::Snapshot { cursor, page } => {
-                    self.cursor.set(cursor);
-                    *self.snapshot.borrow_mut() = Some(page);
-                    self.list.select(None)?;
-                    self.show_details()?;
-                    self.present()?;
-                    self.buttons()?;
-                    self.refresh.set_enabled(true)?;
-                    let page = self.snapshot.borrow();
-                    let count = page.as_ref().map_or(0, |page| page.rows.len());
-                    let note = if count == 0 {
-                        "没有预路由规则 · 实时".to_owned()
-                    } else {
-                        format!("实时（第 {} 页）", cursor.offset / LIMIT as u32 + 1)
-                    };
-                    self.summary.show(count, 0, &note)?;
-                }
-                Update::Counts { revision, values } => {
-                    {
-                        let mut snapshot = self.snapshot.borrow_mut();
-                        let page = snapshot.as_mut().ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidData, "未收到防火墙规则快照")
-                        })?;
-                        if page.revision != revision
-                            || values.iter().any(|value| value.index >= page.rows.len())
-                        {
-                            return Err(io::Error::from(io::ErrorKind::InvalidData).into());
-                        }
-                        for value in values {
-                            let row = &mut page.rows[value.index];
-                            row.packets = value.packets;
-                            row.bytes = value.bytes;
-                        }
-                    }
-                    self.present()?;
-                }
-            }
-        }
-    }
-
-    fn present(&self) -> liteos_ui::Result<()> {
-        let snapshot = self.snapshot.borrow();
-        let Some(page) = snapshot.as_ref() else {
-            return Ok(());
-        };
-        let rows: Vec<_> = page
-            .rows
-            .iter()
-            .map(|row| {
-                let chain = row.chain.as_deref().unwrap_or("入口");
-                let action = firewall::action(row);
-                format!(
-                    "{chain}\t{}\t{action}\t{}\t{}",
-                    row.position, row.packets, row.bytes
-                )
-            })
-            .collect();
-        let rows: Vec<_> = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (index as u64 + 1, row.as_str()))
-            .collect();
-        self.list.set_rows(&rows)
-    }
-
-    fn show_details(&self) -> liteos_ui::Result<()> {
-        let selected = self.list.selection()?;
-        let snapshot = self.snapshot.borrow();
-        let row = selected.and_then(|id| snapshot.as_ref()?.rows.get((id - 1) as usize));
-        let Some(row) = row else {
-            return set_note(&self.details, "");
-        };
-        let RuleConditions {
-            ingress,
-            source,
-            destination,
-            service,
-            state,
-        } = firewall::conditions(row);
-        let action = firewall::action(row);
-        set_note(
-            &self.details,
-            &format!(
-                "入接口 {ingress}　源地址 {source}　目的地址 {destination}　目标服务 {service}　连接状态 {state}\n{action}"
-            ),
-        )
+        self.connections.1.handle(app, window, workspace, event)
     }
 }

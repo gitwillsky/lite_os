@@ -60,7 +60,7 @@ AS 路径表达式是模型拥有的已验证不可变值，纯编译依赖固�
 转发 CPU 意图由 router-config 持久化。根 RIB 只转发专核操作，netstack 持实际线程和受限调度资源，内核调度器拥有 CPU 独占归属。[转发专用 CPU](ip-forwarding.md#转发专用-cpu)
 原生列表不采用 libc 的容量；resolvd 独自负责 musl 的 DNS/搜索行投影限制。
 接口事实与地址列表分开：固定 InterfaceSnapshot 服务收发路径，namespace::addresses 拥有冷查询的 AddressSnapshot；IPv6 地址资格仍由 netstack::inet::ipv6::address 拥有。
-netstack 的域服务通过 `inet::configuration::neighbor_page` 读取单页。全量和分页共用配置读取层的双栈遍历，邻居缓存接口只增加地址起点。邻居行和分页编解码归 [router-protocol](ipv6-link.md#桌面邻居观察)。
+netstack 的域服务通过 `inet::configuration::neighbor_page` 读取单族页。Linux 全量读取和管理分页共用配置读取层的邻居遍历，分页只进入指定族的缓存。邻居行和单族游标编解码归 [router-protocol](ipv6-link.md#桌面邻居观察)。
 netstack 的域服务通过 `inet::route::route_page` 读取单页生效路径。两个 FIB owner 只向同一有界捕获器提供实际路由及原始成员，接口、发布与选路状态各自归原 owner。[路由观察](ip-forwarding.md#桌面路由观察)
 `linux-uapi::rtnetlink` 读取 Linux 链路身份及统计。NET 和设备服务拥有原有计数，router-api 拥有采样期限与每会话速率基线，`router-protocol::management::traffic` 拥有观察帧编码。[接口流量观察](userspace-abi.md#接口流量观察)
 静态地址意图由 router-protocol::configuration 提供，interface 的借用视图仅用于配置预备；NET 拥有实际地址/共享组及本机/直连索引，事务不复制 DAD/监听协议状态。

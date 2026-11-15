@@ -204,6 +204,9 @@ impl<A: Address> FamilyRules<A> {
         let mut sets = Vec::new();
         let mut inspection = Inspection::default();
         for (offset, rule) in rules.iter().enumerate() {
+            if rule.disabled {
+                continue;
+            }
             let ingress = match rule.ingress {
                 Ingress::Any => 0,
                 Ingress::Interface(index) => index,
@@ -423,7 +426,7 @@ fn reachable_chains(program: Prerouting<'_>) -> Result<Vec<bool>, SocketError> {
         }
         for rule in chains[id]
             .rules()
-            .filter(|rule| rule.ingress != Ingress::Unavailable)
+            .filter(|rule| !rule.disabled && rule.ingress != Ingress::Unavailable)
         {
             if let PreroutingAction::Jump { chain } = rule.action {
                 mark(chain as usize, chains, reachable);
@@ -443,7 +446,7 @@ fn reachable_chains(program: Prerouting<'_>) -> Result<Vec<bool>, SocketError> {
             .try_reserve_exact(count)
             .map_err(|_| SocketError::NoMemory)?;
         reachable.resize(count, false);
-        // 调用前已验证深度。设备缺席的跳转不会让未执行的子链开启连接跟踪或分配匹配索引。
+        // 调用前已验证深度。停用或设备缺席的跳转不扩大连接跟踪与匹配索引的执行范围。
         mark(0, &chains, &mut reachable);
     }
     Ok(reachable)

@@ -28,14 +28,6 @@ impl Datagram {
         Some((protocol, address, port))
     }
 
-    fn destination(self) -> Endpoint {
-        self.key.endpoints[usize::from(!self.reversed)]
-    }
-
-    fn source(self) -> Endpoint {
-        self.key.endpoints[usize::from(self.reversed)]
-    }
-
     fn reply(self) -> Self {
         Self {
             reversed: !self.reversed,

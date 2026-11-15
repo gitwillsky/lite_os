@@ -8,7 +8,8 @@ pub mod firewall;
 /// 双栈邻居的授权管理观察。
 pub mod neighbors {
     pub use crate::gateway::NeighborObservation;
-    pub use router_protocol::neighbors::{Entry, Key, NeighborState, Page, observation};
+    pub use router_protocol::neighbors::{Cursor, Entry, Key, NeighborState, Page, observation};
+    pub use router_protocol::routing::Family;
 }
 /// 生效路由和路径的授权管理观察。
 pub mod routes {

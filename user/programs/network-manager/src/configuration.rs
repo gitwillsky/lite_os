@@ -438,6 +438,8 @@ impl View {
 /// 同一审阅窗口与原生配置事务对草稿和图形表单返回的结果。
 pub(super) struct ReviewResult {
     pub(super) saved: bool,
+    /// 仅提交回复能证明本次写入的确切代际；按编号确认保存不意味着当前仍是该版本。
+    pub(super) saved_revision: Option<Revision>,
     pub(super) message: String,
 }
 
@@ -463,6 +465,7 @@ pub(super) async fn review_and_save(
     if !review::confirm(dialogs, parent, background, comparison, recovery).await? {
         return Ok(ReviewResult {
             saved: false,
+            saved_revision: None,
             message: "已取消提交".into(),
         });
     }
@@ -488,6 +491,7 @@ pub(super) async fn apply(
 fn unchanged() -> ReviewResult {
     ReviewResult {
         saved: false,
+        saved_revision: None,
         message: "配置没有改动".into(),
     }
 }
@@ -536,18 +540,23 @@ async fn commit(
         .run(move || {
             let mut client = ManagementClient::local();
             match client.import(revision, commit, candidate.as_ref()) {
-                Ok(_) => Ok(()),
+                Ok(revision) => Ok(Some(revision)),
                 Err(error) => match client.commit_result(commit) {
-                    Ok(CommitResult::Saved) => Ok(()),
+                    Ok(CommitResult::Saved) => Ok(None),
                     _ => Err(error),
                 },
             }
         })?
         .await;
     let saved = result.is_ok();
+    let saved_revision = result.as_ref().ok().copied().flatten();
     let message = match result {
-        Ok(()) => format!("提交 {commit} 已保存"),
+        Ok(_) => format!("提交 {commit} 已保存"),
         Err(error) => format!("提交 {commit} 未确认。{error}。请核对当前配置。"),
     };
-    Ok(ReviewResult { saved, message })
+    Ok(ReviewResult {
+        saved,
+        saved_revision,
+        message,
+    })
 }

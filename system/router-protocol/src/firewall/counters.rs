@@ -8,7 +8,7 @@ use alloc::{string::String, vec::Vec};
 
 pub mod observation;
 
-const VERSION: u32 = 9;
+const VERSION: u32 = 10;
 const ROW: usize = super::ROW + 23;
 const HEADER: usize = 17;
 /// 固定查询正文长度。
@@ -80,7 +80,8 @@ impl Counter {
         self.rule.valid()
             && self.position != 0
             && self.chain.as_deref().is_none_or(valid_chain_name)
-            && (self.rule.ingress != Ingress::Unavailable || (self.packets, self.bytes) == (0, 0))
+            && ((!self.rule.disabled && self.rule.ingress != Ingress::Unavailable)
+                || (self.packets, self.bytes) == (0, 0))
             && match (&self.destination_set, self.rule.destination) {
                 (Some(name), Destination::Set(_)) => valid_name(name),
                 (None, Destination::Any | Destination::Prefix(_)) => true,

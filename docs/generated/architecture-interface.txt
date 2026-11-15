@@ -10682,7 +10682,7 @@ system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_index (sco
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshot (scope : & Namespace , index : u32 ,) -> Result < InterfaceSnapshot , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshots (scope : & Namespace ,) -> Result < Vec < InterfaceSnapshot > , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn learned_dns (scope : & Namespace ,) -> Result < router_protocol :: dns :: LearnedDns , SocketError >
-system/netstack/src/inet/configuration.rs :: pub (crate) fn neighbor_page (scope : & Namespace , after : Option < neighbors :: Key > ,) -> Result < Vec < u8 > , SocketError >
+system/netstack/src/inet/configuration.rs :: pub (crate) fn neighbor_page (scope : & Namespace , cursor : neighbors :: Cursor ,) -> Result < Vec < u8 > , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn neighbor_snapshot (scope : & Namespace , index : u32 ,) -> Result < network_protocol :: NeighborSnapshot , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn network_snapshot (scope : & Namespace) -> Result < Vec < NetworkSnapshot > , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn observe_dns (scope : & Namespace , event : native_runtime :: Event ,) -> Result < () , SocketError >

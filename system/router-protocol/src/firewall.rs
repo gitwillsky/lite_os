@@ -12,13 +12,14 @@ use core::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const VERSION: u32 = 14;
+const VERSION: u32 = 15;
 const PREFIX_BYTES: usize = 18;
 const DESTINATION_END: usize = 28;
 const SOURCE_END: usize = DESTINATION_END + PREFIX_BYTES;
 const TARGET_END: usize = SOURCE_END + PREFIX_BYTES;
 const SOURCE_TARGET_END: usize = TARGET_END + PREFIX_BYTES;
-const ROW: usize = SOURCE_TARGET_END + 3;
+const PORT_END: usize = SOURCE_TARGET_END + 3;
+const ROW: usize = PORT_END + 1;
 const MAX_NAME_BYTES: usize = 255;
 /// 最大子链嵌套深度，与 nftables 的固定跳转栈一致。
 pub const MAX_JUMP_DEPTH: usize = 16;
@@ -273,6 +274,8 @@ pub fn valid_chain_name(name: &str) -> bool {
 /// 单条双栈入站规则。接口身份只在投影后的执行正文中出现。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rule {
+    /// 停用的声明保留原序号和计数位置，执行索引不收录。
+    pub disabled: bool,
     /// 实际入接口或设备缺席状态。
     pub ingress: Ingress,
     /// 来源网段。None 匹配两族的任意源地址。
@@ -396,7 +399,13 @@ impl Rule {
             }),
             _ => return Err(Invalid),
         };
+        let disabled = match input.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Invalid),
+        };
         let rule = Self {
+            disabled,
             ingress,
             source,
             destination,
@@ -472,13 +481,14 @@ impl Rule {
                 TransportProtocol::Tcp => 6,
                 TransportProtocol::Udp => 17,
             };
-            row[SOURCE_TARGET_END + 1..].copy_from_slice(
+            row[SOURCE_TARGET_END + 1..PORT_END].copy_from_slice(
                 &transport
                     .destination_port
                     .map_or(0, NonZeroU16::get)
                     .to_le_bytes(),
             );
         }
+        row[PORT_END] = u8::from(self.disabled);
         row
     }
 }

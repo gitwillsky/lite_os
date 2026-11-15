@@ -71,10 +71,12 @@ impl<'a> Request<'a> {
                 operation,
                 ordinal::VALIDATE | ordinal::IMPORT | ordinal::DIFF
             ) && self.length > crate::bridge::DATAGRAM_MAX as u64)
-            || (matches!(
-                operation,
-                ordinal::CONNECTIONS | ordinal::CLEAR_CONNECTION | ordinal::CONNECTION_CHANGES
-            ) && self.length != crate::connections::CURSOR_BYTES as u64)
+            || (operation == ordinal::CONNECTIONS
+                && self.length != crate::connections::CURSOR_BYTES as u64)
+            || (operation == ordinal::CLEAR_CONNECTION
+                && self.length != crate::connections::IDENTITY_BYTES as u64)
+            || (operation == ordinal::CONNECTION_CHANGES
+                && self.length != crate::connections::changes::CURSOR_BYTES as u64)
             || (operation == ordinal::FIREWALL_COUNTERS
                 && self.length != crate::firewall::counters::CURSOR_BYTES as u64)
             || (operation == ordinal::NEIGHBOR_PAGE

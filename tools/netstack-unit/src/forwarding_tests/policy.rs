@@ -381,6 +381,7 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
             (None, network, prefix, PreroutingAction::Accept),
         ] {
             config.firewall.prerouting.push(PreroutingRule {
+                disabled: false,
                 ingress: interface.cloned(),
                 source: None,
                 destination: Some(destination),
@@ -410,6 +411,22 @@ fn policy_routing_selects_actual_dual_stack_egress_and_rolls_back() {
         }
     }
     filtering.abort().unwrap();
+
+    // 停用 IPv4 的提前放行项后，报文继续命中同链后续的丢弃。IPv6 仍由它自己的放行项处理。
+    config.firewall.prerouting[2].disabled = true;
+    let bytes = config.firewall_source(|_| Ok(Some(2))).unwrap();
+    let batch = network_protocol::ConfigurationBatch::default()
+        .with_prerouting(router_protocol::firewall::Prerouting::parse(&bytes).unwrap());
+    let disabled = crate::inet::prepare_configuration(&net, Some(batch), None).unwrap();
+    disabled.activate().unwrap();
+    a.wire.lock().unwrap().2.receive_snapshot = stack(&net).unwrap().receive_snapshot().map(|snapshot| (2, snapshot));
+    send(&a, 2005);
+    assert_eq!(transit(&a) + transit(&b), 1);
+    let hits = counters(first_page);
+    assert_eq!((hits.rows[2].position, hits.rows[2].rule.disabled, hits.rows[2].packets), (3, true, 0));
+    assert_eq!((hits.rows[5].packets, hits.rows[9].packets), (1, 1));
+    disabled.abort().unwrap();
+
     send(&b, 2005);
     assert_eq!((transit(&a), transit(&b)), (0, 2));
     config.firewall = previous;

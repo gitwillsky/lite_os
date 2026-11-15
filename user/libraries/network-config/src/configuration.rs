@@ -308,7 +308,7 @@ impl ManagementClient {
         Ok(routes)
     }
 
-    /// 查询 `domain` 的一页有效转发连接，None 查询默认域。
+    /// 按 `cursor` 指定的地址族查询 `domain` 的一页有效转发连接，None 查询默认域。
     /// # Errors
     /// 权限不足、游标失效、服务不可用或分页正文非法。
     pub fn connections(
@@ -347,15 +347,15 @@ impl ManagementClient {
         .map(drop)
     }
 
-    /// 查询 `domain` 的一页防火墙命中计数，None 查询默认路由域。
+    /// 查询 `domain` 的一页防火墙命中计数及其配置代际，None 查询默认路由域。
     /// # Errors
     /// 权限不足、规则链换版、游标失效或回复无效。
     pub fn firewall_counters(
         &mut self,
         domain: Option<&str>,
         cursor: router_protocol::firewall::counters::Cursor,
-    ) -> io::Result<router_protocol::firewall::counters::Page> {
-        let (_, bytes) = self.configuration_request(
+    ) -> io::Result<(Revision, router_protocol::firewall::counters::Page)> {
+        let (generation, bytes) = self.configuration_request(
             ordinal::FIREWALL_COUNTERS,
             Some(&cursor.encode()),
             administration::Request {
@@ -364,6 +364,7 @@ impl ManagementClient {
             },
         )?;
         router_protocol::firewall::counters::Page::parse(&bytes, cursor)
+            .map(|page| (generation, page))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "防火墙计数回复无效"))
     }
 

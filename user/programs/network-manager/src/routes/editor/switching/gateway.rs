@@ -96,7 +96,7 @@ pub(super) async fn edit(
     Ok(gateways.map(|values| values.into_iter().collect()))
 }
 
-async fn edit_gateway(
+pub(super) async fn edit_gateway(
     dialogs: &Dialogs,
     parent: &Window,
     used_names: &BTreeSet<&ConfigurationName>,
@@ -122,19 +122,19 @@ async fn edit_gateway(
     {
         vid.select(Some(index as u64 + 1))?;
     }
-    let (_, name) = field(
+    let (_name_label, name) = field(
         &root,
         "接口名称",
         settings.map_or("", |value| value.name.as_str()),
     )?;
-    let (_, address) = field(
+    let (_address_label, address) = field(
         &root,
         "IPv4 地址",
         &settings
             .and_then(|value| value.address)
             .map_or_else(String::new, |address| address.to_string()),
     )?;
-    let (_, prefix) = field(
+    let (_prefix_label, prefix) = field(
         &root,
         "IPv4 前缀长度",
         &settings

@@ -158,21 +158,21 @@ impl AsFd for FirewallObservation {
 /// 本机邻居页观察流，释放时关闭本次订阅。
 pub struct NeighborObservation {
     transport: LocalObservation,
-    after: Option<neighbors::Key>,
+    cursor: neighbors::Cursor,
 }
 
 impl NeighborObservation {
     /// 订阅所选游标后的一页邻居。握手和发送应在后台完成。
     /// # Errors
     /// 网关不可用、对端身份不符、握手或发送失败。
-    pub fn start(domain: Option<&str>, after: Option<neighbors::Key>) -> io::Result<Self> {
+    pub fn start(domain: Option<&str>, cursor: neighbors::Cursor) -> io::Result<Self> {
         let transport = LocalObservation::start_scoped(
             management::WATCH_NEIGHBORS,
             domain,
-            &neighbors::cursor(after),
+            &cursor.encode(),
             RPC_TIMEOUT,
         )?;
-        Ok(Self { transport, after })
+        Ok(Self { transport, cursor })
     }
 
     /// 下一帧的绝对期限剩余时间，供界面安排一次定时唤醒。
@@ -184,10 +184,10 @@ impl NeighborObservation {
     /// # Errors
     /// 会话关闭、权限不足、超时或回复格式无效。
     pub fn try_next(&mut self) -> io::Result<Option<neighbors::observation::Update>> {
-        let after = self.after;
+        let cursor = self.cursor;
         self.transport
             .try_update(management::WATCH_NEIGHBORS, |body| {
-                neighbors::observation::Update::parse(body, after)
+                neighbors::observation::Update::parse(body, cursor)
             })
     }
 }

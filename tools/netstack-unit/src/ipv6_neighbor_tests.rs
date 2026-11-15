@@ -574,7 +574,10 @@ fn cached_echo_and_stale_to_delay_timer_rearm_do_not_allocate_payload_or_index_n
 #[test]
 fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_flag_rules() {
     use network_protocol::NeighborState;
-    use router_protocol::neighbors::{Key, Page, observation};
+    use router_protocol::{
+        neighbors::{Cursor, Key, Page, observation},
+        routing::Family,
+    };
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let (net, device) = domain();
@@ -589,18 +592,24 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     frames(&device);
     let frozen = neighbor_snapshot(&net, 2).unwrap();
     let pending = frozen.get(0).unwrap();
-    let page = |after| {
-        Page::parse(&crate::inet::neighbor_page(&net, after).unwrap(), after).unwrap()
+    let ipv4 = Cursor::first(Family::Ipv4);
+    let ipv6 = Cursor::first(Family::Ipv6);
+    let page = |cursor: Cursor| {
+        let cursor = Cursor::parse(&cursor.encode()).unwrap();
+        Page::parse(&crate::inet::neighbor_page(&net, cursor).unwrap(), cursor).unwrap()
     };
-    let initial = page(None);
+    let initial = page(ipv6);
     assert_eq!(initial.rows[0].neighbor, pending);
     assert!(!initial.more);
-    let before_ipv6 = Key {
+    assert!(page(ipv4).rows.is_empty());
+    assert!(Page::parse(&initial.encode().unwrap(), ipv4).is_err());
+    let before_peer = Key {
         interface: pending.interface_index,
-        address: "192.0.2.255".parse().unwrap(),
+        address: "fe80::1".parse().unwrap(),
     };
-    assert_eq!(page(Some(before_ipv6)), initial);
-    assert!(page(Some(pending.key())).rows.is_empty());
+    assert!(Cursor::after(Family::Ipv4, before_peer).is_err());
+    assert_eq!(page(Cursor::after(Family::Ipv6, before_peer).unwrap()), initial);
+    assert!(page(Cursor::after(Family::Ipv6, pending.key()).unwrap()).rows.is_empty());
     assert_eq!(
         (
             pending.interface_index,
@@ -619,12 +628,12 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     poll(&net, 2003);
     frames(&device);
     let row = neighbor_snapshot(&net, 0).unwrap().get(0).unwrap();
-    let reachable = page(None);
+    let reachable = page(ipv6);
     let delta = observation::encode(&reachable, Some(&initial)).unwrap().unwrap();
-    let observation::Update::Changes(changes) = observation::Update::parse(&delta, None).unwrap() else {
+    let observation::Update::Changes(changes) = observation::Update::parse(&delta, ipv6).unwrap() else {
         panic!("neighbor reachability changed without an increment");
     };
-    assert_eq!(changes.apply(&initial, None).unwrap(), reachable);
+    assert_eq!(changes.apply(&initial, ipv6).unwrap(), reachable);
     assert_eq!(reachable.rows[0].neighbor, row);
     assert_eq!(
         (row.hardware_address, row.state, row.is_router),
@@ -658,12 +667,12 @@ fn neighbor_query_freezes_owner_facts_filters_interface_and_preserves_router_fla
     assert_eq!(neighbor_snapshot(&net, 2).unwrap().get(0), Some(current));
     configure_up(&net, 2, false).unwrap();
     assert!(neighbor_snapshot(&net, 0).unwrap().is_empty());
-    let empty = page(None);
+    let empty = page(ipv6);
     assert!(empty.rows.is_empty());
     let delta = observation::encode(&empty, Some(&reachable)).unwrap().unwrap();
-    let observation::Update::Changes(changes) = observation::Update::parse(&delta, None).unwrap() else {
+    let observation::Update::Changes(changes) = observation::Update::parse(&delta, ipv6).unwrap() else {
         panic!("removed neighbor did not produce an increment");
     };
-    assert_eq!(changes.apply(&reachable, None).unwrap(), empty);
+    assert_eq!(changes.apply(&reachable, ipv6).unwrap(), empty);
     assert_eq!(frozen.get(0), Some(pending));
 }

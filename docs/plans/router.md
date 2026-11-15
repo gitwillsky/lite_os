@@ -46,10 +46,10 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - 新增热路径、锁、分配或 codec 都按[性能验证范围](../development/performance-coverage.md)作 benchmark 决策；
   整机吞吐、收敛时间只作诊断，不作窄阈值 blocking gate。
 - 范围缩减（例如 Linux 侧写操作、未实现的 TCP 选项）在 ABI 矩阵精确记录。
-- 管理器以经典 WinBox 为参照，按功能组织左侧菜单，右侧工作区容纳功能窗口。使用 LiteOS 的应用名称和资源。
+- 管理器以实机观察的 WinBox 为界面基准，按其入口、窗口结构和操作顺序交付。已有能力走真实执行路径，未实现的入口、控件和状态不显示，差距列于下方。
   [WinBox 界面](https://help.mikrotik.com/docs/spaces/ROS/pages/328129/WinBox)
-- 验证节奏：以代码审查与范围内 Clippy 为主，跨架构变更覆盖两架构及 architecture-check；只有审查无法覆盖具体风险时才运行最窄的既有用例。
-  运行时门禁与完整 `make verify` 在全部功能完成后经用户允许统一执行。
+- 验证节奏：每轮优先交付一个可独立使用的功能，经代码审查、范围内 Clippy 和必要门禁确认。跨架构变更覆盖两架构及 architecture-check；
+  完整 `make verify` 在需要统一验收时执行。
 - 用户提供的 x86_64 PVE 可按需要用于后续平台支持及部署验收；不修改既有虚拟机，尤其家庭网关/OpenWrt，亦不修改宿主现有网桥、路由或防火墙。
   只使用专用测试实例；DHCP/RA、动态路由和二层环路等主动测试必须与家庭业务网隔离。连接凭据不进入源码、文档或日志。
 
@@ -60,7 +60,18 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 
 ## 系统验收
 
+已在 AArch64 桌面打开网桥、端口和 VLAN 三个页签，核对属性表单、物理端口选择及取消返回。拓扑提交和数据面行为仍按下方的隔离环境用例验收。
+
 已在 AArch64 桌面通过 SSH 诊断通道核对接口、路由表、防火墙同时打开，以及拖动、缩放、置前、快捷键切换和关闭，并从防火墙窗口进入规则与 NAT 编辑器。
+
+已在 AArch64 开发来宾从静态路由窗口新建 IPv4 网关路由和 IPv6 黑洞路由，经 `ipconfig /routes` 与 Linux 路由查询确认生效。
+在同一属性窗口先应用后改目的网段，确认旧路由撤回；另一条路由提交后旧属性草稿被拒绝，取消未保存修改。删除两条测试路由后确认均已撤回。
+在同一开发实例验证静态路由启停。停用 IPv4 首选网关后保留标志 X，同网段备用黑洞接管，取消属性编辑后保持停用，重新启用后原网关恢复。
+从 IPv6 属性新建停用的黑洞路由可在列表查看，重新启用并应用后进入转发表。测试条目均已移除。
+同一 AArch64 开发实例已对照 `ip -4 neigh` 和 `ip -6 neigh` 验证两套入口的真实记录。对链路本地邻居执行 Ping 后，列表和已打开的属性同步显示状态变化。关闭 IPv6 列表时只关闭其属性，ARP 属性仍可用。
+
+同一开发实例已用 IPv4 UDP 回环验证双端 NAT、连接入表、回复标志、原始及回复端点、从工具栏或属性删除及取消删除，并对照 `ipconfig /connections`。
+IPv6 连接页已验证可打开和实时观察；实际 IPv6 流量的查询、回复及清除由双网卡转发用例覆盖。
 
 整机验收待完成，覆盖以下实际使用场景。验证入口见[构建与验证](../development/build-and-verify.md)。
 
@@ -114,13 +125,33 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - [ ] **在持续转发时流畅操作桌面**。桌面与转发共享 CPU 时，用户可流畅打开菜单、移动窗口和调整窗口大小。
 - [ ] **安装和卸载路由扩展**。管理员可在线安装、卸载和重新安装路由功能。卸载后停止转发及下游服务，继续使用普通主机联网和桌面，管理器入口随安装状态变化。
 - [ ] **在工作区直接编辑各功能的属性**。从接口、路由、防火墙等窗口的表格进入当前项目的编辑、启停和删除，常用操作集中在对应窗口。
-  已可用：接口的属性窗口与启停，按 WinBox 直接提交。仍缺：路由、防火墙、邻居和连接条目的属性窗口，安全模式，撤销与重做。
+  已可用：接口与静态路由属性和启停、地址编辑和删除、ARP 与 IPv6 邻居只读属性、连接属性与删除、双栈防火墙过滤和 NAT 规则编辑。动态路由属性及防火墙属性内「应用」仍待补齐。
+- [ ] **在路由列表查看和操作全部候选**。合并静态声明与运行事实，显示动态路由和真实生效、未选中或已停用状态；显示立即网关与状态页。
+  补齐静态路由备注、网关探测、Scope / Target Scope、首选源和跨 VRF 下一跳，再显示对应字段。当前 IP / IPv6 列表只显示已保存的静态声明；
+  运行结果在「路由 → 路由表」。待采用有界查询和虚拟列表，验收大表筛选与只读账号查看；迁移剩余的批量路由设置，保留一次提交表、路由和规则的能力。
+- [ ] **使用与 WinBox 一致的工作区**。按实机统一侧栏、窗口标题栏、页签、表头、选中态、工具栏和属性窗口布局；移除现有深蓝竖条、立体描边及独有菜单入口。
+  补齐工作区选择和窗口菜单、可暂停 Live、列菜单及条件筛选；补齐 Safe Mode 与撤销、重做后才显示相应入口。
+- [ ] **维护 ARP 和 IPv6 邻居**。补齐静态绑定、启停、从动态转换、删除、备注及代理与发布语义。补齐主机名、实际网桥端口及对应诊断动作，支持查找和条件筛选。
+- [ ] **查看连接统计并调整跟踪设置**。补齐实时超时、方向速率与计数、完整 TCP 状态和跟踪标志、连接类型与标记、表容量及 Tracking 设置，以及和 WinBox 对齐的查找、筛选与滚动。
+- [ ] **补齐 RouterOS 的防火墙链与操作**。支持独立的 Filter input、forward、output 链和 NAT 链，以及 Mangle、Raw 和 Address Lists 页签。补齐拖拽排序、备注、清零计数、双栈旧规则的按族计数和页内查找筛选。
+- [ ] **核对 WinBox 其他菜单与 LiteOS 能力**。实机有而管理器尚无对应入口的项目包括：
+  Quick Set、WiFi / Wireless、WireGuard、PPP、Switch、Mesh、MPLS、Queues、Dot1X、Files、Log、RADIUS、支持报告；
+  Interfaces 的 Interface List、各隧道、VLAN、VXLAN、VRRP、MACsec、MACVLAN、Bonding、LTE 和 Detect Internet；
+  Bridge 的 MSTIs、Port MST Overrides、Filters、NAT、Hosts、MDB 和 MVRP Attributes；
+  IP 的 Cloud、DHCP Client / Relay / Server、DNS、Hotspot、IPsec、Kid Control、Media、NAT PMP、Packing、Pool、Reverse Proxy、SMB、
+  SNMP、SSH、Services、Settings、Socks、Socksify、TFTP、Traffic Flow、UPnP、VRF、Web Proxy。
+  逐项区分已有底层能力、部分实现与缺失；尤其区分 RouterOS Neighbors 发现和 LiteOS 的 ARP / ND。补齐真实流程后再开放对应入口。
 
 ## Done（已实现功能）
 
 - **从桌面进入网络管理器并按功能导航**。已安装的管理器提供桌面图标。可从「接口」「网桥」「IP」「路由」「系统」「工具」进入运行视图或对应配置功能。
 - **在经典工作区同时查看多个网络功能**。从左侧菜单打开接口、路由表、防火墙、邻居和连接等子窗口，可同时查看、移动、缩放、切换和关闭，也可查看表格详情及打开现有配置编辑器。[工作区用法](../../user/programs/network-manager/README.md)
-- **按 WinBox 的外观和交互使用管理器**。标题栏显示「用户@主机」，顶栏选择路由域，底部状态栏显示主机、CPU、内存、运行时间和时钟。左侧是竖排品牌条和平面菜单，可用鼠标或方向键选择，「新终端」打开系统终端。列表窗口有带文字的命令工具栏、标志列、右侧动作面板和条目统计，双击条目打开属性。[界面说明](../../user/programs/network-manager/README.md)
+- **通过菜单、列表和属性窗口管理网络**。标题栏显示「用户@主机」，底部状态栏显示主机、CPU、内存、运行时间和时钟。
+  菜单可用鼠标或方向键选择，「新终端」打开系统终端。列表有命令工具栏、标志列和条目统计。已对齐的入口可双击打开属性。
+  [界面说明](../../user/programs/network-manager/README.md)
+- **在 IP 和 IPv6 窗口直接维护静态路由**。按路由表筛选或查找，可新建、双击编辑、启停和删除静态路由；另在「路由 → 路由表」观察实际路径。
+  [静态路由用法](../../user/programs/network-manager/README.md#静态路由)
+- **按 WinBox 入口查看动态邻居**。「IP → ARP」和「IPv6 → 邻居」分别查看所选域的动态条目，可双击查看实时属性。[邻居用法](../../user/programs/network-manager/README.md#邻居)
 - **安装和卸载桌面管理器**。管理员可单独安装和删除管理应用，桌面入口随之出现或消失。[管理器安装](../../user/programs/network-manager/README.md)
 - **按需启用路由协议和下游服务**。普通联网时无需运行 BGP、OSPF、DHCPv4 地址分发或 DNS 缓存。配置这些功能后，系统启动对应服务；服务故障只影响本项功能。
 
@@ -196,6 +227,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **在 VLAN 自动分发网络设置**。管理员可按 VLAN 设置 IPv4 地址池和静态 IPv6 前缀。设备可自动取得地址、默认网关及 DNS，管理员可按 VLAN 查询 IPv4 租约。[VLAN 网关](../architecture-contract/switching.md#vlan-网关)
 - **按 VLAN 接口管理流量**。管理员可指定 VLAN 接口作为静态路由出口，按流量进入的 VLAN 选择路由表或过滤流量，并查询生效路径和规则命中数。[VLAN 网关](../architecture-contract/switching.md#vlan-网关)
 - **在桌面管理各路由域的网桥与 VLAN**。管理员可在所选域配置网桥成员、快速生成树、端口隔离、VLAN 标签和双栈网关，与本域选路、过滤及地址分发一起提交。[网桥与 VLAN](../../user/programs/network-manager/README.md#网桥与-vlan)
+- **从网桥工作区直接维护拓扑**。可按网桥、端口和 VLAN 浏览所选路由域的配置。从表格打开属性，新增或删除项目并审阅提交，三层网关可从所属 VLAN 打开。[网桥与 VLAN](../../user/programs/network-manager/README.md#网桥与-vlan)
 
 ### BGP
 
@@ -241,8 +273,9 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **查看和清除转发连接**。管理员可查看双栈 TCP、UDP 和 ICMP Echo 连接的双方地址、状态和剩余空闲时间，订阅变化，或清除指定连接。
   [连接查询](../architecture-contract/ip-forwarding.md#查询转发连接)、[实时跟踪](../architecture-contract/ip-forwarding.md#实时跟踪转发连接)、[连接清除](../architecture-contract/ip-forwarding.md#清除转发连接)
 - **在桌面管理防火墙与 NAT**。管理员可编辑匹配条件、动作、地址集和子链，调整规则顺序，并选择新规则如何影响已有连接。[防火墙与 NAT](../../user/programs/network-manager/README.md#防火墙与-nat)
-- **在桌面查看防火墙命中统计**。获授权的用户可查看所选域的规则、匹配条件和动作，实时查看命中的报文数和 IP 流量。[防火墙计数](../../user/programs/network-manager/README.md#防火墙计数)
-- **在桌面查看转发连接**。获授权的用户可实时查看所选路由域的双栈连接、端点和状态。管理员可清除所选连接。[转发连接](../../user/programs/network-manager/README.md#转发连接)
+- **在对应地址族编辑过滤及 NAT 规则**。用户可直接从防火墙页签新建、编辑、启停或删除预路由规则，查看实际命中计数。[防火墙计数与规则](../../user/programs/network-manager/README.md#防火墙计数与规则)
+- **从防火墙页签查看和删除连接**。「IP → 防火墙 → 连接」和「IPv6 → 防火墙 → 连接」实时显示对应地址族的连接。
+  双击查看原始和回复端点、NAT 及回复标志，管理员可删除所选连接。[转发连接](../../user/programs/network-manager/README.md#转发连接)
 
 ### 配置与备份
 
@@ -261,6 +294,7 @@ ping、traceroute、带宽测试、抓包）；导出、导入、配置对比与
 - **在桌面按接口抓包**。管理员可捕获所选域与接口的收发报文，停止后查看抓包丢弃数，并用常见分析工具打开保存的文件。[抓包](../../user/programs/network-manager/README.md#抓包)
 - **用 tcpdump 实时抓包**。获授权的用户可在命令行按接口查看和筛选报文，也可保存为抓包文件供后续分析。[命令行抓包](../../user/base/README.md#命令行抓包)
 - **命令行连通性与逐跳探测**。管理员可用 `ping` 查看目标应答、丢包率和延迟，用 `traceroute` 查看 IPv4 或 IPv6 路径上应答的各跳及往返时间。[使用说明](../../user/base/README.md#命令行网络诊断)
-- **桌面网络诊断**。管理员可从桌面打开网络管理器，通过「工具 → 网络诊断」探测主机名或双栈地址，查看应答、丢包率、延迟及逐跳结果。可停止探测并保留已收到的结果。[使用说明](../../user/programs/network-manager/README.md)
+- **桌面网络诊断**。管理员可从桌面打开网络管理器，通过「工具 → Ping」「工具 → 路由跟踪」探测主机名或双栈地址，按列查看应答、丢包率、延迟及逐跳结果。可停止探测并保留已收到的结果。
+  [使用说明](../../user/programs/network-manager/README.md)
 - **在具名路由域执行桌面诊断**。管理员可在所选域执行 Ping、逐跳探测和带宽测试，结果会标明本次使用的域。[使用说明](../../user/programs/network-manager/README.md)
 - **测试到指定对端的带宽**。可按地址和端口测试 TCP 上传或下载，查看逐秒速率和接收端平均速率，亦可在 LiteOS 上启动临时测速对端。[带宽测试](../../user/programs/network-manager/README.md#带宽测试)

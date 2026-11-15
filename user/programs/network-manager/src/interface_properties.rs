@@ -8,6 +8,7 @@ use crate::{
     child,
     configuration::apply,
     item_list::spacer,
+    item_properties::{button, field},
     routes::{
         ADMIN_STATES, Field, Fields, LiveInterface, admin_index, apply_fields, edit_ipv4_of,
         edit_ipv6_of,
@@ -21,18 +22,7 @@ use liteos_ui::{
 use network_config::{configuration::RouterInterface, format_mac, traffic::Row};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-/// 表单标签列宽、输入框宽度与按钮尺寸（逻辑像素）。
-const LABEL: i32 = 96;
-const INPUT: i32 = 250;
 const SIZE: (i32, i32) = (560, 400);
-
-fn button() -> Layout {
-    Layout {
-        width: 75,
-        height: 23,
-        ..Layout::default()
-    }
-}
 
 /// 所有打开的接口属性窗口与工具栏启停任务。
 pub(super) struct InterfaceWindows {
@@ -73,43 +63,6 @@ struct View {
     live: RefCell<Option<LiveInterface>>,
     /// 尚未提交的地址修改；表单字段在提交时才解析进来。
     draft: RefCell<Option<RouterInterface>>,
-}
-
-/// 一行「右对齐标签 + 控件」。
-fn field(
-    parent: &Widget,
-    decor: &mut Vec<Widget>,
-    label: &str,
-    kind: WidgetKind,
-    text: &str,
-    read_only: bool,
-) -> liteos_ui::Result<Widget> {
-    let line = child(
-        parent,
-        WidgetKind::Row,
-        "",
-        Layout {
-            gap: 6,
-            ..Layout::default()
-        },
-    )?;
-    let mut caption = WidgetSpec::new(WidgetKind::Label, label);
-    caption.state = state::ALIGN_RIGHT;
-    caption.layout = Layout {
-        width: LABEL,
-        ..Layout::default()
-    };
-    decor.push(line.child(caption)?);
-    let mut spec = WidgetSpec::new(kind, text);
-    // 单行编辑框没有只读态；只显示的值用禁用态，与 WinBox 灰底的只读字段一致。
-    spec.state = if read_only { state::DISABLED } else { 0 };
-    spec.layout = Layout {
-        width: INPUT,
-        ..Layout::default()
-    };
-    let input = line.child(spec)?;
-    decor.push(line);
-    Ok(input)
 }
 
 impl View {
@@ -429,7 +382,7 @@ async fn load(view: Rc<View>, background: Background, domain: Option<Arc<str>>, 
 }
 
 /// 以 `live` 为基线把 `next` 直接提交；返回是否已保存及提示。
-async fn submit(
+pub(super) async fn submit(
     background: &Background,
     live: LiveInterface,
     next: RouterInterface,

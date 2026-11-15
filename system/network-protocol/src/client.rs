@@ -196,12 +196,12 @@ impl RemoteNamespace {
     /// 域、存储、能力或回复格式不合法。
     pub fn neighbor_page(
         &self,
-        after: Option<router_protocol::neighbors::Key>,
+        cursor: router_protocol::neighbors::Cursor,
     ) -> Result<Vec<u8>, SocketError> {
         let mut writer = Writer::request(namespace::NEIGHBOR_PAGE);
-        writer.bytes(&router_protocol::neighbors::cursor(after));
+        writer.bytes(&cursor.encode());
         let bytes = self.snapshot_bytes(&writer)?;
-        router_protocol::neighbors::Page::parse(&bytes, after).map_err(|_| SocketError::Invalid)?;
+        router_protocol::neighbors::Page::parse(&bytes, cursor).map_err(|_| SocketError::Invalid)?;
         Ok(bytes)
     }
 

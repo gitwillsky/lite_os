@@ -1,4 +1,4 @@
-//! 「工具 → 网络诊断」窗口：Ping、逐跳探测与带宽测试。
+//! 「工具」菜单的 Ping、路由跟踪与带宽测试窗口。每种工具是独立窗口，各自保留输入、结果与运行状态。
 //! 采用 WinBox 工具窗口布局：左侧为右对齐标签的表单和结果列表，右侧一列命令按钮。
 use crate::{
     child,
@@ -22,14 +22,27 @@ fn button() -> Layout {
     }
 }
 
+/// 诊断工具的种类，对应「工具」菜单的一项。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Tool {
+    Ping,
+    Trace,
+    Bandwidth,
+}
+
+/// 一个启动按钮及其发起的探测；带宽测试的端口在启动时从表单读取。
+#[derive(Clone, Copy)]
+enum Start {
+    Ping,
+    Trace,
+    Bandwidth { download: bool },
+}
+
 #[derive(Clone)]
 struct Controls {
     target: Widget,
-    ping: Widget,
-    trace: Widget,
-    port: Widget,
-    upload: Widget,
-    download: Widget,
+    port: Option<Widget>,
+    starts: Vec<(Widget, Start)>,
     stop: Widget,
     output: Widget,
     status: Widget,
@@ -39,13 +52,13 @@ impl Controls {
     fn running(&self, running: bool) -> liteos_ui::Result<()> {
         let idle = if running { state::DISABLED } else { 0 };
         self.target.set_state(idle)?;
-        self.ping.set_state(if running {
-            state::DISABLED
-        } else {
-            state::DEFAULT
-        })?;
-        for widget in [&self.trace, &self.port, &self.upload, &self.download] {
-            widget.set_state(idle)?;
+        if let Some(port) = &self.port {
+            port.set_state(idle)?;
+        }
+        for (index, (widget, _)) in self.starts.iter().enumerate() {
+            // 首个启动按钮是默认按钮：在目标地址框回车即启动。
+            let default = if index == 0 { state::DEFAULT } else { 0 };
+            widget.set_state(if running { state::DISABLED } else { default })?;
         }
         self.stop
             .set_state(if running { 0 } else { state::DISABLED })
@@ -54,7 +67,7 @@ impl Controls {
 
 pub(super) struct Page {
     // 表单标签只需存活；控件句柄释放即删除节点。
-    _captions: [Widget; 2],
+    _captions: Vec<Widget>,
     controls: Controls,
     background: Background,
     active: Option<(Cancel, Task<()>)>,
@@ -87,7 +100,11 @@ fn field(
 }
 
 impl Page {
-    pub(super) fn new(root: &Widget, background: Background) -> liteos_ui::Result<Self> {
+    pub(super) fn new(
+        root: &Widget,
+        background: Background,
+        tool: Tool,
+    ) -> liteos_ui::Result<Self> {
         let body = child(
             root,
             WidgetKind::Row,
@@ -108,7 +125,8 @@ impl Page {
                 ..Layout::default()
             },
         )?;
-        let (target_caption, target) = field(
+        let mut captions = Vec::new();
+        let (caption, target) = field(
             &form,
             "目标地址：",
             "",
@@ -117,15 +135,22 @@ impl Page {
                 ..Layout::default()
             },
         )?;
-        let (port_caption, port) = field(
-            &form,
-            "测速端口：",
-            "5201",
-            Layout {
-                width: 58,
-                ..Layout::default()
-            },
-        )?;
+        captions.push(caption);
+        let port = if tool == Tool::Bandwidth {
+            let (caption, port) = field(
+                &form,
+                "测速端口：",
+                "5201",
+                Layout {
+                    width: 58,
+                    ..Layout::default()
+                },
+            )?;
+            captions.push(caption);
+            Some(port)
+        } else {
+            None
+        };
         let output = child(
             &form,
             WidgetKind::List,
@@ -144,28 +169,56 @@ impl Page {
                 ..Layout::default()
             },
         )?;
+        let starts: &[(&str, Start)] = match tool {
+            Tool::Ping => &[("开始", Start::Ping)],
+            Tool::Trace => &[("开始", Start::Trace)],
+            Tool::Bandwidth => &[
+                ("测上传", Start::Bandwidth { download: false }),
+                ("测下载", Start::Bandwidth { download: true }),
+            ],
+        };
+        let starts = starts
+            .iter()
+            .map(|(text, start)| {
+                Ok((
+                    child(&commands, WidgetKind::Button, text, button())?,
+                    *start,
+                ))
+            })
+            .collect::<liteos_ui::Result<_>>()?;
         let controls = Controls {
             target,
             port,
-            output,
-            ping: child(&commands, WidgetKind::Button, "Ping", button())?,
-            trace: child(&commands, WidgetKind::Button, "逐跳探测", button())?,
-            upload: child(&commands, WidgetKind::Button, "测上传", button())?,
-            download: child(&commands, WidgetKind::Button, "测下载", button())?,
+            starts,
             stop: child(&commands, WidgetKind::Button, "停止", button())?,
+            output,
             status: child(root, WidgetKind::Status, "", Layout::default())?,
         };
         controls
             .output
             .set_list_style(ListStyle::Details, ListOptions::default())?;
-        controls.output.set_columns(&[Column {
-            id: 1,
-            title: "探测结果",
-            width: 520,
-        }])?;
+        let kind = match tool {
+            Tool::Ping => Kind::Ping,
+            Tool::Trace => Kind::Trace,
+            Tool::Bandwidth => Kind::Bandwidth {
+                port: NonZeroU16::MIN,
+                download: false,
+            },
+        };
+        let columns: Vec<_> = kind
+            .columns()
+            .iter()
+            .enumerate()
+            .map(|(index, (title, width))| Column {
+                id: index as u64 + 1,
+                title,
+                width: *width,
+            })
+            .collect();
+        controls.output.set_columns(&columns)?;
         controls.running(false)?;
         Ok(Self {
-            _captions: [target_caption, port_caption],
+            _captions: captions,
             controls,
             background,
             active: None,
@@ -207,20 +260,29 @@ impl Page {
             }
             return Ok(());
         }
-        let kind = if event.node == controls.ping.id() || event.node == controls.target.id() {
-            Kind::Ping
-        } else if event.node == controls.trace.id() {
-            Kind::Trace
-        } else if event.node == controls.upload.id() || event.node == controls.download.id() {
-            let Ok(port) = controls.port.text()?.trim().parse::<NonZeroU16>() else {
-                return controls.status.set_text("端口请输入 1 到 65535。");
-            };
-            Kind::Bandwidth {
-                port,
-                download: event.node == controls.download.id(),
-            }
+        let start = if event.node == controls.target.id() {
+            controls.starts.first().map(|(_, start)| *start)
         } else {
-            return Ok(());
+            controls
+                .starts
+                .iter()
+                .find(|(widget, _)| widget.id() == event.node)
+                .map(|(_, start)| *start)
+        };
+        let kind = match start {
+            None => return Ok(()),
+            Some(Start::Ping) => Kind::Ping,
+            Some(Start::Trace) => Kind::Trace,
+            Some(Start::Bandwidth { download }) => {
+                let port = match &controls.port {
+                    Some(port) => port.text()?.trim().parse::<NonZeroU16>().ok(),
+                    None => None,
+                };
+                let Some(port) = port else {
+                    return controls.status.set_text("端口请输入 1 到 65535。");
+                };
+                Kind::Bandwidth { port, download }
+            }
         };
         match Probe::start(
             app,

@@ -159,10 +159,14 @@ fn handle(
             )
             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             let (generation, control) = execution_control(owner, metadata.domain)?;
-            (generation, control.firewall_counters(cursor)?)
+            let counters = control.firewall_counters(cursor)?;
+            if owner.inner.lock().generation != generation {
+                return Err(native_abi::ERR_BAD_STATE);
+            }
+            (generation, counters)
         }
         ordinal::NEIGHBOR_PAGE => {
-            let after = router_protocol::neighbors::parse_cursor(
+            let cursor = router_protocol::neighbors::Cursor::parse(
                 content.as_deref().ok_or(native_abi::ERR_INVALID_ARGS)?,
             )
             .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
@@ -170,7 +174,7 @@ fn handle(
             (
                 generation,
                 namespace
-                    .neighbor_page(after)
+                    .neighbor_page(cursor)
                     .map_err(configuration_status)?,
             )
         }

@@ -512,9 +512,9 @@ impl NamespaceService for NamespaceServer {
 
     fn neighbor_page(
         &self,
-        after: Option<router_protocol::neighbors::Key>,
+        cursor: router_protocol::neighbors::Cursor,
     ) -> Result<Vec<u8>, SocketError> {
-        inet::neighbor_page(&self.0, after)
+        inet::neighbor_page(&self.0, cursor)
     }
 
     fn route_page(

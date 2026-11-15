@@ -85,6 +85,13 @@ fn native_arp_gateway_exhausts_committed_probes_and_recovers_from_valid_reply() 
     device.wire.lock().unwrap().0.push_back(reply);
     poll(4002);
     assert_eq!(rank(), (true, true));
+    use router_protocol::{neighbors::{Cursor, Page}, routing::Family};
+    let ipv4 = Cursor::first(Family::Ipv4);
+    let rows = Page::parse(&crate::inet::neighbor_page(&net, ipv4).unwrap(), ipv4).unwrap().rows;
+    assert!(rows.iter().any(|row| row.neighbor.address == gateway && row.neighbor.hardware_address.is_some()));
+    let ipv6 = Cursor::first(Family::Ipv6);
+    let rows = Page::parse(&crate::inet::neighbor_page(&net, ipv6).unwrap(), ipv6).unwrap().rows;
+    assert!(rows.is_empty());
     sender.close_description();
 }
 

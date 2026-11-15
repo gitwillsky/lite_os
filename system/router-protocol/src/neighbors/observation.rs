@@ -1,6 +1,6 @@
 //! 已认证会话上的单页邻居观察。增量引用上一帧的页内位置。
 
-use super::{Decoder, ENTRY_BYTES, Entry, Invalid, Key, Page, extent};
+use super::{Cursor, Decoder, ENTRY_BYTES, Entry, Invalid, Page, extent};
 use crate::management::page_delta;
 use alloc::vec::Vec;
 
@@ -28,12 +28,12 @@ impl Changes {
     /// 从已验证的上一页重建当前页，失败时保留上一页。
     /// # Errors
     /// 新增位置缺失、行顺序与游标不符或分配失败。
-    pub fn apply(self, previous: &Page, after: Option<Key>) -> Result<Page, Invalid> {
+    pub fn apply(self, previous: &Page, cursor: Cursor) -> Result<Page, Invalid> {
         let page = Page {
             rows: self.rows.apply(&previous.rows)?,
             more: self.more,
         };
-        page.validate(after)?;
+        page.validate(Some(cursor))?;
         Ok(page)
     }
 }
@@ -69,11 +69,11 @@ impl Update {
     /// 读取一帧。变化在应用到上一页后再验证排序和游标。
     /// # Errors
     /// 标签、长度、变化位置或条目无效，或分配失败。
-    pub fn parse(bytes: &[u8], after: Option<Key>) -> Result<Self, Invalid> {
+    pub fn parse(bytes: &[u8], cursor: Cursor) -> Result<Self, Invalid> {
         let mut decoder = Decoder::new(bytes);
         let update = match decoder.u8()? {
             crate::management::OBSERVATION_HEARTBEAT => Self::Heartbeat,
-            SNAPSHOT => Self::Snapshot(Page::parse(decoder.take(bytes.len() - 1)?, after)?),
+            SNAPSHOT => Self::Snapshot(Page::parse(decoder.take(bytes.len() - 1)?, cursor)?),
             CHANGES => {
                 let (count, more) = extent(&mut decoder)?;
                 let rows = page_delta::Delta::read(&mut decoder, count, Entry::read)?;

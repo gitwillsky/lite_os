@@ -19,6 +19,7 @@ mod admission;
 mod bgp;
 mod entries;
 mod firewall;
+pub(crate) use firewall::{RuleKind, edit_rule, rule_address};
 mod interfaces;
 pub(crate) use interfaces::{
     ADMIN_STATES, Field, Fields, LiveInterface, admin_index, apply_fields, edit_ipv4_of,
@@ -31,6 +32,7 @@ mod route;
 mod routing_domains;
 mod services;
 mod switching;
+pub(crate) use switching::Page as BridgePage;
 
 const ROWS: usize = 64;
 
@@ -39,7 +41,6 @@ pub(crate) enum Section {
     Interfaces,
     Bridges,
     AddressServices,
-    Firewall,
     Ospf,
     Bgp,
     Admission,
@@ -137,7 +138,6 @@ pub(super) async fn run(
             Section::Interfaces => &edit_interfaces,
             Section::Bridges => &bridges,
             Section::AddressServices => &address_services,
-            Section::Firewall => &filtering,
             Section::Ospf => &ospf,
             Section::Bgp => &bgp,
             Section::Admission => &admission,
@@ -676,7 +676,7 @@ async fn edit_forwarding_cpus(
     Ok(None)
 }
 
-fn interface_names(
+pub(crate) fn interface_names(
     config: &RouterConfiguration,
     domain: Option<&ConfigurationName>,
 ) -> Vec<ConfigurationName> {

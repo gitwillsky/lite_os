@@ -20,10 +20,14 @@ use std::{cell::RefCell, io, os::fd::AsFd, rc::Rc, sync::Arc};
 mod bgp;
 mod editor;
 mod ospf;
+mod static_routes;
+pub(crate) use editor::{RuleKind, edit_rule, interface_names, rule_address};
+
+pub(super) use static_routes::Page as StaticRoutes;
 
 pub(super) use editor::{
-    ADMIN_STATES, Field, Fields, LiveInterface, Section, admin_index, apply_fields, edit_ipv4_of,
-    edit_ipv6_of,
+    ADMIN_STATES, BridgePage, Field, Fields, LiveInterface, Section, admin_index, apply_fields,
+    edit_ipv4_of, edit_ipv6_of,
 };
 
 #[derive(Clone, Copy)]
@@ -55,7 +59,6 @@ struct View {
     previous: Tool,
     next: Tool,
     refresh: Tool,
-    configure: Tool,
     filter: Tool,
     family: Widget,
     destination: Widget,
@@ -84,11 +87,9 @@ impl Page {
                 ..Default::default()
             },
         )?;
-        let [configure, _, filter, _, previous, next, refresh] = toolbar(
+        let [filter, _, previous, next, refresh] = toolbar(
             &bar,
             [
-                Item::Command(Glyph::Add, "新建"),
-                Item::Separator,
                 Item::Icon(Glyph::Filter, "按目的网段筛选"),
                 Item::Separator,
                 Item::Icon(Glyph::Previous, "上一页"),
@@ -198,7 +199,6 @@ impl Page {
             previous,
             next,
             refresh,
-            configure,
             summary: Summary::new(parent)?,
             snapshot: RefCell::default(),
         };
@@ -273,9 +273,6 @@ impl Page {
         };
         if family.is_none() && !matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(());
-        }
-        if self.view.configure.activated(event) {
-            return self.open(app, window, Dialog::Settings(None));
         }
         if self.view.filter.activated(event) || event.node == self.view.destination.id() {
             let text = self.view.destination.text()?;

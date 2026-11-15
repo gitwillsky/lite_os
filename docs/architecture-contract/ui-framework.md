@@ -242,8 +242,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Node.updown 只持有按住方向与下一次重复时刻，数值仍由 range/position 唯一持有；缺少重复时刻按住不会连续步进。
   定时推进返回的 CHANGED 由 Context 收集后入应用事件队列。CalWnd 的 Calendar 只持有选定日期，显示月份即该日期所在月。
 - Node.status_parts 与 Node.background 只保存复制后的分格宽度、底色和共享位图引用；位图由资源上下文保活。
-- Toolbar::set_buttons 返回 ToolbarChange：id/样式/文字/图像宽度变化才重排，状态、帧或位图变化只重画，完全相同不失效。
-  媒体播放机这类应用每次状态变化整组提交按钮；缺少该分级，每次暂停/音量事件都会触发整窗布局与光栅。
+- Toolbar::set_buttons 用 ToolbarChange 区分重排（id、样式、文字、图片宽度）、重画（状态、帧、图片变化）及相同项。播放器重复提交整组按钮时可复用排版。
 - 滑块样式按 comctl32：state 位 TRACK_NO_TICKS（TBS_NOTICKS）不画刻度、自然高度为滑块高度，TRACK_BOTH（TBS_BOTH）画
   BF_SOFT 矩形滑块。Node::slider_rect 是绘制与命中共用的唯一几何：无刻度时在被拉伸的行内沿垂直轨道方向居中。
   `slider_channel(window, id, bitmap, source_x, source_width)` 追加到 ABI 表尾，等价于 NM_CUSTOMDRAW 的 TBCD_CHANNEL：
@@ -251,11 +250,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   非滑块、竖向、缺图或越界返回 INVALID 且旧凹槽不变。
 - Canvas 显示列表的 kind 8 是系统界面位图：在 set_drawing 时按名称一次解析到 Command.bitmap，绘制时原尺寸居中并裁剪，
   缺图不画；Command 相等只比较应用提交字段（位图由名称唯一决定），资源缓存逐出不会造成误判重绘。
-- Canvas kind 9 是逆时针旋转 90° 的单行文字（侧边栏竖排标题）：Painter 逐字形转置覆盖率后按自下而上排布，裁剪到命令矩形。
-  `set_font` 同样接受 Canvas，其文字命令（3/4/6/9）在绘制时改用该派生字体。
+- Canvas kind 9 将单行文字逆时针旋转 90°，按字形转置并裁剪到命令矩形。`set_font` 可为 Canvas 文字命令 3/4/6/9 指定字体。
 - 工具栏的选择性文字按钮没有位图条时不保留图像位（comctl32 `I_IMAGENONE`），纯文字命令与图标按钮可混排在同一工具栏。
-- `text_width(window, role, text, out)` 追加到 ABI 表尾（GetTextExtentPoint32）：按窗口当前 scale 用与控件绘制相同的主题字体
-  度量逻辑宽度，字体用途编号与 set_font 共用 `font_role`；用于状态栏分格等按实际字体决定的固定宽度。
+- ABI 表尾的 `text_width(window, role, text, out)` 按当前 scale 和共享的主题字体用途度量逻辑宽度，用于状态栏分格等布局（GetTextExtentPoint32）。
 - 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
 - Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；沿用现有 canvas/GPU 基线，不新增该操作的 wall-clock 阈值。
 

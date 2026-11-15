@@ -78,6 +78,9 @@ impl Firewall {
     ]}}
 ]))]
 pub struct PreroutingRule {
+    /// 停用规则仍保留其链内位置，重新启用后在原位置参与分类。
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub disabled: bool,
     /// 缺省匹配所有入接口。
     pub ingress: Option<Name>,
     /// 缺省匹配两族的任意来源。指定时只匹配该地址族。
@@ -342,6 +345,7 @@ impl Firewall {
                     },
                 };
                 Ok(firewall::Rule {
+                    disabled: rule.disabled,
                     ingress,
                     source: rule.source,
                     destination,

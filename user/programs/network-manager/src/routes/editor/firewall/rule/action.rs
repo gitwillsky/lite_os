@@ -1,7 +1,7 @@
 //! 动作仅显示当前选择需要的参数，覆盖同族单向与组合 NAT。
 
 use super::super::super::optional_word;
-use super::{choice_field, field, form, form_buttons, optional_port, selection};
+use super::{RuleKind, choice_field, field, form, form_buttons, optional_port, selection};
 use crate::child;
 use liteos_ui::{Dialogs, EventKind, Layout, Widget, WidgetKind, Window, state};
 use network_config::configuration::{ConfigurationName, NatSource, NatTarget, PreroutingAction};
@@ -10,38 +10,56 @@ pub(super) async fn edit(
     dialogs: &Dialogs,
     parent: &Window,
     chains: &[&ConfigurationName],
-    current: &PreroutingAction,
+    current: Option<&PreroutingAction>,
+    scope: Option<RuleKind>,
 ) -> liteos_ui::Result<Option<PreroutingAction>> {
     let (_window, mut events, root) = form(dialogs, parent, "防火墙动作", 520, 335)?;
-    let kind = choice_field(
-        &root,
-        "动作",
-        [
-            "放行",
-            "丢弃",
-            "返回",
-            "设置路由标记",
-            "跳转到子链",
-            "目的地址转换",
-            "固定源地址转换",
-            "自动源地址转换",
-        ],
-    )?;
-    let (index, mark, chain, target, source) = match *current {
-        PreroutingAction::Accept => (0, None, None, None, None),
-        PreroutingAction::Drop => (1, None, None, None, None),
-        PreroutingAction::Return => (2, None, None, None, None),
-        PreroutingAction::SetMark { value } => (3, Some(value), None, None, None),
-        PreroutingAction::Jump { ref chain } => (4, None, Some(chain), None, None),
-        PreroutingAction::DestinationNat {
+    let names = [
+        "放行",
+        "丢弃",
+        "返回",
+        "设置路由标记",
+        "跳转到子链",
+        "目的地址转换",
+        "固定源地址转换",
+        "自动源地址转换",
+    ];
+    let kinds: &[usize] = match scope {
+        Some(RuleKind::Filter) => &[0, 1, 2, 4],
+        Some(RuleKind::Nat) => &[5, 6, 7],
+        None => &[0, 1, 2, 3, 4, 5, 6, 7],
+    };
+    let kind = choice_field(&root, "动作", kinds.iter().map(|&index| names[index]))?;
+    let (index, mark, chain, target, source) = match current {
+        None => (kinds[0], None, None, None, None),
+        Some(PreroutingAction::Accept) => (0, None, None, None, None),
+        Some(PreroutingAction::Drop) => (1, None, None, None, None),
+        Some(PreroutingAction::Return) => (2, None, None, None, None),
+        Some(PreroutingAction::SetMark { value }) => (3, Some(*value), None, None, None),
+        Some(PreroutingAction::Jump { chain }) => (4, None, Some(chain), None, None),
+        Some(PreroutingAction::DestinationNat {
             address,
             port,
             source,
-        } => (5, None, None, Some(NatTarget { address, port }), source),
-        PreroutingAction::SourceNat(value) => (6, None, None, Some(value), None),
-        PreroutingAction::Masquerade => (7, None, None, None, None),
+        }) => (
+            5,
+            None,
+            None,
+            Some(NatTarget {
+                address: *address,
+                port: *port,
+            }),
+            *source,
+        ),
+        Some(PreroutingAction::SourceNat(value)) => (6, None, None, Some(*value), None),
+        Some(PreroutingAction::Masquerade) => (7, None, None, None, None),
     };
-    kind.select(Some(index + 1))?;
+    let index = kinds
+        .iter()
+        .position(|&kind| index == kind)
+        .expect("rule action belongs to the pane");
+    kind.select(Some(index as u64 + 1))?;
+    let selected = || Ok::<_, liteos_ui::Error>(kinds[selection(&kind)?.unwrap_or(0)]);
     let mark_panel = panel(&root)?;
     let (_, mark) = field(
         &mark_panel,
@@ -79,7 +97,7 @@ pub(super) async fn edit(
     status.set_state(state::WRAP)?;
     let (save, cancel) = form_buttons(&root)?;
     let refresh = || {
-        let action = selection(&kind)?.unwrap_or(0);
+        let action = selected()?;
         let set_visible =
             |panel: &Widget, visible| panel.set_state(if visible { 0 } else { state::HIDDEN });
         set_visible(&mark_panel, action == 3)?;
@@ -115,7 +133,7 @@ pub(super) async fn edit(
                 refresh()?
             }
             EventKind::Activate { .. } if event.node == save.id() => {
-                let result = match selection(&kind)?.unwrap_or(0) {
+                let result = match selected()? {
                     0 => PreroutingAction::Accept,
                     1 => PreroutingAction::Drop,
                     2 => PreroutingAction::Return,

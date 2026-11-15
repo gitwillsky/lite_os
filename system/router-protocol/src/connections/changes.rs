@@ -1,9 +1,13 @@
 //! 实时连接变更的有界批次。序号独立于连接 ID，过旧或跨实例的游标需要重新查询。
 
-use super::{CURSOR_BYTES, Connection, Decoder, Invalid, ROW, VERSION};
+use super::{
+    Connection, Decoder, Invalid, POSITION_BYTES, ROW, VERSION, encode_position, parse_position,
+};
 use alloc::vec::Vec;
 
 const HEADER: usize = 22;
+/// 固定变更游标长度。
+pub const CURSOR_BYTES: usize = POSITION_BYTES;
 /// 每批最多返回的变化条数。
 pub const LIMIT: usize = 64;
 /// 变更正文的传输上限。
@@ -21,22 +25,15 @@ pub struct Cursor {
 impl Cursor {
     /// 编码变更游标，起始请求使用全零字段。
     pub fn encode(self) -> [u8; CURSOR_BYTES] {
-        super::Cursor {
-            epoch: self.epoch,
-            after: self.sequence,
-        }
-        .encode()
+        encode_position(1, self.epoch, self.sequence)
     }
 
     /// 解码完整请求正文。
     /// # Errors
     /// 长度、版本或字段组合不合法。
     pub fn parse(bytes: &[u8]) -> Result<Self, Invalid> {
-        let cursor = super::Cursor::parse(bytes)?;
-        Ok(Self {
-            epoch: cursor.epoch,
-            sequence: cursor.after,
-        })
+        let (epoch, sequence) = parse_position(1, bytes)?;
+        Ok(Self { epoch, sequence })
     }
 }
 

@@ -12,6 +12,8 @@ use std::{
 
 mod gateway;
 mod port;
+mod workspace;
+pub(crate) use workspace::Page;
 
 pub(super) async fn edit(
     dialogs: &Dialogs,
@@ -109,7 +111,16 @@ pub(super) async fn edit(
         })
         .collect();
 
-    for name in next.values().flat_map(|bridge| bridge.ports.keys()) {
+    clear_port_addresses(interfaces, &next);
+    *draft = next;
+    Ok(true)
+}
+
+fn clear_port_addresses(
+    interfaces: &mut BTreeMap<ConfigurationName, RouterInterface>,
+    bridges: &BTreeMap<ConfigurationName, Bridge>,
+) {
+    for name in bridges.values().flat_map(|bridge| bridge.ports.keys()) {
         let profile = interfaces
             .get_mut(name)
             .expect("bridge member comes from the interface draft");
@@ -119,8 +130,6 @@ pub(super) async fn edit(
         profile.dhcp_v4_server = None;
         profile.default_route = None;
     }
-    *draft = next;
-    Ok(true)
 }
 
 async fn edit_bridge(
@@ -133,13 +142,13 @@ async fn edit_bridge(
     let current = index.map(|index| &bridges[index]);
     let mut draft = current.map_or_else(Bridge::default, |(_, bridge)| bridge.as_ref().clone());
     let (window, mut events, root) = form(dialogs, parent, "网桥属性", 570, 258)?;
-    let (_, name) = field(
+    let (_name_label, name) = field(
         &root,
         "网桥名称",
         current.map_or("", |(name, _)| name.as_str()),
     )?;
     let rstp = checkbox(&root, "启用快速生成树（RSTP）", draft.rstp)?;
-    let (_, priority) = field(&root, "网桥优先级", &draft.priority.to_string())?;
+    let (_priority_label, priority) = field(&root, "网桥优先级", &draft.priority.to_string())?;
     let bar = child(&root, WidgetKind::Row, "", row())?;
     let ports = child(
         &bar,

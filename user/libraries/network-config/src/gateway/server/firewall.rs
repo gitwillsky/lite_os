@@ -79,6 +79,7 @@ mod tests {
                         next: None,
                         rows: vec![Counter {
                             rule: Rule {
+                                disabled: false,
                                 ingress: Ingress::Any,
                                 source: None,
                                 destination: Destination::Any,

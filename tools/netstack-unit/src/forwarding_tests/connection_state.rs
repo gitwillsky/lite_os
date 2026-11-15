@@ -10,7 +10,7 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
         ipv4::Ipv4Header,
         tcp::{self, TcpHeader},
     };
-    use router_protocol::connections::{Cursor, Identity, PAGE_LIMIT, Page, Phase, Protocol};
+    use router_protocol::connections::{Cursor, Family, Identity, PAGE_LIMIT, Page, Phase, Protocol};
     use router_protocol::connections::changes::{Batch, Change, Cursor as ChangeCursor};
 
     let _serial = SERIAL.lock().unwrap();
@@ -410,11 +410,12 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     let cursor = Cursor {
         epoch: opening.epoch,
         after: opening.rows[0].id,
+        ..first_page
     };
     let established = connections(cursor, 2008);
     let replied = changes(opened.cursor);
     assert_eq!(replied.changes.len(), 2);
-    assert!(replied.changes.iter().all(|change| matches!(change, Change::Updated(row) if row.phase == Phase::Established)));
+    assert!(replied.changes.iter().all(|change| matches!(change, Change::Updated(row) if row.phase == Phase::Established && row.seen_reply)));
     assert_eq!(established.rows.len(), 1);
     assert_eq!(established.rows[0].id, opening.rows[1].id);
     assert_eq!((established.rows[0].phase, established.rows[0].idle_ms), (Phase::Established, 120_000));
@@ -590,13 +591,25 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     let first = connections(first_page, 152_025);
     assert_eq!(first.rows.len(), PAGE_LIMIT);
     assert_eq!(first.next, first.rows.last().map(|row| row.id));
-    let cursor = Cursor { epoch: first.epoch, after: first.next.unwrap() };
+    let cursor = Cursor { epoch: first.epoch, after: first.next.unwrap(), ..first_page };
     let rest = connections(cursor, 152_025);
     assert_eq!(rest.rows.len(), 2);
     assert_eq!(rest.next, None);
     assert!(rest.rows.iter().all(|row| {
         row.id > cursor.after && row.source.port() == 42000 + PAGE_LIMIT as u16 / 2
     }));
+    for family in [Family::Ipv4, Family::Ipv6] {
+        let scope = Cursor { family, ..first_page };
+        assert_eq!(Cursor::parse(&scope.encode()).unwrap(), scope);
+        let page = connections(scope, 152_025);
+        assert!(page.next.is_none());
+        assert_eq!(
+            page.rows,
+            first.rows.iter().chain(&rest.rows).copied()
+                .filter(|row| family.includes(row.source.ip())).collect::<Vec<_>>(),
+        );
+        assert!(Page::parse(&first.encode().unwrap(), scope).is_err());
+    }
     let stale = Cursor { epoch: first.epoch.wrapping_add(1).max(1), ..cursor };
     assert_eq!(
         crate::inet::stack(&net).unwrap().lock().unwrap()
@@ -644,7 +657,7 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     inject_pair(&a, false, (42000, 53), false);
     poll(&net, 152_030);
     assert_eq!(forwarded(&b), 2);
-    let replacement_cursor = Cursor { epoch: first.epoch, after: rest.rows.last().unwrap().id };
+    let replacement_cursor = Cursor { epoch: first.epoch, after: rest.rows.last().unwrap().id, ..first_page };
     let replacement = connections(replacement_cursor, 152_030);
     assert_eq!(replacement.rows.len(), 1);
     assert_eq!(replacement.rows[0].source, target.source);
@@ -710,6 +723,20 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     }
     let added = changes(checkpoint.cursor);
     assert_eq!(added.changes.len(), 2);
+    for (family, ((client, server), change)) in peers.into_iter().zip(&added.changes).enumerate() {
+        let Change::Added(row) = change else { panic!("NAT starts a new flow") };
+        assert_eq!(row.source, core::net::SocketAddr::new(client, 49_000));
+        assert_eq!(row.destination, core::net::SocketAddr::new(public[family], 53));
+        assert_eq!(row.reply_source, core::net::SocketAddr::new(server, 5300));
+        assert_eq!(row.reply_destination, row.source);
+        assert!(!row.seen_reply);
+        let scope = Cursor {
+            family: [Family::Ipv4, Family::Ipv6][family],
+            epoch: checkpoint.cursor.epoch,
+            after: row.id - 1,
+        };
+        assert_eq!(connections(scope, 152_034).rows.first(), Some(row));
+    }
     let collisions = ["10.41.0.202", "2001:db8:29::ca"].map(|address| address.parse().unwrap());
     request(collisions, 53);
     request(public, 54);
@@ -822,10 +849,15 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     for (family, pieces) in replies.as_chunks::<2>().0.iter().enumerate() {
         assert_fragmented_udp(pieces, (public[family], peers[family].0), (53, 49_000));
     }
+    let updates = changes(added.cursor);
     for change in added.changes {
         let Change::Added(row) = change else {
             panic!("NAT starts a new flow");
         };
+        assert!(updates.changes.iter().any(|change| matches!(change, Change::Updated(reply)
+            if reply.id == row.id && reply.seen_reply
+                && reply.reply_source == row.reply_source
+                && reply.reply_destination == row.reply_destination)));
         clear(
             Identity {
                 epoch: checkpoint.cursor.epoch,
@@ -981,8 +1013,19 @@ fn stateful_rules_follow_dual_stack_transmit_and_idle_expiry() {
     );
     let outside = [IpAddr::from(Ipv4Addr::new(10, 41, 0, 15)), B.into()];
     let ports = [5300, 49_002];
+    let checkpoint = changes(ChangeCursor::default());
     inject_pair(&a, false, (49_002, 53), false);
     poll(&net, 152_044);
+    let snat = changes(checkpoint.cursor);
+    assert_eq!(snat.changes.len(), 2);
+    for (index, ((client, server), change)) in peers.into_iter().zip(&snat.changes).enumerate() {
+        let Change::Added(row) = change else { panic!("NAT starts a new flow") };
+        assert_eq!(row.source, core::net::SocketAddr::new(client, 49_002));
+        assert_eq!(row.destination, core::net::SocketAddr::new(server, 53));
+        assert_eq!(row.reply_source, core::net::SocketAddr::new(server, 53));
+        assert_eq!(row.reply_destination, core::net::SocketAddr::new(outside[index], ports[index]));
+        assert!(!row.seen_reply);
+    }
     let requests = frames(&b);
     assert_eq!(requests.len(), 2);
     for (family, frame) in requests.iter().enumerate() {

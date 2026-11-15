@@ -133,6 +133,7 @@ mod tests {
     fn observation_uses_only_changed_rows_and_resends_snapshot_on_revision_change() {
         let cursor = Cursor::default();
         let rule = Rule {
+            disabled: false,
             ingress: Ingress::Any,
             source: None,
             destination: Destination::Any,

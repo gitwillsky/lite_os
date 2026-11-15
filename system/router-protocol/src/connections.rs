@@ -6,24 +6,50 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 pub mod changes;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER: usize = 20;
-const ROW: usize = 56;
+const ROW: usize = 92;
+const POSITION_BYTES: usize = 20;
 /// 单次回复最多包含的实际连接数。
 pub const PAGE_LIMIT: usize = 64;
 /// 最大分页正文长度；传输端在映射正文前校验。
 pub const MAX_PAGE_BYTES: u64 = (HEADER + ROW * PAGE_LIMIT) as u64;
 /// 固定分页请求长度。
-pub const CURSOR_BYTES: usize = 20;
+pub const CURSOR_BYTES: usize = POSITION_BYTES + 1;
+/// 固定清除请求长度。
+pub const IDENTITY_BYTES: usize = POSITION_BYTES;
 
 pub(crate) fn valid_page_length(length: u64) -> bool {
     (HEADER as u64..=MAX_PAGE_BYTES).contains(&length)
         && (length - HEADER as u64).is_multiple_of(ROW as u64)
 }
 
-/// 执行实例与上次检查到的连接 ID。全零开启一次新遍历。
+/// 查询所覆盖的连接地址族。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Family {
+    #[default]
+    All = 0,
+    Ipv4 = 4,
+    Ipv6 = 6,
+}
+
+impl Family {
+    /// 判断端点地址是否属于查询覆盖的地址族。
+    pub fn includes(self, address: IpAddr) -> bool {
+        match self {
+            Self::All => true,
+            Self::Ipv4 => address.is_ipv4(),
+            Self::Ipv6 => address.is_ipv6(),
+        }
+    }
+}
+
+/// 查询地址族、执行实例与上次检查到的连接 ID。零实例和零位置开启一次新遍历。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Cursor {
+    /// 本次遍历所覆盖的地址族，续页保持相同值。
+    pub family: Family,
     /// 转发实例标识；首次查询为零。
     pub epoch: u64,
     /// 上一页返回的继续位置；首次查询为零。
@@ -34,9 +60,8 @@ impl Cursor {
     /// 编码一次分页请求。零实例仅用于起始游标。
     pub fn encode(self) -> [u8; CURSOR_BYTES] {
         let mut bytes = [0; CURSOR_BYTES];
-        bytes[..4].copy_from_slice(&VERSION.to_le_bytes());
-        bytes[4..12].copy_from_slice(&self.epoch.to_le_bytes());
-        bytes[12..20].copy_from_slice(&self.after.to_le_bytes());
+        bytes[..POSITION_BYTES].copy_from_slice(&encode_position(VERSION, self.epoch, self.after));
+        bytes[POSITION_BYTES] = self.family as u8;
         bytes
     }
 
@@ -44,20 +69,41 @@ impl Cursor {
     /// # Errors
     /// 长度、版本或起始游标的字段不合法。
     pub fn parse(bytes: &[u8]) -> Result<Self, Invalid> {
-        let mut input = Decoder::new(bytes);
-        if input.u32()? != VERSION {
-            return Err(Invalid);
-        }
-        let cursor = Self {
-            epoch: input.u64()?,
-            after: input.u64()?,
+        let (family, position) = bytes.split_last().ok_or(Invalid)?;
+        let family = match family {
+            0 => Family::All,
+            4 => Family::Ipv4,
+            6 => Family::Ipv6,
+            _ => return Err(Invalid),
         };
-        input.finish()?;
-        if (cursor.epoch == 0) != (cursor.after == 0) {
-            return Err(Invalid);
-        }
-        Ok(cursor)
+        let (epoch, after) = parse_position(VERSION, position)?;
+        Ok(Self {
+            family,
+            epoch,
+            after,
+        })
     }
+}
+
+fn encode_position(version: u32, epoch: u64, position: u64) -> [u8; POSITION_BYTES] {
+    let mut bytes = [0; POSITION_BYTES];
+    bytes[..4].copy_from_slice(&version.to_le_bytes());
+    bytes[4..12].copy_from_slice(&epoch.to_le_bytes());
+    bytes[12..].copy_from_slice(&position.to_le_bytes());
+    bytes
+}
+
+fn parse_position(version: u32, bytes: &[u8]) -> Result<(u64, u64), Invalid> {
+    let mut input = Decoder::new(bytes);
+    if input.u32()? != version {
+        return Err(Invalid);
+    }
+    let (epoch, position) = (input.u64()?, input.u64()?);
+    input.finish()?;
+    if (epoch == 0) != (position == 0) {
+        return Err(Invalid);
+    }
+    Ok((epoch, position))
 }
 
 /// 管理操作指定的单条连接。实例变化或同一端点复用时，旧身份不能命中新连接。
@@ -71,19 +117,15 @@ pub struct Identity {
 
 impl Identity {
     /// 编码实例和连接 ID。两者必须非零才会被接收方接受。
-    pub fn encode(self) -> [u8; CURSOR_BYTES] {
-        Cursor {
-            epoch: self.epoch,
-            after: self.id,
-        }
-        .encode()
+    pub fn encode(self) -> [u8; IDENTITY_BYTES] {
+        encode_position(1, self.epoch, self.id)
     }
 
     /// 解码固定长度的非零连接身份。
     /// # Errors
     /// 长度、版本或身份字段不合法。
     pub fn parse(bytes: &[u8]) -> Result<Self, Invalid> {
-        let Cursor { epoch, after: id } = Cursor::parse(bytes)?;
+        let (epoch, id) = parse_position(1, bytes)?;
         if id == 0 {
             return Err(Invalid);
         }
@@ -110,7 +152,7 @@ pub enum Phase {
     Reset = 4,
 }
 
-/// 单条活动连接。Echo 用 source.port 携带标识符，destination.port 为零。
+/// 单条活动连接。Echo 用原方向的源端口和回复方向的目的端口携带标识符。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Connection {
     /// 在转发实例内单调分配的连接 ID。
@@ -119,6 +161,12 @@ pub struct Connection {
     pub source: SocketAddr,
     /// 首次转发方向的目的端点。
     pub destination: SocketAddr,
+    /// 回复方向上线时的源端点，应用逆向 NAT 之前。
+    pub reply_source: SocketAddr,
+    /// 回复方向上线时的目的端点，应用逆向 NAT 之前。
+    pub reply_destination: SocketAddr,
+    /// 已有回复报文成功通过转发。
+    pub seen_reply: bool,
     /// 传输协议或 Echo。
     pub protocol: Protocol,
     /// 查询时的连接阶段。
@@ -129,20 +177,36 @@ pub struct Connection {
 
 impl Connection {
     fn valid(&self) -> bool {
-        self.source.is_ipv4() == self.destination.is_ipv4()
-            && self.id != 0
-            && [self.source, self.destination]
-                .into_iter()
-                .all(|endpoint| match endpoint {
-                    SocketAddr::V4(_) => true,
-                    SocketAddr::V6(endpoint) => {
-                        endpoint.scope_id() == 0 && endpoint.flowinfo() == 0
+        self.id != 0
+            && [
+                self.source,
+                self.destination,
+                self.reply_source,
+                self.reply_destination,
+            ]
+            .into_iter()
+            .all(|endpoint| {
+                endpoint.is_ipv4() == self.source.is_ipv4()
+                    && match endpoint {
+                        SocketAddr::V4(_) => true,
+                        SocketAddr::V6(endpoint) => {
+                            endpoint.scope_id() == 0 && endpoint.flowinfo() == 0
+                        }
                     }
-                })
+            })
             && (if self.protocol == Protocol::Echo {
                 self.destination.port() == 0
+                    && self.reply_source.port() == 0
+                    && self.source.port() == self.reply_destination.port()
             } else {
-                self.source.port() != 0 && self.destination.port() != 0
+                [
+                    self.source,
+                    self.destination,
+                    self.reply_source,
+                    self.reply_destination,
+                ]
+                .iter()
+                .all(|endpoint| endpoint.port() != 0)
             })
             && (self.protocol == Protocol::Tcp
                 || matches!(self.phase, Phase::Opening | Phase::Established))
@@ -155,9 +219,14 @@ impl Connection {
             if self.source.is_ipv4() { 4 } else { 6 },
             self.protocol as u8,
             self.phase as u8,
-            0,
+            u8::from(self.seen_reply),
         ]);
-        for endpoint in [self.source, self.destination] {
+        for endpoint in [
+            self.source,
+            self.destination,
+            self.reply_source,
+            self.reply_destination,
+        ] {
             bytes.extend_from_slice(&endpoint.port().to_le_bytes());
             match endpoint.ip() {
                 IpAddr::V4(address) => {
@@ -187,9 +256,11 @@ impl Connection {
             4 => Phase::Reset,
             _ => return Err(Invalid),
         };
-        if input.u8()? != 0 {
-            return Err(Invalid);
-        }
+        let seen_reply = match input.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Invalid),
+        };
         let mut endpoint = || {
             let port = u16::from_le_bytes(input.take(2)?.try_into().map_err(|_| Invalid)?);
             let octets: [u8; 16] = input.take(16)?.try_into().map_err(|_| Invalid)?;
@@ -204,6 +275,8 @@ impl Connection {
         };
         let source = endpoint()?;
         let destination = endpoint()?;
+        let reply_source = endpoint()?;
+        let reply_destination = endpoint()?;
         input.finish()?;
         Ok(Self {
             id,
@@ -212,6 +285,9 @@ impl Connection {
             phase,
             source,
             destination,
+            reply_source,
+            reply_destination,
+            seen_reply,
         })
     }
 }
@@ -287,6 +363,12 @@ impl Page {
         for row in rows {
             page.rows.push(Connection::read(row)?);
         }
-        page.valid(cursor.after).then_some(page).ok_or(Invalid)
+        (page.valid(cursor.after)
+            && page
+                .rows
+                .iter()
+                .all(|row| cursor.family.includes(row.source.ip())))
+        .then_some(page)
+        .ok_or(Invalid)
     }
 }

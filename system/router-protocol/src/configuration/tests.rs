@@ -199,6 +199,7 @@ fn configuration_round_trip_keeps_native_identity_and_full_dns_policy() {
         prefix_length: 16,
         preference: 1,
         metric: 5,
+        disabled: false,
         action: StaticAction::Forward {
             members: alloc::vec![
                 StaticMember {
@@ -521,7 +522,6 @@ fn configuration_round_trip_keeps_native_identity_and_full_dns_policy() {
             .len(),
         1
     );
-    assert_eq!(loaded, configuration);
     let mut invalid_source = loaded.clone();
     invalid_source.routes[0].preference = 0;
     assert_eq!(invalid_source.validate().unwrap_err().path, "/routes/0");

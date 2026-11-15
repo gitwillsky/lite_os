@@ -172,6 +172,7 @@ pub(super) async fn edit(
                     prefix_length: prefix.length,
                     preference: preference_value,
                     metric: metric_value,
+                    disabled: current.is_some_and(|route| route.disabled),
                     action,
                 }));
             }

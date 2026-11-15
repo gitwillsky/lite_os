@@ -109,6 +109,9 @@ pub struct StaticRoute {
     pub preference: u32,
     #[serde(default)]
     pub metric: u32,
+    /// 持久停用状态。缺省仍参与选路，停用则保留声明但撤出全部运行时候选。
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub disabled: bool,
     pub action: StaticAction,
 }
 /// 转发与显式终止动作；终止不带无效的出口字段。
@@ -241,7 +244,7 @@ pub(super) fn validate(
 /// # Parameters
 /// `reference` 只解析当前路由域内的接口配置名。`resolve` 将稳定引用解析到当前 ifindex；缺席返回 None，含糊返回 Invalid。
 /// # Returns
-/// 可捕获的指定地址族完整来源；没有实际成员的转发组暂退，设备重现后重新投影持久声明。
+/// 可捕获的指定地址族完整来源；只包含启用声明。没有实际成员的转发组暂退，设备重现后重新投影。
 /// # Errors
 /// 未知引用、无效正文/数量、设备匹配含糊或内存不足；没有部分结果。
 pub(super) fn compile<'a>(
@@ -252,10 +255,11 @@ pub(super) fn compile<'a>(
 ) -> Result<Vec<u8>, crate::routing::EncodeError> {
     use crate::routing::{self, Action, Batch, Family, Member, NextHop, Target};
     let declarations = declared.iter().filter(|route| {
-        matches!(
-            (family, route.destination),
-            (Family::Ipv4, IpAddr::V4(_)) | (Family::Ipv6, IpAddr::V6(_))
-        )
+        !route.disabled
+            && matches!(
+                (family, route.destination),
+                (Family::Ipv4, IpAddr::V4(_)) | (Family::Ipv6, IpAddr::V6(_))
+            )
     });
     let count = declarations.clone().count();
     let mut attributes = Vec::new();

@@ -1,21 +1,25 @@
 //! 转发连接观察。服务按身份分页，窗口只持有当前页和一条前瞻记录。
 
+mod property;
+
 use crate::{
     child,
     item_list::{Glyph, Item, Summary, Tool, toolbar},
+    workspace::Workspace,
 };
 use liteos_ui::{
     Application, AsyncFd, Background, Clock, Column, Dialogs, Event, EventKind, Layout,
     ListOptions, ListStyle, MessageButtons, MessageIcon, MessageResult, Sleep, Task, Widget,
-    WidgetKind, Window,
+    WidgetKind, Window, state,
 };
 use network_config::{
     ManagementClient,
     configuration::{
         PendingConnectionWatch,
-        connections::{Connection, Cursor, Identity, Phase, Protocol, changes},
+        connections::{Connection, Cursor, Family, Identity, changes},
     },
 };
+use property::{Field, Property};
 use std::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -36,6 +40,7 @@ pub(super) struct Page {
     view: Rc<View>,
     observer: Option<Task<()>>,
     clear: Option<Task<()>>,
+    family: Family,
     domain: Option<Arc<str>>,
 }
 
@@ -50,6 +55,7 @@ struct View {
     previous: Tool,
     next: Tool,
     refresh: Tool,
+    paging: Widget,
     clear: Tool,
     summary: Summary,
     background: Background,
@@ -63,6 +69,7 @@ struct View {
     // 只记录走过的页边界，回退无需从第一条扫描。
     anchors: RefCell<Vec<u64>>,
     snapshot: RefCell<Snapshot>,
+    property: RefCell<Option<Property>>,
     // 读取和补页未完成时，屏幕上仍可能有旧行，暂不允许使用这些行执行操作。
     available: Cell<bool>,
     // 清除确认和请求共用一个操作期，观察更新不能提前启用清除按钮。
@@ -71,29 +78,12 @@ struct View {
 
 impl Page {
     pub(super) fn new(
-        app: &mut Application,
+        app: &Application,
         parent: &Widget,
         background: Background,
+        family: Family,
     ) -> liteos_ui::Result<Self> {
-        let bar = child(
-            parent,
-            WidgetKind::Row,
-            "",
-            Layout {
-                gap: 6,
-                ..Default::default()
-            },
-        )?;
-        let [clear, _, previous, next, refresh] = toolbar(
-            &bar,
-            [
-                Item::Command(Glyph::Remove, "删除"),
-                Item::Separator,
-                Item::Icon(Glyph::Previous, "上一页"),
-                Item::Icon(Glyph::Next, "下一页"),
-                Item::Icon(Glyph::Refresh, "刷新"),
-            ],
-        )?;
+        let [clear] = toolbar(parent, [Item::Command(Glyph::Remove, "删除")])?;
         let list = child(
             parent,
             WidgetKind::List,
@@ -110,33 +100,32 @@ impl Page {
                 full_row_select: true,
             },
         )?;
-        list.set_columns(&[
-            Column {
-                id: 1,
-                title: "协议",
-                width: 90,
-            },
-            Column {
-                id: 2,
-                title: "源地址",
-                width: 210,
-            },
-            Column {
-                id: 3,
-                title: "目标地址",
-                width: 210,
-            },
-            Column {
-                id: 4,
-                title: "状态",
-                width: 105,
-            },
-        ])?;
+        let columns: Vec<_> = Field::COLUMNS
+            .into_iter()
+            .enumerate()
+            .map(|(index, (field, width))| Column {
+                id: index as u64 + 1,
+                title: field.label(),
+                width,
+            })
+            .collect();
+        list.set_columns(&columns)?;
+        let paging = child(parent, WidgetKind::Column, "", Layout::default())?;
+        paging.set_state(state::HIDDEN)?;
+        let [previous, next, refresh] = toolbar(
+            &paging,
+            [
+                Item::Icon(Glyph::Previous, "上一页"),
+                Item::Icon(Glyph::Next, "下一页"),
+                Item::Icon(Glyph::Refresh, "刷新"),
+            ],
+        )?;
         let view = View {
             list,
             previous,
             next,
             refresh,
+            paging,
             clear,
             summary: Summary::new(parent)?,
             background,
@@ -147,6 +136,7 @@ impl Page {
             changed: Cell::default(),
             anchors: RefCell::new(vec![0]),
             snapshot: RefCell::default(),
+            property: RefCell::default(),
             available: Cell::new(false),
             clearing: Cell::new(false),
         };
@@ -155,6 +145,7 @@ impl Page {
             view: Rc::new(view),
             observer: None,
             clear: None,
+            family,
             domain: None,
         })
     }
@@ -170,6 +161,7 @@ impl Page {
         self.domain = domain;
         self.view.available.set(false);
         self.view.anchors.borrow_mut().truncate(1);
+        self.view.property.borrow_mut().take();
         *self.view.snapshot.borrow_mut() = Snapshot::default();
         self.view.present(true)?;
         if self.view.visible.get() {
@@ -184,14 +176,21 @@ impl Page {
         window: &Window,
         visible: bool,
     ) -> liteos_ui::Result<()> {
-        if self.view.visible.replace(visible) == visible || !visible {
+        if self.view.visible.replace(visible) == visible {
             return Ok(());
         }
-        self.reload(app, window)
+        if visible {
+            self.reload(app, window)
+        } else {
+            self.view.property.borrow_mut().take();
+            Ok(())
+        }
     }
 
     fn reload(&mut self, app: &mut Application, window: &Window) -> liteos_ui::Result<()> {
         let view = &self.view;
+        view.property.borrow_mut().take();
+        view.refresh.set_enabled(false)?;
         view.request.set(view.request.get().wrapping_add(1));
         view.available.set(false);
         view.controls()?;
@@ -203,13 +202,17 @@ impl Page {
             let view = view.clone();
             let parent = window.clone();
             let domain = self.domain.clone();
+            let family = self.family;
             self.observer = Some(app.spawn_local(window, async move {
-                let result = view.observe(&parent, domain.as_ref()).await;
+                let result = view.observe(&parent, family, domain.as_ref()).await;
                 view.changed.take();
                 if let Err(error) = result
                     && view.visible.get()
                 {
                     view.available.set(false);
+                    view.property.borrow_mut().take();
+                    let _ = view.refresh.set_enabled(true);
+                    let _ = view.paging.set_state(0);
                     let _ = view.controls();
                     let _ = view
                         .summary
@@ -224,6 +227,7 @@ impl Page {
         &mut self,
         app: &mut Application,
         window: &Window,
+        workspace: &Workspace,
         event: &Event,
     ) -> liteos_ui::Result<()> {
         let view = &self.view;
@@ -231,11 +235,44 @@ impl Page {
             return Ok(());
         }
         if event.node == view.list.id() && matches!(event.kind, EventKind::Select { .. }) {
+            if view.available.get() {
+                view.show_summary()?;
+            }
             return view.controls();
         }
         if !matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(());
         }
+        if event.node == view.list.id() {
+            if let Some((identity, row)) = view.selected()? {
+                let mut property = view.property.borrow_mut();
+                if let Some(current) = property
+                    .as_ref()
+                    .filter(|current| current.identity == identity)
+                {
+                    workspace.raise(&current.frame)?;
+                } else {
+                    let new = Property::new(workspace, identity, &row)?;
+                    new.remove.set_enabled(!view.clearing.get())?;
+                    *property = Some(new);
+                }
+            }
+            return Ok(());
+        }
+        let remove = {
+            let mut property = view.property.borrow_mut();
+            if property
+                .as_ref()
+                .is_some_and(|property| property.closes(event))
+            {
+                property.take();
+                return Ok(());
+            }
+            property
+                .as_ref()
+                .filter(|property| property.remove.activated(event))
+                .and_then(|property| view.lookup(property.identity))
+        };
         if view.refresh.activated(event) {
             self.reload(app, window)?;
         } else if view.available.get() && view.previous.activated(event) {
@@ -252,10 +289,13 @@ impl Page {
                 view.anchors.borrow_mut().push(after);
                 self.reload(app, window)?;
             }
-        } else if view.clear.activated(event)
-            && !view.clearing.get()
-            && let Some((identity, row)) = view.selected()?
-        {
+        } else if view.clearing.get() {
+            return Ok(());
+        } else if let Some((identity, row)) = if view.clear.activated(event) {
+            view.selected()?
+        } else {
+            remove
+        } {
             view.clearing.set(true);
             view.controls()?;
             let view = view.clone();
@@ -264,15 +304,13 @@ impl Page {
             let request = view.request.get();
             self.clear = Some(app.spawn_local(window, async move {
                 let result = view.clear_connection(&parent, domain, identity, row).await;
-                let text = match result {
-                    Ok(true) => "已清除所选转发连接".into(),
-                    Ok(false) => "已取消清除".into(),
-                    Err(error) => format!("未确认清除结果，请核对列表。{error}"),
-                };
                 view.clearing.set(false);
                 let _ = view.controls();
-                if request == view.request.get() {
-                    let _ = view.summary.notice(&text);
+                if let Err(error) = result
+                    && request == view.request.get()
+                    && view.visible.get()
+                {
+                    let _ = view.summary.notice(&format!("无法确认连接已删除。{error}"));
                 }
             })?);
         }
@@ -288,29 +326,41 @@ impl View {
         let Some(id) = self.list.selection()? else {
             return Ok(None);
         };
+        let identity = Identity {
+            epoch: self.snapshot.borrow().cursor.epoch,
+            id,
+        };
+        Ok(self.lookup(identity))
+    }
+
+    fn lookup(&self, identity: Identity) -> Option<(Identity, Connection)> {
         let snapshot = self.snapshot.borrow();
-        let row = snapshot
+        if !self.available.get() || snapshot.cursor.epoch != identity.epoch {
+            return None;
+        }
+        snapshot
             .rows
             .iter()
             .take(DISPLAY_ROWS)
-            .find(|row| row.id == id);
-        Ok(row.map(|row| {
-            (
-                Identity {
-                    epoch: snapshot.cursor.epoch,
-                    id,
-                },
-                *row,
-            )
-        }))
+            .find(|row| row.id == identity.id)
+            .map(|row| (identity, *row))
     }
 
     fn controls(&self) -> liteos_ui::Result<()> {
         let available = self.available.get();
-        self.previous
-            .set_enabled(available && self.anchors.borrow().len() > 1)?;
-        self.next
-            .set_enabled(available && self.snapshot.borrow().rows.len() > DISPLAY_ROWS)?;
+        let previous = self.anchors.borrow().len() > 1;
+        let next = self.snapshot.borrow().rows.len() > DISPLAY_ROWS;
+        self.previous.set_enabled(available && previous)?;
+        self.next.set_enabled(available && next)?;
+        if available {
+            self.paging
+                .set_state(if previous || next { 0 } else { state::HIDDEN })?;
+        }
+        if let Some(property) = self.property.borrow().as_ref() {
+            property
+                .remove
+                .set_enabled(available && !self.clearing.get())?;
+        }
         self.clear
             .set_enabled(!self.clearing.get() && self.selected()?.is_some())
     }
@@ -333,17 +383,32 @@ impl View {
             .map(|(row, text)| (row.id, text.as_str()))
             .collect();
         self.list.set_rows(&rows)?;
-        let selected = usize::from(self.list.selection()?.is_some());
-        self.summary.show(
-            rows.len(),
-            selected,
-            &format!("实时（第 {} 页）", self.anchors.borrow().len()),
-        )?;
         drop(snapshot);
+        let mut property = self.property.borrow_mut();
+        if let Some(current) = property.as_ref() {
+            if let Some((_, row)) = self.lookup(current.identity) {
+                current.present(&row)?;
+            } else {
+                property.take();
+            }
+        }
+        drop(property);
+        self.show_summary()?;
         self.controls()
     }
 
-    async fn observe(&self, window: &Window, domain: Option<&Arc<str>>) -> Result<(), Error> {
+    fn show_summary(&self) -> liteos_ui::Result<()> {
+        let count = self.snapshot.borrow().rows.len().min(DISPLAY_ROWS);
+        let selected = usize::from(self.list.selection()?.is_some());
+        self.summary.show(count, selected, "实时")
+    }
+
+    async fn observe(
+        &self,
+        window: &Window,
+        family: Family,
+        domain: Option<&Arc<str>>,
+    ) -> Result<(), Error> {
         let mut waiting = None::<Watch>;
         let mut displayed = None;
         let mut restart = None;
@@ -365,7 +430,7 @@ impl View {
                 let scope = domain.cloned();
                 let result = self
                     .background
-                    .run(move || snapshot(scope.as_deref(), after, epoch, baseline))?
+                    .run(move || snapshot(scope.as_deref(), family, after, epoch, baseline))?
                     .await;
                 if !self.visible.get() || self.request.get() != request {
                     continue;
@@ -399,7 +464,7 @@ impl View {
                 self.controls()?;
                 self.summary.notice("正在重新同步转发连接…")?;
             } else if !batch.changes.is_empty() {
-                self.apply(domain, batch, request).await?;
+                self.apply(domain, family, batch, request).await?;
             } else {
                 if waiting.is_none() {
                     let scope = domain.cloned();
@@ -444,6 +509,7 @@ impl View {
     async fn apply(
         &self,
         domain: Option<&Arc<str>>,
+        family: Family,
         batch: changes::Batch,
         request: u64,
     ) -> Result<(), Error> {
@@ -464,11 +530,14 @@ impl View {
                         }
                     }
                     changes::Change::Added(row) | changes::Change::Updated(row)
-                        if row.id > after && last_known.is_none_or(|last| row.id <= last) =>
+                        if family.includes(row.source.ip())
+                            && row.id > after
+                            && last_known.is_none_or(|last| row.id <= last) =>
                     {
                         match rows.binary_search_by_key(&row.id, |item| item.id) {
                             Ok(index) => {
-                                changed |= rows[index].phase != row.phase;
+                                changed |= (rows[index].phase, rows[index].seen_reply)
+                                    != (row.phase, row.seen_reply);
                                 rows[index] = row;
                             }
                             Err(index) if index < WINDOW_ROWS => {
@@ -498,6 +567,7 @@ impl View {
                     read_rows(
                         &mut ManagementClient::local(),
                         scope.as_deref(),
+                        family,
                         epoch,
                         tail,
                         missing,
@@ -522,7 +592,7 @@ impl View {
         domain: Option<Arc<str>>,
         identity: Identity,
         row: Connection,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let message = format!(
             "确定清除所选域中的这条转发连接？\n路由域：{}\n{} → {}",
             domain.as_deref().unwrap_or("默认路由域"),
@@ -541,17 +611,18 @@ impl View {
             .await?
             != MessageResult::Yes
         {
-            return Ok(false);
+            return Ok(());
         }
         self.background
             .run(move || ManagementClient::local().clear_connection(domain.as_deref(), identity))?
             .await?;
-        Ok(true)
+        Ok(())
     }
 }
 
 fn snapshot(
     domain: Option<&str>,
+    family: Family,
     after: u64,
     epoch: u64,
     baseline: Option<changes::Cursor>,
@@ -569,6 +640,7 @@ fn snapshot(
     let rows = read_rows(
         &mut client,
         domain,
+        family,
         cursor.epoch,
         if first_page { 0 } else { after },
         WINDOW_ROWS,
@@ -579,14 +651,22 @@ fn snapshot(
 fn read_rows(
     client: &mut ManagementClient,
     domain: Option<&str>,
+    family: Family,
     epoch: u64,
     after: u64,
     limit: usize,
 ) -> io::Result<Vec<Connection>> {
     let mut cursor = if after == 0 {
-        Cursor::default()
+        Cursor {
+            family,
+            ..Cursor::default()
+        }
     } else {
-        Cursor { epoch, after }
+        Cursor {
+            family,
+            epoch,
+            after,
+        }
     };
     let mut rows = Vec::with_capacity(limit);
     loop {
@@ -599,35 +679,20 @@ fn read_rows(
         }
         rows.extend(page.rows.into_iter().take(limit - rows.len()));
         match page.next {
-            Some(after) if rows.len() < limit => cursor = Cursor { epoch, after },
+            Some(after) if rows.len() < limit => {
+                cursor = Cursor {
+                    after,
+                    epoch,
+                    ..cursor
+                }
+            }
             _ => return Ok(rows),
         }
     }
 }
 
 fn row_text(row: &Connection) -> String {
-    let protocol = match row.protocol {
-        Protocol::Tcp => "TCP",
-        Protocol::Udp => "UDP",
-        Protocol::Echo => "ICMP Echo",
-    };
-    let phase = match row.phase {
-        Phase::Opening if row.protocol == Protocol::Tcp => "握手中",
-        Phase::Opening => "等待回包",
-        Phase::Established => "已建立",
-        Phase::Closing => "关闭中",
-        Phase::Reset => "已重置",
-    };
-    if row.protocol == Protocol::Echo {
-        format!(
-            "{protocol}\t{}（ID {}）\t{}\t{phase}",
-            row.source.ip(),
-            row.source.port(),
-            row.destination.ip()
-        )
-    } else {
-        format!("{protocol}\t{}\t{}\t{phase}", row.source, row.destination)
-    }
+    Field::COLUMNS.map(|(field, _)| field.text(row)).join("\t")
 }
 
 struct Watch {

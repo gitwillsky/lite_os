@@ -67,10 +67,10 @@ pub trait NamespaceService: Send + Sync {
     /// # Errors
     /// 域不可用或捕获存储不足，不返回部分集合。
     fn neighbor_snapshot(&self, index: u32) -> Result<NeighborSnapshot, SocketError>;
-    /// 捕获当前域游标后的一页实际邻居，供管理观察使用。
+    /// 捕获当前域中指定地址族的一页实际邻居，供管理观察使用。
     /// # Errors
     /// 域不可用、编码或存储失败。
-    fn neighbor_page(&self, after: Option<router_protocol::neighbors::Key>) -> Result<Vec<u8>, SocketError>;
+    fn neighbor_page(&self, cursor: router_protocol::neighbors::Cursor) -> Result<Vec<u8>, SocketError>;
     /// 捕获当前域中单族的一页生效路由和成员。
     /// # Errors
     /// 域不可用、编码或存储失败。
@@ -215,13 +215,13 @@ pub fn dispatch_namespace(
             }
         }
         NEIGHBOR_PAGE => {
-            let after = router_protocol::neighbors::parse_cursor(request.bytes()?)
+            let cursor = router_protocol::neighbors::Cursor::parse(request.bytes()?)
                 .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
             request.finish()?;
             if !handles.is_empty() {
                 return Err(native_abi::ERR_INVALID_ARGS);
             }
-            snapshot_reply(reply, || service.neighbor_page(after), Vec::as_slice)
+            snapshot_reply(reply, || service.neighbor_page(cursor), Vec::as_slice)
         }
         ROUTE_PAGE => {
             let cursor = router_protocol::route_view::Cursor::parse(request.bytes()?)
