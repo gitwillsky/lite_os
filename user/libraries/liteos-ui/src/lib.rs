@@ -121,6 +121,8 @@ pub enum EventKind {
         reason: u32,
     },
     ClipboardChanged,
+    /// 自绘终端的上屏文本，一次包含完整 UTF-8 字符串。
+    TextCommit(String),
     RenameRequested {
         row: u64,
     },
@@ -421,7 +423,31 @@ impl Application {
             }
             return Ok(None);
         }
-        let event = Event::decode(event);
+        let event = if event.kind == event::TEXT_COMMIT {
+            // 运行库的事件提供 UTF-8 长度。本次复制完整事务后才推进下一次 step。
+            let mut bytes = vec![0; (event.value as usize).min(4000)];
+            let mut written = 0;
+            // SAFETY: 输出借用只在同步 ABI 调用期间存活，长度由运行库校验。
+            let code = unsafe {
+                (self.connection.api.read_text_commit)(
+                    self.connection.context.as_ptr(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    &mut written,
+                )
+            };
+            self.connection.check(code)?;
+            bytes.truncate(written);
+            Some(Event {
+                window: event.window,
+                node: event.node,
+                kind: EventKind::TextCommit(
+                    String::from_utf8(bytes).expect("runtime text is UTF-8"),
+                ),
+            })
+        } else {
+            Event::decode(event)
+        };
         if let Some(event) = &event {
             self.subscriptions.borrow_mut().publish(event);
         }

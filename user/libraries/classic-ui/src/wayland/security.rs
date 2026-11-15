@@ -51,6 +51,20 @@ impl Display {
     ///
     /// 没有 session capability 返回 PermissionDenied；路径、fd 传递、协议或 I/O 失败均回收尚未交出的资源。
     pub fn delegate_shell(&mut self, path: &Path, instance: &str) -> io::Result<ShellConnection> {
+        self.delegate(path, instance, "org.liteos.desktop")
+    }
+
+    /// 委派一个只能绑定输入法协议与任务栏图标的会话连接。
+    /// 路径、实例标识与错误约束与 delegate_shell 相同。
+    pub fn delegate_input_method(
+        &mut self,
+        path: &Path,
+        instance: &str,
+    ) -> io::Result<ShellConnection> {
+        self.delegate(path, instance, "org.liteos.ime")
+    }
+
+    fn delegate(&mut self, path: &Path, instance: &str, app: &str) -> io::Result<ShellConnection> {
         let manager = self.security_manager.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -102,11 +116,9 @@ impl Display {
         }
         .encode(id, &mut self.transport.writer)
         .map_err(io::Error::other)?;
-        context::Request::SetAppId {
-            app_id: "org.liteos.desktop".into(),
-        }
-        .encode(id, &mut self.transport.writer)
-        .map_err(io::Error::other)?;
+        context::Request::SetAppId { app_id: app.into() }
+            .encode(id, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
         context::Request::SetInstanceId {
             instance_id: instance.into(),
         }

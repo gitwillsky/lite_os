@@ -48,6 +48,7 @@ exclude = [
     "user/libraries/classic-ui-runtime",
     "user/libraries/liteos-ui",
     "user/programs/terminal",
+    "user/programs/pinyin-ime",
     "user/programs/compositor",
     "user/programs/logon",
     "user/programs/desktop",

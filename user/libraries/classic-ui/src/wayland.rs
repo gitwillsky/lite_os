@@ -13,6 +13,10 @@ pub use shell::{ShellArrangement, ShellCommand};
 mod stream;
 mod subsurface;
 pub use subsurface::ImageId;
+mod input_method;
+mod text_input;
+pub use input_method::InputMethodEvent;
+pub use text_input::{TextInputEdit, TextPurpose};
 mod transport;
 mod window_size;
 
@@ -154,6 +158,13 @@ pub enum EventKind {
         horizontal: i32,
     },
     Key(Key),
+    /// 原子上屏与预编辑事务，target 对应 set_text_input 的本地身份。
+    TextInput {
+        target: u64,
+        edit: TextInputEdit,
+    },
+    /// 仅授权输入法进程的状态和按键事件。
+    InputMethod(InputMethodEvent),
     Focus(bool),
     /// 合成器提示可以准备下一帧；时间基准未指定，不表示实际呈现完成。
     FrameReady {
@@ -211,6 +222,9 @@ enum Role {
     Layer {
         object: ObjectId,
     },
+    InputPopup {
+        object: ObjectId,
+    },
 }
 
 struct Window {
@@ -261,6 +275,9 @@ pub struct Display {
     repeat_delay: i32,
     pointer_device: Option<ObjectId>,
     keyboard_device: Option<ObjectId>,
+    text_input: text_input::TextInput,
+    input_method_managers: Option<(ObjectId, ObjectId)>,
+    input_method: Option<input_method::InputMethod>,
     layer_shell: Option<ObjectId>,
     security_manager: Option<ObjectId>,
     dialog_manager: Option<ObjectId>,
@@ -435,6 +452,37 @@ impl Display {
         } else {
             None
         };
+        let text_input_object = if globals
+            .iter()
+            .any(|(_, name, _)| name == "zwp_text_input_manager_v3")
+        {
+            let manager = bind(Interface::ZwpTextInputManagerV3, 1)?;
+            Some(manager)
+        } else {
+            None
+        };
+        let input_method_managers = if globals
+            .iter()
+            .any(|(_, name, _)| name == "zwp_input_method_manager_v2")
+            && globals
+                .iter()
+                .any(|(_, name, _)| name == "zwp_virtual_keyboard_manager_v1")
+        {
+            Some((
+                bind(Interface::ZwpInputMethodManagerV2, 1)?,
+                bind(Interface::ZwpVirtualKeyboardManagerV1, 1)?,
+            ))
+        } else {
+            None
+        };
+        let mut text_input = text_input::TextInput::default();
+        if let Some(manager) = text_input_object {
+            let id = transport.allocate(Interface::ZwpTextInputV3)?;
+            wayland_wire::protocol::zwp_text_input_manager_v3::Request::GetTextInput { id, seat }
+                .encode(manager, &mut transport.writer)
+                .map_err(io::Error::other)?;
+            text_input.object = Some(id);
+        }
         let mut display = Self {
             transport,
             compositor,
@@ -458,6 +506,9 @@ impl Display {
             repeat_delay: 0,
             pointer_device: None,
             keyboard_device: None,
+            text_input,
+            input_method_managers,
+            input_method: None,
             layer_shell,
             security_manager,
             dialog_manager,
@@ -880,6 +931,11 @@ impl Display {
                     .map_err(io::Error::other)?;
                 xdg_surface::Request::Destroy
                     .encode(xdg, writer)
+                    .map_err(io::Error::other)?;
+            }
+            Role::InputPopup { object } => {
+                wayland_wire::protocol::zwp_input_popup_surface_v2::Request::Destroy
+                    .encode(object, writer)
                     .map_err(io::Error::other)?;
             }
             Role::Layer { object } => {

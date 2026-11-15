@@ -32,7 +32,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
 }
 
 /// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
-const PROGRAMS: [&str; 15] = [
+const PROGRAMS: [&str; 16] = [
     "compositor",
     "smbfs",
     "logon",
@@ -45,6 +45,7 @@ const PROGRAMS: [&str; 15] = [
     "sound-player",
     "media-player",
     "notepad",
+    "pinyin-ime",
     "device-manager",
     "savedump",
     "resolvd",

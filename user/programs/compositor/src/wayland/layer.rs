@@ -11,7 +11,7 @@ use wayland_wire::{
 
 use super::{
     Content,
-    client::{Client, Data, Entry, Fail},
+    client::{Client, Data, Entry, Fail, Privilege},
 };
 
 /// 锚点位（`zwlr_layer_surface_v1.anchor`）。
@@ -57,6 +57,7 @@ pub struct LayerState {
 
 pub struct LayerSurface {
     pub surface: ObjectId,
+    namespace: String,
     pending: LayerState,
     pub current: LayerState,
     outstanding: Vec<u32>,
@@ -88,6 +89,7 @@ impl LayerSurface {
 /// 一个已映射的 layer surface。
 pub struct LayerView<'a> {
     pub surface: ObjectId,
+    pub namespace: &'a str,
     pub state: &'a LayerState,
     pub content: &'a Content,
 }
@@ -159,13 +161,26 @@ impl Client {
             id,
             surface,
             layer,
+            namespace,
             ..
         } = request
         else {
             return Ok(());
         };
+        if self.privilege == Privilege::InputMethod
+            && (namespace != "liteos-ime-status"
+                || self
+                    .objects
+                    .values()
+                    .any(|entry| matches!(entry.data, Data::LayerSurface(_))))
+        {
+            return Err(Fail::invalid_method(
+                object,
+                "input method may create only its status indicator",
+            ));
+        }
         let state = self.surface_mut(surface)?;
-        if state.xdg.is_some() || state.layer.is_some() || state.cursor || state.drag_icon {
+        if state.has_role() {
             return Err(Fail::new(
                 object,
                 shell::Error::Role as u32,
@@ -191,6 +206,7 @@ impl Client {
         };
         let layer_surface = LayerSurface {
             surface,
+            namespace,
             pending: initial,
             current: initial,
             outstanding: Vec::new(),
@@ -306,8 +322,24 @@ impl Client {
         else {
             return Ok(());
         };
+        let indicator = self.privilege == Privilege::InputMethod;
         let layer = self.layer_surface_mut(layer_id)?;
         let pending = layer.pending;
+        if indicator
+            && (pending.layer != Layer::Overlay
+                || pending.anchor != (ANCHOR_BOTTOM | ANCHOR_RIGHT)
+                || pending.exclusive_zone != -1
+                || pending.exclusive_edge != 0
+                || pending.keyboard != KeyboardInteractivity::None
+                || pending.width != 22
+                || pending.height != 22
+                || pending.margin != [0, 4, 2, 0])
+        {
+            return Err(Fail::invalid_method(
+                layer_id,
+                "input method status indicator geometry is fixed",
+            ));
+        }
         if pending.exclusive_edge & pending.anchor != pending.exclusive_edge {
             return Err(Fail::new(
                 layer_id,
@@ -401,10 +433,19 @@ impl Client {
             else {
                 return None;
             };
+            let content = surface.current.content.as_ref()?;
+            if self.privilege == Privilege::InputMethod
+                && (content.output_size(1) != (22, 22)
+                    || surface.current.offset != (0, 0)
+                    || !surface.children.is_empty())
+            {
+                return None;
+            }
             Some(LayerView {
                 surface: layer.surface,
+                namespace: &layer.namespace,
                 state: &layer.current,
-                content: surface.current.content.as_ref()?,
+                content,
             })
         })
     }

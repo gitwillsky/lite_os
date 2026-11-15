@@ -140,6 +140,8 @@ pub struct Seat {
     /// 外壳借走键盘后若不保留此目标，新窗口出现时就无法通知原窗口取消激活。
     advertised_activation: Option<(Target, u64)>,
     keys: KeyTracker,
+    /// 释放只交给当初接收按下的抓取代际；失焦时不能把拼音键送给新窗口。
+    ime_keys: Vec<(u32, crate::wayland::InputMethodGrab)>,
     /// 合成器正在抓取指针（交互式移动/缩放）：客户端看不到指针事件。
     grabbed: bool,
     /// 当前指针焦点收到的 `enter` 序号；`set_cursor` 必须带它才有效。
@@ -307,6 +309,7 @@ impl Seat {
         stack: &Stack,
         scale: i32,
         exclusive: Option<Target>,
+        secure: bool,
     ) -> bool {
         let activation_changed = self.sync_activation(server, stack, scale);
         let active = exclusive.or_else(|| stack.active()).map(|target| {
@@ -317,8 +320,12 @@ impl Seat {
         });
         let changed = active != self.keyboard_focus;
         // 1. logical focus 未变也要检查新对象；客户端绑定键盘可能晚于窗口取得焦点。
+        let masks = xkb::modifier_masks(self.keys.modifiers());
+        // 安全屏装配间隙也要撤销输入法；此时 logon 的 wl_surface 可能尚未可用。
+        let text_focus = if secure { None } else { active };
         if !changed && !active.is_some_and(|((client, _), _)| server.keyboard_needs_enter(client)) {
-            return activation_changed;
+            return server.sync_text_focus(text_focus, masks, || self.next_serial())
+                || activation_changed;
         }
         // 2. 只有真正换焦点才发送旧对象 leave；新绑定不能使已有对象重新 enter。
         if changed && let Some(((client, surface), _)) = self.keyboard_focus {
@@ -328,7 +335,13 @@ impl Seat {
         if let Some(((client, surface), _)) = active {
             let serial = self.next_serial();
             let (depressed, locked) = xkb::modifier_masks(self.keys.modifiers());
-            let pressed = self.keys.pressed().to_vec();
+            let pressed: Vec<_> = self
+                .keys
+                .pressed()
+                .iter()
+                .copied()
+                .filter(|code| !self.ime_keys.iter().any(|(key, _)| key == code))
+                .collect();
             server.with_client(client, |client| {
                 // 3. 新对象先 enter，再同步当前 pressed keys/modifiers；按键只投递给已 enter 对象。
                 client.keyboard_enter(serial, surface, &pressed);
@@ -336,7 +349,9 @@ impl Seat {
             });
         }
         self.keyboard_focus = active;
-        changed || activation_changed
+        server.sync_text_focus(text_focus, masks, || self.next_serial())
+            || changed
+            || activation_changed
     }
 
     /// 键盘焦点所在的客户端。
@@ -353,6 +368,7 @@ impl Seat {
             self.keys.consume(code);
         } else {
             self.keys.take_consumed(code);
+            self.ime_keys.retain(|(key, _)| *key != code);
         }
     }
 
@@ -384,6 +400,23 @@ impl Seat {
             }
         }
         if !pressed && self.keys.take_consumed(code) {
+            return Shortcut::None;
+        }
+        let grab = server.input_method_grab();
+        let channel = if pressed {
+            grab.inspect(|&channel| self.ime_keys.push((code, channel)))
+        } else if let Some(index) = self.ime_keys.iter().position(|(key, _)| *key == code) {
+            let (_, channel) = self.ime_keys.swap_remove(index);
+            if grab != Some(channel) {
+                return Shortcut::None;
+            }
+            Some(channel)
+        } else {
+            None
+        };
+        if let Some(channel) = channel {
+            let masks = modifiers_changed.then(|| xkb::modifier_masks(self.keys.modifiers()));
+            server.input_method_key(channel, self.next_serial(), time, code, pressed, masks);
             return Shortcut::None;
         }
         if let Some(((client, _), _)) = self.keyboard_focus {

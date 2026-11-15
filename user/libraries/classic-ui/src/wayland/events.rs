@@ -46,6 +46,8 @@ impl Display {
             return Ok(());
         }
         match event {
+            AnyEvent::ZwpTextInputV3(event) => self.handle_text_input(event)?,
+            event @ (AnyEvent::ZwpInputMethodV2(_) | AnyEvent::ZwpInputMethodKeyboardGrabV2(_)) => self.handle_input_method(event)?,
             AnyEvent::WlSeat(wl_seat::Event::Capabilities { capabilities }) => {
                 if capabilities & wl_seat::capability::POINTER != 0 && self.pointer_device.is_none()
                 {
@@ -439,6 +441,9 @@ mod tests {
                 repeat_delay: 500,
                 pointer_device: None,
                 keyboard_device: None,
+                text_input: Default::default(),
+                input_method_managers: None,
+                input_method: None,
                 layer_shell: None,
                 security_manager: None,
                 dialog_manager: None,

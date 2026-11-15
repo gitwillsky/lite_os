@@ -31,6 +31,7 @@ enum Page {
 }
 struct UserSession {
     child: SessionChild,
+    input_method: Option<(SessionChild, ShellLease)>,
     user: SessionUser,
     // 父进程持有 capability 租约；注销先终止进程组，再关闭租约，不留下仍运行的旧外壳。
     _lease: ShellLease,
@@ -198,8 +199,33 @@ impl Logon {
                 )
                 .user(user.clone()),
             )?;
+            // 与桌面同 UID、各自进程组与连接。输入法启动失败不应阻止登录。
+            let input_method = (|| {
+                let (socket, lease) = display
+                    .delegate_input_method(
+                        Path::new("/run/liteos/ime-listener"),
+                        &format!("{}-{}", user.identity.uid, std::process::id()),
+                    )?
+                    .split();
+                let (_control, child_control) = UnixStream::pair()?;
+                let child = SessionChild::spawn(
+                    SessionCommand::new(
+                        "/bin/pinyin-ime",
+                        Vec::new(),
+                        SessionIo::Wayland {
+                            socket: socket.into(),
+                            control: child_control.into(),
+                        },
+                    )
+                    .user(user.clone()),
+                )?;
+                Ok::<_, io::Error>((child, lease))
+            })()
+            .inspect_err(|error| eprintln!("logon: input method launch: {error}"))
+            .ok();
             Ok::<_, io::Error>(UserSession {
                 child,
+                input_method,
                 user,
                 _lease: lease,
                 control,
@@ -305,6 +331,12 @@ impl Logon {
             println!("logon: desktop exited {status}");
             self.logout(display, window)?;
             return Ok(true);
+        }
+        if let Some((child, _)) = &mut session.input_method
+            && let Some(status) = child.try_wait()?
+        {
+            eprintln!("logon: input method exited {status}");
+            session.input_method = None;
         }
         let mut fd = [PollFd::new(session.control.as_fd(), PollEvents::READ)];
         if poll(&mut fd, Some(Duration::ZERO))? != 0 {

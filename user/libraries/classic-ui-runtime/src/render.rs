@@ -34,6 +34,9 @@ impl Tree {
         for id in self.roots() {
             self.paint_node(id, p, keyboard_focus, false, canvas, video);
         }
+        if keyboard_focus {
+            self.paint_preedit(p);
+        }
         if let Some(node) = self
             .menubar
             .and_then(|id| self.nodes.get(&id))

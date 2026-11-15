@@ -139,11 +139,7 @@ impl Client {
                 self.surface_mut(origin)?;
                 if let Some(icon) = icon {
                     let surface = self.surface_mut(icon)?;
-                    if surface.xdg.is_some()
-                        || surface.layer.is_some()
-                        || surface.subsurface_role
-                        || surface.cursor
-                    {
+                    if surface.has_role() && !surface.drag_icon {
                         return Err(Fail::new(
                             object,
                             wl_data_device::Error::Role as u32,

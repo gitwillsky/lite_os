@@ -26,6 +26,7 @@ mod shm;
 mod subsurface;
 mod surface;
 mod surface_commit;
+mod text_input;
 mod viewport;
 mod xdg;
 
@@ -40,6 +41,7 @@ pub mod layer_edges {
     pub use super::layer::{ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP, exclusive_side};
 }
 pub use seat::CursorRequest;
+pub(crate) use server::Grab as InputMethodGrab;
 pub use server::{ClientId, Server};
 pub use shell::WindowCommand;
 pub use subsurface::ChildView;

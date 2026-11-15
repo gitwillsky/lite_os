@@ -80,6 +80,7 @@ EXPECTED_INFO = (
     r"interface: 'wl_shm',\s+version:\s+1,\s+name:\s+2",
     r"interface: 'xdg_wm_base',\s+version:\s+6,\s+name:\s+3",
     r"interface: 'wl_output',\s+version:\s+4,\s+name:\s+4",
+    r"interface: 'zwp_text_input_manager_v3',\s+version:\s+1,\s+name:\s+17",
     r"'AR24'",
     r"'XR24'",
     r"make: 'LiteOS', model: 'Virtual Display'",
@@ -201,7 +202,9 @@ def install_files(image: Path, sources: list[tuple[Path, str]], directory: Path)
 def check_info(text: str) -> None:
     """`wayland-info` 的输出必须包含全部期望片段，缺失时指出是哪一条。"""
     missing = [pattern for pattern in EXPECTED_INFO if re.search(pattern, text) is None]
-    if any(interface in text for interface in ("zwlr_layer_shell_v1", "wp_security_context_manager_v1")):
+    privileged = ("zwlr_layer_shell_v1", "wp_security_context_manager_v1",
+                  "zwp_input_method_manager_v2", "zwp_virtual_keyboard_manager_v1")
+    if any(interface in text for interface in privileged):
         raise RuntimeError("ordinary clients can see privileged globals")
     if missing:
         raise RuntimeError(f"wayland-info output is missing {missing}\n{text[-2500:]}")

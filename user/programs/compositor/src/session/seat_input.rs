@@ -98,7 +98,8 @@ impl Session {
                     if first && !self.secure_pending {
                         // 前一抓取可能在同批刚释放，Seat 此时没有焦点。先以本次按下的
                         // 位置恢复 enter，再派发 button 及 serial；不改写仍按住的隐式目标。
-                        self.seat.update_pointer(&mut self.server, hit, point, scale, time, false);
+                        self.seat
+                            .update_pointer(&mut self.server, hit, point, scale, time, false);
                     }
                     let root = hit.and_then(|hit| self.root_target(hit.target));
                     let layer = root.and_then(|root| {
@@ -106,7 +107,12 @@ impl Session {
                             .iter()
                             .find(|layer| (layer.client, layer.surface) == root)
                     });
-                    if !self.secure_pending && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
+                    let input_ui =
+                        root.is_some_and(|(client, _)| self.server.is_input_method(client));
+                    if !self.secure_pending
+                        && !input_ui
+                        && matches!(code, BUTTON_LEFT | BUTTON_RIGHT)
+                    {
                         match layer {
                             Some(layer) if layer.keyboard == KeyboardInteractivity::OnDemand => {
                                 self.keyboard_layer = Some((layer.client, layer.surface));
@@ -205,6 +211,7 @@ impl Session {
                     } else {
                         exclusive.or(self.keyboard_layer)
                     },
+                    self.secure_pending,
                 );
                 // Alt 的 evdev 键码：左 56、右 100。
                 if !pressed && matches!(code, 56 | 100) {

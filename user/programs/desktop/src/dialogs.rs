@@ -111,6 +111,12 @@ impl Dialog {
             None => {}
         }
         match event.kind {
+            EventKind::TextInput { edit, .. } => {
+                if let Some(commit) = edit.commit {
+                    self.edit.insert_text(&commit);
+                }
+                return Ok(Action::None);
+            }
             EventKind::Close => return Ok(Action::Close),
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 self.pointer = (x, y);

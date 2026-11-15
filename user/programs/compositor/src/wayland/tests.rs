@@ -303,6 +303,7 @@ fn registry_advertises_the_implemented_globals() {
             (12, "wl_subcompositor".to_owned(), 1),
             (13, "zxdg_output_manager_v1".to_owned(), 3),
             (14, "xdg_wm_dialog_v1".to_owned(), 1),
+            (17, "zwp_text_input_manager_v3".to_owned(), 1),
         ]
     );
 }

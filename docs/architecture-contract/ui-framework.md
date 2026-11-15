@@ -125,12 +125,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   无这份生命周期约束，客户端替换内容或退出可能提前关闭 host 正在取样的 GEM。没有按窗口 ID 维护的第二份纹理表。
   顶点缓冲按两个输出槽复用，覆盖前必须无 flip 在途；标准 EXECBUFFER/transfer 与 KMS 的 fence 顺序由 DRM owner 保证。
   GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；显示节拍与第三方 EGL 路径由 GPU gate 验证，交互由 Wayland/桌面 gate 验证。
-
 - 程序图标按 context 首次使用时读取，窗口装饰持有 Rc，不重复解码同一条目的像素；缺失时使用既有通用图标。
-- foreign-toplevel 的 title/app_id/state 只由 Display 的 done/closed 更新。SDK token 与协议对象代际一起校验，
-  不复制协议状态或把可复用 wire id 当作长期应用标识。列表选择由运行库保存，应用按需读取稳定条目标识。
-  同一桌面的普通应用可使用标准 foreign-toplevel，任务管理器依赖该能力；layer-shell 只授予 Session/Shell，
-  security-context manager 只授予 Session。公开 socket 的 root 身份也不能获得后两者。
+- 特权连接和输入法见[会话授权与文本输入契约](text-input.md)。
 - 媒体播放状态由 libmpv 拥有，Engine 只镜像观察事件；播放/暂停命令在后端切换真实状态，不按迟到的 UI 快照重写。
   `mpv-client::render` 独占 render context，callback 只投递容量为 1 的唤醒；UI 不等待 render API，渲染线程不等待普通 client API 或 UI。
   关闭先撤销 client callback，再 stop/join 渲染 owner（撤销 render callback、释放 context），最后销毁 core 与动态库。

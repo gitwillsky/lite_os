@@ -29,8 +29,25 @@ pub struct CursorRequest {
 }
 
 /// 重复按键：每秒字符数与首次重复前的延迟毫秒。由客户端自己实现重复，合成器只宣告参数。
-const REPEAT_RATE: i32 = 30;
-const REPEAT_DELAY_MS: i32 = 500;
+pub(super) const REPEAT_RATE: i32 = 30;
+pub(super) const REPEAT_DELAY_MS: i32 = 500;
+
+pub(super) fn keymap(keyboard: ObjectId) -> Result<(std::os::fd::OwnedFd, u32), Fail> {
+    let text = keyboard::xkb::keymap_text();
+    // keymap 文本以 NUL 结尾，size 包含它（libxkbcommon 按 C 字符串读取）。
+    let mut bytes = text.into_bytes();
+    bytes.push(0);
+    let memory =
+        MemFd::create("liteos-keymap", bytes.len()).map_err(|_| Fail::implementation(keyboard))?;
+    let fd = memory
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|_| Fail::implementation(keyboard))?;
+    File::from(fd.try_clone().map_err(|_| Fail::implementation(keyboard))?)
+        .write_all_at(&bytes, 0)
+        .map_err(|_| Fail::implementation(keyboard))?;
+    Ok((fd, bytes.len() as u32))
+}
 
 impl Client {
     pub(super) fn announce_seat(&mut self, seat: ObjectId, version: u32) -> Result<(), Fail> {
@@ -77,24 +94,12 @@ impl Client {
 
     /// 为新的 `wl_keyboard` 发送 keymap（独立 memfd，客户端可以随意映射）与重复参数。
     fn send_keymap(&mut self, keyboard: ObjectId, version: u32) -> Result<(), Fail> {
-        let text = keyboard::xkb::keymap_text();
-        // keymap 文本以 NUL 结尾，size 包含它（libxkbcommon 按 C 字符串读取）。
-        let mut bytes = text.into_bytes();
-        bytes.push(0);
-        let memory = MemFd::create("liteos-keymap", bytes.len())
-            .map_err(|_| Fail::implementation(keyboard))?;
-        let fd = memory
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|_| Fail::implementation(keyboard))?;
-        File::from(fd.try_clone().map_err(|_| Fail::implementation(keyboard))?)
-            .write_all_at(&bytes, 0)
-            .map_err(|_| Fail::implementation(keyboard))?;
+        let (fd, size) = keymap(keyboard)?;
         let offset = self.writer.bytes().len();
         let event = wl_keyboard::Event::Keymap {
             format: wl_keyboard::KeymapFormat::XkbV1,
             fd,
-            size: bytes.len() as u32,
+            size,
         };
         event.encode(keyboard, &mut self.writer)?;
         // 描述符不走 Writer 的借用列表，而由本连接持有直到发送完成。
@@ -138,6 +143,7 @@ impl Client {
                         || state.layer.is_some()
                         || state.subsurface_role
                         || state.drag_icon
+                        || state.input_popup
                     {
                         return Err(Fail::new(
                             object,

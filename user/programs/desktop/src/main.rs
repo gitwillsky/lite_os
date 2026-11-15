@@ -7,6 +7,7 @@ mod paint;
 mod popups;
 mod start;
 mod taskbar;
+mod text_input;
 mod tray;
 use classic_ui::{
     Display, Edit, Event, EventKind, ITEM_DOUBLE_CLICK, ItemClick, KeyboardInteractivity, Layer,
@@ -725,6 +726,13 @@ impl Desktop {
                 .map_or(32, classic_ui::Bitmap::height);
             let rect = classic_ui::large_icon_edit_rect(self.icons.rect(index), height);
             match event.kind {
+                EventKind::TextInput { edit, .. } => {
+                    if let Some(commit) = edit.commit {
+                        rename.edit.insert_text(&commit);
+                        pending.insert(window);
+                    }
+                    return Ok(());
+                }
                 EventKind::Key(key) if key.pressed => {
                     match key.code {
                         1 => {
@@ -1312,11 +1320,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 dirty = true;
             }
             let taskbar_focused = state.task_focus.is_some();
+            if matches!(event.kind, EventKind::Button { pressed: true, .. }) {
+                display.set_text_input(None)?;
+            }
             state.event(&mut display, &mut art, event, &mut pending)?;
             if taskbar_focused != state.task_focus.is_some() && !state.settings.always_on_top {
                 state.apply_taskbar(&mut display)?;
             }
         }
+        state.sync_text_target(&mut display, &mut art)?;
         dirty |= state.volume.poll();
         dirty |= state.poll_paste(&mut display);
         // 菜单映射、键盘 enter 和剪贴板 offer 可分批到达，按本轮处理后的状态更新可用性。

@@ -382,6 +382,8 @@ pub struct Surface {
     pub cursor: bool,
     /// wl_data_device.start_drag 的图标角色，和其它 surface 角色互斥。
     pub drag_icon: bool,
+    /// 候选窗角色在 surface 生命周期内保留。
+    pub input_popup: bool,
     /// 已通知客户端进入输出（`wl_surface.enter`）。
     pub entered: bool,
     /// `wp_viewport` 的裁剪与缩放；缺少它客户端请求的视口裁剪与缩放无法生效。
@@ -395,6 +397,15 @@ pub struct Surface {
 }
 
 impl Surface {
+    pub(super) fn has_role(&self) -> bool {
+        self.xdg.is_some()
+            || self.layer.is_some()
+            || self.cursor
+            || self.drag_icon
+            || self.subsurface_role
+            || self.input_popup
+    }
+
     pub fn new(object: ObjectId) -> Self {
         let mut state = Self::default();
         state.current.order.push(object);

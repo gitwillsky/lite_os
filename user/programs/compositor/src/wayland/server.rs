@@ -16,6 +16,9 @@ use std::{
 use linux_uapi::unix::{PollEvents, PollFd, recv_fds, send_fd};
 use wayland_wire::wire::ObjectId;
 
+mod ime_relay;
+pub(crate) use ime_relay::Grab;
+
 use super::{
     Client, Content, CursorRequest, ForeignInfo, LayerView, Output, Window, WindowCommand,
 };
@@ -90,6 +93,7 @@ pub struct ClientId(pub u64);
 pub struct Server {
     listener: UnixListener,
     connections: Vec<Connection>,
+    ime: ime_relay::Relay,
     next_id: u64,
     output: Output,
     contexts: Vec<super::security::Listener>,
@@ -127,6 +131,7 @@ impl Server {
         Ok(Self {
             listener,
             connections: Vec::new(),
+            ime: ime_relay::Relay::default(),
             next_id: 1,
             output,
             contexts: Vec::new(),
@@ -192,7 +197,7 @@ impl Server {
             if events[0].contains(PollEvents::READ) {
                 loop {
                     match context.listener.accept() {
-                        Ok((stream, _)) => accepted.push(stream),
+                        Ok((stream, _)) => accepted.push((stream, context.privilege)),
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                         Err(_) => return false,
@@ -217,8 +222,16 @@ impl Server {
                 connection.closing = true;
             }
         }
-        for stream in accepted {
-            self.add_connection(stream, Client::shell(self.output))?;
+        for (stream, privilege) in accepted {
+            if privilege == super::client::Privilege::InputMethod
+                && self
+                    .connections
+                    .iter()
+                    .any(|c| !c.closing && c.client.privilege == privilege)
+            {
+                continue;
+            }
+            self.add_connection(stream, Client::with_privilege(self.output, privilege))?;
         }
         // 先发完再移除：协议错误事件必须在断开前到达客户端。
         self.connections

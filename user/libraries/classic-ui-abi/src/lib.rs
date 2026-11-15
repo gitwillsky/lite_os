@@ -208,6 +208,8 @@ pub mod event {
     pub const VIDEO_RELEASED: u32 = 27;
     /// 视频子表面可以继续提交。
     pub const VIDEO_READY: u32 = 28;
+    /// 自绘文本控件上屏 UTF-8，value 是字节数；下一次 step 前用 read_text_commit 读取。
+    pub const TEXT_COMMIT: u32 = 29;
 }
 
 /// 单个 XRGB8888 共享缓冲。重新分配同一槽的文件时更换 generation。
@@ -586,6 +588,10 @@ pub struct Api {
     /// 向窗口的 Canvas 视频子表面提交借用的封印 memfd。PENDING 时仍由调用者持有；
     /// OK 后 VIDEO_RELEASED 才允许重写。传 null 隐藏子表面，已有在途槽继续释放。
     pub canvas_video: unsafe extern "C" fn(*mut c_void, u64, u64, *const VideoFrame) -> i32,
+    /// 设定自绘终端的局部文本光标；空矩形停用文本输入。
+    pub canvas_text_caret: unsafe extern "C" fn(*mut c_void, u64, u64, Rect) -> i32,
+    /// 读取最近一条 TEXT_COMMIT 的 UTF-8；与 read_text 同样支持长度查询。
+    pub read_text_commit: unsafe extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> i32,
 }
 
 /// [`Api::message_box`] 的 style 位（Win32 MessageBox 的 uType 布局）。

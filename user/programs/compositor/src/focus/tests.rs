@@ -291,13 +291,13 @@ fn shell_keyboard_borrow_does_not_lose_the_previous_window_activation() {
     let mut stack = Stack::default();
     stack.sync(&[first], SCREEN, 1);
     let mut seat = super::Seat::default();
-    seat.sync_keyboard(&mut server, &stack, 1, None);
+    seat.sync_keyboard(&mut server, &stack, 1, None, false);
     assert_eq!(configs(), [(id(22), true)]);
     let shell = Some((ClientId(1), id(7)));
-    seat.sync_keyboard(&mut server, &stack, 1, shell);
+    seat.sync_keyboard(&mut server, &stack, 1, shell, false);
     let borrowed = configs();
     stack.sync(&[first, second], SCREEN, 1);
-    seat.sync_keyboard(&mut server, &stack, 1, shell);
+    seat.sync_keyboard(&mut server, &stack, 1, shell, false);
     assert_eq!(
         configs(),
         [(id(22), false), (id(24), true)],
@@ -307,14 +307,14 @@ fn shell_keyboard_borrow_does_not_lose_the_previous_window_activation() {
         borrowed.is_empty(),
         "keyboard borrow must preserve activation without republishing it"
     );
-    seat.sync_keyboard(&mut server, &stack, 1, None);
+    seat.sync_keyboard(&mut server, &stack, 1, None, false);
     assert!(
         configs().is_empty(),
         "returning the keyboard must not republish activation"
     );
     let replacement = (second.0, second.1, 2, second.3, second.4, second.5);
     stack.sync(&[first, replacement], SCREEN, 1);
-    assert!(seat.sync_keyboard(&mut server, &stack, 1, None));
+    assert!(seat.sync_keyboard(&mut server, &stack, 1, None, false));
     assert_eq!(
         configs(),
         [(id(24), true)],

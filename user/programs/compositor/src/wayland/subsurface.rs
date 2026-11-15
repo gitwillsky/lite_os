@@ -64,6 +64,7 @@ impl Client {
                     || child.layer.is_some()
                     || child.cursor
                     || child.drag_icon
+                    || child.input_popup
                     || child.subsurface.is_some()
                 {
                     return Err(bad(

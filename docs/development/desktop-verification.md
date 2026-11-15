@@ -194,13 +194,15 @@ UTF-8 和 UTF-16 LE 两个匹配文件在递归查询中返回 2 项；关闭子
 |---|---|---|
 | 外观与 HiDPI | 原版资源与整数缩放已接入，完整应用视觉验收尚未完成 | 按[设计规格](../design/classic-desktop/README.md)逐项核对 1x/2x 的字体、图标、光标、控件与裁剪；待核数值不自动提升置信度 |
 | 外壳交互 | 设计清单仍含未实现或未验收行为 | 按[交互清单](../design/classic-desktop/interaction.md)及[外壳规格](../design/classic-desktop/shell.md)核对 XOR 拖动、菜单动画、个性化菜单、拖动排序、气球提示与系统事件声音 |
-| 输入与文件操作 | 已接入标准文本选择和文件拖放，IME 仍待实现 | 协议支持范围由[设备架构](../architecture/devices-terminal.md)拥有，回收站接收本地文件 URI |
+| 输入与文件操作 | 已接入标准文本选择和文件拖放，标准 Wayland IME 支持中文预编辑与上屏 | 协议支持范围由[设备架构](../architecture/devices-terminal.md)拥有，回收站接收本地文件 URI |
 | 媒体播放 | libmpv/FFmpeg 音视频与 ALSA 输出已接入；独立声音播放器只支持 PCM WAV，录音未实现 | 按固定解码依赖核对格式、网络来源、缩放与输出切换；源码接通不代表运行验收通过 |
 
 共享框架的生命周期、GPU 缓冲与性能证明范围见[Wayland 验证](wayland-ui-verification.md)。
 
 ## 门禁
 
+拼音用门禁私有磁盘上的独立观察脚本裁决。测试单击 Shift 和点击任务栏图标切换模式，
+取消一次预编辑后在记事本保存「你好Abc」，在图形终端验证上屏「中文」的实际 PTY 字节，并把资源管理器中的 old.txt 改名为「测试.txt」。
 `make verify-runtime-desktop` 使用真实产品 logon/desktop/file-explorer，不用 UI 探针代替产品。
 它向一次性镜像注入 alice/bob 与 root 的测试散列（产品 root 无口令会自动登录，不能走密码流程）、procfs 检查脚本与独立标准 ALSA C observer，绝不写入产品或开发账户。
 冷启动 topology 复用 display_session 的 AArch64/HVF、2 CPU、1280×800，并通过共用 QEMU owner 添加 VirtIO Sound。

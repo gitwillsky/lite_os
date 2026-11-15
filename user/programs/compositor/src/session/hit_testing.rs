@@ -18,6 +18,32 @@ impl Session {
         Some((target.0, root))
     }
 
+    /// 将协议的光标矩形换算成输出像素；放不下时改到光标上方。
+    pub(super) fn ime_popup_box(
+        &self,
+        boxes: &[LayerBox],
+    ) -> Option<((ClientId, ObjectId), (i32, i32))> {
+        let (popup, field, caret, (width, height)) = self.server.input_popup()?;
+        let origin = self.locate_target(boxes, field)?.origin;
+        let scale = self.scale as i32;
+        let (screen_width, screen_height) = self.screen();
+        let x = origin.0.saturating_add(caret.x.saturating_mul(scale));
+        let y = origin.1.saturating_add(caret.y.saturating_mul(scale));
+        let below = y.saturating_add(caret.height.saturating_mul(scale));
+        let top = if below.saturating_add(height) <= screen_height {
+            below
+        } else {
+            y.saturating_sub(height)
+        };
+        Some((
+            popup,
+            (
+                x.clamp(0, (screen_width - width).max(0)),
+                top.clamp(0, (screen_height - height).max(0)),
+            ),
+        ))
+    }
+
     /// 隐式抓取跟随真实 surface：窗口/外壳/popup 移动后仍向原来的子 surface 发送坐标。
     pub(super) fn locate_target(
         &self,
@@ -26,10 +52,19 @@ impl Session {
     ) -> Option<Hit> {
         let root = self.server.root_surface(target.0, target.1)?;
         let scale = self.scale as i32;
-        let (origin, generation) = boxes
-            .iter()
-            .find(|layer| (layer.client, layer.surface) == (target.0, root))
-            .map(|layer| ((layer.x, layer.y), None))
+        let popup = self
+            .server
+            .input_popup()
+            .filter(|(popup, _, _, _)| *popup == (target.0, root));
+        let (origin, generation) = popup
+            .and_then(|_| self.ime_popup_box(boxes))
+            .map(|(_, origin)| (origin, None))
+            .or_else(|| {
+                boxes
+                    .iter()
+                    .find(|layer| (layer.client, layer.surface) == (target.0, root))
+                    .map(|layer| ((layer.x, layer.y), None))
+            })
             .or_else(|| {
                 self.stack
                     .placement(target.0, root)
@@ -168,7 +203,11 @@ impl Session {
         let windows = self.stack.windows();
         let split = self.fullscreen_start().unwrap_or(windows.len());
         let (below, above) = windows.split_at(split);
-        layer_hit(Layer::Overlay..=Layer::Overlay)
+        self.ime_popup_box(boxes)
+            .and_then(|((client, surface), origin)| {
+                self.tree_hit(client, surface, origin, point, None)
+            })
+            .or_else(|| layer_hit(Layer::Overlay..=Layer::Overlay))
             .or_else(|| self.popup_hit(point, above))
             .or_else(|| window_hit(above))
             .or_else(|| layer_hit(Layer::Top..=Layer::Top))

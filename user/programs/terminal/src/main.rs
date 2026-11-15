@@ -243,6 +243,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 view::paint(&canvas, &model.borrow(), focused.get())?;
             }
+            EventKind::TextCommit(text) if event.node == canvas.id() => {
+                if let Err(error) = input.push(text.into_bytes()) {
+                    eprintln!("terminal: input method: {error}");
+                }
+            }
             EventKind::Key {
                 code,
                 pressed: true,

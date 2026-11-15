@@ -991,6 +991,15 @@ impl Widget {
             unsafe { (c.api.focus)(c.context.as_ptr(), w, id) }
         })
     }
+    /// Opt a Canvas into text input at a caret in widget coordinates. An empty rectangle disables it.
+    /// Returns an error if the widget is not a Canvas or the rectangle is invalid.
+    pub fn text_caret(&self, caret: Rect) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 窗口与控件 ID 由同一连接发放；矩形按值传入。
+            unsafe { (c.api.canvas_text_caret)(c.context.as_ptr(), w, id, caret) }
+        })
+    }
+
     /// 当前逻辑矩形；必要时更新排版，不提交像素。未收到 configure 时为零矩形。
     pub fn geometry(&self) -> Result<Rect> {
         let mut rect = Rect::default();

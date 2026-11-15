@@ -23,8 +23,8 @@ EXPLORER_FIRST_LABEL = (286, 190)
 # 登录框按 413px 横幅加两侧 3px 外框居中；边框采样不能继续使用旧的 450px 宽度。
 LOGON_LEFT = (1280 - (413 + 6)) // 2
 LOGON_TOP = (800 - 300) // 2
-# taskbar_layout 从右侧保留 4px、60px 时钟和 24px 音量单元，取音量单元中心。
-TRAY_VOLUME_X = 1280 - 4 - 60 - 12
+# taskbar_layout 从右侧保留 4px、24px 中英指示器、60px 时钟和 24px 音量单元。
+TRAY_VOLUME_X = 1280 - 4 - 60 - 24 - 12
 # 面板 64×150，菜单在指针左上翻转；分别取面板左内边与菜单行右内边。
 VOLUME_PANEL_SAMPLE_OPEN = ((TRAY_VOLUME_X - 32 + 4, 700), (212, 208, 200))
 TRAY_CONTEXT_ITEM = (TRAY_VOLUME_X - 8, 774)
@@ -87,6 +87,7 @@ def type_text(session, text: str) -> None:
         elif char == ' ': tap(session, 'spc')
         elif char == '/': tap(session, 'slash')
         elif char == '-': tap(session, 'minus')
+        elif char == '.': tap(session, 'dot')
         else: raise RuntimeError(f'unsupported gate character: {char!r}')
 
 
@@ -98,7 +99,9 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
         '/etc/group': (ROOT / 'user/base/group').read_text().replace('adm:x:4:root\n', 'adm:x:4:root,alice\n') + 'users:x:100:\nvideo:x:44:alice\n',
         # 产品默认的 root 没有口令，开机即自动登录；本门禁要走完整的密码登录，所以给 root 设同一口令。
         '/etc/shadow': (ROOT / 'user/base/shadow').read_text().replace('root::', f'root:{HASH}:') + f'alice:{HASH}:1:0:99999:7:::\nbob:{HASH}:1:0:99999:7:::\n',
-        '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n',
+        '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n::once:/bin/sh /var/tmp/check-pinyin\n',
+        '/var/tmp/ime-notepad.txt': 'original\n',
+        '/var/tmp/ime-folder/old.txt': 'rename fixture\n',
         '/home/alice/readme.txt': 'Desktop session fixture\n',
     }
     for index, (destination, text) in enumerate(files.items()):
@@ -107,12 +110,13 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
         source.chmod(0o600 if destination == '/etc/shadow' else 0o644)
         sources.append((source, destination))
     sources.append((ROOT / 'scripts/fixtures/desktop/check-session.sh', '/var/tmp/check-desktop'))
+    sources.append((ROOT / 'scripts/fixtures/desktop/check-pinyin.sh', '/var/tmp/check-pinyin'))
     sources.append((volume_probe, '/bin/volume-check'))
     sources.append((ROOT / 'scripts/fixtures/desktop/check-task-observer.sh', '/var/tmp/check-task-observer'))
     install_files(image, sources, directory)
     # debugfs 新建目录/文件默认归 root；私有 fixture 的 home 必须符合实际 alice 账户的所有权。
     # 否则非 root 的删除/回收站测试只会得到 EACCES，根本没有验证文件操作。
-    for path in ("/home/alice", "/home/alice/readme.txt"):
+    for path in ("/home/alice", "/home/alice/readme.txt", "/var/tmp/ime-notepad.txt", "/var/tmp/ime-folder", "/var/tmp/ime-folder/old.txt"):
         run_debugfs(image, f"set_inode_field {path} uid 1000", writable=True)
         run_debugfs(image, f"set_inode_field {path} gid 100", writable=True)
 
@@ -138,6 +142,69 @@ def login(session) -> None:
     tap(session, 'ret')
     console.wait_for(('logon: authenticated uid=1000', 'logon: desktop ready', 'DESKTOP_IDENTITY_OK'))
     wait_screen(session, [icon_sample("my-documents-32.bmp", (6 + (75 - 32) // 2, 12 + 4), DESKTOP_BACKGROUND), ((1200, 400), DESKTOP_BACKGROUND), ((1000, 780), (212, 208, 200))], 'desktop first frame')
+
+
+def launch_run(session, command: str) -> None:
+    # Win+R 的 Win 键先由现有外壳快捷键处理；等待对话框真正接管键盘后再输命令。
+    tap(session, 'meta_l', 'r')
+    wait_screen(session, [((100, 650), (255, 255, 255))], 'run dialog')
+    type_text(session, command)
+    tap(session, 'ret')
+
+
+def check_pinyin(session) -> None:
+    print('desktop gate: Chinese Pinyin and English input', flush=True)
+    indicator = (1258, 780)
+    face = (212, 208, 200)
+    wait_screen(session, [(indicator, face)], 'English indicator')
+    launch_run(session, 'notepad /var/tmp/ime-notepad.txt')
+    # 用已有可写文件进入保存路径，控制台由独立脚本比对落盘的 UTF-8。
+    session.console.wait_for(('compositor: window "ime-notepad',))
+    click(session, 150, 153)
+    tap(session, 'ctrl', 'a')
+    tap(session, 'shift')
+    wait_screen(session, [(indicator, SELECTED)], 'Chinese indicator')
+    type_text(session, 'ni')
+    tap(session, 'esc')
+    type_text(session, 'nihao')
+    tap(session, 'spc')
+    tap(session, 'shift')
+    wait_screen(session, [(indicator, face)], 'English indicator after Shift')
+    tap(session, 'shift', 'a')
+    type_text(session, 'bc')
+    tap(session, 'ctrl', 's')
+    session.console.wait_for(('PINYIN_NOTEPAD_OK',))
+    tap(session, 'alt', 'f4')
+    launch_run(session, 'terminal /bin/sh /var/tmp/check-pinyin terminal')
+    session.console.wait_for(('compositor: window "终端"',))
+    click(session, 151, 153)
+    click(session, 1265, 786)
+    wait_screen(session, [(indicator, SELECTED)], 'Chinese indicator after click')
+    type_text(session, 'zhongwen')
+    tap(session, '1')
+    tap(session, 'ret')
+    session.console.wait_for(('PINYIN_PTY_OK',))
+    wait_screen(session, [((200, 200), DESKTOP_BACKGROUND)], 'terminal exited')
+    click(session, 1265, 786)
+    wait_screen(session, [(indicator, face)], 'English mode with no active field')
+    launch_run(session, 'file-explorer /var/tmp/ime-folder --select old.txt')
+    session.console.wait_for(('compositor: window "ime-folder"',))
+    # 第三个可调整窗口位于初始位置 +2×19。等待启动扫描及 --select 已发表。
+    label = (324, 228)
+    wait_screen(session, [(label, SELECTED)], 'rename fixture selected')
+    tap(session, 'f2')
+    # 选区从图标标签变成编辑框；编辑框上方像素成为窗口色。
+    wait_screen(session, [(label, (255, 255, 255))], 'inline filename editor')
+    tap(session, 'shift')
+    wait_screen(session, [(indicator, SELECTED)], 'Chinese mode in filename editor')
+    type_text(session, 'ceshi')
+    tap(session, 'spc')
+    tap(session, 'shift')
+    wait_screen(session, [(indicator, face)], 'English suffix in filename editor')
+    type_text(session, '.txt')
+    tap(session, 'ret')
+    session.console.wait_for(('PINYIN_RENAME_OK',))
+    print('desktop gate: Pinyin Notepad, PTY and filename rename passed', flush=True)
 
 
 def wait_security(session) -> None:
@@ -394,6 +461,25 @@ def check_passwordless(image: Path) -> None:
         wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'passwordless unlock')
 
 
+def pinyin_session(image: Path, volume_probe: Path) -> None:
+    # 单独冷启动，避免此前打开的窗口改变既有资源管理器门禁所用的级联位置。
+    with tempfile.TemporaryDirectory(prefix='liteos-pinyin-') as temp:
+        directory = Path(temp)
+        private = directory / 'rootfs.img'
+        shutil.copyfile(image, private)
+        install(private, directory, volume_probe)
+        with display_session(private, sound=True) as session:
+            try:
+                login(session)
+                check_pinyin(session)
+            except (RuntimeError, OSError):
+                snapshot = ROOT / 'target/desktop-runtime'
+                snapshot.mkdir(parents=True, exist_ok=True)
+                session.qmp.execute('screendump', {'filename': str(snapshot / 'pinyin-failure.ppm')})
+                (snapshot / 'pinyin-console.log').write_text(session.console.text)
+                raise
+
+
 def main() -> int:
     target = target_from_environment()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -405,11 +491,12 @@ def main() -> int:
     image = args.image.resolve()
     stamp = ROOT / 'target/verify-gates/desktop-aarch64.json'
     volume_probe = build_volume_probe(cached_musl_paths(find_compiler()))
-    payload = runtime_gate_payload('desktop', RECIPE_VERSION, (image, volume_probe, Path(__file__).resolve(), ROOT / 'scripts/fixtures/desktop/check-session.sh', ROOT / 'scripts/fixtures/desktop/check-task-observer.sh', ROOT / 'scripts/display_gate.py', ROOT / 'scripts/verify_wayland.py'))
+    payload = runtime_gate_payload('desktop', RECIPE_VERSION, (image, volume_probe, Path(__file__).resolve(), ROOT / 'scripts/fixtures/desktop/check-session.sh', ROOT / 'scripts/fixtures/desktop/check-pinyin.sh', ROOT / 'scripts/fixtures/desktop/check-task-observer.sh', ROOT / 'scripts/display_gate.py', ROOT / 'scripts/verify_wayland.py'))
     try:
         if runtime_gate_hit(stamp, payload, (image,)):
             print('desktop verification cache hit')
             return 0
+        pinyin_session(image, volume_probe)
         with tempfile.TemporaryDirectory(prefix='liteos-desktop-') as temp:
             directory = Path(temp)
             private = directory / 'rootfs.img'

@@ -101,6 +101,11 @@ pub(super) enum Data {
     Popup(super::popup::Popup),
     Dialog(super::dialog::Dialog),
     ForeignHandle(ForeignHandle),
+    TextInput(Box<super::text_input::TextInput>),
+    InputMethod(Box<super::text_input::Method>),
+    MethodGrab(ObjectId),
+    MethodPopup(ObjectId),
+    VirtualKeyboard(bool),
 }
 
 pub(super) struct Entry {
@@ -110,7 +115,7 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 12] = [
+const GLOBALS: [(u32, Interface, u32); 13] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 6),
@@ -129,6 +134,7 @@ const GLOBALS: [(u32, Interface, u32); 12] = [
     // 输出的逻辑位置与尺寸（物理尺寸除以 scale）；客户端用它决定全屏窗口大小。
     (13, Interface::ZxdgOutputManagerV1, 3),
     (14, Interface::XdgWmDialogV1, 1),
+    (17, Interface::ZwpTextInputManagerV3, 1),
 ];
 
 /// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
@@ -141,6 +147,7 @@ pub(super) enum Privilege {
     Application,
     Session,
     Shell,
+    InputMethod,
 }
 
 pub struct Client {
@@ -170,6 +177,7 @@ pub struct Client {
     pub(super) selection_set: Option<super::clipboard::SelectionSet>,
     /// 接收方对当前选择的读取请求，由 Server 转交持有者。
     pub(super) receives: Vec<super::clipboard::ReceiveRequest>,
+    pub(super) ime_actions: Vec<super::text_input::Action>,
     pub(super) drag_requests: Vec<super::drag::Request>,
     /// 下一个服务端分配的对象 id（窗口句柄）。
     pub(super) next_server_object: u32,
@@ -188,11 +196,12 @@ impl Client {
         Self::with_privilege(output, Privilege::Session)
     }
 
+    #[cfg(test)]
     pub(super) fn shell(output: Output) -> Self {
         Self::with_privilege(output, Privilege::Shell)
     }
 
-    fn with_privilege(output: Output, privilege: Privilege) -> Self {
+    pub(super) fn with_privilege(output: Output, privilege: Privilege) -> Self {
         let display = Entry {
             interface: Interface::WlDisplay,
             version: 1,
@@ -219,6 +228,7 @@ impl Client {
             selection_set: None,
             receives: Vec::new(),
             drag_requests: Vec::new(),
+            ime_actions: Vec::new(),
             next_server_object: SERVER_ID_BASE,
             outgoing_fds: VecDeque::new(),
         }
@@ -436,6 +446,18 @@ impl Client {
             AnyRequest::WlSeat(request) => self.seat(object, version, request),
             AnyRequest::WlPointer(request) => self.pointer(object, request),
             AnyRequest::WlKeyboard(_) => Ok(()),
+            AnyRequest::ZwpTextInputManagerV3(request) => self.text_manager(request),
+            AnyRequest::ZwpTextInputV3(request) => self.text_input(object, request),
+            AnyRequest::ZwpInputMethodManagerV2(request) => self.method_manager(request),
+            AnyRequest::ZwpInputMethodV2(request) => self.method(object, request),
+            AnyRequest::ZwpInputMethodKeyboardGrabV2(_) | AnyRequest::ZwpInputPopupSurfaceV2(_) => {
+                self.remove_method_child(object);
+                Ok(())
+            }
+            AnyRequest::ZwpVirtualKeyboardManagerV1(request) => {
+                self.virtual_keyboard_manager(request)
+            }
+            AnyRequest::ZwpVirtualKeyboardV1(request) => self.virtual_keyboard(object, request),
             AnyRequest::ZwlrLayerShellV1(request) => self.layer_shell(object, version, request),
             AnyRequest::ZwlrLayerSurfaceV1(request) => self.layer_surface(object, request),
             AnyRequest::ZwlrForeignToplevelManagerV1(request) => {
@@ -513,6 +535,15 @@ impl Client {
             .into_iter()
             .chain(privileged)
             .chain(session)
+            .chain(
+                (self.privilege == Privilege::InputMethod)
+                    .then_some([
+                        (18, Interface::ZwpInputMethodManagerV2, 1),
+                        (19, Interface::ZwpVirtualKeyboardManagerV1, 1),
+                    ])
+                    .into_iter()
+                    .flatten(),
+            )
             .chain((self.privilege == Privilege::Shell).then_some((
                 16,
                 Interface::LiteosShellV1,

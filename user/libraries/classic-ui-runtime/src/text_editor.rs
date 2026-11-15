@@ -50,8 +50,17 @@ fn expand(line: &str) -> String {
     text
 }
 fn prefix(p: &Painter<'_>, line: &str, column: usize) -> i32 {
-    let line: String = line.chars().take(column).collect();
-    (p.text_width(&expand(&line), false) + p.scale() - 1) / p.scale()
+    let end = line
+        .char_indices()
+        .nth(column)
+        .map_or(line.len(), |(offset, _)| offset);
+    let slice = &line[..end];
+    let width = if slice.as_bytes().contains(&b'\t') {
+        p.text_width(&expand(slice), false)
+    } else {
+        p.text_width(slice, false)
+    };
+    (width + p.scale() - 1) / p.scale()
 }
 impl TextEditor {
     pub fn new(text: &str) -> Self {
@@ -243,6 +252,24 @@ impl TextEditor {
         });
         (true, changed)
     }
+    pub fn caret(&self, rect: Rect, p: &Painter<'_>) -> Rect {
+        let g = self.geometry(rect);
+        let (row, column) = self.document.cursor();
+        let left = g.text.x + 2 + prefix(p, &self.document.lines()[row], column)
+            - self.horizontal.position;
+        let top = g.text.y + row as i32 * self.line_height - self.vertical.position;
+        if g.text.is_empty() {
+            return g.text;
+        }
+        let height = self.line_height.min(g.text.height);
+        Rect::new(
+            left.clamp(g.text.x, g.text.right() - 1),
+            top.clamp(g.text.y, g.text.bottom() - height),
+            1,
+            height,
+        )
+    }
+
     pub fn paint(&self, rect: Rect, p: &mut Painter<'_>, focused: bool) {
         p.edge(rect, Edge::Sunken);
         p.fill(rect.inset(2), C::Window);

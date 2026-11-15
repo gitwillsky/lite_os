@@ -50,7 +50,7 @@ SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
 # 动态世界的程序：链接系统 Rust dylib 的产品程序与门禁探针。Rust dylib 没有稳定 ABI，
 # 它们必须与系统库出自同一次 Cargo 调用并整体发布，门禁直接取用这次的探针，不另行构建。
 DYNAMIC_PROGRAMS = frozenset({
-    ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
+    ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"), ("pinyin-ime", "pinyin-ime"),
     ("sound-player", "sndplay"), ("smbfs", "smbfs"), ("linux-uapi", "session-launch"),
     ("resolvd", "resolvd"), ("network-config", "ipconfig"),
     ("compositor", "wayland-probe"), ("compositor", "shell-probe"),

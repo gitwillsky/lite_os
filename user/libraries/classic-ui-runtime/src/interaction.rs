@@ -140,6 +140,15 @@ impl Tree {
             self.armed.filter(|id| self.hit() == Some(*id)),
         );
         let mut out = Vec::new();
+        if let EventKind::TextInput { target, edit } = input {
+            let (action, repaint) = self.apply_text_input(window, *target, edit, probe);
+            out.extend(action);
+            return (out, true, repaint);
+        }
+        let preedit_cleared = matches!(
+            input,
+            EventKind::Focus(false) | EventKind::Button { pressed: true, .. }
+        ) && self.clear_preedit();
         if matches!(
             input,
             EventKind::Button { pressed: true, .. }
@@ -173,7 +182,7 @@ impl Tree {
         if toolbar_handled {
             return (out, true, true);
         }
-        let menu_repaint = menu_repaint || toolbar_repaint || combo_repaint;
+        let menu_repaint = preedit_cleared || menu_repaint || toolbar_repaint || combo_repaint;
         if self.calendar_input(window, input, &mut out) {
             return (out, true, true);
         }

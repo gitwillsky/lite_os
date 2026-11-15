@@ -12,6 +12,13 @@ pub fn geometry(widget: &Widget) -> liteos_ui::Result<(usize, usize)> {
 }
 pub fn paint(widget: &Widget, model: &Model, focused: bool) -> liteos_ui::Result<()> {
     let bounds = widget.geometry()?;
+    let (column, row) = model.cursor().unwrap_or((0, 0));
+    widget.text_caret(Rect::new(
+        column as i32 * WIDTH,
+        row as i32 * HEIGHT,
+        1,
+        HEIGHT,
+    ))?;
     let (_, background) = model.default_colors();
     let selection = model.selection_projection();
     let mut commands = Vec::new();

@@ -20,6 +20,7 @@ use wayland_wire::{
 pub(super) struct Listener {
     pub listener: UnixListener,
     close: OwnedFd,
+    pub privilege: super::client::Privilege,
 }
 
 impl Listener {
@@ -56,7 +57,11 @@ impl Context {
     pub(super) fn pending(listener: UnixListener, close: OwnedFd) -> Self {
         Self {
             state: State::Pending(Pending {
-                listener: Listener { listener, close },
+                listener: Listener {
+                    listener,
+                    close,
+                    privilege: super::client::Privilege::Shell,
+                },
                 engine: None,
                 app: None,
                 instance: None,
@@ -138,7 +143,10 @@ impl Client {
             context::Request::Commit => {
                 // Session 来源已拥有外壳能力；本 engine 只委派桌面子集，禁止委派新的 session manager。
                 if pending.engine.as_deref() != Some("org.liteos.session")
-                    || pending.app.as_deref() != Some("org.liteos.desktop")
+                    || !matches!(
+                        pending.app.as_deref(),
+                        Some("org.liteos.desktop" | "org.liteos.ime")
+                    )
                     || pending
                         .instance
                         .as_ref()
@@ -155,7 +163,11 @@ impl Client {
                 else {
                     unreachable!("matched above")
                 };
-                self.security_contexts.push(pending.listener);
+                let mut listener = pending.listener;
+                if pending.app.as_deref() == Some("org.liteos.ime") {
+                    listener.privilege = super::client::Privilege::InputMethod;
+                }
+                self.security_contexts.push(listener);
                 Ok(())
             }
             context::Request::Destroy => unreachable!("handled before checking committed state"),

@@ -39,6 +39,7 @@
 - [音频契约](architecture-contract/audio.md)
 - [io_uring 契约](architecture-contract/io-uring.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)
+- [Wayland 会话授权与文本输入契约](architecture-contract/text-input.md)
 - [UI 框架与 SDK 契约](architecture-contract/ui-framework.md)
 
 ## Linux 64-bit 用户态 ABI
@@ -55,6 +56,7 @@
 
 ## 工程基线
 
+- [Wayland 与拼音输入基线](standards/wayland.md)
 - [固定规范与上游来源](standards-baseline.md)
 - [构建、测试与验证](development/build-and-verify.md)
 - [网络驱动器验证](development/network-drive-verification.md)

@@ -374,10 +374,22 @@ impl Session {
         let screen = self.screen();
         let scale = self.scale as i32;
         let work_area = self.work_area();
+        let taskbar = self.server.layers().find_map(|(client, layer)| {
+            (self.server.has_shell_control(client)
+                && layer.namespace == "org.liteos.taskbar"
+                && layer.state.height >= 26)
+                .then_some(layer.state.layer)
+        });
         let mut boxes: Vec<LayerBox> = self
             .server
             .layers()
-            .map(|(client, layer)| {
+            .filter_map(|(client, layer)| {
+                let indicator = self.server.is_input_method(client);
+                let layer_order = if indicator {
+                    taskbar?
+                } else {
+                    layer.state.layer
+                };
                 let size = layer.content.output_size(scale);
                 // layer-shell：独占区为 0 的 surface 避开其他 surface 的独占区，其余相对整个输出。
                 let area = if layer.state.exclusive_zone == 0 {
@@ -386,18 +398,22 @@ impl Session {
                     (0, 0, screen.0, screen.1)
                 };
                 let (x, y) = shell_layout::place(layer.state, size, area, scale);
-                LayerBox {
+                Some(LayerBox {
                     client,
                     surface: layer.surface,
-                    layer: layer.state.layer,
+                    layer: layer_order,
                     keyboard: layer.state.keyboard,
                     x,
                     y,
-                }
+                })
             })
             .collect();
-        boxes
-            .sort_by_key(|layer| layer_order(layer.layer, Some(layer.client) == self.logon_client));
+        boxes.sort_by_key(|layer| {
+            (
+                layer_order(layer.layer, Some(layer.client) == self.logon_client),
+                self.server.is_input_method(layer.client),
+            )
+        });
         boxes
     }
 
@@ -544,13 +560,14 @@ impl Session {
                 self.input.handle_uevents()?;
             }
             // 已由前一轮按钮按下授权的 start_drag/accept 先于同轮硬件释放生效。
+            let previous_ime_grab = self.server.input_method_grab();
             self.server.dispatch(&returned[2 + input_count..])?;
             // 先退休旧映射及其授权，再处理同轮输入；否则旧抓取可能命中新一代窗口。
-            let windows_changed = self.sync_windows()?;
+            self.sync_windows()?;
             self.sync_work_area();
-            if windows_changed {
-                self.sync_focus();
-            }
+            self.sync_focus();
+            self.server
+                .dispatch_input_method(previous_ime_grab, || self.seat.next_serial());
             self.process_data_device();
             // 一批积压的位置只应用最终状态，避免逐样本提交光标与 resize configure。
             input::coalesce_motion(&mut events);
@@ -718,6 +735,7 @@ impl Session {
             } else {
                 exclusive.or(self.keyboard_layer)
             },
+            self.secure_pending,
         );
         let time = self.now_ms();
         let pointer = self.input.pointer().position();

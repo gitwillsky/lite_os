@@ -117,6 +117,9 @@ impl Session {
                 append(layer.client, layer.surface, layer.x, layer.y, None);
             }
         }
+        if let Some(((client, surface), (x, y))) = self.ime_popup_box(&boxes) {
+            append(client, surface, x, y, None);
+        }
         if let Some((client, surface)) = server.drag_icon() {
             let (x, y) = self.input.pointer().position();
             append(client, surface, x, y, None);

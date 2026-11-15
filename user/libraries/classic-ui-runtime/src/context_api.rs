@@ -56,6 +56,67 @@ pub(super) unsafe extern "C" fn step(
     }
 }
 
+/// 声明 Canvas 的文本输入光标。坐标相对控件，空矩形停用，未知控件或无效几何返回错误。
+pub(super) unsafe extern "C" fn canvas_text_caret(
+    context: *mut c_void,
+    window: u64,
+    node: u64,
+    caret: abi::Rect,
+) -> i32 {
+    // SAFETY: 与 Api 的 context 线程独占契约相同；矩形值通过 ABI 复制。
+    unsafe {
+        invoke(context, |context| {
+            let host = context.host_mut(window)?;
+            let tree = host.controls_mut()?;
+            if caret.x < 0
+                || caret.y < 0
+                || caret.width < 0
+                || caret.height < 0
+                || caret.x.checked_add(caret.width).is_none()
+                || caret.y.checked_add(caret.height).is_none()
+            {
+                return Err(invalid("invalid text caret"));
+            }
+            let current = tree
+                .nodes
+                .get(&node)
+                .filter(|node| node.kind == abi::widget::CANVAS)
+                .ok_or_else(|| invalid("text caret requires a Canvas"))?;
+            let caret = (caret.width > 0 && caret.height > 0).then_some(canvas::Rect::new(
+                caret.x,
+                caret.y,
+                caret.width,
+                caret.height,
+            ));
+            if current.text_caret != caret {
+                tree.nodes
+                    .get_mut(&node)
+                    .expect("validated Canvas")
+                    .text_caret = caret;
+                host.frame.invalidate();
+            }
+            Ok(())
+        })
+    }
+}
+
+/// 复制最近一次 TEXT_COMMIT 的 UTF-8。直到下次 step 才能复用这个槽。
+pub(super) unsafe extern "C" fn read_text_commit(
+    context: *mut c_void,
+    buffer: *mut u8,
+    capacity: usize,
+    written: *mut usize,
+) -> i32 {
+    // SAFETY: Context 只由此线程访问；输出区符合 read_text 的长度查询契约。
+    let Some(context) = (unsafe { context.cast::<Context>().as_ref() }) else {
+        return abi::INVALID;
+    };
+    let Some(text) = &context.text_commit else {
+        return abi::NOT_FOUND;
+    };
+    unsafe { copy_text(text, buffer, capacity, written) }
+}
+
 pub(super) unsafe extern "C" fn error_text(
     pointer: *mut c_void,
     buffer: *mut u8,

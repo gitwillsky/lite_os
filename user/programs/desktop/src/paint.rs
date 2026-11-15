@@ -363,7 +363,8 @@ fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
     };
     let clock_width = if s.settings.show_clock { 60 } else { 0 };
     let usb_width = if s.tray.usb.connected() { 24 } else { 0 };
-    let tray_width = 4 + network_width + usb_width + 24 + clock_width;
+    // 最右侧 24 像素由会话输入法的 layer surface 绘制，时钟隐藏时也须留出其命中区域。
+    let tray_width = 4 + network_width + usb_width + 24 + clock_width + 24;
     let tray = Rect::new((width - 2 - tray_width).max(0), 4, tray_width, 22);
     let network = Rect::new(tray.x + 2, 4, network_width, 22);
     let usb = Rect::new(network.right(), 4, usb_width, 22);

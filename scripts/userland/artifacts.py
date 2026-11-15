@@ -40,7 +40,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     program_targets = tuple(
         _RustUserTarget(crate, binary, binary, 1)
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
-                              ("desktop", "desktop"), ("file-explorer", "file-explorer"), ("smbfs", "smbfs"),
+                              ("desktop", "desktop"), ("pinyin-ime", "pinyin-ime"), ("file-explorer", "file-explorer"), ("smbfs", "smbfs"),
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"),
@@ -70,6 +70,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
+        UserlandArtifact(ROOT / "assets/pinyin/pinyin.tsv", "/usr/share/liteos/pinyin.tsv"),
+        UserlandArtifact(ROOT / "assets/pinyin/pinyin-NOTICE.md", "/usr/share/liteos/pinyin-NOTICE.md"),
         UserlandArtifact(ROOT / "assets/fonts/liteos-terminal.a8", "/usr/share/liteos/liteos-terminal.a8"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
         # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。

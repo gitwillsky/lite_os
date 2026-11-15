@@ -27,7 +27,7 @@ interface: 'wl_shm',                                     version:  1, name:  2
 	formats (fourcc):
 	         1 = 'XR24'
 	         0 = 'AR24'
-interface: 'xdg_wm_base',                                version:  3, name:  3
+interface: 'xdg_wm_base',                                version:  6, name:  3
 interface: 'wl_output',                                  version:  4, name:  4
 	name: LITEOS-1
 	x: 0, y: 0, scale: 1,
@@ -35,6 +35,7 @@ interface: 'wl_output',                                  version:  4, name:  4
 	mode:
 		width: 1280 px, height: 800 px, refresh: 60.000 Hz,
 		flags: current preferred
+interface: 'zwp_text_input_manager_v3',                  version:  1, name: 17
 """
 
 
@@ -70,7 +71,8 @@ class InfoTests(unittest.TestCase):
 
 
     def test_privileged_globals_are_hidden_even_from_a_root_socket_client(self) -> None:
-        for interface in ("zwlr_layer_shell_v1", "wp_security_context_manager_v1"):
+        for interface in ("zwlr_layer_shell_v1", "wp_security_context_manager_v1",
+                          "zwp_input_method_manager_v2", "zwp_virtual_keyboard_manager_v1"):
             with self.assertRaisesRegex(RuntimeError, "privileged globals"):
                 check_info(INFO + f"interface: '{interface}', version: 1, name: 6\n")
 

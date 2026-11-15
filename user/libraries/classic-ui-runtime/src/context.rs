@@ -51,7 +51,9 @@ pub struct Context {
     next: u64,
     pub error: String,
     pub(super) events: VecDeque<abi::Event>,
-    resources: Resources,
+    /// Canvas 上屏事务的 UTF-8，step 返回的事件标记和此槽在同一调用线程读取。
+    pub(super) text_commit: Option<String>,
+    pub(super) resources: Resources,
     // OWNER: Canvas 图片引用交给共享加载器；paint 只收结果，不能同步读取/解码用户图片。
     pictures: PictureLoader,
     files: Option<super::file_dialog::FileWorker>,
@@ -72,6 +74,7 @@ impl Context {
             next: 1,
             error: String::new(),
             events: VecDeque::new(),
+            text_commit: None,
             resources: Resources::system()?,
             pictures: PictureLoader::default(),
             files: None,
@@ -250,7 +253,7 @@ impl Context {
             drop(worker);
         }
     }
-    fn blocked(&self, target: u64) -> bool {
+    pub(super) fn blocked(&self, target: u64) -> bool {
         self.windows.iter().any(|(id, child)| {
             if *id == target || !child.modal {
                 return false;
@@ -299,6 +302,7 @@ impl Context {
         wake: Option<BorrowedFd<'_>>,
     ) -> io::Result<Option<abi::Event>> {
         self.paint()?;
+        self.sync_text_target()?;
         if let Some(event) = self.events.pop_front() {
             return Ok(Some(event));
         }
@@ -406,7 +410,7 @@ impl Context {
                 });
             }
         }
-        if let Some(input) = incoming {
+        if let Some(mut input) = incoming {
             if matches!(input.kind, EventKind::ToplevelsChanged) {
                 self.events.push_back(abi::Event {
                     kind: event::TOPLEVELS_CHANGED,
@@ -422,6 +426,7 @@ impl Context {
                 && matches!(
                     input.kind,
                     EventKind::Key(_)
+                        | EventKind::TextInput { .. }
                         | EventKind::Button { .. }
                         | EventKind::Wheel { .. }
                         | EventKind::PointerEnter { .. }
@@ -458,6 +463,9 @@ impl Context {
                 self.events.push_back(event);
                 return Ok(self.events.pop_front());
             }
+            if matches!(input.kind, EventKind::Button { pressed: true, .. }) {
+                self.display.set_text_input(None)?;
+            }
             let mut handled = clipboard_handled;
             let close = host.frame.event(&mut self.display, &input)?.close;
             let mut file_action = super::file_dialog::Action::Pending;
@@ -489,6 +497,11 @@ impl Context {
                     handled |= consumed;
                     if repaint {
                         host.frame.invalidate();
+                    }
+                    if actions.iter().any(|event| event.kind == event::TEXT_COMMIT)
+                        && let EventKind::TextInput { edit, .. } = &mut input.kind
+                    {
+                        self.text_commit = edit.commit.take();
                     }
                     self.events.extend(actions);
                     if host.frame.client_rect(&self.display).is_some_and(|r| {
@@ -646,6 +659,7 @@ impl Context {
         }
         // 外部图片 FD 唤醒时可能没有 Wayland 事件，也必须接收结果并提交失效的 Canvas。
         self.paint()?;
+        self.sync_text_target()?;
         Ok(self.events.pop_front())
     }
     fn paint(&mut self) -> io::Result<()> {

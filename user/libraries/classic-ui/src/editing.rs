@@ -290,6 +290,19 @@ impl crate::Painter<'_> {
         self.hit_text(edit_text_area(rect, margins, true), edit, password, x)
     }
 
+    /// Return a single-line caret in surface coordinates, accounting for horizontal scrolling.
+    /// Geometry is derived from the same text rectangle used by drawing and hit testing.
+    pub fn edit_caret(&self, rect: canvas::Rect, edit: &Edit, bordered: bool) -> canvas::Rect {
+        let inner = edit_text_area(rect, (0, 0), bordered);
+        let caret = self.logical_ceil(self.text_width(&edit.text()[..edit.cursor()], false));
+        canvas::Rect::new(
+            inner.x + caret.min((inner.width - 1).max(0)),
+            inner.y,
+            1,
+            inner.height,
+        )
+    }
+
     fn hit_text(&self, inner: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
         let caret = if password {
             edit.text()[..edit.cursor()].chars().count() as i32 * self.text_width("*", false)
