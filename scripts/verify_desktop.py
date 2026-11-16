@@ -439,8 +439,11 @@ def check_volume(session) -> None:
     console.wait_for(('logon: logged out',), after=mark)
 
 
-def check_passwordless(image: Path) -> None:
-    """产品默认 root 没有口令：开机直接进桌面，锁定后 Ctrl+Alt+Del 直接解锁，全程不出现登录对话框。"""
+def check_passwordless(image: Path, directory: Path) -> None:
+    """从免密会话验证登录、解锁和终端首次打开时的 Tab 补全。"""
+    proof = directory / 'completion-proof'
+    proof.write_text("printf 'TAB_COMPLETION_%s\\n' \"$((6*7))\" > /dev/console\n")
+    install_files(image, [(proof, '/root/liteos-completion/proof')], directory)
     print('desktop gate: passwordless account skips the logon dialog', flush=True)
     with display_session(image, sound=True) as session:
         console = session.console
@@ -460,6 +463,18 @@ def check_passwordless(image: Path) -> None:
         console.wait_for(('logon: secure attention Unlock', 'logon: account has no password, skipping the logon dialog',
                           'logon: unlocked'), after=mark)
         wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'passwordless unlock')
+        print('desktop gate: terminal shell Tab completion on first focus', flush=True)
+        mark = console.mark()
+        launch_run(session, 'terminal')
+        console.wait_for(('compositor: window "终端"',), after=mark)
+        time.sleep(0.6)
+        # 不点击窗口或多按一次 Tab；只有 first-focus Tab 确实交给 ash，cd 后相对路径才存在。
+        type_text(session, 'cd liteos-com')
+        tap(session, 'tab')
+        tap(session, 'ret')
+        type_text(session, '/bin/sh proof')
+        tap(session, 'ret')
+        console.wait_for(('TAB_COMPLETION_42',), after=mark, timeout_seconds=5)
 
 
 def pinyin_session(image: Path, volume_probe: Path) -> None:
@@ -518,11 +533,12 @@ def main() -> int:
                     (snapshot / 'console.log').write_text(session.console.text)
                     raise
         with tempfile.TemporaryDirectory(prefix='liteos-desktop-passwordless-') as temp:
-            private = Path(temp) / 'rootfs.img'
+            directory = Path(temp)
+            private = directory / 'rootfs.img'
             shutil.copyfile(image, private)
-            check_passwordless(private)
+            check_passwordless(private, directory)
         publish_runtime_gate(stamp, payload)
-        print('desktop gate: authentication, identity, taskbar, run, SAS, lock/unlock, password change, logout, ALSA volume/mute and passwordless login passed')
+        print('desktop gate: authentication, identity, taskbar, run, SAS, lock/unlock, password change, logout, ALSA volume/mute, passwordless login and terminal Tab completion passed')
     except (RuntimeError, OSError) as error:
         print(f'desktop verification failed: {error}', file=sys.stderr)
         return 1

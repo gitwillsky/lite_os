@@ -219,6 +219,13 @@ impl ProcInode {
                     .ok_or(FileSystemError::NotFound)?,
             ),
             ProcNode::KernelSysctlDir if name == b"pid_max" => ProcNode::PidLimit,
+            ProcNode::KernelSysctlDir if name == b"random" => ProcNode::RandomSysctlDir,
+            ProcNode::RandomSysctlDir => match name {
+                b"." => ProcNode::RandomSysctlDir,
+                b".." => ProcNode::KernelSysctlDir,
+                b"boot_id" => ProcNode::BootId,
+                _ => return Err(FileSystemError::NotFound),
+            },
             ProcNode::KernelSysctlDir => ProcNode::IpcLimit(
                 crate::ipc::IpcLimit::ALL
                     .into_iter()

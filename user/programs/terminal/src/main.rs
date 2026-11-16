@@ -75,6 +75,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     spec.layout.grow = 1;
     spec.state = liteos_ui::state::TAB_INPUT;
     let canvas = window.widget(spec)?;
+    canvas.focus()?;
     // 窗口出现前完成初次 exec；此后所有等待、读写和终止回收通过异步任务推进。
     let initial = Area {
         columns: 80,

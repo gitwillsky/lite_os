@@ -102,6 +102,7 @@ PID namespace 的 clone/unshare/setns、祖先编号 reservation、init shutdown
 signal/wait/TTY 使用实际 namespace 投影；proc mount 固定实际 PID view，stat/status/NS* 使用真实 ladder，
 kernel/pid_max 控制实际 namespace 的 allocation limit。seccomp 通知、SO_PEERCRED、
 SCM_CREDENTIALS、capget/capset、prlimit 与已声明 PID selector 使用实际 namespace 投影。
+`/proc/sys/kernel/random/boot_id` 提供每次启动固定的只读 UUIDv4，可与 `/proc/PID/stat` 的 starttime 配合识别 PID 复用。
 clone3 的基本参数、set_tid 与已声明 flags 使用同一 clone owner；完整 proc 范围见进程契约。
 IPC semaphore/shared memory 使用实际 IPC owner；文件系统配额不在本轮新增范围。
 

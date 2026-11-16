@@ -2880,11 +2880,13 @@ system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMm
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn allocate (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn backing_memory (& self) -> Result < Vmo , native_abi :: Status >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn is_unpinned (& self) -> bool
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn new (inode : Arc < Ext4Inode >) -> Result < Arc < Self > , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn truncate (& self , size : u64 , policy : WritePolicy) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn write (& self , offset : u64 , data : & [u8] , policy : Option < WritePolicy > ,) -> Result < usize , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) impl Content :: fn writeback (& self) -> Result < () , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn writeback_then_retire (& self , retire : impl FnOnce (u64) ,) -> Result < () , FileSystemError >
 system/ext4/src/content.rs :: pub (crate) struct Content
 system/ext4/src/ext4.rs :: pub (crate) struct Ext4FileSystem
 system/ext4/src/ext4.rs :: pub (crate) use inode :: Ext4Inode
@@ -3213,6 +3215,12 @@ system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn cre
 system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn has_xattr_inodes (& self) -> bool
 system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn read_xattr_value (& self , parent : u32 , inode : u32 , size : usize , entry_hash : u32 , name : & [u8] ,) -> Result < Vec < u8 > , FileSystemError >
 system/ext4/src/fuse_server.rs :: pub (crate) fn serve_control (control : Channel) -> i64
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) impl ContentCache :: fn get (& self , number : u64) -> Option < Arc < Content > >
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) impl ContentCache :: fn get_or_create (& self , inode : & Arc < Ext4Inode > ,) -> Result < Option < Arc < Content > > , FileSystemError >
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) impl ContentCache :: fn retire (& self , number : u64) -> Result < () , FileSystemError >
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) impl ContentCache :: fn take_all (& self) -> BTreeMap < u64 , Arc < Content > >
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) impl ContentCache :: fn writeback (& self) -> Result < () , FileSystemError >
+system/ext4/src/fuse_server/content_cache.rs :: pub (super) struct ContentCache
 system/ext4/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
 system/ext4/src/time.rs :: pub (crate) fn get_realtime_ns () -> u64
 system/ext4/src/time.rs :: pub (crate) fn get_time_ns () -> u64
@@ -5656,6 +5664,7 @@ system/linuxd/src/fs/procfs/networking.rs :: pub (super) impl NetworkTable :: fn
 system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Maps
 system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Rollup
 system/linuxd/src/fs/procfs/node.rs :: enum ProcMapFormat :: Smaps
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: BootId
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: BuddyInfo
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: Cmdline
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: CoreBufferLimit (crate :: net :: CoreBufferLimit)
@@ -5694,6 +5703,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStat (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatm (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatus (usize)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessTaskDir (usize)
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: RandomSysctlDir
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: Root
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: SelfLink
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: Stat
@@ -5834,6 +5844,8 @@ system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_signed_vecto
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_unsigned_long (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (u64) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_value (input : & mut dyn UserInput , offset : u64 , minimum : u32 , publish : impl FnOnce (u32) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_permissions.rs :: pub (super) fn require (effective_uid : u32 , requested : u8) -> Result < () , FileSystemError >
+system/linuxd/src/fs/procfs/sysctl_permissions.rs :: pub (super) fn require_directory_or_boot_id (node : ProcNode , requested : u8 ,) -> Option < Result < () , FileSystemError > >
+system/linuxd/src/fs/procfs/system.rs :: pub (super) fn format_boot_id () -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/system.rs :: pub (super) fn format_buddyinfo (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/system.rs :: pub (super) fn format_cpu_stat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/procfs/system.rs :: pub (super) fn format_loadavg (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
@@ -8192,7 +8204,9 @@ system/linuxd/src/platform/mod.rs :: pub (crate) struct ResetError
 system/linuxd/src/platform/mod.rs :: pub (crate) use serial :: register_console
 system/linuxd/src/platform/serial.rs :: pub (crate) fn register_console ()
 system/linuxd/src/random.rs :: enum RandomError :: # [doc = " entropy device 未注册、失败或返回非法 completion。"] DeviceUnavailable
+system/linuxd/src/random.rs :: enum RandomError :: # [doc = " 无法分配用于生成启动标识的 entropy batch。"] OutOfMemory
 system/linuxd/src/random.rs :: pub (crate) enum RandomError
+system/linuxd/src/random.rs :: pub (crate) fn boot_id () -> Result < & 'static [u8 ; 16] , RandomError >
 system/linuxd/src/random.rs :: pub (crate) impl EntropyBatch < CAPACITY > :: fn fill (& mut self , length : usize) -> Result < & [u8] , RandomError >
 system/linuxd/src/random.rs :: pub (crate) impl EntropyBatch < CAPACITY > :: fn try_new () -> Option < Self >
 system/linuxd/src/random.rs :: pub (crate) struct EntropyBatch < const CAPACITY : usize >

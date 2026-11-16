@@ -15,6 +15,7 @@ impl ProcInode {
             | ProcNode::KernelSysctlDir
             | ProcNode::NetSysctlDir => ProcNode::SysDir,
             ProcNode::CoreNetSysctlDir => ProcNode::NetSysctlDir,
+            ProcNode::RandomSysctlDir => ProcNode::KernelSysctlDir,
             ProcNode::ThreadDir(tgid, _, directory) => directory.parent(tgid),
             ProcNode::TaskFdDir(tgid, tid, directory)
             | ProcNode::TaskFdInfoDir(tgid, tid, directory)
@@ -322,6 +323,7 @@ impl ProcInode {
             }
             ProcNode::KernelSysctlDir => {
                 emit!(ProcNode::PidLimit, InodeType::File, b"pid_max");
+                emit!(ProcNode::RandomSysctlDir, InodeType::Directory, b"random");
                 for resource in crate::ipc::IpcLimit::ALL {
                     emit!(
                         ProcNode::IpcLimit(resource),
@@ -329,6 +331,9 @@ impl ProcInode {
                         resource.name()
                     );
                 }
+            }
+            ProcNode::RandomSysctlDir => {
+                emit!(ProcNode::BootId, InodeType::File, b"boot_id");
             }
             ProcNode::FsSysctlDir => {
                 emit!(ProcNode::MountLimit, InodeType::File, b"mount-max");

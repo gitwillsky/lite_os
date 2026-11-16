@@ -15,6 +15,7 @@ from ext4_image import find_debugfs, debugfs_path
 from local_inputs import INPUTS
 from qemu_gate import boot, guest_inittab, SHELL_PROMPT, ShellCommand
 from sync_userland import synchronize
+from userland.busybox import build_busybox, obtain_source
 from userland.artifacts import base_userland
 from verify_busybox import build_musl_probe, BUSYBOX_KERNEL_ARGUMENTS
 from toolchain.musl import cached_musl_paths, find_compiler, run
@@ -44,7 +45,7 @@ def start_server(policy: str, log) -> tuple[subprocess.Popen, dict]:
         child.terminate(); child.wait(timeout=20)
         raise
 
-def exercise(original: Path, policy: str, musl, probe: Path, output: Path) -> None:
+def exercise(original: Path, policy: str, musl, busybox: Path, probe: Path, output: Path) -> None:
     """只修改一次性 rootfs 副本；root 负责 fixture 装配，产品连接/文件操作均由 UID 65534 执行。"""
     with tempfile.TemporaryDirectory(prefix=f"network-{policy}-", dir=INPUTS / "samba/runs") as temporary, (output / f"{policy}-samba.log").open("wb") as log:
         work = Path(temporary)
@@ -52,7 +53,7 @@ def exercise(original: Path, policy: str, musl, probe: Path, output: Path) -> No
         try:
             image = work / "rootfs.img"
             shutil.copyfile(original, image)
-            synchronize(image, base_userland(musl))
+            synchronize(image, base_userland(musl), busybox)
             inittab = work / "inittab"
             inittab.write_text(guest_inittab())
             # secret 只进一次性磁盘的 0600 文件；不经过串口命令、guest argv 或环境变量。
@@ -87,10 +88,12 @@ def main() -> None:
     output = ROOT / "target/network-drive-runtime" / target.arch
     output.mkdir(parents=True, exist_ok=True)
     (INPUTS / "samba/runs").mkdir(parents=True, exist_ok=True)
-    musl = cached_musl_paths(find_compiler())
+    compiler = find_compiler()
+    musl = cached_musl_paths(compiler)
+    busybox = build_busybox(obtain_source(), compiler, None)
     probe = build_musl_probe(musl, "network-drive")
     for policy in ("sign", "encrypt"):
-        exercise(image, policy, musl, probe, output)
+        exercise(image, policy, musl, busybox, probe, output)
     print("network drive signing/encryption runtime gate passed")
 
 if __name__ == "__main__":

@@ -47,8 +47,16 @@ class UserlandSyncTests(unittest.TestCase):
                 "/usr/share/applications/wine-msi.desktop", "/etc/fonts/conf.d/99-liteos-ui.conf",
                 "/usr/share/fontconfig/conf.avail/10-hinting.conf", "/usr/share/X11/xkb/rules/evdev",
             ))
-            commands.append("symlink /usr/share/liteos/user-link /root/project")
+            commands.extend((
+                "symlink /usr/share/liteos/user-link /root/project",
+                f"write {source} /bin/init",
+                "ln /bin/init /bin/sh",
+                "set_inode_field /bin/init links_count 2",
+                f"write {source} /bin/passwd",
+            ))
             sync_userland.run_batch(image, commands, directory, "fixture", writable=True)
+            busybox = directory / "busybox"
+            busybox.write_bytes(b"first BusyBox generation")
             config = directory / "inittab"
             config.write_text("::respawn:-/bin/sh\n")
             scene = directory / "boot-scene.lbs"
@@ -69,10 +77,10 @@ class UserlandSyncTests(unittest.TestCase):
             # 回读失败不能发布成功 stamp；下一次必须能完成修复。
             with patch.object(sync_userland, "verify_artifacts", side_effect=RuntimeError("readback failed")):
                 with self.assertRaisesRegex(RuntimeError, "readback failed"):
-                    sync_userland.synchronize(image, artifacts)
+                    sync_userland.synchronize(image, artifacts, busybox)
             self.assertIsNone(sync_userland.read_stamp(image))
-            self.assertTrue(sync_userland.synchronize(image, artifacts))
-            self.assertFalse(sync_userland.synchronize(image, artifacts))
+            self.assertTrue(sync_userland.synchronize(image, artifacts, busybox))
+            self.assertFalse(sync_userland.synchronize(image, artifacts, busybox))
             for removed in (
                 "/bin/audio-service", "/bin/desktop", "/etc/init.d/graphical-session",
                 "/usr/lib/lite-runtime", "/usr/share/liteos/apps", "/usr/share/liteos/user-link",
@@ -90,16 +98,18 @@ class UserlandSyncTests(unittest.TestCase):
             legacy.write_text("root:!:1:0:99999:7:::\nnobody:!:1:0:99999:7:::\n")
             sync_userland.run_batch(image, ["rm /etc/shadow", f"write {legacy} /etc/shadow"], directory, "legacy-default", writable=True)
             # 即使系统文件命中缓存，出厂默认迁移也必须生效并报告实际修改。
-            self.assertTrue(sync_userland.synchronize(image, artifacts))
+            self.assertTrue(sync_userland.synchronize(image, artifacts, busybox))
             self.assertIn("root::", run_debugfs(image, "cat /etc/shadow"))
             self.assertIn("nobody:!:", run_debugfs(image, "cat /etc/shadow"))
-            self.assertFalse(sync_userland.synchronize(image, artifacts))
+            self.assertFalse(sync_userland.synchronize(image, artifacts, busybox))
             password = directory / "shadow"
             password.write_text("root:$6$existing-user-hash:1:0:99999:7:::\n")
             sync_userland.run_batch(image, ["rm /etc/shadow", f"write {password} /etc/shadow", "set_inode_field /etc/shadow mode 0100600"], directory, "existing-password", writable=True)
-            config.write_text(config.read_text() + "# new system generation\n")
-            self.assertTrue(sync_userland.synchronize(image, artifacts))
+            busybox.write_bytes(b"second BusyBox generation")
+            self.assertTrue(sync_userland.synchronize(image, artifacts, busybox))
             self.assertIn(password.read_text().strip(), run_debugfs(image, "cat /etc/shadow"))
+            for path in ("/bin/sh", "/bin/passwd", "/usr/bin/env"):
+                self.assertIn("second BusyBox generation", run_debugfs(image, f"cat {path}"))
             # 有旧 stamp 时，移除其独占库，保留当前清单共享的 ALSA 与 Fontconfig 文件。
             previous = sync_userland.read_stamp(image)
             stale_library = "/usr/lib/liteos/libxkbregistry.so.0"
@@ -110,11 +120,11 @@ class UserlandSyncTests(unittest.TestCase):
             sync_userland.run_batch(image, [f"write {source} {stale_library}",
                 f"rm {sync_userland.STAMP_PATH}", f"write {stamp} {sync_userland.STAMP_PATH}"],
                 directory, "previous-runtime", writable=True)
-            self.assertTrue(sync_userland.synchronize(image, artifacts))
+            self.assertTrue(sync_userland.synchronize(image, artifacts, busybox))
             self.assertNotIn("Inode:", run_debugfs(image, f"stat {stale_library}"))
             self.assertIn("old product", run_debugfs(image, "cat /usr/lib/liteos/libasound.so.2"))
             self.assertIn(config.read_text().strip(), run_debugfs(image, "cat /etc/fonts/fonts.conf"))
-            self.assertFalse(sync_userland.synchronize(image, artifacts))
+            self.assertFalse(sync_userland.synchronize(image, artifacts, busybox))
 
     def test_managed_paths_cannot_escape_into_user_data(self):
         for path in ("/root/project", "/usr/share/liteos/../../bin/sh", "/usr/share/liteos//bad", "/etc/passwd"):

@@ -68,6 +68,42 @@ static void run_threads(void *(*body)(void *))
 	}
 }
 
+/* 关闭 writer 后 rename 覆盖占位文件，随后立即用新名字打开。FORGET 可与 lookup 并行。 */
+struct replacement {
+	char current[128], temporary[128];
+	unsigned char payload[1200];
+};
+
+static void *publish_replacement(void *argument)
+{
+	const struct replacement *file = argument;
+	int fd = open(file->current, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	CHECK(90, fd >= 0 && close(fd) == 0);
+	fd = open(file->temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	CHECK(91, fd >= 0);
+	CHECK(92, write(fd, file->payload, sizeof file->payload) == sizeof file->payload && close(fd) == 0);
+	CHECK(93, rename(file->temporary, file->current) == 0);
+	return NULL;
+}
+
+static void check_replacement_contents(void)
+{
+	struct replacement file;
+	snprintf(file.current, sizeof file.current, "%s/record", root);
+	snprintf(file.temporary, sizeof file.temporary, "%s/record.tmp", root);
+	for (int round = 0; round < 64; round++) {
+		memset(file.payload, round + 1, sizeof file.payload);
+		pthread_t writer;
+		CHECK(94, pthread_create(&writer, NULL, publish_replacement, &file) == 0);
+		CHECK(95, pthread_join(writer, NULL) == 0);
+		int fd = open(file.current, O_RDONLY | O_CLOEXEC);
+		unsigned char bytes[sizeof file.payload];
+		CHECK(96, fd >= 0 && read(fd, bytes, sizeof bytes) == sizeof bytes);
+		CHECK(97, memcmp(bytes, file.payload, sizeof bytes) == 0);
+		CHECK(98, close(fd) == 0 && unlink(file.current) == 0);
+	}
+}
+
 /* A. 每个线程在共享目录里 create → write → rename → unlink；结束时目录必须为空，期间的目录遍历不崩溃。 */
 static void *churn(void *argument)
 {
@@ -363,6 +399,8 @@ static void one_filesystem(const char *base, int offset)
 	snprintf(root, sizeof root, "%s/stress", base);
 	rmdir(root);
 	CHECK(offset + 1, mkdir(root, 0700) == 0);
+	stage("rename-replacement-contents");
+	check_replacement_contents();
     stage("rename-link-counts");
     rename_final_link_counts(offset + 22);
     stage("paged-directory-cursor");

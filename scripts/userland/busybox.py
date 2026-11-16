@@ -1,6 +1,7 @@
 """BusyBox 固定源码、配置、ELF 与二进制缓存发布。"""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from build_cache import (
     write_manifest,
 )
 from build_target import target_from_environment
+from ext4_image import run_debugfs
 from local_inputs import INPUTS
 from pathlib import Path
 from toolchain.musl import MuslCachePaths, cached_musl_paths, compiler_identity, find_stripper, run
@@ -69,12 +71,11 @@ FORBIDDEN_BOOT_MARKERS = (
     "\ufffd",
 )
 
-ACCOUNT_APPLETS = ("passwd", "adduser", "addgroup")
-
 BUSYBOX_LINKS = (
-    *ACCOUNT_APPLETS,
     "[",
     "[[",
+    "addgroup",
+    "adduser",
     "arch",
     "ash",
     "awk",
@@ -130,6 +131,7 @@ BUSYBOX_LINKS = (
     "nohup",
     "od",
     "patch",
+    "passwd",
     "pgrep",
     "ping",
     "pidof",
@@ -187,6 +189,37 @@ BUSYBOX_LINKS = (
     "yes",
     "zcat",
 )
+
+BUSYBOX_INIT = "/bin/init"
+# npm/pnpm 的 shebang 使用 /usr/bin/env；它与 /bin/env 指向同一个 BusyBox ELF。
+BUSYBOX_APPLET_PATHS = (*(f"/bin/{name}" for name in BUSYBOX_LINKS), "/usr/bin/env")
+
+
+def busybox_link_commands() -> list[str]:
+    """基线装配与离线同步共用此安装布局；调用前需写入 init inode。"""
+    return [
+        # debugfs ln 不增计数。先预留引用，避免中断后重试 unlink 时释放仍被引用的 inode。
+        f"set_inode_field {BUSYBOX_INIT} links_count {len(BUSYBOX_APPLET_PATHS) + 1}",
+        *(f"ln {BUSYBOX_INIT} {path}" for path in BUSYBOX_APPLET_PATHS),
+    ]
+
+
+def verify_busybox_links(image: Path) -> None:
+    """回读 /bin 和 /usr/bin 中的 BusyBox 入口，校验其共享 inode 和链接数。"""
+    metadata = run_debugfs(image, f"stat {BUSYBOX_INIT}")
+    inode = re.search(r"^Inode:\s+(\d+)\s+Type: regular\s+Mode:\s+0755\b", metadata, re.MULTILINE)
+    links = re.search(r"^Links:\s+(\d+)\b", metadata, re.MULTILINE)
+    if not inode or not links or int(links[1]) != len(BUSYBOX_APPLET_PATHS) + 1:
+        raise RuntimeError("BusyBox image has an invalid init inode or link count")
+    entries = set()
+    for directory in ("/bin", "/usr/bin"):
+        for line in run_debugfs(image, f"ls -p {directory}").splitlines():
+            fields = line.split("/")
+            if len(fields) >= 7 and fields[1] == inode[1]:
+                entries.add(f"{directory}/{fields[5]}")
+    expected = {BUSYBOX_INIT, *BUSYBOX_APPLET_PATHS}
+    if entries != expected:
+        raise RuntimeError(f"BusyBox applets differ from the install layout: {sorted(expected ^ entries)}")
 
 
 def source_payload() -> dict[str, object]:

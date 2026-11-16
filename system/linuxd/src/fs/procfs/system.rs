@@ -148,3 +148,24 @@ pub(super) fn format_uptime(
         idle_us / 10_000 % 100
     ))
 }
+
+/// 返回带换行的标准小写 UUIDv4。
+///
+/// # Errors
+///
+/// 熵设备或分配失败时传播错误。
+pub(super) fn format_boot_id() -> Result<Vec<u8>, FileSystemError> {
+    let uuid = crate::random::boot_id().map_err(|error| match error {
+        crate::random::RandomError::OutOfMemory => FileSystemError::OutOfMemory,
+        crate::random::RandomError::DeviceUnavailable => FileSystemError::IoError,
+    })?;
+    let mut output = ProcText::new();
+    for (index, byte) in uuid.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            output.write_bytes(b"-")?;
+        }
+        write!(output, "{byte:02x}").map_err(|_| FileSystemError::OutOfMemory)?;
+    }
+    output.write_bytes(b"\n")?;
+    Ok(output.finish())
+}

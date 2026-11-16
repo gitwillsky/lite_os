@@ -101,6 +101,8 @@ impl ProcAttributes {
                     | ProcNode::InotifyLimit(_)
                     | ProcNode::MountLimit
                     | ProcNode::KernelSysctlDir
+                    | ProcNode::RandomSysctlDir
+                    | ProcNode::BootId
                     | ProcNode::PidLimit
                     | ProcNode::IpcLimit(_)
             )

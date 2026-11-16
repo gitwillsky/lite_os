@@ -48,6 +48,8 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   分配成本需要在最后实际 owner benchmark 评估，不新增或降低性能阈值。
   kernel/pid_max 为 actual active PID namespace 的 0644 control，inode ownership 映射 owning
   user root；open 与每次 write 按 EUID/root 或 SYS_ADMIN 检查，限制由 allocation owner 同锁更新。
+  `/proc/sys/kernel/random/boot_id` 为全局 0444 UUIDv4。Linuxd 首次读取通过 entropy 设备生成，
+  Once 仅在成功时发布，所有进程和 proc 挂载共享同一个值。后续读无需取熵、无需进程快照，失败可重试。
   ProcSnapshot 只 pin 不可变 actual PID identity，不保活 namespace 编号 registration；显示历史
   identity 不反查已复用的编号。
 - nsfs inode独占canonical magic dentry的Weak slot；FD与bind view都保活同一实际dentry，
@@ -463,7 +465,9 @@ MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不
   VMO 复制失败可能已修改前缀，保守保留预留到回写/截断/内容退休，不能撤销已修改数据的空间保证。
   ext4 在 BEGIN 前登记本批 VMO slice，linuxd CPU 缓冲在 BEGIN 前准备；失败的待确认页可重试，不把旧快照重新写入 VMO。
   映射并发写由内核写保护/重新置脏保留，回写确认由各内容 owner 的原有操作锁串行。
-  最后 FORGET 退休且链接数为零时直接丢弃内容与预留，不为马上回收的脏数据分配磁盘块；未知链接状态保守写回。
+  FORGET 与 RELEASE 只归还各自的 inode 引用；内容缓存持有最后一个引用时尝试退休。链接数为零可直接丢弃内容与预留，
+  已链接的 inode 写回成功前始终保留原 VMO，使并行 lookup 继续读取同一份数据。写回后在同一个内容事务内持缓存锁复查引用
+  再摘除，避免遗漏再次打开和写入。失败或仍被引用时保留，由后续释放或周期写回重试。缓存锁不覆盖 I/O。
   这取代了此前“先直写存储再写 VMO”的 write：数据不再同时存在于 journal staged 副本与内容 VMO 两份。
 
 

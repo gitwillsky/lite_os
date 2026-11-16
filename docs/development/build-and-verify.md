@@ -75,8 +75,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   按 registry SRI 校验并固定的 cache 全局安装 Codex 与 Claude；npm package/platform
   identity、APK metadata、package database、唯一 `/usr/local/bin` 入口与真实 `--version`
   执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
-- `sync-userland` 离线同步 UART 基线的 init、rcS、profile、shutdown 与共享启动素材，并移除旧镜像中退休的
+- `sync-userland` 离线同步 UART 基线的 BusyBox、rcS、profile、shutdown 与共享启动素材，并移除旧镜像中退休的
   图形 binary、私有会话脚本、呈现素材和退休运行时；旧 stamp 中的专属库随清单撤销，当前清单共享的库保留。
+  BusyBox 与基线镜像共用 applet 清单，`/bin/init`、`/bin/sh`、`/usr/bin/env` 等入口硬链接到同一个 ELF。
   不修改 `/root`、用户安装的 APK 或项目。镜像内内容指纹命中时 no-op。
   `run` 与 `run-gui` 自动同步；`reset-rootfs` 才从基线显式重建开发镜像。
 - Rust userspace 以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache；

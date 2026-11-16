@@ -52,6 +52,8 @@ pub(super) enum ProcNode {
     InotifySysctlDir,
     InotifyLimit(crate::fs::InotifyLimit),
     KernelSysctlDir,
+    RandomSysctlDir,
+    BootId,
     PidLimit,
     IpcLimit(crate::ipc::IpcLimit),
     MountLimit,
@@ -260,6 +262,7 @@ impl ProcNode {
             | Self::FsSysctlDir
             | Self::InotifySysctlDir
             | Self::KernelSysctlDir
+            | Self::RandomSysctlDir
             | Self::UserSysctlDir
             | Self::TaskNetDir(_, _, _)
             | Self::ProcessDir(_)

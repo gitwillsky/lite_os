@@ -26,7 +26,7 @@ from ext4_image import debugfs_path, find_debugfs, find_mke2fs, verify_root_owne
 from openssl_cache import OpenSslPaths
 from pathlib import Path
 from userland.artifacts import base_userland
-from userland.busybox import BUSYBOX_LINKS, FORBIDDEN_BOOT_MARKERS
+from userland.busybox import BUSYBOX_LINKS, FORBIDDEN_BOOT_MARKERS, busybox_link_commands, verify_busybox_links
 from toolchain.musl import MuslCachePaths, run
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -221,11 +221,7 @@ def create_image(
         commands.append(
             f"set_inode_field {debugfs_path(artifact.destination)} mode 0{0o100000 | artifact.mode:o}"
         )
-    commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
-    # npm/pnpm use `#!/usr/bin/env node`; without the standard env location apk installs succeed
-    # but every JavaScript package-manager entry fails exec with ENOENT.
-    commands.append("ln /bin/init /usr/bin/env")
-    commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 2}")
+    commands.extend(busybox_link_commands())
     script_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile("w", delete=False) as script:
@@ -256,20 +252,7 @@ def create_image(
         fields = line.split()
         if len(fields) >= 9 and fields[0].isdigit():
             entries[fields[-1]] = int(fields[0])
-    expected = {"init", *BUSYBOX_LINKS}
-    missing = sorted(expected - entries.keys())
-    if missing:
-        raise RuntimeError(f"BusyBox rootfs lacks applets: {', '.join(missing)}")
-    if len({entries[name] for name in expected}) != 1:
-        raise RuntimeError("BusyBox applets must be hardlinks to one inode")
-    metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
-    if f"Links: {len(expected) + 1}" not in metadata:
-        raise RuntimeError("BusyBox inode link count does not match rootfs applets")
-    standard_env = run(
-        [str(find_debugfs()), "-R", "stat /usr/bin/env", str(image)], ROOT
-    )
-    if f"Inode: {entries['init']}" not in standard_env or "Mode:  0755" not in standard_env:
-        raise RuntimeError("BusyBox rootfs lacks the standard /usr/bin/env hardlink")
+    verify_busybox_links(image)
     stress_commands = {"liteos-stress", *STRESS_LINKS}
     missing_stress = sorted(stress_commands - entries.keys())
     if missing_stress:

@@ -448,6 +448,9 @@ impl ProcInode {
         &self,
         viewer: &crate::namespace::UserNamespace,
     ) -> Result<Vec<u8>, FileSystemError> {
+        if self.node == ProcNode::BootId {
+            return system::format_boot_id();
+        }
         if matches!(self.node, ProcNode::Partitions) {
             return format_partitions();
         }
@@ -504,10 +507,12 @@ impl ProcInode {
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot, self.source.current_time_offsets()?),
 
-            ProcNode::Mounts | ProcNode::Partitions | ProcNode::Cmdline | ProcNode::LastPanic => {
-                unreachable!(
-                    "mount table, partitions and command line handled before task snapshot"
-                )
+            ProcNode::Mounts
+            | ProcNode::Partitions
+            | ProcNode::Cmdline
+            | ProcNode::LastPanic
+            | ProcNode::BootId => {
+                unreachable!("task-independent proc contents handled before task snapshot")
             }
             ProcNode::ProcessStat(pid) => format_process_stat(
                 find_process(&snapshot, pid)?,
@@ -570,6 +575,7 @@ impl ProcInode {
             | ProcNode::FsSysctlDir
             | ProcNode::InotifySysctlDir
             | ProcNode::KernelSysctlDir
+            | ProcNode::RandomSysctlDir
             | ProcNode::UserSysctlDir
             | ProcNode::NamespaceDir(_, _, _)
             | ProcNode::NamespaceLink(_, _)
@@ -631,21 +637,9 @@ impl Inode for ProcInode {
         identity: &super::AccessIdentity,
         requested: u8,
     ) -> Result<(), FileSystemError> {
-        if matches!(
-            self.node,
-            ProcNode::SysDir
-                | ProcNode::NetSysctlDir
-                | ProcNode::CoreNetSysctlDir
-                | ProcNode::UserSysctlDir
-                | ProcNode::FsSysctlDir
-                | ProcNode::InotifySysctlDir
-                | ProcNode::KernelSysctlDir
-        ) {
-            return if requested & 2 != 0 {
-                Err(FileSystemError::AccessDenied)
-            } else {
-                Ok(())
-            };
+        if let Some(result) = sysctl_permissions::require_directory_or_boot_id(self.node, requested)
+        {
+            return result;
         }
         if matches!(self.node, ProcNode::PidLimit) {
             let target = self

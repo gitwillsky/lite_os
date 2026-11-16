@@ -19,12 +19,14 @@ use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status, signals};
 use native_runtime::sync::{Mutex, Once};
 use native_runtime::{Channel, Event, Vmo};
 
-use crate::content::Content;
+mod content_cache;
+
 use crate::ext4::{Ext4FileSystem, Ext4Inode};
 use crate::vfs::{
     CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryVisit, DirectoryVisitor,
     FileSystemError, InodeMetadata, InodeType, OwnerModeChange, WritePolicy, XattrChange,
 };
+use content_cache::ContentCache;
 
 /// 每个挂载的工作线程数：请求在 ext4 内部按 mutation owner 串行，多个线程让读与元数据查询并行。
 const WORKERS: usize = 4;
@@ -118,7 +120,7 @@ impl MountService for Ext4Service {
             filesystem: filesystem.clone(),
             nodes: Mutex::new(BTreeMap::new()),
             handles: Mutex::new(BTreeMap::new()),
-            contents: Mutex::new(BTreeMap::new()),
+            contents: ContentCache::default(),
             next_handle: AtomicU64::new(1),
             destroyed: AtomicBool::new(false),
             claim: Mutex::new(Some(claim)),
@@ -167,7 +169,8 @@ impl MountControl for Ext4Control {
             .node(node)
             .map_err(|_| native_abi::ERR_NOT_FOUND)?;
         self.mount
-            .content(&inode)
+            .contents
+            .get_or_create(&inode)
             .map_err(status)?
             .ok_or(native_abi::ERR_WRONG_TYPE)?
             .backing_memory()
@@ -198,9 +201,8 @@ struct Mount {
     nodes: Mutex<BTreeMap<u64, Node>>,
     // OWNER: 打开句柄 fh → inode；RELEASE 移除。
     handles: Mutex<BTreeMap<u64, Arc<Ext4Inode>>>,
-    // OWNER: inode 号 → 普通文件的内容 VMO；节点被 FORGET 或挂载拆除时写回后移除。缺失时 mmap 与
-    // read/write 各看到一份内容，映射写入永远不会到达存储。
-    contents: Mutex<BTreeMap<u64, Arc<Content>>>,
+    // OWNER: inode 号 → 唯一内容 VMO，重查同一 inode 不得在旧 VMO 写回前发布第二份。
+    contents: ContentCache,
     next_handle: AtomicU64,
     // OWNER: DESTROY 已执行 shutdown；连接随后断开时不再重复。
     destroyed: AtomicBool,
@@ -397,7 +399,7 @@ impl Mount {
         if self.destroyed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let contents = core::mem::take(&mut *self.contents.lock());
+        let contents = self.contents.take_all();
         let written = contents
             .values()
             .try_for_each(|content| content.writeback());
@@ -443,37 +445,12 @@ impl Mount {
             .ok_or(errno::EBADF as i32)
     }
 
-    /// 普通文件的内容 VMO（首次使用时建立）；其他类型返回 `None`。
-    fn content(&self, inode: &Arc<Ext4Inode>) -> Result<Option<Arc<Content>>, FileSystemError> {
-        if inode.inode_type() != InodeType::File {
-            return Ok(None);
-        }
-        let mut contents = self.contents.lock();
-        if let Some(content) = contents.get(&inode.number()) {
-            return Ok(Some(content.clone()));
-        }
-        let content = Content::new(inode.clone())?;
-        contents.insert(inode.number(), content.clone());
-        Ok(Some(content))
-    }
-
-    /// 已建立的内容 VMO；大小改变或持久化时只需处理已缓存的文件。
-    fn cached_content(&self, inode: &Ext4Inode) -> Option<Arc<Content>> {
-        self.contents.lock().get(&inode.number()).cloned()
-    }
-
-    /// 写回全部内容 VMO 的映射写入。
-    fn writeback_contents(&self) -> Result<(), FileSystemError> {
-        let contents: Vec<_> = self.contents.lock().values().cloned().collect();
-        contents.iter().try_for_each(|content| content.writeback())
-    }
-
     /// 周期写回映射写入，直到挂载拆除。
     fn flush_loop(&self) {
         while !self.destroyed.load(Ordering::Acquire) {
             let deadline = native_runtime::system::monotonic() + CONTENT_WRITEBACK_INTERVAL;
             let _ = native_runtime::system::sleep_until(deadline);
-            if let Err(error) = self.writeback_contents() {
+            if let Err(error) = self.contents.writeback() {
                 warn!("ext4 content writeback failed: {error:?}");
             }
         }
@@ -694,7 +671,7 @@ impl Mount {
                 let size = input.u32()?.min(MAX_TRANSFER) as usize;
                 let inode = self.handle(handle)?;
                 let mut data = alloc::vec![0u8; size];
-                let read = match self.content(&inode).map_err(fs_error)? {
+                let read = match self.contents.get_or_create(&inode).map_err(fs_error)? {
                     Some(content) => content.read(offset, &mut data),
                     None => inode.read_storage(offset, &mut data),
                 }
@@ -717,7 +694,7 @@ impl Mount {
                     kill_suidgid: write_flags & fuse::WRITE_KILL_SUIDGID != 0,
                 };
                 let inode = self.handle(handle)?;
-                let written = match self.content(&inode).map_err(fs_error)? {
+                let written = match self.contents.get_or_create(&inode).map_err(fs_error)? {
                     Some(content) => content.write(offset, data, Some(policy)),
                     None => inode.write_storage(offset, data, Some(policy)),
                 }
@@ -745,15 +722,17 @@ impl Mount {
             fuse::RELEASE | fuse::RELEASEDIR => {
                 let handle = input.u64()?;
                 let released = self.handles.lock().remove(&handle);
-                drop(released);
+                if let Some(inode) = released {
+                    self.drop_inode_reference(inode);
+                }
                 Ok(None)
             }
             // FSYNC/FSYNCDIR 与 SYNCFS 都提交整个日志：ext4 的持久化边界是日志事务。
             fuse::FSYNC | fuse::FSYNCDIR | fuse::SYNCFS => {
                 let inode = self.node(header.nodeid)?;
                 if header.opcode == fuse::SYNCFS {
-                    self.writeback_contents().map_err(fs_error)?;
-                } else if let Some(content) = self.cached_content(&inode) {
+                    self.contents.writeback().map_err(fs_error)?;
+                } else if let Some(content) = self.contents.get(inode.number()) {
                     content.writeback().map_err(fs_error)?;
                 }
                 inode.sync_storage().map_err(fs_error)?;
@@ -835,7 +814,7 @@ impl Mount {
                     return Err(errno::EOPNOTSUPP as i32);
                 }
                 let inode = self.handle(handle)?;
-                if let Some(content) = self.content(&inode).map_err(fs_error)? {
+                if let Some(content) = self.contents.get_or_create(&inode).map_err(fs_error)? {
                     content.allocate(offset, length).map_err(fs_error)?;
                 } else {
                     inode
@@ -900,16 +879,17 @@ impl Mount {
                 None
             }
         };
-        // 最后引用可能触发孤儿回收（ext4 I/O），在节点表锁外写回/丢弃内容并释放 inode。
         if let Some(node) = removed {
-            let content = self.contents.lock().remove(&node.inode.number());
-            if let Some(content) = content {
-                // 无链接内容直接丢弃，避免先分配块再回收；未知链接状态仍保守写回。
-                let unlinked = node.inode.metadata().is_ok_and(|attrs| attrs.links == 0);
-                if !unlinked && let Err(error) = content.writeback() {
-                    warn!("ext4 content writeback on forget failed: {error:?}");
-                }
-            }
+            self.drop_inode_reference(node.inode);
+        }
+    }
+
+    fn drop_inode_reference(&self, inode: Arc<Ext4Inode>) {
+        // inode 的最后引用可能触发孤儿回收，释放与写回均在节点/句柄表锁外进行。
+        let number = inode.number();
+        drop(inode);
+        if let Err(error) = self.contents.retire(number) {
+            warn!("ext4 content writeback on retirement failed: {error:?}");
         }
     }
 
@@ -931,7 +911,7 @@ impl Mount {
         let kill_suidgid = valid & FATTR_KILL_SUIDGID != 0;
         if valid & fuse::FATTR_SIZE != 0 {
             let policy = WritePolicy { kill_suidgid };
-            if let Some(content) = self.content(&inode).map_err(fs_error)? {
+            if let Some(content) = self.contents.get_or_create(&inode).map_err(fs_error)? {
                 content.truncate(size, policy).map_err(fs_error)?;
             } else {
                 inode

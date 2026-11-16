@@ -14,14 +14,16 @@ from pathlib import Path, PurePosixPath
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import debugfs_path, find_debugfs, offline_development_image, verify_root_owned_files
-from userland.busybox import ACCOUNT_APPLETS, build_busybox, obtain_source
+from userland.busybox import (
+    BUSYBOX_APPLET_PATHS, BUSYBOX_INIT, build_busybox, busybox_link_commands, obtain_source, verify_busybox_links,
+)
 from userland import UserlandArtifact
 from userland.artifacts import base_userland
 from toolchain.musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
-RECIPE_VERSION = 5
+RECIPE_VERSION = 6
 
 
 # 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
@@ -59,7 +61,7 @@ def managed_path(path: str) -> bool:
     if path == "/usr/share/mime/packages/liteos.xml" or path.startswith("/usr/share/icons/hicolor/"):
         return True
     return path in {
-        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        *RETIRED_FILES, BUSYBOX_INIT, *BUSYBOX_APPLET_PATHS, "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
         "/bin/pinyin-ime",
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/savedump", "/bin/session-launch",
@@ -191,6 +193,7 @@ def artifact_payload(
         "recipe_version": RECIPE_VERSION,
         "arch": target.arch,
         "files": files,
+        "busybox_applets": BUSYBOX_APPLET_PATHS,
     }
     return payload, fingerprint(payload)
 
@@ -269,12 +272,13 @@ def enroll_development_ssh(image: Path, client_public_key: Path | None) -> str |
         return f"{algorithm} {key}"
 
 
-def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
+def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...], busybox: Path) -> bool:
     """同步产物并发布镜像内指纹；无变化返回 False。
 
     Args:
         image: 持久开发 ext 镜像，调用期间不得由 QEMU 使用。
         artifacts: 当前构建得到的完整系统文件集合。
+        busybox: 当前构建得到的 BusyBox multicall ELF，覆盖整组 applet。
 
     Returns:
         实际修改镜像返回 True，已命中内容指纹返回 False。
@@ -289,7 +293,10 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
         if previous is not None and (previous.mode != artifact.mode or sha256(previous.source) != sha256(artifact.source)):
             raise RuntimeError(f"conflicting runtime owners: {artifact.destination}")
         installed.setdefault(artifact.destination, artifact)
-    artifacts = tuple(installed.values())
+    busybox_paths = {BUSYBOX_INIT, *BUSYBOX_APPLET_PATHS}
+    if busybox_paths.intersection(installed):
+        raise RuntimeError("standalone system files cannot occupy BusyBox applet paths")
+    artifacts = (*installed.values(), UserlandArtifact(busybox, BUSYBOX_INIT, 0o755))
     for artifact in artifacts:
         if not managed_path(artifact.destination):
             raise RuntimeError(f"userland artifact escaped managed paths: {artifact.destination}")
@@ -322,7 +329,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             print(f"userland sync cache hit: {identity[:12]}")
             return account_changed
 
-        current_paths = {artifact.destination for artifact in artifacts}
+        current_paths = {*installed, *busybox_paths}
         stored_paths = previous.get("paths") if previous is not None else None
         previous_paths = stored_paths if isinstance(stored_paths, list) else []
         stale_paths = sorted(
@@ -335,7 +342,9 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             retired = retired_commands(image, current_paths, directory)
             commands = [f"rm {STAMP_PATH}", *retired]
             commands.extend(f"mkdir {debugfs_path(path)}" for path in parent_directories(artifacts))
+            commands.append("mkdir /usr/bin")
             commands.extend(f"rm {debugfs_path(path)}" for path in stale_paths)
+            commands.extend(f"rm {path}" for path in BUSYBOX_APPLET_PATHS)
             for artifact in artifacts:
                 destination = debugfs_path(artifact.destination)
                 commands.extend(
@@ -345,8 +354,10 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
                         f"set_inode_field {destination} mode 0{0o100000 | artifact.mode:o}",
                     )
                 )
+            commands.extend(busybox_link_commands())
             run_batch(image, commands, directory, "write-userland", writable=True)
             verify_artifacts(image, artifacts, directory)
+            verify_busybox_links(image)
             removed_paths = [command.split(" ", 1)[1] for command in retired]
             removed_paths.extend(stale_paths)
             retired_metadata = run_batch(
@@ -392,9 +403,7 @@ def main() -> int:
     compiler = find_compiler()
     binary = build_busybox(obtain_source(), compiler, None)
     artifacts = base_userland(cached_musl_paths(compiler))
-    # 同一个固定 BusyBox ELF 以标准 applet 名安装，旧开发镜像无需替换 init 或覆盖账户数据。
-    artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in ACCOUNT_APPLETS)
-    synchronize(image, artifacts)
+    synchronize(image, artifacts, binary)
     return 0
 
 

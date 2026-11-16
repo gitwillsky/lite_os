@@ -250,6 +250,29 @@ impl Content {
         self.writeback_range(&mut self.reserved.lock(), 0, u64::MAX)
     }
 
+    /// 缓存独占 inode 时才可退休内容；lookup、句柄和在途 I/O 均持有 inode 引用。
+    pub(crate) fn is_unpinned(&self) -> bool {
+        Arc::strong_count(&self.inode) == 1
+    }
+
+    /// 写回后在同一次文件内容事务内尝试从缓存摘除。
+    /// 回调锁住缓存并复查引用后才能摘除。写回失败保留脏页和缓存条目供重试。
+    ///
+    /// # Errors
+    ///
+    /// 传播写回失败，回调不会执行。
+    pub(crate) fn writeback_then_retire(
+        &self,
+        retire: impl FnOnce(u64),
+    ) -> Result<(), FileSystemError> {
+        let mut reserved = self.reserved.lock();
+        if !self.is_unpinned() || !self.inode.metadata().is_ok_and(|attrs| attrs.links == 0) {
+            self.writeback_range(&mut reserved, 0, u64::MAX)?;
+        }
+        retire(self.inode.number());
+        Ok(())
+    }
+
     fn writeback_range(
         &self,
         reserved: &mut BTreeSet<u32>,
