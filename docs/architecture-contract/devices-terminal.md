@@ -185,8 +185,11 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   event、PTY master、virtio port）前必须先 `reserve` 整批目标，出队后的 copy 才不会因 fault 丢数据；
   写入先 `copy` 再按设备实际接受量 `consume`。syscall 以游标累计进度为结果，已有进度时优先返回进度。
   设备只在尚未交付任何字节时阻塞。
-- `/dev/tty` 是调用者 controlling terminal 的别名：open 按该 Terminal 的设备号重开底层 console 或
-  pts，读写与唤醒源与直接打开一致；caller session 没有 controlling TTY 时返回 `ENXIO`。
+- `/dev/tty` 从调用者的 controlling Terminal 重开实际 console 或 PTY，读写与唤醒源与直接打开一致；
+  caller session 没有 controlling TTY 时返回 `ENXIO`。
+- 每次 devpts mount 由本实例独占 PTY weak slot 索引和 inode 序号。序号区分 index 复用前后的实际 pair，避免旧 dentry 误连新终端。
+  `/dev/pts/ptmx` 与相邻 `/dev/ptmx` 设备号入口均分配同一实例的 master，slave 由实际 devpts inode 打开，`/dev/tty` 按 controlling Terminal 身份重开。
+  每个实例的索引与序号使用同一短锁发布，只在打开、关闭与枚举路径访问；TTY 数据面沿用原有 pair 状态和唤醒。
 - `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
   blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
   clipboard syscall；SPICE agent framing 属于用户态，agent 必须在单一 owner

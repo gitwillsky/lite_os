@@ -11,7 +11,7 @@ mod flush;
 pub(super) use flush::clear_raw as clear_terminal_raw_input;
 
 /// console 文件后端 seam；具体 platform adapter 只在 composition root 装配。
-pub(crate) trait Console: Send + Sync {
+pub(crate) trait Console: Send + Sync + core::any::Any {
     /// 非阻塞读取当前 IRQ ring 中已有 console bytes。
     ///
     /// # Parameters
@@ -211,6 +211,11 @@ impl Terminal {
     /// 创建时绑定的实际设备号；`/dev/tty` 据此重新打开 controlling terminal。
     pub(crate) fn device_number(&self) -> DeviceNumber {
         self.device
+    }
+
+    /// 返回此终端实际使用的字节 backend。TTY 打开别名时由该 backend 识别原 PTY 实例。
+    pub(super) fn console(&self) -> &dyn Console {
+        self.console.as_ref()
     }
 
     /// 一次锁快照投影 Linux proc stat 的 controlling-terminal 字段。

@@ -54,6 +54,7 @@ pub(super) enum ProcNode {
     KernelSysctlDir,
     RandomSysctlDir,
     BootId,
+    OverflowId(crate::namespace::OverflowId),
     PidLimit,
     IpcLimit(crate::ipc::IpcLimit),
     MountLimit,
@@ -234,6 +235,7 @@ impl ProcNode {
                     | Self::MountLimit
                     | Self::InotifyLimit(_)
                     | Self::PidLimit
+                    | Self::OverflowId(_)
                     | Self::IpcLimit(_)
                     | Self::CoreBufferLimit(_)
                     | Self::OptmemLimit

@@ -332,15 +332,15 @@ make run-agent-development
 ```sh
 printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
 codex login status
-codex exec --sandbox danger-full-access '读取当前仓库并运行最小检查'
+codex exec --sandbox read-only '读取当前仓库并运行最小检查'
 
 export ANTHROPIC_API_KEY='...'
 claude -p '读取当前仓库并运行最小检查'
 ```
 
-LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整契约，因此 Agent
-开发镜像不宣称 sandbox 隔离。任何 CLI 首次出现的 `ENOSYS`、fatal trap 或 hang 都必须定位
-第一个 kernel/userspace 契约缺口并补正式 Linux 语义，禁止增加 CLI 专用假成功分支。
+在 AArch64/HVF 上已用 Codex 0.169.0 随附的 Bubblewrap 验证命令执行、`read-only` 的写入拒绝和
+`workspace-write` 的工作区写入边界。其他 Linux namespace/seccomp/Landlock 能力以 ABI 矩阵为准。
+任何 CLI 首次出现的 `ENOSYS`、fatal trap 或 hang 均需定位第一个 kernel/userspace 契约缺口并补正式 Linux 语义。
 
 ## 单元测试
 

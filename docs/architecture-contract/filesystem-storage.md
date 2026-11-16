@@ -50,6 +50,9 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   user root；open 与每次 write 按 EUID/root 或 SYS_ADMIN 检查，限制由 allocation owner 同锁更新。
   `/proc/sys/kernel/random/boot_id` 为全局 0444 UUIDv4。Linuxd 首次读取通过 entropy 设备生成，
   Once 仅在成功时发布，所有进程和 proc 挂载共享同一个值。后续读无需取熵、无需进程快照，失败可重试。
+  `kernel/overflowuid`、`kernel/overflowgid` 为全局 0644 control，写入按本次 EUID 检查，codec 使用 0..65535。
+  namespace 的两个独立 AtomicU16 既提供 sysctl 回读，也直接提供所有无映射 UID/GID 的用户态回退值。
+  Relaxed 已足以原子发布各自的值，无其他状态依赖写入顺序。没有唯一 owner 会使配置读值与实际投影分离。
   ProcSnapshot 只 pin 不可变 actual PID identity，不保活 namespace 编号 registration；显示历史
   identity 不反查已复用的编号。
 - nsfs inode独占canonical magic dentry的Weak slot；FD与bind view都保活同一实际dentry，
@@ -306,6 +309,11 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   MNT_EXPIRE 只在两次连续闲置尝试后拆除；普通 path release 清除真实 view mark，本次 umount
   独占 path 的 release 保留 mark。MS_MOVE 在准备新 membership 后才摘旧位置，
   view ID 不变；MS_BIND 共享实际 superblock 和 source dentry subtree，创建新 attachment/view ID。
+  `pivot_root` 用同一 topology transaction 准备两条真实 attachment 迁移，包括切换 namespace forest root。
+  其锁只同步 root pin 快照和发表；没有可变的唯一 root owner，脱离旧根后 namespace 会继续引用旧树。
+  preflight 检查包含关系、namespace membership 和 shared/inseparable 限制，写入权限不由拓扑更换撤销。
+  提交后只替换仍精确指向旧根的任务 root/cwd，保留其他路径和已打开的 dirfd；锁序为 VFS topology、
+  process graph、线程 fs handle 与共享 FsContext，此阶段无 filesystem I/O。
   recursive bind 整组准备再发表，非 recursive bind 不得剥离 locked child。Source 使用实际 mounted
   view，允许其他 namespace 的已有 path；target 必须属于 caller namespace。
   Ext4 构造显式接收实际 block dev_t，所有 inode st_dev/mountinfo 共用它；internal cache/filesystem

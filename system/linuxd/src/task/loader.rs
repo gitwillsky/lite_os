@@ -314,7 +314,7 @@ fn source(
         .map_err(ProgramLoadError::FileSystem)?;
     // Linux `do_open_execat` 以 O_RDONLY 真正打开文件；regular file 的打开不会等待 peer。
     const O_RDONLY: u32 = 0;
-    let storage = match inode.open_backend(O_RDONLY, identity, authority) {
+    let storage = match inode.open_backend(opened, O_RDONLY, identity, authority) {
         Ok(crate::fs::InodeOpen::Storage(storage)) => storage,
         Ok(crate::fs::InodeOpen::Device(_)) => return Err(ProgramLoadError::NotRegularFile),
         Err(crate::fs::InodeOpenError::Filesystem(error)) => {

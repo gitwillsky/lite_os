@@ -113,6 +113,27 @@ pub(super) fn write_unsigned_long(
 ) -> Result<(), DeviceError> {
     write_scalar(input, offset, 0, u64::MAX, publish)
 }
+
+/// proc_dointvec_minmax 的 0..65535 单值范围，用于 UID/GID overflow control。
+/// 非零 offset 按 numeric sysctl 规则消费，不改值。非法整数或越界返回 EINVAL。
+pub(super) fn write_u16(
+    input: &mut dyn UserInput,
+    offset: u64,
+    publish: impl FnOnce(u16),
+) -> Result<(), DeviceError> {
+    let Some(write) = NumericWrite::prepare(input, offset)? else {
+        return Ok(());
+    };
+    let (value, negative, consumed) =
+        decode_integer(&write.bytes[..write.copied], true, i32::MAX as u64)?;
+    let value = u16::try_from(value).map_err(|_| DeviceError::Errno(errno::EINVAL))?;
+    if negative && value != 0 {
+        return Err(DeviceError::Errno(errno::EINVAL));
+    }
+    publish(value);
+    input.consume(write.count - write.copied + consumed);
+    Ok(())
+}
 fn write_scalar(
     input: &mut dyn UserInput,
     offset: u64,

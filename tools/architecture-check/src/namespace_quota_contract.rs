@@ -45,7 +45,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     if !proc_tokens.contains("source.current_namespace_authority()?.namespace")
         || !proc.contains("fn require_access(")
         || !proc.contains("identity.namespace_capable(")
-        || !node_tokens.contains("Self::UserResourceLimit(_)|Self::UserMap(_,_)|Self::TimeOffsets(_)|Self::MountLimit|Self::InotifyLimit(_)|Self::PidLimit|Self::IpcLimit(_)|Self::CoreBufferLimit(_)|Self::OptmemLimit)=>{0o100644}")
+        || !node_tokens.contains("Self::UserResourceLimit(_)|Self::UserMap(_,_)|Self::TimeOffsets(_)|Self::MountLimit|Self::InotifyLimit(_)|Self::PidLimit|Self::OverflowId(_)|Self::IpcLimit(_)|Self::CoreBufferLimit(_)|Self::OptmemLimit)=>{0o100644}")
         || !opened_tokens.contains("inode.user_namespace")
         || !proc.contains("let key = (node, scope)")
         || !identity.contains("effective_uid: self.capability_uid")

@@ -128,6 +128,7 @@ impl InodeOpenError {
 /// FIFO 汇合被 signal 打断返回 `Interrupted`；设备不存在、socket/symlink 返回 `NoDevice`。
 pub(crate) fn open_by_type<T: Inode + ?Sized>(
     inode: &T,
+    opened: &crate::fs::OpenedFile,
     flags: u32,
     identity: &super::AccessIdentity,
 ) -> Result<InodeOpen, InodeOpenError> {
@@ -149,7 +150,7 @@ pub(crate) fn open_by_type<T: Inode + ?Sized>(
         }
         InodeType::CharacterDevice => super::chardev::open(&super::chardev::OpenRequest {
             number: inode.device_number().ok_or(FileSystemError::NoDevice)?,
-            flags,
+            opened,
             identity,
         })
         .map(InodeOpen::Device)
@@ -162,7 +163,7 @@ pub(crate) fn open_by_type<T: Inode + ?Sized>(
 }
 
 /// 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
-pub(crate) trait Inode: Send + Sync {
+pub(crate) trait Inode: Send + Sync + core::any::Any {
     /// filesystem 的实际叠加深度；普通文件系统为零，FUSE 从 INIT 协商事实投影。
     fn stack_depth(&self) -> u32 {
         0
@@ -259,11 +260,12 @@ pub(crate) trait Inode: Send + Sync {
     /// 显式拒绝 reopen，magic link 仍保留真实 metadata identity，不降级为 label lookup。
     fn open_backend(
         &self,
+        opened: &crate::fs::OpenedFile,
         flags: u32,
         identity: &super::AccessIdentity,
         _authority: &crate::namespace::NamespaceAuthority,
     ) -> Result<InodeOpen, InodeOpenError> {
-        open_by_type(self, flags, identity)
+        open_by_type(self, opened, flags, identity)
     }
 
     /// 不进入 mount namespace 的 pseudo-filesystem 事实；path/fd statfs 共用此 projection。

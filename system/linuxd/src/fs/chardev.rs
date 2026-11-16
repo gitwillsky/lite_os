@@ -416,8 +416,8 @@ impl DeviceWaitSources {
 /// 打开设备时 driver 可见的调用者上下文。
 pub(crate) struct OpenRequest<'a> {
     pub(crate) number: DeviceNumber,
-    /// 本次打开的原始 status flags；TTY 从 O_NOCTTY 与 O_ACCMODE 决定自动取得。
-    pub(crate) flags: u32,
+    /// 设备实际打开路径，供 ptmx 一类 path-scoped 设备定位所属实例。
+    pub(crate) opened: &'a crate::fs::OpenedFile,
     pub(crate) identity: &'a AccessIdentity,
 }
 

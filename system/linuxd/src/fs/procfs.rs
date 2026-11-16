@@ -486,18 +486,10 @@ impl ProcInode {
                 .thread_file_information(tid, fd, &self.pid_namespace)?
                 .ok_or(FileSystemError::NotFound);
         }
-        let scope = match self.node {
-            ProcNode::Stat
-            | ProcNode::MemInfo
-            | ProcNode::BuddyInfo
-            | ProcNode::VmStat
-            | ProcNode::LoadAvg
-            | ProcNode::Uptime => ProcSnapshotScope::System,
-            _ => self
-                .node
-                .process_key()
-                .map_or(ProcSnapshotScope::System, ProcSnapshotScope::Process),
-        };
+        let scope = self
+            .node
+            .process_key()
+            .map_or(ProcSnapshotScope::System, ProcSnapshotScope::Process);
         let snapshot = self.source.snapshot(scope, &self.pid_namespace)?;
         match self.node {
             ProcNode::Stat => format_cpu_stat(&snapshot),
@@ -506,7 +498,6 @@ impl ProcInode {
             ProcNode::VmStat => format_vmstat(&snapshot),
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot, self.source.current_time_offsets()?),
-
             ProcNode::Mounts
             | ProcNode::Partitions
             | ProcNode::Cmdline
@@ -561,6 +552,7 @@ impl ProcInode {
             | ProcNode::MountLimit
             | ProcNode::InotifyLimit(_)
             | ProcNode::PidLimit
+            | ProcNode::OverflowId(_)
             | ProcNode::IpcLimit(_)
             | ProcNode::CoreBufferLimit(_)
             | ProcNode::OptmemLimit
@@ -695,7 +687,10 @@ impl Inode for ProcInode {
             }
             return Ok(());
         }
-        if matches!(self.node, ProcNode::MountLimit | ProcNode::InotifyLimit(_)) {
+        if matches!(
+            self.node,
+            ProcNode::MountLimit | ProcNode::InotifyLimit(_) | ProcNode::OverflowId(_)
+        ) {
             return sysctl_permissions::require(identity.effective_uid(), requested);
         }
         if matches!(self.node, ProcNode::UserResourceLimit(_)) {
@@ -732,6 +727,7 @@ impl Inode for ProcInode {
 
     fn open_backend(
         &self,
+        _opened: &crate::fs::OpenedFile,
         flags: u32,
         _: &super::AccessIdentity,
         authority: &crate::namespace::NamespaceAuthority,

@@ -72,6 +72,20 @@ impl TaskControlBlock {
         drop(retired);
     }
 
+    /// pivot_root 同锁更新仍精确引用旧根的 root/cwd，保留两者的其他路径。
+    pub(in crate::task) fn replace_fs_root(&self, old: &OpenedFile, new: &Arc<OpenedFile>) {
+        let handle = self.thread().fs_namespaces.lock();
+        if let Some(fs) = &handle.fs {
+            let mut fs = fs.lock();
+            if fs.root.same_path(old) {
+                fs.root = new.clone();
+            }
+            if fs.cwd.same_path(old) {
+                fs.cwd = new.clone();
+            }
+        }
+    }
+
     /// 原子替换共享 fs context 的工作目录 identity，旧 opened-entry 锁外退休。
     ///
     /// # Parameters

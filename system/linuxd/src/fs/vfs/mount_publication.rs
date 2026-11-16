@@ -12,41 +12,63 @@ use alloc::{
 /// 已存在view的一次placement迁移；实际attachment payload和新index节点均在摘旧边前准备。
 pub(super) struct Placement {
     view: Arc<MountView>,
-    parent: Arc<MountView>,
-    old_parent: Arc<MountView>,
+    parent: Option<Arc<MountView>>,
+    old_parent: Option<Arc<MountView>>,
     edge: Option<Box<mount_retirement::Retirement>>,
     node: Option<mount_index::PreparedAttachment>,
-    owner: Option<Arc<MountView>>,
 }
 impl Placement {
     pub(super) fn prepare(
         view: Arc<MountView>,
         attachment: Attachment,
     ) -> Result<Self, FileSystemError> {
+        Self::prepare_at(view, Some(attachment))
+    }
+
+    /// 准备迁移已挂载的 view；空 attachment 表示所在 namespace 的 forest root。
+    ///
+    /// # Errors
+    ///
+    /// OOM、失效的 parent 或跨 namespace 时返回错误，原位置保持不变。
+    pub(super) fn prepare_at(
+        view: Arc<MountView>,
+        attachment: Option<Attachment>,
+    ) -> Result<Self, FileSystemError> {
         let old_parent = view
             .attachment()
-            .and_then(|edge| edge.parent.upgrade())
-            .ok_or(FileSystemError::InvalidOperation)?;
-        let parent = attachment
-            .parent
-            .upgrade()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if !Arc::ptr_eq(&parent.scope, &view.scope) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        let key = mount_index::AttachmentKey::Child {
-            parent: Arc::as_ptr(&parent) as usize,
-            point: Arc::as_ptr(&attachment.point) as usize,
+            .map(|edge| {
+                edge.parent
+                    .upgrade()
+                    .ok_or(FileSystemError::InvalidOperation)
+            })
+            .transpose()?;
+        let (parent, key, edge) = if let Some(attachment) = attachment {
+            let parent = attachment
+                .parent
+                .upgrade()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if !Arc::ptr_eq(&parent.scope, &view.scope) {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            let key = mount_index::AttachmentKey::Child {
+                parent: Arc::as_ptr(&parent) as usize,
+                point: Arc::as_ptr(&attachment.point) as usize,
+            };
+            (
+                Some(parent),
+                key,
+                Some(mount_retirement::Retirement::for_attachment(attachment)?),
+            )
+        } else {
+            (None, mount_index::AttachmentKey::Root(view.scope.id), None)
         };
         let node = mount_index::prepare_at(&view, key)?;
-        let edge = mount_retirement::Retirement::for_attachment(attachment)?;
         Ok(Self {
             view,
             parent,
             old_parent,
-            edge: Some(edge),
+            edge,
             node: Some(node),
-            owner: None,
         })
     }
 }
@@ -187,12 +209,12 @@ impl<'a> Publication<'a> {
             if !placement.view.state.lock().namespace_member {
                 return Err(FileSystemError::InvalidOperation);
             }
-            Self::parent_change(&mut publication.parents, placement.parent.clone(), true)?;
-            Self::parent_change(
-                &mut publication.parents,
-                placement.old_parent.clone(),
-                false,
-            )?;
+            if let Some(parent) = &placement.parent {
+                Self::parent_change(&mut publication.parents, parent.clone(), true)?;
+            }
+            if let Some(parent) = &placement.old_parent {
+                Self::parent_change(&mut publication.parents, parent.clone(), false)?;
+            }
         }
         for parent in &mut publication.parents {
             let (length, capacity) = {
@@ -270,7 +292,7 @@ impl<'a> Publication<'a> {
         for placement in &self.placements {
             edges.push((
                 Arc::as_ptr(&placement.view) as usize,
-                Some(Arc::downgrade(&placement.parent)),
+                placement.parent.as_ref().map(Arc::downgrade),
             ));
         }
         edges.sort_unstable_by_key(|(owner, _)| *owner);
@@ -378,21 +400,19 @@ impl<'a> Publication<'a> {
         // 先摘迁移的旧index，才能在原位置发表被它覆盖的新mount。
         for placement in &mut self.placements {
             mount_index::detach(&placement.view);
-            placement.owner = Some({
-                let mut state = placement.old_parent.state.lock();
+            if let Some(parent) = &placement.old_parent {
+                let mut state = parent.state.lock();
                 let index = state
                     .children
                     .iter()
                     .position(|child| Arc::ptr_eq(child, &placement.view))
                     .expect("placement owns actual child edge");
-                state.children.remove(index)
-            });
-            let retired = placement
-                .view
-                .state
-                .lock()
-                .attachment
-                .replace(placement.edge.take().expect("placement edge prepared"));
+                state.children.remove(index);
+            }
+            let retired = core::mem::replace(
+                &mut placement.view.state.lock().attachment,
+                placement.edge.take(),
+            );
             if let Some(retired) = retired {
                 mount_retirement::enqueue(retired);
             }
@@ -401,13 +421,10 @@ impl<'a> Publication<'a> {
             set.publish();
         }
         // 必须先批量移走全部旧owning edge，再批量插入；net capacity不保证逐项搬移的峰值。
-        for placement in &mut self.placements {
-            placement
-                .parent
-                .state
-                .lock()
-                .children
-                .push(placement.owner.take().expect("actual moving edge prepared"));
+        for placement in &self.placements {
+            if let Some(parent) = &placement.parent {
+                parent.state.lock().children.push(placement.view.clone());
+            }
         }
         mount_propagation::publish_shared(core::mem::take(&mut self.shared));
         mount_propagation::publish_memberships(self.incoming);

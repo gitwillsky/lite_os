@@ -178,6 +178,7 @@ mod fs {
         fn inode_type(&self) -> InodeType;
         fn open_backend(
             &self,
+            _opened: &OpenedFile,
             _flags: u32,
             _identity: &AccessIdentity,
             _authority: &crate::namespace::NamespaceAuthority,
@@ -2324,7 +2325,7 @@ mod fs {
         let opened = namespace_opened(NamespaceReference::new(child.clone())).unwrap();
         let InodeOpen::Device(file) = opened
             .inode()
-            .open_backend(0, &AccessIdentity::root(), &authority)
+            .open_backend(&opened, 0, &AccessIdentity::root(), &authority)
             .ok()
             .unwrap();
         assert!(file.positioned().is_none());

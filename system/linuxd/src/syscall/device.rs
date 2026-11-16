@@ -53,6 +53,7 @@ impl UserMemory for TaskUserMemory<'_> {
         let backend = opened
             .inode()
             .open_backend(
+                &opened,
                 crate::fs::O_RDONLY,
                 &self.0.access_identity(true),
                 &self.0.namespace_authority(),

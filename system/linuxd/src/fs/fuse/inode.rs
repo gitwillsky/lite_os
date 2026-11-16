@@ -550,6 +550,7 @@ impl Inode for FuseInode {
     /// FOPEN_KEEP_CACHE 的打开作废页缓存，保证打开时看到其他客户端的修改。其余类型按通用规则打开。
     fn open_backend(
         &self,
+        opened: &crate::fs::OpenedFile,
         flags: u32,
         identity: &AccessIdentity,
         _authority: &crate::namespace::NamespaceAuthority,
@@ -557,7 +558,7 @@ impl Inode for FuseInode {
         let (open, release) = match self.kind {
             InodeType::File => (fuse::OPEN, fuse::RELEASE),
             InodeType::Directory => (fuse::OPENDIR, fuse::RELEASEDIR),
-            _ => return open_by_type(self, flags, identity),
+            _ => return open_by_type(self, opened, flags, identity),
         };
         // Linux：O_CREAT/O_EXCL/O_NOCTTY 已由 VFS 处理；未协商 ATOMIC_O_TRUNC 时截断另发 SETATTR。
         let flags = flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);

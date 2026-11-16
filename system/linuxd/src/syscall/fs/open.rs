@@ -251,7 +251,7 @@ pub(in crate::syscall) fn open_at(
     // 原子创建已打开的 backend 直接使用；否则按 inode 类型打开。
     let backend = match created_backend {
         Some(backend) => backend,
-        None => match inode.open_backend(flags, &identity, &task.namespace_authority()) {
+        None => match inode.open_backend(&opened, flags, &identity, &task.namespace_authority()) {
             Ok(backend) => backend,
             Err(InodeOpenError::Filesystem(error)) => return ferr(error),
             Err(InodeOpenError::Interrupted) => return crate::syscall::INTERNAL_RESTART_SYS,

@@ -1,4 +1,4 @@
-//! Linux mem major 1 字符设备：`null`、`zero`、`random`、`urandom` 与 `kmsg`。
+//! Linux mem major 1 字符设备：`null`、`zero`、`full`、`random`、`urandom` 与 `kmsg`。
 
 use alloc::sync::Arc;
 use linux_abi::errno;
@@ -25,6 +25,7 @@ const POLLOUT: i16 = 0x004;
 const MEM_MAJOR: u32 = 1;
 const NULL_MINOR: u32 = 3;
 const ZERO_MINOR: u32 = 5;
+const FULL_MINOR: u32 = 7;
 const RANDOM_MINOR: u32 = 8;
 const URANDOM_MINOR: u32 = 9;
 const KMSG_MINOR: u32 = 11;
@@ -51,6 +52,7 @@ pub(super) fn register() -> Result<(), FileSystemError> {
     for (path, minor, permissions) in [
         (&b"null"[..], NULL_MINOR, 0o666),
         (b"zero", ZERO_MINOR, 0o666),
+        (b"full", FULL_MINOR, 0o666),
         (b"random", RANDOM_MINOR, 0o666),
         (b"urandom", URANDOM_MINOR, 0o666),
         (b"kmsg", KMSG_MINOR, 0o600),
@@ -68,6 +70,7 @@ impl CharacterDriver for MemDriver {
         let file: Arc<dyn DeviceFile> = match request.number.minor {
             NULL_MINOR => Arc::try_new(Null).map(|file| file as Arc<dyn DeviceFile>),
             ZERO_MINOR => Arc::try_new(Zero).map(|file| file as Arc<dyn DeviceFile>),
+            FULL_MINOR => Arc::try_new(Full).map(|file| file as Arc<dyn DeviceFile>),
             RANDOM_MINOR | URANDOM_MINOR => {
                 Arc::try_new(Entropy).map(|file| file as Arc<dyn DeviceFile>)
             }
@@ -114,6 +117,27 @@ impl DeviceFile for Zero {
 
     fn poll(&self, events: i16) -> i16 {
         events & (POLLIN | POLLOUT)
+    }
+}
+
+/// `/dev/full`：读出零字节流，写入立即返回 ENOSPC，定位总是回到 0。
+struct Full;
+
+impl DeviceFile for Full {
+    fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
+        Zero.read(output, nonblocking)
+    }
+
+    fn write(&self, _input: &mut dyn UserInput, _nonblocking: bool) -> Result<(), DeviceError> {
+        Err(DeviceError::Errno(errno::ENOSPC))
+    }
+
+    fn seek(&self, _offset: i64, _whence: u32) -> Result<u64, DeviceError> {
+        Ok(0)
+    }
+
+    fn poll(&self, events: i16) -> i16 {
+        Zero.poll(events)
     }
 }
 

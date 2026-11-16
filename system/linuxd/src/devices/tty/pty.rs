@@ -1,5 +1,4 @@
 use crate::sync::Mutex;
-use crate::sync::Once;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -20,6 +19,7 @@ struct PtyConsoleState {
 }
 
 struct PtyConsole {
+    pool: Arc<PtyPool>,
     output: Arc<PipeEnd>,
     master_notification: Arc<PipeEnd>,
     state: Mutex<PtyConsoleState>,
@@ -97,10 +97,11 @@ struct PtyState {
 }
 
 /// Unix98 PTY master/slave 共用的 line-discipline 与生命周期 owner。
-pub(crate) struct PtyPair {
-    index: u32,
-    owner_uid: u32,
-    owner_gid: u32,
+pub(super) struct PtyPair {
+    pub(super) index: u32,
+    pub(super) inode: u64,
+    pub(super) owner_uid: u32,
+    pub(super) owner_gid: u32,
     console: Arc<PtyConsole>,
     terminal: Arc<Terminal>,
     slave_notification_read: Arc<PipeEnd>,
@@ -332,6 +333,7 @@ impl Drop for PtySlave {
 
 struct PtyRegistry {
     slots: FallibleMap<u32, Weak<PtyPair>>,
+    next_inode: u64,
 }
 
 /// weak allocation 观察者不占用索引；实际 master/slave admission 全部归还才允许复用。
@@ -342,228 +344,204 @@ fn reusable(slot: &Weak<PtyPair>) -> bool {
     })
 }
 
-// OWNER: pty module 唯一拥有 Unix98 index namespace 与生命周期。weak
-// slots 允许最后一个 endpoint 关闭后原位复用；缺失此 registry 会让 devpts 与 ptmx pair 分裂。
-static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
-
-/// 创建 Unix98 PTY index registry。
-///
-/// # Errors
-///
-/// 重复初始化返回 `AlreadyExists`。
-pub(super) fn init() -> Result<(), FileSystemError> {
-    if PTYS.get().is_some() {
-        return Err(FileSystemError::AlreadyExists);
-    }
-    PTYS.call_once(|| {
-        Mutex::new(PtyRegistry {
-            slots: FallibleMap::new(),
-        })
-    });
-    Ok(())
+/// 一个 devpts 实例的 Unix98 index owner。
+/// Weak slots 不保活已关闭端点；多个挂载可各自使用相同的可见 index。
+pub(super) struct PtyPool {
+    registry: Mutex<PtyRegistry>,
+    limit: u32,
 }
 
-/// 分配新 Unix98 pair，并把 ptmx opener 记录为 slave inode owner。
-///
-/// # Parameters
-///
-/// - `owner_uid`: open `/dev/ptmx` 时的 effective UID。
-/// - `owner_gid`: open `/dev/ptmx` 时的 effective GID。
-///
-/// # Returns
-///
-/// master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
-pub(super) fn open_master(
-    owner_uid: u32,
-    owner_gid: u32,
-) -> Result<Arc<PtyMaster>, FileSystemError> {
-    let mut allocated =
-        Arc::<PtyMaster>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
-    let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let (output_read, output_write) =
-        crate::ipc::Pipe::pair().map_err(|()| FileSystemError::OutOfMemory)?;
-    let (slave_notification_read, slave_notification_write) =
-        crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
-    let (master_notification_read, master_notification_write) =
-        crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
-    let console = Arc::try_new(PtyConsole {
-        output: output_write,
-        master_notification: master_notification_write.clone(),
-        state: Mutex::new(PtyConsoleState {
-            input: [0; PTY_INPUT_CAPACITY],
-            head: 0,
-            length: 0,
-        }),
-    })
-    .map_err(|_| FileSystemError::OutOfMemory)?;
-    // 1. 实际索引只有 registry 拥有；读取候选后在锁外准备完整 pair 与 AVL node。
-    // 2. 发布时重验该候选。并发 opener 已占用则退休未发布对象并重试，不泄漏设备号。
-    let pair = loop {
-        let index = {
-            let registry = registry.lock();
-            let mut candidate = 0;
-            for (&index, slot) in registry.slots.iter() {
-                if index != candidate || reusable(slot) {
-                    break;
-                }
-                candidate += 1;
-            }
-            if candidate >= super::PTS_MINOR_COUNT {
-                return Err(FileSystemError::NoSpace);
-            }
-            candidate
-        };
-        let terminal = Terminal::new(
-            console.clone(),
-            crate::fs::DeviceNumber::new(super::PTS_MAJOR, index),
-        )
-        .map_err(|()| FileSystemError::OutOfMemory)?;
-        let pair = Arc::try_new(PtyPair {
-            index,
-            owner_uid,
-            owner_gid,
-            console: console.clone(),
-            terminal,
-            slave_notification_read: slave_notification_read.clone(),
-            slave_notification_write: slave_notification_write.clone(),
-            master_notification_read: master_notification_read.clone(),
-            master_notification_write: master_notification_write.clone(),
-            state: Mutex::new(PtyState {
-                locked: true,
-                master_open: true,
-                slave_opens: 0,
+impl PtyPool {
+    /// 创建空实例；分配失败返回 OutOfMemory。
+    pub(super) fn new(limit: u32) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            registry: Mutex::new(PtyRegistry {
+                slots: FallibleMap::new(),
+                next_inode: 3,
+            }),
+            limit,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    /// 分配新 Unix98 pair，并把 ptmx opener 记录为 slave inode owner。
+    ///
+    /// # Parameters
+    ///
+    /// - `owner_uid`: open `/dev/ptmx` 时的 effective UID。
+    /// - `owner_gid`: open `/dev/ptmx` 时的 effective GID。
+    ///
+    /// # Returns
+    ///
+    /// master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
+    pub(super) fn open_master(
+        self: &Arc<Self>,
+        owner_uid: u32,
+        owner_gid: u32,
+    ) -> Result<Arc<PtyMaster>, FileSystemError> {
+        let mut allocated =
+            Arc::<PtyMaster>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
+        let registry = &self.registry;
+        let (output_read, output_write) =
+            crate::ipc::Pipe::pair().map_err(|()| FileSystemError::OutOfMemory)?;
+        let (slave_notification_read, slave_notification_write) =
+            crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
+        let (master_notification_read, master_notification_write) =
+            crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
+        let console = Arc::try_new(PtyConsole {
+            pool: self.clone(),
+            output: output_write,
+            master_notification: master_notification_write.clone(),
+            state: Mutex::new(PtyConsoleState {
+                input: [0; PTY_INPUT_CAPACITY],
+                head: 0,
+                length: 0,
             }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
-        let prepared = FallibleMap::try_prepare(index, Arc::downgrade(&pair))
+        // 1. 实际索引只有 registry 拥有；读取候选后在锁外准备完整 pair 与 AVL node。
+        // 2. 发布时重验该候选。并发 opener 已占用则退休未发布对象并重试，不泄漏设备号。
+        let pair = loop {
+            let (index, inode) = {
+                let registry = registry.lock();
+                let mut candidate = 0;
+                for (&index, slot) in registry.slots.iter() {
+                    if index != candidate || reusable(slot) {
+                        break;
+                    }
+                    candidate += 1;
+                }
+                if candidate >= self.limit {
+                    return Err(FileSystemError::NoSpace);
+                }
+                (candidate, registry.next_inode)
+            };
+            let terminal = Terminal::new(
+                console.clone(),
+                crate::fs::DeviceNumber::new(super::PTS_MAJOR, index),
+            )
+            .map_err(|()| FileSystemError::OutOfMemory)?;
+            let pair = Arc::try_new(PtyPair {
+                index,
+                inode,
+                owner_uid,
+                owner_gid,
+                console: console.clone(),
+                terminal,
+                slave_notification_read: slave_notification_read.clone(),
+                slave_notification_write: slave_notification_write.clone(),
+                master_notification_read: master_notification_read.clone(),
+                master_notification_write: master_notification_write.clone(),
+                state: Mutex::new(PtyState {
+                    locked: true,
+                    master_open: true,
+                    slave_opens: 0,
+                }),
+            })
             .map_err(|_| FileSystemError::OutOfMemory)?;
-        let mut registry = registry.lock();
-        if registry
-            .slots
-            .get(&index)
-            .is_some_and(|slot| !reusable(slot))
-        {
+            let prepared = FallibleMap::try_prepare(index, Arc::downgrade(&pair))
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            let mut registry = registry.lock();
+            if registry.next_inode != inode
+                || registry
+                    .slots
+                    .get(&index)
+                    .is_some_and(|slot| !reusable(slot))
+            {
+                drop(registry);
+                drop(prepared);
+                drop(pair);
+                continue;
+            }
+            registry.next_inode = inode.checked_add(1).ok_or(FileSystemError::NoSpace)?;
+            let retired = registry.slots.take_entry(&index);
+            registry.slots.commit_vacant(prepared);
             drop(registry);
-            drop(prepared);
-            drop(pair);
-            continue;
-        }
-        let retired = registry.slots.take_entry(&index);
-        registry.slots.commit_vacant(prepared);
-        drop(registry);
-        drop(retired);
-        break pair;
-    };
-    Arc::get_mut(&mut allocated)
-        .expect("unpublished PTY master is unique")
-        .write(PtyMaster {
-            pair,
-            output: output_read,
-        });
-    // SAFETY: 唯一 Arc storage 已完整初始化；publication 后没有 fallible allocation。
-    Ok(unsafe { allocated.assume_init() })
-}
-
-/// 打开 live 且已 unlock 的 `/dev/pts/N` slave。
-///
-/// # Parameters
-///
-/// - `index`: TIOCGPTN 返回的 device index。
-///
-/// # Returns
-///
-/// 独立 slave open 引用；不存在返回 NotFound，锁定或 master 已关闭返回 IoError。
-pub(super) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
-    let mut allocated =
-        Arc::<PtySlave>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
-    let pair = PTYS
-        .get()
-        .ok_or(FileSystemError::InvalidOperation)?
-        .lock()
-        .slots
-        .get(&index)
-        .and_then(Weak::upgrade)
-        .ok_or(FileSystemError::NotFound)?;
-    {
-        let mut state = pair.state.lock();
-        if state.locked || !state.master_open {
-            return Err(FileSystemError::IoError);
-        }
-        state.slave_opens = state
-            .slave_opens
-            .checked_add(1)
-            .ok_or(FileSystemError::NoSpace)?;
+            drop(retired);
+            break pair;
+        };
+        Arc::get_mut(&mut allocated)
+            .expect("unpublished PTY master is unique")
+            .write(PtyMaster {
+                pair,
+                output: output_read,
+            });
+        // SAFETY: 唯一 Arc storage 已完整初始化；publication 后没有 fallible allocation。
+        Ok(unsafe { allocated.assume_init() })
     }
-    Arc::get_mut(&mut allocated)
-        .expect("unpublished PTY slave is unique")
-        .write(PtySlave {
-            pair: pair.clone(),
-            registered: AtomicBool::new(true),
-        });
-    // SAFETY: 完整初始化的唯一 storage；所有失败均发生在 slave admission 前。
-    let slave = unsafe { allocated.assume_init() };
-    pair.master_notification_write.signal_readiness();
-    Ok(slave)
-}
 
-pub(crate) fn slave_exists(index: u32) -> bool {
-    PTYS.get().is_some_and(|registry| {
-        registry
-            .lock()
-            .slots
-            .get(&index)
-            .and_then(Weak::upgrade)
-            .is_some_and(|pair| pair.state.lock().master_open)
-    })
-}
-
-/// 读取 live slave 的唯一 owner snapshot，供 devpts metadata 与 VFS permission 共用。
-///
-/// # Parameters
-///
-/// - `index`: TIOCGPTN 返回的 device index。
-///
-/// # Returns
-///
-/// master 存活时返回 ptmx opener 的 effective UID/GID，否则 None。
-pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
-    PTYS.get().and_then(|registry| {
-        registry
+    /// 仅查找本实例内仍存活的 slave；不存在时返回 None。
+    pub(super) fn pair(&self, index: u32) -> Option<Arc<PtyPair>> {
+        self.registry
             .lock()
             .slots
             .get(&index)
             .and_then(Weak::upgrade)
             .filter(|pair| pair.state.lock().master_open)
-            .map(|pair| (pair.owner_uid, pair.owner_gid))
-    })
+    }
+
+    /// 取得按可见 index 排序的 live inode 快照；分配失败返回 OutOfMemory。
+    pub(super) fn live_indices(&self) -> Result<Vec<(u32, u64)>, FileSystemError> {
+        let mut indices = Vec::new();
+        loop {
+            let count = self.registry.lock().slots.len();
+            indices
+                .try_reserve_exact(count)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            let registry = self.registry.lock();
+            if indices.capacity() < registry.slots.len() {
+                continue;
+            }
+            for (&index, slot) in registry.slots.iter() {
+                if let Some(pair) = slot.upgrade().filter(|pair| pair.state.lock().master_open) {
+                    indices.push((index, pair.inode));
+                }
+            }
+            return Ok(indices);
+        }
+    }
 }
 
-/// 为 devpts getdents 取得当前 live master index 快照。
-///
-/// # Returns
-///
-/// 升序 index；快照 storage OOM 返回错误。
-pub(crate) fn slave_indices() -> Result<Vec<u32>, FileSystemError> {
-    let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let mut indices = Vec::new();
-    loop {
-        let count = registry.lock().slots.len();
-        indices
-            .try_reserve_exact(count)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let registry = registry.lock();
-        if indices.capacity() < registry.slots.len() {
-            drop(registry);
-            continue;
-        }
-        for (&index, slot) in registry.slots.iter() {
-            if slot
-                .upgrade()
-                .is_some_and(|pair| pair.state.lock().master_open)
-            {
-                indices.push(index);
+impl PtyPair {
+    /// 打开实际 pair 的 slave；已锁定或 master 已关闭返回 IoError。
+    pub(super) fn open_slave(self: &Arc<Self>) -> Result<Arc<PtySlave>, FileSystemError> {
+        let mut allocated =
+            Arc::<PtySlave>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
+        {
+            let mut state = self.state.lock();
+            if state.locked || !state.master_open {
+                return Err(FileSystemError::IoError);
             }
+            state.slave_opens = state
+                .slave_opens
+                .checked_add(1)
+                .ok_or(FileSystemError::NoSpace)?;
         }
-        return Ok(indices);
+        Arc::get_mut(&mut allocated)
+            .expect("unpublished PTY slave is unique")
+            .write(PtySlave {
+                pair: self.clone(),
+                registered: AtomicBool::new(true),
+            });
+        // SAFETY: 完整初始化的唯一 storage；所有失败均发生在 slave admission 前。
+        let slave = unsafe { allocated.assume_init() };
+        self.master_notification_write.signal_readiness();
+        Ok(slave)
     }
+}
+
+/// 重开 controlling PTY 的同一 pair。console 返回 None，已回收或编号复用返回 NoDevice。
+pub(super) fn reopen_slave(
+    terminal: &Arc<Terminal>,
+) -> Result<Option<Arc<PtySlave>>, FileSystemError> {
+    let Some(console) = (terminal.console() as &dyn core::any::Any).downcast_ref::<PtyConsole>()
+    else {
+        return Ok(None);
+    };
+    let pair = console
+        .pool
+        .pair(terminal.device_number().minor)
+        .filter(|pair| Arc::ptr_eq(&pair.terminal, terminal))
+        .ok_or(FileSystemError::NoDevice)?;
+    pair.open_slave().map(Some)
 }

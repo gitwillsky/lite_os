@@ -62,6 +62,7 @@ pub const SYSCALL_FCHOWNAT: usize = 54;
 pub const SYSCALL_FCHOWN: usize = 55;
 pub const SYSCALL_UMOUNT2: usize = 39;
 pub const SYSCALL_MOUNT: usize = 40;
+pub const SYSCALL_PIVOT_ROOT: usize = 41;
 pub const SYSCALL_STATFS: usize = 43;
 pub const SYSCALL_FSTATFS: usize = 44;
 pub const SYSCALL_TRUNCATE: usize = 45;

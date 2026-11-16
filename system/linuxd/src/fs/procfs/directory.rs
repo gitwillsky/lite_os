@@ -323,6 +323,16 @@ impl ProcInode {
             }
             ProcNode::KernelSysctlDir => {
                 emit!(ProcNode::PidLimit, InodeType::File, b"pid_max");
+                emit!(
+                    ProcNode::OverflowId(crate::namespace::OverflowId::Uid),
+                    InodeType::File,
+                    b"overflowuid"
+                );
+                emit!(
+                    ProcNode::OverflowId(crate::namespace::OverflowId::Gid),
+                    InodeType::File,
+                    b"overflowgid"
+                );
                 emit!(ProcNode::RandomSysctlDir, InodeType::Directory, b"random");
                 for resource in crate::ipc::IpcLimit::ALL {
                     emit!(

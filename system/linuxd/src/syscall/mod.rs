@@ -253,6 +253,9 @@ pub(crate) fn syscall(
                 args[4] as *const u8,
             ),
             SYSCALL_UMOUNT2 => fs::mount::sys_umount2(args[0] as *const u8, args[1]),
+            SYSCALL_PIVOT_ROOT => {
+                fs::mount::sys_pivot_root(args[0] as *const u8, args[1] as *const u8)
+            }
             SYSCALL_STATFS => fs::statistics::sys_statfs(args[0] as *const u8, args[1]),
             SYSCALL_FSTATFS => fs::statistics::sys_fstatfs(args[0], args[1]),
             SYSCALL_TRUNCATE => sys_truncate(args[0] as *const u8, args[1] as i64),

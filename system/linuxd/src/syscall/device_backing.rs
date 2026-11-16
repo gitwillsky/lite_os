@@ -65,9 +65,9 @@ impl BackingFile for Registered {
             _ => 6,
         };
         inode.require_access(&self.identity, access)?;
-        let prepared = PreparedFileDescription::try_new()?.prepare_named(opened, flags)?;
+        let prepared = PreparedFileDescription::try_new()?.prepare_named(opened.clone(), flags)?;
         let backend = inode
-            .open_backend(flags, &self.identity, &self.authority)
+            .open_backend(&opened, flags, &self.identity, &self.authority)
             .map_err(|error| match error {
                 InodeOpenError::Filesystem(error) => error,
                 InodeOpenError::Interrupted => FileSystemError::Errno(errno::EINTR as u16),

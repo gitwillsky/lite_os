@@ -6,7 +6,7 @@ use super::{
 use crate::namespace::{
     NamespaceError, NamespaceOwner, NamespaceType, UserNamespace, UserResource, UserResourceCharge,
 };
-use crate::sync::Once;
+use crate::sync::Mutex;
 use alloc::boxed::Box;
 use alloc::{sync::Arc, vec::Vec};
 
@@ -20,8 +20,8 @@ pub(crate) enum UnmountMode {
 }
 pub(crate) struct MountNamespace {
     pub(super) scope: Arc<MountScope>,
-    // OWNER: 初始 namespace 早于 worker；唯一 root forest 安装一次，所有 membership 保持同一 Arc。
-    root: Once<Arc<MountView>>,
+    // OWNER: 唯一 forest root。VFS 事务安装/切换 root，短锁同步无拓扑锁的 root 引用快照。
+    root: Mutex<Option<Arc<MountView>>>,
     retirement: Option<Box<super::mount_retirement::Retirement>>,
     _charge: Option<UserResourceCharge>,
 }
@@ -67,7 +67,7 @@ impl MountNamespace {
         let retirement = super::mount_retirement::Retirement::for_namespace()?;
         Arc::try_new(Self {
             scope,
-            root: Once::new(),
+            root: Mutex::new(None),
             retirement: Some(retirement),
             _charge: None,
         })
@@ -75,19 +75,25 @@ impl MountNamespace {
     }
     /// 在 VFS namespace transaction 内一次安装真实 root；失败不替换 namespace identity。
     pub(super) fn install_root(&self, root: Arc<MountView>) -> Result<(), FileSystemError> {
-        if self.root.get().is_some() {
+        if self.root.lock().is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
-        self.root
-            .try_call_once(|| {
-                let mut nodes = [Some(mount_index::prepare(&root)?)];
-                self.insert_prepared(core::slice::from_ref(&root), &mut nodes)?;
-                Ok(root)
-            })
-            .map(|_| ())
+        let mut nodes = [Some(mount_index::prepare(&root)?)];
+        self.insert_prepared(core::slice::from_ref(&root), &mut nodes)?;
+        *self.root.lock() = Some(root);
+        Ok(())
     }
     pub(super) fn root_view(&self) -> Arc<MountView> {
-        self.root.get().expect("live mount namespace root").clone()
+        self.root
+            .lock()
+            .as_ref()
+            .expect("live mount namespace root")
+            .clone()
+    }
+    /// VFS topology 事务提交后，用新根替换实际的 forest owner，旧根已由新 parent 保活。
+    pub(super) fn replace_root(&self, root: Arc<MountView>) {
+        let previous = self.root.lock().replace(root);
+        debug_assert!(previous.is_some());
     }
     /// 唯一 forest 的实际 child ownership；snapshot 仅在事务内持临时 pins，不成为第二份 topology。
     pub(super) fn snapshot(&self) -> Result<Vec<Arc<MountView>>, FileSystemError> {
@@ -106,7 +112,7 @@ impl MountNamespace {
         self.scope.user.clone()
     }
     pub(crate) fn root(&self) -> Result<Arc<OpenedFile>, FileSystemError> {
-        let view = self.root.get().ok_or(FileSystemError::NotFound)?.clone();
+        let view = self.root.lock().clone().ok_or(FileSystemError::NotFound)?;
         let dentry = view.root.clone();
         OpenedFile::at(view, dentry)
     }
@@ -154,7 +160,7 @@ impl MountNamespace {
         }
         let namespace = Arc::try_new(Self {
             scope,
-            root: Once::initialized(views.first().expect("copied root view").clone()),
+            root: Mutex::new(Some(views.first().expect("copied root view").clone())),
             retirement: Some(
                 super::mount_retirement::Retirement::for_namespace().map_err(namespace_error)?,
             ),
@@ -249,9 +255,8 @@ impl Drop for MountNamespace {
             .retirement
             .take()
             .expect("namespace retirement prepared");
-        // 移交一个真实 Arc pin；Once 原 pin 随字段析构释放，退休节点独占后续 forest cleanup。
-        // 不消费 spin 0.10 Once 的 extraction API：其 read 后仍析构原值，会重复 Drop。
-        if let Some(root) = self.root.get().map(Arc::clone) {
+        // 移交唯一 forest root 引用，退休节点独占后续 cleanup。
+        if let Some(root) = self.root.lock().take() {
             retirement.install_namespace(root);
             super::mount_retirement::enqueue(retirement);
         }

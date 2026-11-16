@@ -221,6 +221,7 @@ impl Inode for PidInode {
     }
     fn open_backend(
         &self,
+        _opened: &crate::fs::OpenedFile,
         _flags: u32,
         _creator: &AccessIdentity,
         _authority: &crate::namespace::NamespaceAuthority,

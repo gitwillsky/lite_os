@@ -46,14 +46,14 @@
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke，并经 `input/eventN` 设备文件拥有 evdev UAPI；VirtIO input adapter 只提供 raw event/config。
 - 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::chardev`/`fs::devnode` 注册 minor 区间 driver 与 devfs 节点，
   open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
-  不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`devices::tty`/`console`/`ptmx`/`pts/N`）
-  分别由 fs 与 `devices::tty` 自身注册；pts 设备号为 Linux `(136, index)`。
+  不解释具体设备状态。mem（`null`/`zero`/`full`/`random`/`urandom`/`kmsg`）与 TTY 控制设备由各自 owner 注册；
+  devpts 的 slave 设备号为 Linux `(136, index)`，打开时由所属 devpts inode 取得实际 pair。
 - 系统 console Terminal 是 `devices::tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 linuxd 串口接收线程共享它；
-  `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
+  `/dev/tty` 按调用者的 controlling Terminal 重开底层设备。PTY 实例、pair 与 Terminal
   session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
   PTY、termios、ANSI/ECMA-48。
-- PTY index registry 使用单一 AVL owner；pair、Terminal、Pipe 和索引 node 都在自旋锁外准备，
-  发布只重验候选索引并原子替换退休 weak slot；devpts 枚举也先在锁外准备容量再重验。
+- 每个 devpts mount 有独立 AVL PTY 索引；pair、Terminal、Pipe 和索引节点都在自旋锁外准备，
+  发布时重验候选索引和 inode 序号，再原子替换退休 weak slot。枚举在锁外准备容量再重验。
   actual master fput 发布 master closed、关闭输出 reader、唤醒两端并锁外交付一次 hangup；
   每个独立 slave open 的 admission 在 actual fput 归还一次。观察 backend 的 Arc 不延迟 hangup，
   也不阻止两端全部关闭后的 index 复用。失败准备不发布任何 slot 或 slave admission。

@@ -53,10 +53,8 @@ static int verify_live_task_statistics(void);
 static int verify_kernel_proc_tasks(void);
 int verify_pidfds(const char *proc);
 
-static int map_write(pid_t pid, const char *name, const char *bytes)
+static int write_text(const char *path, const char *bytes)
 {
-    char path[96];
-    snprintf(path, sizeof path, "/proc/%d/%s", pid, name);
     int fd = open(path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) return -1;
     size_t length = strlen(bytes);
@@ -65,6 +63,42 @@ static int map_write(pid_t pid, const char *name, const char *bytes)
     close(fd);
     errno = saved_errno;
     return written == (ssize_t)length ? 0 : -1;
+}
+static int map_write(pid_t pid, const char *name, const char *bytes)
+{
+    char path[96];
+    snprintf(path, sizeof path, "/proc/%d/%s", pid, name);
+    return write_text(path, bytes);
+}
+
+static int verify_overflow_ids(void)
+{
+    const char *uid = "/proc/sys/kernel/overflowuid";
+    const char *gid = "/proc/sys/kernel/overflowgid";
+    const char *paths[] = { uid, gid };
+    for (size_t index = 0; index < sizeof paths / sizeof *paths; ++index) {
+        char value[16];
+        int fd = open(paths[index], O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return 1;
+        ssize_t count = read(fd, value, sizeof value);
+        close(fd);
+        if (count != 6 || memcmp(value, "65534\n", 6)) return 2;
+        if (write_text(paths[index], "65536\n") != -1 || errno != EINVAL) return 3;
+    }
+    int error = 0;
+    if (write_text(uid, "4242\n") || write_text(gid, "4243\n")) {
+        error = 4;
+    } else {
+        pid_t child = fork();
+        if (child == 0)
+            _exit(unshare(CLONE_NEWUSER) || getuid() != 4242 || getgid() != 4243);
+        int status;
+        if (child < 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status))
+            error = 5;
+    }
+    int restored_uid = write_text(uid, "65534\n");
+    int restored_gid = write_text(gid, "65534\n");
+    return restored_uid || restored_gid ? 6 : error;
 }
 static int first_lower(int fd, uint32_t expected)
 {
@@ -139,6 +173,11 @@ static int namespace_child(int ready, int proceed, int inherited_map, int parent
 }
 int verify_user_namespaces(void)
 {
+    int overflow = verify_overflow_ids();
+    if (overflow) {
+        dprintf(2, "overflow IDs failed step=%d errno=%d\n", overflow, errno);
+        return 210 + overflow;
+    }
     int kernel_proc = verify_kernel_proc_tasks();
     if (kernel_proc) {
         dprintf(2, "kernel proc failed step=%d errno=%d\n", kernel_proc, errno);
@@ -2837,7 +2876,8 @@ static int verify_clone_wait_relations(void)
 static int pid_namespace_image(int ancestor_peer)
 {
     if (getpid() != 1 || syscall(SYS_gettid) != 1 || getppid() != 0
-        || getpgid(0) != 1 || getsid(0) != 1 || getpgid(1) != 1 || getsid(1) != 1) return 1;
+        || getpgid(0) != 0 || getsid(0) != 0 || setsid() != 1
+        || getpgid(1) != 1 || getsid(1) != 1 || setsid() != -1 || errno != EPERM) return 1;
     if (syscall(SYS_getpgid, UINT64_C(0x100000001)) != 1
         || setpgid(-1, 0) != -1 || errno != EINVAL
         || getpgid(-1) != -1 || errno != ESRCH) return 2;

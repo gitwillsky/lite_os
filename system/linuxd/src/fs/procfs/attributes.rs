@@ -103,6 +103,7 @@ impl ProcAttributes {
                     | ProcNode::KernelSysctlDir
                     | ProcNode::RandomSysctlDir
                     | ProcNode::BootId
+                    | ProcNode::OverflowId(_)
                     | ProcNode::PidLimit
                     | ProcNode::IpcLimit(_)
             )

@@ -18,7 +18,6 @@ struct ChildGraphSlots {
     future_group: fallible_tree::NodeSlot<usize, ProcessGroupIndex>,
     thread_pid: PidLinkSlot,
     namespace_exit: Option<Arc<super::pid_namespace::NamespaceExit>>,
-    group_links: Option<(PidLinkSlot, PidLinkSlot)>,
 }
 
 impl ChildGraphSlots {
@@ -39,14 +38,6 @@ impl ChildGraphSlots {
                         ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory)
                     })?,
                 )
-            } else {
-                None
-            },
-            group_links: if namespace_init {
-                Some((
-                    PidLinkSlot::try_new().map_err(ProcessCloneError::Pid)?,
-                    PidLinkSlot::try_new().map_err(ProcessCloneError::Pid)?,
-                ))
             } else {
                 None
             },
@@ -135,38 +126,6 @@ fn publish_child(
             .is_none(),
         "unpublished child cannot already own a controlling TTY"
     );
-    let namespace_init = process_pid.identity().is_namespace_init();
-    let session = if namespace_init { pid } else { session };
-    let process_group = if namespace_init { pid } else { process_group };
-    let mut group_member = Some(slots.group_member);
-    let mut group_slot = Some(slots.future_group);
-    let new_group = if namespace_init {
-        let (pgid, sid) = slots
-            .group_links
-            .expect("namespace init group links prepared");
-        let pgid = process_pid.clone_in(pgid);
-        let sid = process_pid.clone_in(sid);
-        let mut members = FallibleMap::new();
-        members.commit_vacant(
-            group_member
-                .take()
-                .expect("child group member prepared")
-                .fill(pid, ()),
-        );
-        Some(group_slot.take().expect("child group node prepared").fill(
-            pid,
-            ProcessGroupIndex {
-                pgid,
-                sid,
-                members,
-                exit_check_pending: false,
-                exit_check_next: None,
-                was_orphaned_stopped: false,
-            },
-        ))
-    } else {
-        None
-    };
     let child_tid = child.tid();
     let leader_credentials = child.leader_credentials_handle();
     let process = child.process().clone();
@@ -187,7 +146,7 @@ fn publish_child(
             children: FallibleMap::new(),
             session,
             process_group,
-            group_slot,
+            group_slot: Some(slots.future_group),
             exec_generation: 0,
             state: ProcessState::Live(threads),
             group_exit: None,
@@ -229,21 +188,12 @@ fn publish_child(
         .expect("fork creator thread disappeared during child publication")
         .created_children
         .commit_vacant(slots.creator_child.fill(pid, ()));
-    if let Some(group) = new_group {
-        graph.groups.commit_vacant(group);
-    } else {
-        graph
-            .groups
-            .get_mut(&process_group)
-            .expect("fork parent process group missing from graph")
-            .members
-            .commit_vacant(
-                group_member
-                    .take()
-                    .expect("child group member prepared")
-                    .fill(pid, ()),
-            );
-    }
+    graph
+        .groups
+        .get_mut(&process_group)
+        .expect("fork parent process group missing from graph")
+        .members
+        .commit_vacant(slots.group_member.fill(pid, ()));
     graph.processes_created = graph.processes_created.saturating_add(1);
     Ok(retired)
 }

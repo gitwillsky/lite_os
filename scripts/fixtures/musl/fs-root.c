@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
@@ -175,10 +176,92 @@ static int thread_roots(struct fixture *f,int detach)
     if(joined || !atomic_load(&input.okay) || !proc_ok) { dprintf(2,"fs root thread joined=%d worker_ok=%d proc_ok=%d detach=%d\n",joined,atomic_load(&input.okay),proc_ok,detach); return 0; }
     return detach ? byte_at(AT_FDCWD,f->outside,'O') : byte_at(AT_FDCWD,"/target",'J');
 }
+
+static void pivot_roots(const struct fixture *fixture)
+{
+    char root[256], put_old[272], previous_outside[256];
+    snprintf(root, sizeof root, "%s/mnt", fixture->root);
+    snprintf(put_old, sizeof put_old, "%s/old", root);
+    snprintf(previous_outside, sizeof previous_outside, "/old%s", fixture->outside);
+    if (unshare(CLONE_NEWNS) || mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) || chdir("/")) fail(191);
+    if (syscall(SYS_pivot_root, root, "/") != -1 || errno != EBUSY) fail(192);
+    if (mkdir(put_old, 0755)) fail(193);
+    char marker[272];
+    snprintf(marker, sizeof marker, "%s/pivot-marker", root);
+    if (!write_file(marker, "P", 1, 0600)) fail(194);
+
+    int ready[2];
+    if (pipe(ready)) fail(195);
+    pid_t peer = fork();
+    if (peer == 0) {
+        close(ready[1]);
+        char signal;
+        if (read(ready[0], &signal, 1) != 1 || !cwd_is("/") || !byte_at(AT_FDCWD, "pivot-marker", 'P'))
+            fail(196);
+        _exit(0);
+    }
+    close(ready[0]);
+    if (peer < 0 || syscall(SYS_pivot_root, root, put_old)) fail(197);
+    if (!cwd_is("/") || !byte_at(AT_FDCWD, "/pivot-marker", 'P')
+        || !byte_at(AT_FDCWD, previous_outside, 'O')) fail(198);
+    if (write(ready[1], "R", 1) != 1 || !child_ok(peer) || close(ready[1])) fail(199);
+    if (umount2("/old", MNT_DETACH) || access(previous_outside, F_OK) != -1 || errno != ENOENT) fail(200);
+
+    int old_root = open("/", O_RDONLY | O_DIRECTORY);
+    if (old_root < 0 || mkdir("/nested", 0755) || mount("tmpfs", "/nested", "tmpfs", 0, NULL)
+        || chdir("/nested") || !write_file("final-marker", "F", 1, 0600)) fail(201);
+    if (syscall(SYS_pivot_root, ".", ".") || fchdir(old_root) || umount2(".", MNT_DETACH)
+        || close(old_root) || chdir("/")) fail(202);
+    if (!byte_at(AT_FDCWD, "final-marker", 'F') || access("/pivot-marker", F_OK) != -1 || errno != ENOENT) fail(203);
+}
+
+static void separate_devpts(const struct fixture *fixture)
+{
+    char mountpoint[2][256], path[272];
+    int master[2], slave[2];
+    for (int n = 0; n < 2; ++n) {
+        snprintf(mountpoint[n], sizeof mountpoint[n], "%s/pts%d", fixture->root, n);
+        if (mkdir(mountpoint[n], 0755) || mount("devpts", mountpoint[n], "devpts", MS_NOSUID | MS_NOEXEC,
+            "newinstance,ptmxmode=0666,mode=620,max=1")) fail(205);
+        snprintf(path, sizeof path, "%s/0", mountpoint[n]);
+        if (access(path, F_OK) != -1 || errno != ENOENT) fail(206);
+        snprintf(path, sizeof path, "%s/ptmx", mountpoint[n]);
+        master[n] = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+        int index = -1, unlock = 0;
+        if (master[n] < 0 || ioctl(master[n], TIOCGPTN, &index) || index != 0 || ioctl(master[n], TIOCSPTLCK, &unlock))
+            fail(207);
+        if (open(path, O_RDWR | O_NOCTTY) != -1 || errno != ENOSPC) fail(208);
+        snprintf(path, sizeof path, "%s/0", mountpoint[n]);
+        struct stat state;
+        slave[n] = open(path, O_RDWR | O_NOCTTY);
+        if (slave[n] < 0 || fstat(slave[n], &state) || (state.st_mode & 0777) != 0620) fail(209);
+    }
+    const char byte = 'P';
+    char seen;
+    if (write(slave[0], &byte, 1) != 1 || read(master[0], &seen, 1) != 1 || seen != byte) fail(210);
+    if (read(master[1], &seen, 1) != -1 || errno != EAGAIN) fail(211);
+    for (int n = 0; n < 2; ++n) {
+        if (close(slave[n]) || close(master[n]) || umount2(mountpoint[n], MNT_DETACH) || rmdir(mountpoint[n]))
+            fail(212);
+    }
+}
+
 int verify_fs_root(void)
 {
     struct fixture f;
     if(!setup(&f)) { dprintf(2,"fs root setup errno=%d\n",errno); return 152; }
+    pid_t pivot = fork();
+    if (pivot == 0) {
+        pivot_roots(&f);
+        _exit(0);
+    }
+    if (!child_ok(pivot) || !byte_at(AT_FDCWD, f.outside, 'O')) return 204;
+    pid_t pts = fork();
+    if (pts == 0) {
+        separate_devpts(&f);
+        _exit(0);
+    }
+    if (!child_ok(pts)) return 213;
     for(int scenario=0;scenario<9;scenario++) {
         pid_t child=fork();
         if(child==0) {

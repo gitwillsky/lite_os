@@ -33,6 +33,7 @@
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
 | 39 | `umount2` | Partial | 普通卸载判忙与实际资源退休；caller root 转 superblock RO；lazy detach、两阶段 expire、nofollow；`MNT_FORCE` 不增加强制中止 I/O 能力 |
 | 40 | `mount` | Partial | 已登记文件系统、挂载安全/atime 属性、remount、bind/move/propagation 与堆叠；类型解析 `data`，ext4 接受实际 `data=ordered`；`fuse.<subtype>` 以 `subtype=` 交给 FUSE（见下）；未知选项/flags `EINVAL` |
+| 41 | `pivot_root` | Complete | 按 owning UserNS 的 `CAP_SYS_ADMIN` 校验；在同一挂载命名空间交换根与 `put_old`，迁移精确引用旧根的 root/cwd，支持 `pivot_root(".", ".")` |
 | 43 | `statfs` | Complete | mounted/pseudo filesystem 同 inode projection |
 | 44 | `fstatfs` | Complete | 所有 OFD 的真实 inode filesystem projection（pipefs/sockfs/anon_inodefs/shmem 区分） |
 | 45 | `truncate` | Complete | 跟随路径；EISDIR/EINVAL 类型检查、挂载写者 EROFS、写权限、ETXTBSY、RLIMIT_FSIZE 的 SIGXFSZ/EFBIG，截断与 ftruncate 共用 |
@@ -179,6 +180,8 @@ poll/epoll。read 逐条在 copy 前出队，copy fault 为 EFAULT 且当前记�
 环覆盖为一次 `EPIPE`；write 以 `<N>` 前缀发布用户 record（最长 1024 字节）；`lseek` 只接受偏移 0；
 poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk 限速。
 
+`/dev/full` 实现标准 `1:7` 设备，读取返回零字节流，写入返回 `ENOSPC`。devpts 支持独立实例、
+`newinstance`、`ptmxmode`、`mode`、`uid`、`gid` 和 `max`。实例创建时设置的选项不支持 remount 变更。
 字符设备读写的范围缩减：`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
 `/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。

@@ -146,7 +146,8 @@ impl OpenedFile {
     pub(in crate::fs) fn is_unlinked(&self) -> bool {
         self.dentry.is_unlinked()
     }
-    pub(super) fn same_path(&self, other: &Self) -> bool {
+    /// 比较路径身份，包含实际 mount view 和 canonical dentry。
+    pub(crate) fn same_path(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.dentry, &other.dentry)
             && match (&self.mount, &other.mount) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -167,16 +168,33 @@ impl OpenedFile {
     }
     /// `..` 在 mount root 从实际 attachment 回到 mountpoint 的父目录；inode 相同并不代表同一路径。
     pub(super) fn parent(&self, stop: &Arc<Self>) -> Result<Option<Arc<Self>>, FileSystemError> {
+        self.parent_with_boundary(Some(stop))
+    }
+
+    /// 字符设备实例以实际 opened path 为准；查找挂载点的真实父目录。
+    ///
+    /// # Errors
+    /// 返回拓扑或路径引用分配错误。
+    pub(crate) fn device_parent(&self) -> Result<Option<Arc<Self>>, FileSystemError> {
+        let _transaction = super::vfs().namespace()?;
+        self.parent_with_boundary(None)
+    }
+
+    fn parent_with_boundary(
+        &self,
+        stop: Option<&Arc<Self>>,
+    ) -> Result<Option<Arc<Self>>, FileSystemError> {
         let Some(view) = &self.mount else {
             return Ok(None);
         };
         let mut view = view.clone();
         let mut dentry = self.dentry.clone();
         loop {
-            if stop
-                .mount
-                .as_ref()
-                .is_some_and(|root| Arc::ptr_eq(root, &view))
+            if let Some(stop) = stop
+                && stop
+                    .mount
+                    .as_ref()
+                    .is_some_and(|root| Arc::ptr_eq(root, &view))
                 && Arc::ptr_eq(&stop.dentry, &dentry)
             {
                 return Ok(Some(stop.clone()));

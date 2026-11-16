@@ -344,6 +344,7 @@ impl Inode for SysInode {
 
     fn open_backend(
         &self,
+        opened: &crate::fs::OpenedFile,
         flags: u32,
         identity: &super::AccessIdentity,
         _authority: &crate::namespace::NamespaceAuthority,
@@ -355,7 +356,7 @@ impl Inode for SysInode {
                 .map(super::InodeOpen::Device)
                 .map_err(Into::into);
         }
-        super::inode::open_by_type(self, flags, identity)
+        super::inode::open_by_type(self, opened, flags, identity)
     }
 
     fn read_storage(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {

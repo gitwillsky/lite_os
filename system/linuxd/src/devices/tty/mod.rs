@@ -49,6 +49,7 @@ const TTY_MINOR: u32 = 0;
 const CONSOLE_MINOR: u32 = 1;
 const PTMX_MINOR: u32 = 2;
 const CONSOLE_NUMBER: DeviceNumber = DeviceNumber::new(TTYAUX_MAJOR, CONSOLE_MINOR);
+const PTMX_NUMBER: DeviceNumber = DeviceNumber::new(TTYAUX_MAJOR, PTMX_MINOR);
 /// Linux `UNIX98_PTY_SLAVE_MAJOR`；slave index 直接作为 minor。
 pub(super) const PTS_MAJOR: u32 = 136;
 /// pts minor 空间（Linux `MINORBITS`）；pty index 不得超出。
@@ -174,7 +175,6 @@ pub(crate) fn init(console: Arc<dyn ConsoleDevice>) -> Result<ConsoleReady, File
     let console = Arc::try_new(DeviceConsole(console)).map_err(|_| FileSystemError::OutOfMemory)?;
     let terminal =
         Terminal::new(console, CONSOLE_NUMBER).map_err(|()| FileSystemError::OutOfMemory)?;
-    pty::init()?;
     CONSOLE.call_once(|| terminal);
     let auxiliary = Arc::try_new(TtyAuxiliaryDriver).map_err(|_| FileSystemError::OutOfMemory)?;
     chardev::register_driver(DeviceNumber::new(TTYAUX_MAJOR, 0), 3, auxiliary)?;
@@ -185,8 +185,6 @@ pub(crate) fn init(console: Arc<dyn ConsoleDevice>) -> Result<ConsoleReady, File
     ] {
         devnode::register_node(path, DeviceNumber::new(TTYAUX_MAJOR, minor), permissions)?;
     }
-    let slaves = Arc::try_new(PtsDriver).map_err(|_| FileSystemError::OutOfMemory)?;
-    chardev::register_driver(DeviceNumber::new(PTS_MAJOR, 0), PTS_MINOR_COUNT, slaves)?;
     crate::fs::register_filesystem(&devpts::DevPtsFileSystemType)?;
     Ok(ConsoleReady(()))
 }
@@ -264,75 +262,50 @@ struct TtyAuxiliaryDriver;
 impl CharacterDriver for TtyAuxiliaryDriver {
     fn open(&self, request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
         match request.number.minor {
-            // `/dev/tty` 是调用者 controlling terminal 的别名：按其实际设备重新打开，读写与唤醒
-            // 源因此与直接打开该设备一致。
+            // `/dev/tty` 直接借用 controlling Terminal identity，避免按数值 minor 跨实例匹配。
             TTY_MINOR => {
                 let terminal = job_control()
                     .controlling_terminal()
                     .ok_or(FileSystemError::NoDevice)?;
-                open_terminal(terminal.device_number(), true)
+                let pty = pty::reopen_slave(&terminal)?;
+                open_terminal_file(terminal, pty, true).map(|file| file as Arc<dyn DeviceFile>)
             }
-            CONSOLE_MINOR => open_terminal(CONSOLE_NUMBER, false),
-            PTMX_MINOR => {
-                let master = pty::open_master(request.identity.uid(), request.identity.gid())?;
-                Arc::try_new(PtyMasterFile(master))
-                    .map(|file| file as Arc<dyn DeviceFile>)
-                    .map_err(|_| FileSystemError::OutOfMemory)
+            CONSOLE_MINOR => {
+                open_terminal_file(console(), None, false).map(|file| file as Arc<dyn DeviceFile>)
             }
+            PTMX_MINOR => devpts::open_ptmx(request),
             _ => Err(FileSystemError::NoDevice),
         }
     }
 }
 
-/// `/dev/pts/N` 的 driver。
-struct PtsDriver;
-
-impl CharacterDriver for PtsDriver {
-    fn open(&self, request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        let file = open_terminal_file(request.number, true)?;
-        if request.flags & crate::fs::O_NOCTTY == 0 {
-            job_control().open_controlling(
-                &file.terminal,
-                request.flags & crate::fs::O_ACCMODE != crate::fs::O_WRONLY,
-            );
-        }
-        Ok(file)
-    }
-}
-
-/// 打开 console 或一个 pts 的 terminal 文件。
-///
-/// `job_control` 为 false 时读写不做后台访问判定，保持 `/dev/console` 的系统输出不受 TOSTOP
-/// 约束；termios 修改始终判定。
-fn open_terminal(
-    number: DeviceNumber,
-    job_control: bool,
+/// 打开某一 devpts mount 的实际 slave，并按 open flags 执行 controlling TTY admission。
+fn open_slave_file(
+    slave: Arc<PtySlave>,
+    flags: u32,
 ) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-    open_terminal_file(number, job_control).map(|file| file as Arc<dyn DeviceFile>)
+    let file = open_terminal_file(slave.terminal().clone(), Some(slave), true)?;
+    if flags & crate::fs::O_NOCTTY == 0 {
+        job_control().open_controlling(
+            &file.terminal,
+            flags & crate::fs::O_ACCMODE != crate::fs::O_WRONLY,
+        );
+    }
+    Ok(file)
 }
 
 /// 在自动取得前完成可失败的文件壳分配，避免打开 OOM 留下 controlling-TTY 副作用。
 fn open_terminal_file(
-    number: DeviceNumber,
+    terminal: Arc<Terminal>,
+    pty: Option<Arc<PtySlave>>,
     job_control: bool,
 ) -> Result<Arc<TerminalFile>, FileSystemError> {
-    let file = if number == CONSOLE_NUMBER {
-        TerminalFile {
-            terminal: console(),
-            pty: None,
-            job_control,
-        }
-    } else if number.major == PTS_MAJOR {
-        let slave = pty::open_slave(number.minor)?;
-        TerminalFile {
-            terminal: slave.terminal().clone(),
-            pty: Some(slave),
-            job_control,
-        }
-    } else {
-        return Err(FileSystemError::NoDevice);
-    };
-    Arc::try_new(file).map_err(|_| FileSystemError::OutOfMemory)
+    Arc::try_new(TerminalFile {
+        terminal,
+        pty,
+        job_control,
+    })
+    .map_err(|_| FileSystemError::OutOfMemory)
 }
 
 /// 一个打开的 console 或 pts。

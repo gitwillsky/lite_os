@@ -4231,8 +4231,8 @@ system/linuxd/src/devices/mod.rs :: pub (crate) mod input
 system/linuxd/src/devices/mod.rs :: pub (crate) mod tty
 system/linuxd/src/devices/mod.rs :: pub (crate) mod usb
 system/linuxd/src/devices/mod.rs :: pub (crate) mod virtio_port
-system/linuxd/src/devices/tty/devpts.rs :: pub (crate) impl DevPtsFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/devices/tty/devpts.rs :: pub (crate) struct DevPtsFileSystem
+system/linuxd/src/devices/tty/devpts.rs :: pub (super) fn open_ptmx (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 system/linuxd/src/devices/tty/devpts.rs :: pub (super) struct DevPtsFileSystemType
 system/linuxd/src/devices/tty/ioctl.rs :: pub (super) fn pty_master (master : & PtyMaster , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 system/linuxd/src/devices/tty/ioctl.rs :: pub (super) fn terminal (terminal : & Arc < Terminal > , call : & IoctlCall < '_ > ,) -> Result < isize , DeviceError >
@@ -4257,9 +4257,6 @@ system/linuxd/src/devices/tty/mod.rs :: trait JobControl :: fn open_controlling 
 system/linuxd/src/devices/tty/mod.rs :: trait JobControl :: fn set_foreground_group (& self , terminal : & Terminal , pgid : usize) -> Result < () , DeviceError >
 system/linuxd/src/devices/tty/mod.rs :: trait JobControl :: fn signal_group (& self , pgid : usize , signal : usize)
 system/linuxd/src/devices/tty/mod.rs :: trait JobControl :: fn wait_for_console (& self , deadline : Option < u64 > , input_ready : & dyn Fn () -> bool) -> WaitResult
-system/linuxd/src/devices/tty/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
-system/linuxd/src/devices/tty/pty.rs :: pub (crate) fn slave_indices () -> Result < Vec < u32 > , FileSystemError >
-system/linuxd/src/devices/tty/pty.rs :: pub (crate) fn slave_owner (index : u32) -> Option < (u32 , u32) >
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtyMaster :: fn close (& self)
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtyMaster :: fn index (& self) -> u32
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtyMaster :: fn notification_pipe (& self) -> Arc < Pipe >
@@ -4283,11 +4280,19 @@ system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtySlave :: fn readines
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtySlave :: fn terminal (& self) -> & Arc < Terminal >
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) impl PtySlave :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) struct PtyMaster
-system/linuxd/src/devices/tty/pty.rs :: pub (crate) struct PtyPair
 system/linuxd/src/devices/tty/pty.rs :: pub (crate) struct PtySlave
-system/linuxd/src/devices/tty/pty.rs :: pub (super) fn init () -> Result < () , FileSystemError >
-system/linuxd/src/devices/tty/pty.rs :: pub (super) fn open_master (owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
-system/linuxd/src/devices/tty/pty.rs :: pub (super) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) PtyPair :: index : u32
+system/linuxd/src/devices/tty/pty.rs :: pub (super) PtyPair :: inode : u64
+system/linuxd/src/devices/tty/pty.rs :: pub (super) PtyPair :: owner_gid : u32
+system/linuxd/src/devices/tty/pty.rs :: pub (super) PtyPair :: owner_uid : u32
+system/linuxd/src/devices/tty/pty.rs :: pub (super) fn reopen_slave (terminal : & Arc < Terminal > ,) -> Result < Option < Arc < PtySlave > > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) impl PtyPair :: fn open_slave (self : & Arc < Self >) -> Result < Arc < PtySlave > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) impl PtyPool :: fn live_indices (& self) -> Result < Vec < (u32 , u64) > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) impl PtyPool :: fn new (limit : u32) -> Result < Arc < Self > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) impl PtyPool :: fn open_master (self : & Arc < Self > , owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) impl PtyPool :: fn pair (& self , index : u32) -> Option < Arc < PtyPair > >
+system/linuxd/src/devices/tty/pty.rs :: pub (super) struct PtyPair
+system/linuxd/src/devices/tty/pty.rs :: pub (super) struct PtyPool
 system/linuxd/src/devices/tty/pty/input_notification.rs :: pub (super) PtyInputActions :: notify_slave : bool
 system/linuxd/src/devices/tty/pty/input_notification.rs :: pub (super) PtyInputActions :: signals : u64
 system/linuxd/src/devices/tty/pty/input_notification.rs :: pub (super) const fn pty_input_actions (cooked_ready : bool , raw_backlog : bool , signals : u64 ,) -> PtyInputActions
@@ -4334,6 +4339,7 @@ system/linuxd/src/devices/tty/terminal.rs :: pub (crate) struct RetiredTerminalC
 system/linuxd/src/devices/tty/terminal.rs :: pub (crate) struct Terminal
 system/linuxd/src/devices/tty/terminal.rs :: pub (crate) trait Console
 system/linuxd/src/devices/tty/terminal.rs :: pub (crate) use input_batch :: { TERMINAL_INPUT_BATCH_BYTES , character_write_chunk }
+system/linuxd/src/devices/tty/terminal.rs :: pub (super) impl Terminal :: fn console (& self) -> & dyn Console
 system/linuxd/src/devices/tty/terminal.rs :: pub (super) use flush :: clear_raw as clear_terminal_raw_input
 system/linuxd/src/devices/tty/terminal.rs :: trait Console :: fn discard_input (& self) -> usize
 system/linuxd/src/devices/tty/terminal.rs :: trait Console :: fn discard_output (& self) -> usize
@@ -4646,9 +4652,9 @@ system/linuxd/src/fs/chardev.rs :: pub (crate) MapRequest :: fd_readable : bool
 system/linuxd/src/fs/chardev.rs :: pub (crate) MapRequest :: fd_writable : bool
 system/linuxd/src/fs/chardev.rs :: pub (crate) MapRequest :: shared : bool
 system/linuxd/src/fs/chardev.rs :: pub (crate) MapRequest :: writable : bool
-system/linuxd/src/fs/chardev.rs :: pub (crate) OpenRequest :: flags : u32
 system/linuxd/src/fs/chardev.rs :: pub (crate) OpenRequest :: identity : & 'a AccessIdentity
 system/linuxd/src/fs/chardev.rs :: pub (crate) OpenRequest :: number : DeviceNumber
+system/linuxd/src/fs/chardev.rs :: pub (crate) OpenRequest :: opened : & 'a crate :: fs :: OpenedFile
 system/linuxd/src/fs/chardev.rs :: pub (crate) UringCommand :: address : usize
 system/linuxd/src/fs/chardev.rs :: pub (crate) UringCommand :: data : [u8 ; 80]
 system/linuxd/src/fs/chardev.rs :: pub (crate) UringCommand :: extended : bool
@@ -5085,7 +5091,7 @@ system/linuxd/src/fs/inode.rs :: pub (crate) enum InodeOpen
 system/linuxd/src/fs/inode.rs :: pub (crate) enum InodeOpenError
 system/linuxd/src/fs/inode.rs :: pub (crate) enum InodeType
 system/linuxd/src/fs/inode.rs :: pub (crate) enum LinkTarget
-system/linuxd/src/fs/inode.rs :: pub (crate) fn open_by_type < T : Inode + ? Sized > (inode : & T , flags : u32 , identity : & super :: AccessIdentity ,) -> Result < InodeOpen , InodeOpenError >
+system/linuxd/src/fs/inode.rs :: pub (crate) fn open_by_type < T : Inode + ? Sized > (inode : & T , opened : & crate :: fs :: OpenedFile , flags : u32 , identity : & super :: AccessIdentity ,) -> Result < InodeOpen , InodeOpenError >
 system/linuxd/src/fs/inode.rs :: pub (crate) struct FineTimes
 system/linuxd/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 system/linuxd/src/fs/inode.rs :: pub (crate) trait Inode
@@ -5121,7 +5127,7 @@ system/linuxd/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result <
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn mknod (& self , _name : & [u8] , _kind : InodeType , _metadata : CreateMetadata , _device : Option < super :: DeviceNumber > ,) -> Result < Arc < dyn Inode > , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn namespace_reference (& self) -> Option < crate :: namespace :: NamespaceReference >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn notification_link_state (& self) -> Option < (u64 , u32) >
-system/linuxd/src/fs/inode.rs :: trait Inode :: fn open_backend (& self , flags : u32 , identity : & super :: AccessIdentity , _authority : & crate :: namespace :: NamespaceAuthority ,) -> Result < InodeOpen , InodeOpenError >
+system/linuxd/src/fs/inode.rs :: trait Inode :: fn open_backend (& self , opened : & crate :: fs :: OpenedFile , flags : u32 , identity : & super :: AccessIdentity , _authority : & crate :: namespace :: NamespaceAuthority ,) -> Result < InodeOpen , InodeOpenError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn page_cache_id (& self) -> Result < crate :: memory :: SharedFileId , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn prepare_cached_write (& self , _identity : & crate :: fs :: AccessIdentity ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn prepare_memory_write (& self , _writer : & super :: memory_file :: MemoryWrite < '_ > , _identity : Option < & super :: AccessIdentity > ,) -> Result < () , FileSystemError >
@@ -5412,13 +5418,13 @@ system/linuxd/src/fs/mount.rs :: trait FileSystemType :: fn name (& self) -> & '
 system/linuxd/src/fs/mount.rs :: trait FileSystemType :: fn requires_device (& self) -> bool
 system/linuxd/src/fs/mount.rs :: trait FileSystemType :: fn user_namespace_mount (& self) -> bool
 system/linuxd/src/fs/mount.rs :: trait FileSystemType :: fn validate_mount_options (& self , options : & [u8]) -> Result < () , FileSystemError >
+system/linuxd/src/fs/mount_options.rs :: pub (crate) MountOption :: key : & 'a [u8]
+system/linuxd/src/fs/mount_options.rs :: pub (crate) MountOption :: value : Option < & 'a [u8] >
 system/linuxd/src/fs/mount_options.rs :: pub (crate) fn is_empty (options : & [u8]) -> bool
-system/linuxd/src/fs/mount_options.rs :: pub (super) MountOption :: key : & 'a [u8]
-system/linuxd/src/fs/mount_options.rs :: pub (super) MountOption :: value : Option < & 'a [u8] >
-system/linuxd/src/fs/mount_options.rs :: pub (super) fn parse (options : & [u8]) -> impl Iterator < Item = MountOption < '_ > >
+system/linuxd/src/fs/mount_options.rs :: pub (crate) fn parse (options : & [u8]) -> impl Iterator < Item = MountOption < '_ > >
+system/linuxd/src/fs/mount_options.rs :: pub (crate) struct MountOption < 'a >
 system/linuxd/src/fs/mount_options.rs :: pub (super) fn parse_number (value : & [u8]) -> Option < u64 >
 system/linuxd/src/fs/mount_options.rs :: pub (super) fn parse_scaled (value : & [u8]) -> Option < u64 >
-system/linuxd/src/fs/mount_options.rs :: pub (super) struct MountOption < 'a >
 system/linuxd/src/fs/nsfs.rs :: pub (crate) fn namespace_opened (namespace : NamespaceReference ,) -> Result < Arc < OpenedFile > , FileSystemError >
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Direct (DirectWrite < 'a >)
@@ -5687,6 +5693,7 @@ system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: NetLink
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: NetRoute
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: NetSysctlDir
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: OptmemLimit
+system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: OverflowId (crate :: namespace :: OverflowId)
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: Partitions
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: PidLimit
 system/linuxd/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCmdline (usize)
@@ -5841,6 +5848,7 @@ system/linuxd/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcThreadSnapshot
 system/linuxd/src/fs/procfs/snapshot.rs :: pub (super) impl ProcThreadSnapshot :: fn comm (& self) -> & [u8]
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write (target : & Arc < UserNamespace > , resource : UserResource , input : & mut dyn UserInput , offset : u64 , caller : & NamespaceAuthority ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_signed_vector (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (& [Option < i32 > ; 4]) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
+system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_u16 (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (u16) ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_unsigned_long (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (u64) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_value (input : & mut dyn UserInput , offset : u64 , minimum : u32 , publish : impl FnOnce (u32) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 system/linuxd/src/fs/procfs/sysctl_permissions.rs :: pub (super) fn require (effective_uid : u32 , requested : u8) -> Result < () , FileSystemError >
@@ -6192,6 +6200,7 @@ system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn install_root (& self , root : Arc < MountView >) -> Result < () , FileSystemError >
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn namespace_file_loops (& self , inode : & dyn super :: Inode) -> bool
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn remove (& self , root : & Arc < OpenedFile > , mode : UnmountMode ,) -> Result < Vec < Arc < crate :: sync :: TaskEvent > > , FileSystemError >
+system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn replace_root (& self , root : Arc < MountView >)
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn root_view (& self) -> Arc < MountView >
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn snapshot (& self) -> Result < Vec < Arc < MountView > > , FileSystemError >
 system/linuxd/src/fs/vfs/mount_namespace.rs :: pub (super) impl MountNamespace :: fn unmount_view < 'a > (& self , root : & 'a Arc < OpenedFile > ,) -> Result < & 'a Arc < MountView > , FileSystemError >
@@ -6199,6 +6208,7 @@ system/linuxd/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSyst
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn change_mount_propagation (& self , authority : & crate :: namespace :: NamespaceAuthority , root : & Arc < OpenedFile > , kind : MountPropagation , recursive : bool ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn is_namespace_root (& self , namespace : & Arc < MountNamespace > , opened : & Arc < OpenedFile > ,) -> bool
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn move_mount (& self , namespace : & Arc < MountNamespace > , source : & Arc < OpenedFile > , point : & Arc < OpenedFile > ,) -> Result < () , FileSystemError >
+system/linuxd/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn pivot_root (& self , namespace : & Arc < MountNamespace > , root : & Arc < OpenedFile > , new_root : & Arc < OpenedFile > , put_old : Arc < OpenedFile > , publish_fs : impl FnOnce () ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (in crate :: fs) impl VirtualFileSystem :: fn mount (& self , namespace : & Arc < MountNamespace > , point : Arc < OpenedFile > , filesystem : Arc < MountedFilesystem > , source : Arc < Vec < u8 > > , root_inode : Arc < dyn Inode > , flags : MountFlags ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (super) impl VirtualFileSystem :: fn enter_mount (& self , opened : Arc < OpenedFile > ,) -> Result < Arc < OpenedFile > , FileSystemError >
 system/linuxd/src/fs/vfs/mount_operations.rs :: pub (super) impl VirtualFileSystem :: fn is_mount_point (& self , path : & Arc < OpenedFile >) -> bool
@@ -6227,6 +6237,7 @@ system/linuxd/src/fs/vfs/mount_propagation.rs :: pub (super) struct PeerGroup
 system/linuxd/src/fs/vfs/mount_propagation.rs :: pub (super) struct PreparedShared
 system/linuxd/src/fs/vfs/mount_propagation.rs :: pub (super) struct Propagation
 system/linuxd/src/fs/vfs/mount_publication.rs :: pub (super) impl Placement :: fn prepare (view : Arc < MountView > , attachment : Attachment ,) -> Result < Self , FileSystemError >
+system/linuxd/src/fs/vfs/mount_publication.rs :: pub (super) impl Placement :: fn prepare_at (view : Arc < MountView > , attachment : Option < Attachment > ,) -> Result < Self , FileSystemError >
 system/linuxd/src/fs/vfs/mount_publication.rs :: pub (super) impl Publication < 'a > :: fn prepare (incoming : & 'a [Arc < MountView >] , nodes : & 'a mut [Option < mount_index :: PreparedAttachment >] , placements : Vec < Placement > , shared : Vec < mount_propagation :: PreparedShared > , retiring : Option < mount_retirement :: PreparedDetach > ,) -> Result < Self , FileSystemError >
 system/linuxd/src/fs/vfs/mount_publication.rs :: pub (super) impl Publication < 'a > :: fn publish (mut self)
 system/linuxd/src/fs/vfs/mount_publication.rs :: pub (super) struct Placement
@@ -6349,12 +6360,14 @@ system/linuxd/src/fs/vfs/namespace_access.rs :: pub (super) struct NamespaceAcce
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl ContentWrite :: fn release_inode_access (& mut self)
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn begin_content_write (& self) -> Result < ContentWrite , FileSystemError >
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn begin_write (& self) -> Result < WriteOpen , FileSystemError >
+system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn device_parent (& self) -> Result < Option < Arc < Self > > , FileSystemError >
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn inode (& self) -> Arc < dyn Inode >
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn may_suid (& self , namespace : & super :: MountNamespace , user : & Arc < crate :: namespace :: UserNamespace > ,) -> bool
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn mount_flags (& self) -> MountFlags
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn mount_id (& self) -> u64
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn read_access (& self) -> ReadAccess < '_ >
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn same_mount (& self , other : & Self) -> bool
+system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn same_path (& self , other : & Self) -> bool
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn touch_access (& self)
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn watch_context (& self) -> Option < (Arc < dyn Inode > , Vec < u8 > , bool) >
 system/linuxd/src/fs/vfs/opened.rs :: pub (crate) struct ContentWrite
@@ -6373,7 +6386,6 @@ system/linuxd/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn inode_id
 system/linuxd/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn parent (& self , stop : & Arc < Self >) -> Result < Option < Arc < Self > > , FileSystemError >
 system/linuxd/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn path (& self , root : & Arc < Self > , deleted_suffix : bool ,) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn project_path (& self , root : & Arc < Self > , deleted_suffix : bool ,) -> Result < (Vec < u8 > , bool) , FileSystemError >
-system/linuxd/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn same_path (& self , other : & Self) -> bool
 system/linuxd/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn change_xattr (self : & Arc < Self > , name : & [u8] , value : Option < Vec < u8 > > , flags : u32 , identity : & AccessIdentity ,) -> Result < () , XattrError >
 system/linuxd/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn executable_capability (& self , namespace : & super :: MountNamespace , caller : & Arc < UserNamespace > ,) -> Result < Option < file_capability :: FileCapabilityData > , FileSystemError >
 system/linuxd/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn list_xattrs (& self , identity : & AccessIdentity) -> Result < Vec < u8 > , XattrError >
@@ -7420,7 +7432,7 @@ system/linuxd/src/namespace/mod.rs :: pub (crate) use quota :: { UserResource , 
 system/linuxd/src/namespace/mod.rs :: pub (crate) use reference :: { NamespaceOwner , NamespaceReference , NamespaceSelector , NamespaceType }
 system/linuxd/src/namespace/mod.rs :: pub (crate) use rlimit_counts :: { IO_URING_BYTES_PER_UID , NamespaceRlimits , RlimitCharge , RlimitResource , }
 system/linuxd/src/namespace/mod.rs :: pub (crate) use time :: { TimeClock , TimeNamespace , TimeOffset , TimeOffsetError , TimeOffsets }
-system/linuxd/src/namespace/mod.rs :: pub (crate) use user :: { NamespaceAuthority , UserNamespace , UserNamespaceMap }
+system/linuxd/src/namespace/mod.rs :: pub (crate) use user :: { NamespaceAuthority , OverflowId , UserNamespace , UserNamespaceMap }
 system/linuxd/src/namespace/mod.rs :: pub (crate) use uts :: UtsNamespace
 system/linuxd/src/namespace/pid.rs :: enum PidAllocationError :: Dead
 system/linuxd/src/namespace/pid.rs :: enum PidAllocationError :: Exhausted
@@ -7566,6 +7578,8 @@ system/linuxd/src/namespace/time.rs :: pub (crate) struct TimeNamespace
 system/linuxd/src/namespace/time.rs :: pub (crate) struct TimeOffset
 system/linuxd/src/namespace/time.rs :: pub (crate) struct TimeOffsets
 system/linuxd/src/namespace/time.rs :: pub (super) impl TimeNamespace :: fn initial (user : Arc < UserNamespace >) -> Result < Arc < Self > , NamespaceError >
+system/linuxd/src/namespace/user.rs :: enum OverflowId :: Gid
+system/linuxd/src/namespace/user.rs :: enum OverflowId :: Uid
 system/linuxd/src/namespace/user.rs :: enum UserNamespaceMap :: Gid
 system/linuxd/src/namespace/user.rs :: enum UserNamespaceMap :: Setgroups
 system/linuxd/src/namespace/user.rs :: enum UserNamespaceMap :: Uid
@@ -7573,8 +7587,11 @@ system/linuxd/src/namespace/user.rs :: pub (crate) NamespaceAuthority :: effecti
 system/linuxd/src/namespace/user.rs :: pub (crate) NamespaceAuthority :: effective_gid : u32
 system/linuxd/src/namespace/user.rs :: pub (crate) NamespaceAuthority :: effective_uid : u32
 system/linuxd/src/namespace/user.rs :: pub (crate) NamespaceAuthority :: namespace : Arc < UserNamespace >
+system/linuxd/src/namespace/user.rs :: pub (crate) enum OverflowId
 system/linuxd/src/namespace/user.rs :: pub (crate) enum UserNamespaceMap
 system/linuxd/src/namespace/user.rs :: pub (crate) impl NamespaceAuthority :: fn capable (& self , target : & Arc < UserNamespace > , capability : Capability) -> bool
+system/linuxd/src/namespace/user.rs :: pub (crate) impl OverflowId :: fn set (self , value : u16)
+system/linuxd/src/namespace/user.rs :: pub (crate) impl OverflowId :: fn value (self) -> u32
 system/linuxd/src/namespace/user.rs :: pub (crate) impl UserNamespace :: fn child (creator : & NamespaceAuthority , at_namespace_root : bool , rlimits : super :: NamespaceRlimits ,) -> Result < Arc < Self > , NamespaceError >
 system/linuxd/src/namespace/user.rs :: pub (crate) impl UserNamespace :: fn control_setgroups (self : & Arc < Self > , allow : bool , opener : & NamespaceAuthority ,) -> Result < () , NamespaceError >
 system/linuxd/src/namespace/user.rs :: pub (crate) impl UserNamespace :: fn display_id (& self , uid : bool , kernel : u32) -> u32
@@ -8340,6 +8357,7 @@ system/linuxd/src/syscall/fs/io/write_limit.rs :: pub (super) fn regular_write_c
 system/linuxd/src/syscall/fs/links.rs :: pub (crate) fn sys_linkat (old_dirfd : isize , old_path : * const u8 , new_dirfd : isize , new_path : * const u8 , flags : usize ,) -> isize
 system/linuxd/src/syscall/fs/links.rs :: pub (crate) fn sys_symlinkat (target : * const u8 , new_dirfd : isize , new_path : * const u8) -> isize
 system/linuxd/src/syscall/fs/mount.rs :: pub (crate) fn sys_mount (source : * const u8 , target : * const u8 , fstype : * const u8 , flags : usize , data : * const u8 ,) -> isize
+system/linuxd/src/syscall/fs/mount.rs :: pub (crate) fn sys_pivot_root (new_root : * const u8 , put_old : * const u8) -> isize
 system/linuxd/src/syscall/fs/mount.rs :: pub (crate) fn sys_umount2 (target : * const u8 , flags : usize) -> isize
 system/linuxd/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mkdirat (dirfd : isize , name : * const u8 , mode : u32) -> isize
 system/linuxd/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mknodat (dirfd : isize , name : * const u8 , mode : u32 , device : u64) -> isize
@@ -9229,6 +9247,7 @@ system/linuxd/src/task/model/process_resources.rs :: pub (crate) impl TaskContro
 system/linuxd/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn set_root_directory (& self , opened : Arc < OpenedFile >)
 system/linuxd/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , opened : Arc < OpenedFile >)
 system/linuxd/src/task/model/process_resources.rs :: pub (in crate :: task) impl TaskControlBlock :: fn proc_directory (& self , kind : crate :: fs :: ProcDirectory ,) -> Option < Arc < OpenedFile > >
+system/linuxd/src/task/model/process_resources.rs :: pub (in crate :: task) impl TaskControlBlock :: fn replace_fs_root (& self , old : & OpenedFile , new : & Arc < OpenedFile >)
 system/linuxd/src/task/model/process_resources.rs :: pub (in crate :: task) impl TaskControlBlock :: fn terminal (& self) -> Option < Arc < Terminal > >
 system/linuxd/src/task/model/process_resources.rs :: pub (in crate :: task) impl super :: Process :: fn clear_terminal_if (& self , expected : & Terminal)
 system/linuxd/src/task/model/process_resources.rs :: pub (in crate :: task) impl super :: Process :: fn replace_terminal (& self , next : Option < Arc < Terminal > > ,) -> Option < Arc < Terminal > >
@@ -9705,6 +9724,7 @@ system/linuxd/src/task/process_table.rs :: pub (crate) fn wait_for_signal_delive
 system/linuxd/src/task/process_table.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
 system/linuxd/src/task/process_table.rs :: pub (crate) use capabilities :: capability_sets
 system/linuxd/src/task/process_table.rs :: pub (crate) use deferred :: { dispatch_deferred_work , next_deferred_deadline }
+system/linuxd/src/task/process_table.rs :: pub (crate) use fs_roots :: replace_fs_roots
 system/linuxd/src/task/process_table.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake , futex_wake_op }
 system/linuxd/src/task/process_table.rs :: pub (crate) use parent_death :: parent_death_signal
 system/linuxd/src/task/process_table.rs :: pub (crate) use pidfd :: { PidFdError , open_pidfd , pidfd_get_file , pidfd_identity }
@@ -9774,6 +9794,7 @@ system/linuxd/src/task/process_table/exec_drain.rs :: pub (super) impl ExecState
 system/linuxd/src/task/process_table/exec_drain.rs :: pub (super) struct ExecDrain
 system/linuxd/src/task/process_table/exec_drain.rs :: pub (super) struct ExecState
 system/linuxd/src/task/process_table/exec_identity.rs :: pub (in crate :: task) fn mark_process_exec (task : & TaskControlBlock , link : Option < PidLinkSlot > , trace_link : Option < Arc < PidRegistration > > ,)
+system/linuxd/src/task/process_table/fs_roots.rs :: pub (crate) fn replace_fs_roots (old : & OpenedFile , new : & Arc < OpenedFile >)
 system/linuxd/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " WAIT value 或 CMP_REQUEUE expected 不匹配。"] Again
 system/linuxd/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " absolute monotonic deadline 已到期。"] TimedOut
 system/linuxd/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " futex word 不可从 calling address space 读取。"] Fault

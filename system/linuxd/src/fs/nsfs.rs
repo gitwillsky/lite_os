@@ -127,6 +127,7 @@ impl Inode for NamespaceInode {
     }
     fn open_backend(
         &self,
+        _opened: &crate::fs::OpenedFile,
         _: u32,
         _: &super::AccessIdentity,
         _: &crate::namespace::NamespaceAuthority,

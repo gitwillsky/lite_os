@@ -174,6 +174,101 @@ impl VirtualFileSystem {
             super::mount_attachment::attach(&tree, point)
         })
     }
+
+    /// 在现有 mount publication 中交换根与 put_old，随后更新引用原根的任务路径。
+    ///
+    /// # Errors
+    /// 不属于同一 namespace、路径不包含、共享/锁定拓扑或 OOM 时不改变挂载树。
+    pub(crate) fn pivot_root(
+        &self,
+        namespace: &Arc<MountNamespace>,
+        root: &Arc<OpenedFile>,
+        new_root: &Arc<OpenedFile>,
+        put_old: Arc<OpenedFile>,
+        publish_fs: impl FnOnce(),
+    ) -> Result<(), FileSystemError> {
+        self.lock_mount(put_old, |point| {
+            let old = root
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let new = new_root
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let parent = point
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if [root, new_root, point]
+                .iter()
+                .any(|path| path.inode().inode_type() != InodeType::Directory)
+            {
+                return Err(FileSystemError::NotDirectory);
+            }
+            if Arc::ptr_eq(old, new) || Arc::ptr_eq(old, parent) {
+                return Err(FileSystemError::Busy);
+            }
+            let old_slot = old.attachment();
+            let previous_parent = new
+                .attachment()
+                .and_then(|edge| edge.parent.upgrade())
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let old_parent = old_slot.as_ref().and_then(|edge| edge.parent.upgrade());
+            if ![old, new, parent]
+                .into_iter()
+                .all(|view| namespace.contains(view))
+                || !Arc::ptr_eq(&root.dentry, &old.root)
+                || !Arc::ptr_eq(&new_root.dentry, &new.root)
+                || new.state.lock().restrictions.inseparable
+                || [
+                    Some(parent),
+                    Some(&previous_parent),
+                    old_parent.as_ref().or(Some(old)),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|view| mount_propagation::group(view).is_some())
+            {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            if new_root.is_unlinked() {
+                return Err(FileSystemError::NotFound);
+            }
+            if !point.project_path(new_root, false)?.1 || !new_root.project_path(root, false)?.1 {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            let replace_forest = old_slot.is_none();
+            let mut placements = Vec::new();
+            placements
+                .try_reserve_exact(2)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            placements.push(mount_publication::Placement::prepare_at(
+                new.clone(),
+                old_slot,
+            )?);
+            placements.push(mount_publication::Placement::prepare(
+                old.clone(),
+                Attachment::new(parent, point.dentry.clone()),
+            )?);
+            let publication = mount_publication::Publication::prepare(
+                &[],
+                &mut [],
+                placements,
+                Vec::new(),
+                None,
+            )?;
+            let inherited_lock =
+                core::mem::replace(&mut old.state.lock().restrictions.inseparable, false);
+            new.state.lock().restrictions.inseparable = inherited_lock;
+            publication.publish();
+            if replace_forest {
+                namespace.replace_root(new.clone());
+            }
+            publish_fs();
+            Ok(())
+        })
+    }
     /// Linux `lock_mount`：独占持有实际顶层挂载点 dentry，再取得 namespace gate 执行 `attach`。
     ///
     /// 1. 旧 dirfd/magic path 可能仍指被覆盖的下层，先进入实际顶层 mount；

@@ -111,7 +111,8 @@ handler、blocked、ptrace 与 core-dump 信号仍走 pending/dequeue。
   read 各 key/value 一次转交 caller，把相同 layout 的 Box 改为 MaybeUninit；topology edges
   必须为空，旧值不会重复 Drop，fill 重新完整初始化。新 group 只在实际需要时锁外准备两个
   link，重新进入 graph 后完整复查权限/目标；OOM 返回标准 ENOMEM，不改变 membership。
-  clone namespace PID1 以自己的 identity 建 SID/PGID，普通 fork 继承 parent group。
+  包括新 PID namespace 的 PID 1 在内，所有 fork 继承 creator 的实际 SID/PGID；
+  外层 identity 在子 namespace 投影为 0，首次 setsid 才建立该进程自己的 session 和 group。
 - Namespace init 的 shutdown event 在新 init graph construction 前 fallibly 分配，
   ProcessNode.namespace_exit 独占 Arc；PidNamespace Dead lifecycle 只保存 PidExitWake 的 Weak，
   不保活 Task/waiter。所有 exit_in_progress 标记与最后 exiting init Thread 的 claim 同 graph

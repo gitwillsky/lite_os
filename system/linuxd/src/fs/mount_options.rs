@@ -5,13 +5,13 @@
 
 /// 一个选项项。
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct MountOption<'a> {
-    pub(super) key: &'a [u8],
-    pub(super) value: Option<&'a [u8]>,
+pub(crate) struct MountOption<'a> {
+    pub(crate) key: &'a [u8],
+    pub(crate) value: Option<&'a [u8]>,
 }
 
 /// 遍历选项字符串；空项（`a,,b`、首尾逗号）被跳过。
-pub(super) fn parse(options: &[u8]) -> impl Iterator<Item = MountOption<'_>> {
+pub(crate) fn parse(options: &[u8]) -> impl Iterator<Item = MountOption<'_>> {
     options
         .split(|&byte| byte == b',')
         .filter(|item| !item.is_empty())

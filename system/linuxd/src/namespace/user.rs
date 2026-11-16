@@ -3,7 +3,39 @@ use super::quota::{UserQuotas, UserResource, UserResourceCharge};
 use super::{IdMap, NamespaceError};
 use crate::sync::Mutex;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU16, Ordering};
 use linux_abi::capability::Capability;
+
+/// Linux 全局 UID/GID overflow sysctl，同时用于无映射 ID 的用户态表示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum OverflowId {
+    Uid,
+    Gid,
+}
+
+// OWNER: 两个系统级回退值与 UID/GID 投影共享。每个值独立读写，对其他状态无发表顺序要求；
+// Relaxed 足以防止并发 sysctl 与投影出现 data race，也不把回退值当成实际权限 ID。
+static OVERFLOW_UID: AtomicU16 = AtomicU16::new(65534);
+static OVERFLOW_GID: AtomicU16 = AtomicU16::new(65534);
+
+impl OverflowId {
+    fn storage(self) -> &'static AtomicU16 {
+        match self {
+            Self::Uid => &OVERFLOW_UID,
+            Self::Gid => &OVERFLOW_GID,
+        }
+    }
+
+    /// 返回当前系统级回退值。
+    pub(crate) fn value(self) -> u32 {
+        u32::from(self.storage().load(Ordering::Relaxed))
+    }
+
+    /// 发布由全局 sysctl 权限检查放行的 16 位回退值。
+    pub(crate) fn set(self, value: u16) {
+        self.storage().store(value, Ordering::Relaxed);
+    }
+}
 
 /// proc map 控制文件种类；不把 UID/GID 与 setgroups 写成另一路 credential policy。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -224,7 +256,14 @@ impl UserNamespace {
         }
     }
     pub(crate) fn display_id(&self, uid: bool, kernel: u32) -> u32 {
-        self.map_kernel_id(uid, kernel).unwrap_or(65534)
+        self.map_kernel_id(uid, kernel).unwrap_or_else(|| {
+            if uid {
+                OverflowId::Uid
+            } else {
+                OverflowId::Gid
+            }
+            .value()
+        })
     }
     pub(crate) fn may_setgroups(&self) -> bool {
         let state = self.mappings.lock();

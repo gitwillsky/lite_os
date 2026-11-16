@@ -94,10 +94,10 @@ fn project_user_queue(
     info: PendingSignal,
 ) -> PendingSignal {
     let uid = info.user_sender_uid(signal).map_or(0, |uid| {
-        sender
-            .user_namespace()
-            .to_kernel(true, uid)
-            .map_or(65534, |uid| target_user_namespace.display_id(true, uid))
+        sender.user_namespace().to_kernel(true, uid).map_or_else(
+            || crate::namespace::OverflowId::Uid.value(),
+            |uid| target_user_namespace.display_id(true, uid),
+        )
     });
     info.project_user_identity(
         signal,

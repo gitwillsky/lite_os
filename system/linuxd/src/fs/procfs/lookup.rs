@@ -219,6 +219,12 @@ impl ProcInode {
                     .ok_or(FileSystemError::NotFound)?,
             ),
             ProcNode::KernelSysctlDir if name == b"pid_max" => ProcNode::PidLimit,
+            ProcNode::KernelSysctlDir if name == b"overflowuid" => {
+                ProcNode::OverflowId(crate::namespace::OverflowId::Uid)
+            }
+            ProcNode::KernelSysctlDir if name == b"overflowgid" => {
+                ProcNode::OverflowId(crate::namespace::OverflowId::Gid)
+            }
             ProcNode::KernelSysctlDir if name == b"random" => ProcNode::RandomSysctlDir,
             ProcNode::RandomSysctlDir => match name {
                 b"." => ProcNode::RandomSysctlDir,

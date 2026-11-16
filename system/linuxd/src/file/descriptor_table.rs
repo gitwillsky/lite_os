@@ -176,7 +176,7 @@ impl FileDescriptorTable {
             let prepared = prepared.prepare_named(backing_opened.clone(), flags)?;
             crate::fs::chardev::open(&crate::fs::chardev::OpenRequest {
                 number,
-                flags,
+                opened: &backing_opened,
                 identity: &identity,
             })
             .map(|file| prepared.finish(crate::fs::InodeOpen::Device(file)))

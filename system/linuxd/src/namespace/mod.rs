@@ -23,7 +23,7 @@ use alloc::sync::Arc;
 pub(crate) use id_map::IdMap;
 pub(crate) use reference::{NamespaceOwner, NamespaceReference, NamespaceSelector, NamespaceType};
 pub(crate) use time::{TimeClock, TimeNamespace, TimeOffset, TimeOffsetError, TimeOffsets};
-pub(crate) use user::{NamespaceAuthority, UserNamespace, UserNamespaceMap};
+pub(crate) use user::{NamespaceAuthority, OverflowId, UserNamespace, UserNamespaceMap};
 pub(crate) use uts::UtsNamespace;
 
 /// namespace 准备与标准 ID map publication 的失败分类；syscall/procfs 各自在 ABI seam 编码。

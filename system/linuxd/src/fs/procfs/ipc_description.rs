@@ -156,8 +156,8 @@ fn format_row(
     user: &UserNamespace,
     pid: &PidNamespace,
 ) -> Result<(), DeviceError> {
-    let uid = |value| user.map_kernel_id(true, value).unwrap_or(65534);
-    let gid = |value| user.map_kernel_id(false, value).unwrap_or(65534);
+    let uid = |value| user.display_id(true, value);
+    let gid = |value| user.display_id(false, value);
     let number =
         |value: &Option<Arc<PidIdentity>>| value.as_ref().map_or(0, |value| value.number_in(pid));
     let formatted = match row {

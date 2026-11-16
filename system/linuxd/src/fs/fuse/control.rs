@@ -233,6 +233,7 @@ impl Inode for ControlInode {
     }
     fn open_backend(
         &self,
+        _opened: &crate::fs::OpenedFile,
         _flags: u32,
         _: &AccessIdentity,
         _: &crate::namespace::NamespaceAuthority,

@@ -101,6 +101,33 @@ fn user_string(
         })
 }
 
+/// Linux pivot_root：解析两个目录并提交挂载拓扑，成功返回 0，失败返回负 errno。
+pub(crate) fn sys_pivot_root(new_root: *const u8, put_old: *const u8) -> isize {
+    let task = current_task().expect("pivot_root requires a current task");
+    let result = (|| {
+        let origin = task.lookup_origin();
+        let identity = task.access_identity(true);
+        let resolve = |pointer| {
+            let name = path(&task, pointer)?;
+            vfs()
+                .open_file_at(origin.clone(), &name, &identity)
+                .map_err(ferr)
+        };
+        let new = resolve(new_root)?;
+        let old = resolve(put_old)?;
+        if !may_mount(&task) {
+            return Err(-errno::EPERM);
+        }
+        let root = task.lookup_origin().root();
+        vfs()
+            .pivot_root(&task.mount_namespace(), &root, &new, old, || {
+                crate::task::replace_fs_roots(&root, &new);
+            })
+            .map_err(ferr)
+    })();
+    result.map_or_else(|error| error, |()| 0)
+}
+
 /// 创建一个新挂载（Linux `do_new_mount`）。
 ///
 /// # Parameters

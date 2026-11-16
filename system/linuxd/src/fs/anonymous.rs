@@ -195,6 +195,7 @@ impl Inode for PseudoInode {
     }
     fn open_backend(
         &self,
+        _opened: &crate::fs::OpenedFile,
         flags: u32,
         _: &AccessIdentity,
         _: &crate::namespace::NamespaceAuthority,

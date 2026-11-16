@@ -46,6 +46,7 @@ enum ProcOpenFile {
         resource: crate::namespace::UserResource,
     },
     MountLimit,
+    OverflowId(crate::namespace::OverflowId),
     InotifyLimit(crate::fs::InotifyLimit),
     CoreBufferLimit {
         target: Arc<crate::net::NetNamespace>,
@@ -204,6 +205,11 @@ pub(super) fn open(
             super::sysctl_permissions::require(opener.effective_uid, 2)?;
         }
         ProcOpenFile::MountLimit
+    } else if let ProcNode::OverflowId(id) = inode.node {
+        if flags & crate::fs::O_ACCMODE != crate::fs::O_RDONLY {
+            super::sysctl_permissions::require(opener.effective_uid, 2)?;
+        }
+        ProcOpenFile::OverflowId(id)
     } else if let ProcNode::UserResourceLimit(resource) = inode.node {
         let target = inode
             .user_namespace
@@ -295,6 +301,9 @@ impl ProcOpenFile {
         }
         if let Self::PidLimit { target } = self {
             return super::super::try_format_bytes(format_args!("{}\n", target.limit()));
+        }
+        if let Self::OverflowId(id) = self {
+            return super::super::try_format_bytes(format_args!("{}\n", id.value()));
         }
         if let Self::CoreBufferLimit { resource, .. } = self {
             return super::super::try_format_bytes(format_args!("{}\n", resource.value()));
@@ -453,6 +462,7 @@ impl PositionedFile for ProcOpenFile {
                     self,
                     Self::Limit { .. }
                         | Self::MountLimit
+                        | Self::OverflowId(_)
                         | Self::InotifyLimit(_)
                         | Self::CoreBufferLimit { .. }
                         | Self::OptmemLimit(_)
@@ -611,6 +621,11 @@ impl PositionedFile for ProcOpenFile {
         }
         if let Self::Limit { target, resource } = self {
             return super::sysctl_limit::write(target, *resource, input, offset, writer);
+        }
+        if let Self::OverflowId(id) = self {
+            super::sysctl_permissions::require(writer.effective_uid, 2)
+                .map_err(|_| DeviceError::Errno(errno::EPERM))?;
+            return super::sysctl_limit::write_u16(input, offset, |value| id.set(value));
         }
         let Self::Map {
             target,
